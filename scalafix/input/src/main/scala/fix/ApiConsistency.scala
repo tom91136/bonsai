@@ -39,4 +39,25 @@ object ApiConsistency {
     def overloaded(user: String): Int                                                         = 8
     def overloaded(user: String, count: Int): Int                                             = 9
   }
+
+  trait Fetcher {
+    def illusts(user: Long, offset: Option[Long] = None): Int  = 1
+    def novels(user: Long, offset: Option[Long] = None): Int   = 2
+    def bookmarks(user: Long, offset: Long = 0L): Int          = 3 // assert: ApiConsistency.inconsistent-parameter
+  }
+
+  object Handlers {
+    val first: Endpoint[Int, Int]    = Endpoint("first")
+    val second: Endpoint[Int, Int]   = Endpoint("second")
+    val third: Endpoint[Int, Int]    = Endpoint("third") // assert: ApiConsistency.registry-drift
+    val registered: Seq[AnyEndpoint] = Seq(first, second)
+  }
+
+  object Stages {
+    val one: Endpoint[Long, Long]        = Endpoint("one")
+    val two: Endpoint[Long, Long]        = Endpoint("two")
+    val three: Endpoint[Long, Long]      = Endpoint("three") // assert: ApiConsistency.registry-drift
+    val listed: Set[AnyEndpoint]         = Set.apply(one, two)
+    val indexed: IndexedSeq[AnyEndpoint] = IndexedSeq(one, two)
+  }
 }

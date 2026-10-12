@@ -1,5 +1,9 @@
 package net.kurobako.baumkuchen.analysis
 
+import java.nio.file.Files
+import scala.jdk.CollectionConverters.*
+import scala.util.Using
+
 class BytecodeSuite extends AnalysisSuite {
   private def statements(count: Int): String = (1 to count).map(index =>
     s"    total += values($index % values.length) * $index"
@@ -30,7 +34,8 @@ class BytecodeSuite extends AnalysisSuite {
                            |}
                            |class Lazy { lazy val values: Vector[Int] = Vector(${(1 to 2000).mkString(
                             ", "
-                          )}) }""".stripMargin
+                          )}) }""".stripMargin,
+      "Top.scala" -> s"def topHuge(values: Array[Int]): Int = {\n  var total = 0\n${statements(1000)}\n  total\n}"
     ))
     Bytecode.findings(result.bytecode, result.graph.nodes)
   }
@@ -43,6 +48,22 @@ class BytecodeSuite extends AnalysisSuite {
 
   test("lambda bodies are reported under the method that defines them") {
     assertFinding(found, "huge-method", "Kernel.lambda (lambda) has")
+  }
+
+  test("huge top-level methods are reported under their own name") {
+    assertFinding(found, "huge-method", "topHuge has")
+  }
+
+  test("a malformed class file fails the read rather than being skipped") {
+    val directory = Files.createTempDirectory("baumkuchen-bytecode-")
+    try {
+      Files.write(
+        directory.resolve("Junk.class"),
+        Array[Byte](0xca.toByte, 0xfe.toByte, 0xba.toByte, 0xbe.toByte, 0, 0, 0, 61, 0, 2, 99)
+      ): Unit
+      val error = intercept[IllegalArgumentException](Bytecode.read(Vector(directory)))
+      assert(error.getMessage.contains("unknown constant pool tag"), error.getMessage)
+    } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
   }
 
   test("initialisers that run once are left alone") {

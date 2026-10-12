@@ -30,6 +30,24 @@ class BuildSuite extends FunSuite {
     assertEquals(read.map(_.root), Right(Some(root)))
   }
 
+  directory.test("the manifest reads classpath and library lines, and names malformed lines with their position") {
+    root =>
+      val complete = write(
+        root,
+        "complete.tsv",
+        s"output\tcore\tmain\t${root.resolve("classes")}\n" +
+          s"classpath\t${root.resolve("lib.jar")}\nlibrary\tcore\nroot\t$root\n"
+      )
+      val read = Manifest.read(complete)
+      assertEquals(read.map(_.classpath), Right(Vector(root.resolve("lib.jar"))))
+      assertEquals(read.map(_.libraries), Right(Set("core")))
+      assertEquals(read.map(_.root), Right(Some(root)))
+      val scoped  = write(root, "scoped.tsv", "output\tcore\tclasses\t/x\n")
+      val unknown = write(root, "unknown.tsv", "mystery\tline\n")
+      assert(Manifest.read(scoped).left.exists(_.contains("unknown scope: classes")))
+      assert(Manifest.read(unknown).left.exists(_.contains("unrecognised manifest line: mystery")))
+  }
+
   test("modules without fatal warnings are reported") {
     val manifest = Manifest(
       Vector.empty,

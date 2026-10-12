@@ -50,6 +50,17 @@ class AlgebraSuite extends AnalysisSuite {
     assertNoFinding(found)(_.detail.contains("T"))
   }
 
+  test("context functions are not curried plain functions") {
+    val found = findings(
+      "Contexts.scala" ->
+        """type Contextual = Int ?=> String
+          |type PlainFunction = Int => String
+          |case class Context(value: (Contextual, Int))
+          |case class Plain(value: (PlainFunction, Int))""".stripMargin
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.DuplicateShape)
+  }
+
   test("alternatives of the same shape are reported together as information") {
     given Finding.Level = Finding.Level.Info
     assertFinding(

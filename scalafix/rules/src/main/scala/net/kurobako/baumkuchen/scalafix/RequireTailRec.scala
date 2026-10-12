@@ -76,10 +76,9 @@ class RequireTailRec extends SemanticRule("RequireTailRec") {
 
   @scala.annotation.tailrec
   private def callRef(term: Term, methodSymbol: Symbol)(using SemanticDocument): Option[Term.Ref] = term match {
-    case call: Term.Apply => call.fun match {
-        case ref: Term.Ref if ref.symbol == methodSymbol => Some(ref)
-        case _                                           => callRef(call.fun, methodSymbol)
-      }
-    case _ => None
+    case reference: Term.Ref if reference.symbol == methodSymbol => Some(reference)
+    case call: Term.Apply                                        => callRef(call.fun, methodSymbol)
+    case application: Term.ApplyType                             => callRef(application.fun, methodSymbol)
+    case _                                                       => None
   }
 }

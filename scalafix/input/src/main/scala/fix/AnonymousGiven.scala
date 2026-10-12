@@ -9,10 +9,15 @@ object AnonymousGiven {
   case class Celsius(value: Int)
   case class Kelvin(value: Int)
   case class Fahrenheit(value: Int)
+  case class Rank(value: Int)
 
   private given ascending: Ordering[Celsius] = Ordering.by(_.value) // assert: AnonymousGiven.anonymous-given
   private given descending: Ordering[Kelvin] = Ordering.by(-_.value)
   given exported: Ordering[Fahrenheit]       = Ordering.by(-_.value)
+
+  private given ranked: Ordering[Rank] with { // assert: AnonymousGiven.anonymous-given
+    def compare(left: Rank, right: Rank): Int = left.value - right.value
+  }
 
   def sorted(values: List[Celsius]): List[Celsius] = values.sorted
   def kelvins(values: List[Kelvin]): List[Kelvin]  = values.sortWith(descending.lt)
@@ -35,6 +40,16 @@ numeric is never referenced by name; give it a clause of its own, `(using Numeri
     given first: Ordering[Kelvin]  = Ordering.by(_.value)
     given second: Ordering[Kelvin] = Ordering.by(-_.value)
     values.max(using first)
+  }
+
+  def clashingBodies(values: List[Rank]): Rank = {
+    given firstBody: Ordering[Rank] with {
+      def compare(left: Rank, right: Rank): Int = left.value - right.value
+    }
+    given secondBody: Ordering[Rank] with {
+      def compare(left: Rank, right: Rank): Int = right.value - left.value
+    }
+    values.min(using firstBody)
   }
 
   trait Sorter { def sort(values: List[Celsius])(using order: Ordering[Celsius]): List[Celsius] }

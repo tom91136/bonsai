@@ -15,4 +15,14 @@ case _ => "other"
   }
   val typed = xs.map((x: Int) => x match { case _ => "other" })
   val captures = xs.map(x => x match { case _ => x.toString })
+
+  val blocked = xs.map {
+case 1 => "one"
+case _ => "other"
+}
+
+  val assigned: Int => String = {
+case 1 => "one"
+case _ => "other"
+}
 }

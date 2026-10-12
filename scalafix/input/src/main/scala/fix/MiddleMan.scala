@@ -46,4 +46,10 @@ object MiddleMan {
     def start(speed: Int): Int = Engine.start(speed + 1)
     def stop(): Unit           = Engine.stop()
   }
+
+  object Bridged { // assert: MiddleMan.middle-man
+    import Engine.*
+    def start(speed: Int): Int = Engine.start(speed)
+    def stop(): Unit           = Engine.stop()
+  }
 }

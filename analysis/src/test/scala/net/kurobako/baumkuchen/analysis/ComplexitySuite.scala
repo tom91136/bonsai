@@ -19,11 +19,16 @@ class ComplexitySuite extends AnalysisSuite {
                           |  }
                           |  def indexed(values: Vector[Int]): Int = values.indices.map(index => values(index)).sum
                           |  def listIndexed(values: List[Int]): Int = values.indices.map(index => values(index)).sum
-                          |  def filtered(values: Vector[Int]): Int = {
-                          |    val positive = values.filter(_ > 0)
-                          |    positive.map(value => positive.count(_ < value)).sum
-                          |  }
-                          |}""".stripMargin
+          |  def filtered(values: Vector[Int]): Int = {
+          |    val positive = values.filter(_ > 0)
+          |    positive.map(value => positive.count(_ < value)).sum
+          |  }
+          |  def mutualFirst(values: Vector[Int]): Int = if (values.isEmpty) 0 else mutualSecond(values)
+          |  def mutualSecond(values: Vector[Int]): Int = values.count(_ > 0) + mutualFirst(values)
+          |  def crossed(rows: List[Int], keys: List[Int]): Int = rows.map(_ => keys.last).sum
+          |  def joined(rows: List[Int], keys: List[Int]): Int = rows.map(_ => keys.mkString.length).sum
+          |  def arrays(left: Array[Int], right: Array[Int]): Int = left.map(value => right.count(_ == value)).sum
+          |}""".stripMargin
     ))
     Complexity.findings(result.complexities, result.graph.nodes)
   }
@@ -48,6 +53,18 @@ class ComplexitySuite extends AnalysisSuite {
     assertNoFinding(found)(finding =>
       Vector("linear", "nested", "looping", "indexed ").exists(name => finding.detail.startsWith(s"Search.$name"))
     )
+  }
+
+  test("mutually recursive methods are bounded rather than followed forever") {
+    assertNoFinding(found)(finding =>
+      finding.detail.startsWith("Search.mutualFirst") || finding.detail.startsWith("Search.mutualSecond")
+    )
+  }
+
+  test("array traversals and walks or aggregates nested in traversals are super-linear") {
+    assertFinding(found, "complexity", "Search.arrays is O(|left| * |right|)")
+    assertFinding(found, "complexity", "Search.crossed is O(|keys| * |rows|)")
+    assertFinding(found, "complexity", "Search.joined is O(|keys| * |rows|)")
   }
 
   private lazy val bounded = {

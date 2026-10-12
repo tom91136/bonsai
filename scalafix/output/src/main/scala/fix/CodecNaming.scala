@@ -10,6 +10,7 @@ package fix {
         userId: String,
         @key("user_name") userName: String,
         @key("is_locked") @encodedName("is_locked") isLocked: Boolean,
+        @key("user_email") @encodedName("email") email: String,
         title: String
     ) derives ReadWriter, Schema
 

@@ -64,6 +64,17 @@ class SmellsSuite extends AnalysisSuite {
     )
   }
 
+  test("a string default passed explicitly is redundant") {
+    assertFinding(
+      findings(
+        "Render.scala" -> "object Render { def fill(colour: String = \"red\"): Int = colour.length }",
+        "Main.scala"   -> "object Main { val first = Render.fill(\"red\") }"
+      ),
+      "redundant-default",
+      "Render.fill(colour).colour is passed its default \"red\" explicitly at 1 calls"
+    )
+  }
+
   test("flags every caller passes as a literal select between methods") {
     assertFinding(
       findings(

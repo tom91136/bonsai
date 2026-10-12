@@ -13,6 +13,7 @@ package fix {
         @key("userId") userId: String,// assert: CodecNaming.redundant-key
         @key("user_name") userName: String,// assert: CodecNaming.schema-name
         @key("is_locked") @encodedName("is_locked") isLocked: Boolean,
+        @key("user_email") @encodedName("email") email: String,// assert: CodecNaming.schema-name
         title: String
     ) derives ReadWriter, Schema
 

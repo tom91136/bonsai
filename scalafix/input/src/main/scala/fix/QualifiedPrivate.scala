@@ -41,8 +41,16 @@ object QualifiedPrivate {
     inline def inlined: Int                                         = binary
   }
 
+  class Unused {
+    private[QualifiedPrivate] def helper: Int = 1 // assert: QualifiedPrivate.redundant-qualifier
+  }
+
   private[QualifiedPrivate] class Escaping(val value: Int)
   def escaping(value: Int): Escaping = new Escaping(value)
+
+  private[QualifiedPrivate] class Scoped
+  private[QualifiedPrivate] trait Marker
+  private[QualifiedPrivate] object Nested
 
   class Shared {
     private[QualifiedPrivate] def peek: Int = 2

@@ -342,4 +342,57 @@ class PuritySuite extends AnalysisSuite {
   test("an effectful function passed to a view is reported as running again on every traversal") {
     assertFinding(contracts, "effectful-transform", "calls scala.Predef.println", "a view runs it again")
   }
+
+  private lazy val known = extract(
+    Seq(
+      "Main.scala"    -> "object Main { def main(args: Array[String]): Unit = println(Effects) }",
+      "Effects.scala" ->
+        """object Effects {
+          |  def uuid(): java.util.UUID = java.util.UUID.randomUUID()
+          |  def math(): Double = Math.random()
+          |  def random(): Int = scala.util.Random.nextInt(10)
+          |  def slept(): Unit = Thread.sleep(1)
+          |  def env(): String = System.getenv("HOME")
+          |  def property(): String = System.getProperty("user.home")
+          |  def copied(source: Array[Int], target: Array[Int]): Unit =
+          |    System.arraycopy(source, 0, target, 0, source.length)
+          |  def printed(): Unit = { val out = new java.io.ByteArrayOutputStream(); out.write(1) }
+          |  def logged(text: String): Unit = org.slf4j.LoggerFactory.getLogger("effects").info(text)
+          |}""".stripMargin
+    ),
+    dependencies = Seq(
+      "Slf4j.scala" ->
+        """package org.slf4j
+          |class Logger { def info(message: String): Unit = () }
+          |object LoggerFactory { def getLogger(name: String): Logger = new Logger }
+          |""".stripMargin
+    )
+  )
+
+  private def effects(name: String): Set[Purity.Kind] =
+    known.purity.methods.getOrElse(name, fail(s"no method $name")).effects.map(_.kind).toSet
+
+  test("clocks, randomness, threads, environment, copies and output streams are known effects") {
+    assertEquals(effects("Effects.uuid"), Set(Purity.Kind.Random))
+    assertEquals(effects("Effects.math"), Set(Purity.Kind.Random))
+    assertEquals(effects("Effects.random"), Set(Purity.Kind.Random))
+    assertEquals(effects("Effects.slept"), Set(Purity.Kind.Output))
+    assertEquals(effects("Effects.env"), Set(Purity.Kind.Input))
+    assertEquals(effects("Effects.property"), Set(Purity.Kind.Input))
+    assertEquals(effects("Effects.copied"), Set(Purity.Kind.Writes))
+    assertEquals(effects("Effects.printed"), Set(Purity.Kind.Output))
+    assertEquals(effects("Effects.logged"), Set(Purity.Kind.Output))
+  }
+
+  test("the purity summary tallies verdicts and ranks the causes of unknown") {
+    val summary = Purity.summary(result.purity)
+    val counts  = """purity: \d+ pure, \d+ impure, \d+ unknown of \d+ methods, reading \d+ library methods""".r
+    assert(counts.matches(summary.head), summary.mkString("\n"))
+    assert(
+      summary.exists(line =>
+        line.startsWith("purity: unknown ") && line.contains("Executors.newFixedThreadPool")
+      ),
+      summary.mkString("\n")
+    )
+  }
 }

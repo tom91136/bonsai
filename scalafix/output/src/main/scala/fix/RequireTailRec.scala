@@ -18,6 +18,23 @@ object RequireTailRec {
   def annotatedTailRec(n: Int, acc: Int): Int =
     if (n <= 0) acc else annotatedTailRec(n - 1, acc + n)
 
+  @annotation.tailrec
+  def typedTailRec[A](value: A, n: Int): A =
+    if (n <= 0) value else typedTailRec[A](value, n - 1)
+
+  @annotation.tailrec
+  def matchedTailRec(n: Int): Int =
+    n match {
+      case 0 => 0
+      case _ => matchedTailRec(n - 1)
+    }
+
+  class FinalHelper {
+    @annotation.tailrec
+    final def finalTailRec(i: Int): Unit =
+      if (i > 0) finalTailRec(i - 1)
+  }
+
   class Helper {
     @annotation.tailrec
     private def privateLoop(i: Int): Unit =

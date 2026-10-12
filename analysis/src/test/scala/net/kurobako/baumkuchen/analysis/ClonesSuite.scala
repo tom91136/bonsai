@@ -88,6 +88,7 @@ class ClonesSuite extends AnalysisSuite {
         s"object Second {\n  def second(items: List[Int]): String = {\n$run\n    s\"$$total of $$count\"\n  }\n}"
     ))
     assertFinding(found, "duplicate-code", "2 copies of 4 lines")
+    assertEquals(found.size, 1, found.mkString("\n"))
   }
 
   test("generated sources are not hashed") {

@@ -17,6 +17,24 @@ object CollectionIdioms {
   val ok3 = map.getOrElse("a", 0)
   val ok4 = list.slice(1, 3)
 
+  val texts = List("a", "b")
+  val literals = List(2L, 3L)
+  val flags = List(true, false)
+  val characters = List('a', 'b')
+  val longTarget = literals.contains(2L)
+  val stringTarget = texts.contains("a")
+  val charTarget = characters.contains('a')
+  val booleanTarget = !(flags.contains(false))
+  val treeMap = scala.collection.immutable.TreeMap("a" -> 1)
+  val hashMap = scala.collection.immutable.HashMap("b" -> 2)
+  val treeLookup = treeMap.getOrElse("a", 0)
+  val hashLookup = hashMap.getOrElse("b", 0)
+  val range = 1 to 5
+  val rangeSearch = range.contains(2)
+  val rangeSlice = range.slice(1, 3)
+  val arraySeq = scala.collection.immutable.ArraySeq(1, 2)
+  val arraySeqSearch = arraySeq.contains(1)
+
   var evaluations = 0
   def next(): Int = { evaluations += 1; evaluations }
   val effects = list.exists(_ == next())

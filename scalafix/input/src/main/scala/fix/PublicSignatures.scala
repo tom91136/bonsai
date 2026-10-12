@@ -12,7 +12,10 @@ object PublicSignatures {
   def assemble(source: String, tools: (assembler: String, disassembler: Option[String])): Unit = ()
   def multiplyAdd(left: Long, right: Long, addend: Long): Long = left // assert: PublicSignatures.primitive-run
   def encode(value: Long, signed: Boolean = false, octal: Boolean = false, padded: Boolean = false): String = ""
-  private def internal(value: Any): (Int, Int)                                                              = (0, 0)
+  def storeRef(value: AnyRef): Unit                                                         = ()     // assert: PublicSignatures.any-type
+  def storeObject(value: java.lang.Object): Unit                                            = ()     // assert: PublicSignatures.any-type
+  def indent(first: String, second: String, third: String): String                          = first  // assert: PublicSignatures.primitive-run
+  private def internal(value: Any): (Int, Int)                                              = (0, 0)
   override def toString: String = "PublicSignatures"
 
   private object Internal {
@@ -28,3 +31,5 @@ object PublicSignatures {
     def clamp(low: Int, high: Int, step: Int): Int = value // assert: PublicSignatures.primitive-run
   }
 }
+
+def topLevelPublic(value: Any): Unit = () // assert: PublicSignatures.any-type

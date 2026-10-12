@@ -3,6 +3,8 @@ rule = PatternShadow
  */
 package fix
 
+val shared = 1
+
 object PatternShadow {
   sealed trait Shape
   case class Applied(wrapper: String, arguments: List[Int]) extends Shape
@@ -75,4 +77,17 @@ object PatternShadow {
     (key, _) <- rows
     doubled = key * 2
   } yield doubled
+
+  def sourced(shape: Shape): Int = shape match {
+    case Single(shared) => shared // assert: PatternShadow.pattern-shadow
+    case _              => 0
+  }
+
+  def mutable(shape: Shape): Int = {
+    var bound = 0
+    shape match {
+      case Single(bound) => bound // assert: PatternShadow.pattern-shadow
+      case _             => 0
+    }
+  }
 }

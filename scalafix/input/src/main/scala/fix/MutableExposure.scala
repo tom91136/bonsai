@@ -15,9 +15,16 @@ object MutableExposure {
     var balance: Long                      = 0                         // assert: MutableExposure.public-var
     val history: mutable.ArrayBuffer[Long] = mutable.ArrayBuffer.empty // assert: MutableExposure.exposed-mutable
     def pending: mutable.Queue[Long]       = mutable.Queue.empty       // assert: MutableExposure.exposed-mutable
+    val inferred                           = mutable.Map.empty[String, String] // assert: MutableExposure.exposed-mutable
+    val legacy                             = new java.util.ArrayList[Int]()    // assert: MutableExposure.exposed-mutable
     private var cursor                     = 0
     private val buffer                     = mutable.ArrayBuffer.empty[Long]
     def snapshot: Vector[Long]             = buffer.toVector
+  }
+
+  trait Cache {
+    var hits: Int                       = 0                 // assert: MutableExposure.public-var
+    val store: mutable.Map[String, Int] = mutable.Map.empty // assert: MutableExposure.exposed-mutable
   }
 
   private class Hidden {

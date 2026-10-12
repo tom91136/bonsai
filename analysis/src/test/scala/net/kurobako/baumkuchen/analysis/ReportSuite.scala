@@ -81,6 +81,28 @@ class ReportSuite extends AnalysisSuite {
     assertEquals(found.sorted, Vector("Tools.deprecated is never referenced", "Tools.other is never referenced"))
   }
 
+  test("lines render as tab-separated fields with the category of their node") {
+    val node = Node(
+      "lib.Tools.spare",
+      "core",
+      Output.Scope.Main,
+      "src/main/scala/Tools.scala",
+      12,
+      generated = false,
+      exported = false,
+      outer = None
+    )
+    val finding = Finding(Finding.Rule.UnusedMember, node, "Tools.spare is never referenced")
+    assertEquals(
+      Report.Line("error", finding).show,
+      "error\tunused-member\thandwritten\tcore\tlib.Tools.spare\tsrc/main/scala/Tools.scala:12\t" +
+        "Tools.spare is never referenced"
+    )
+    assert(Report.Line("error", finding).failing)
+    assert(!Report.Line("warning", finding).failing)
+    assertEquals(Report.Line("info", finding.copy(node = node.copy(generated = true))).show.split('\t')(2), "generated")
+  }
+
   test("baselines round trip through their text form") {
     val found = lines(defaults)
     assertEquals(Report.baseline(Report.write(found)), found.map(_.finding.key).toSet)

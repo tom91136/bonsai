@@ -101,6 +101,15 @@ class CLISuite extends FunSuite {
     assert(CLI.parse(List("--effects", "demo")).left.exists(_.startsWith("an effects policy is written")))
   }
 
+  test("generated patterns and the purity summary flag are carried through") {
+    assertEquals(
+      CLI.parse(List("--generated", "**/src/generated/**", "--purity")).map(options =>
+        (options.generated, options.purity)
+      ),
+      Right((Vector("glob:**/src/generated/**"), true))
+    )
+  }
+
   test("unknown rule ids are rejected") {
     assert(CLI.parse(List("--error", "bogus")).left.exists(_.startsWith("unknown rule: bogus")))
     assert(CLI.parse(List("--disable", "bogus")).left.exists(_.startsWith("unknown rule: bogus")))

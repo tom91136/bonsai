@@ -5,6 +5,7 @@ package fix
 
 object GivenPlacement {
   case class Celsius(value: Double)
+  case class Kelvin(value: Double)
   object Celsius {
     given Ordering[Celsius]           = Ordering.by(_.value)
     given Conversion[Double, Celsius] = Celsius(_)
@@ -14,6 +15,15 @@ object GivenPlacement {
     given Ordering[Celsius]           = Ordering.by(-_.value)          // assert: GivenPlacement.orphan-given
     given Int                         = 42                             // assert: GivenPlacement.ambient-given
     given Conversion[String, Celsius] = text => Celsius(text.toDouble) // assert: GivenPlacement.conversion-placement
+  }
+
+  object Bodies {
+    given Ordering[Kelvin] with { // assert: GivenPlacement.orphan-given
+      def compare(left: Kelvin, right: Kelvin): Int = left.value.compare(right.value)
+    }
+    given Conversion[String, Kelvin] with { // assert: GivenPlacement.conversion-placement
+      def apply(text: String): Kelvin = Kelvin(text.toDouble)
+    }
   }
 
   object Internal {

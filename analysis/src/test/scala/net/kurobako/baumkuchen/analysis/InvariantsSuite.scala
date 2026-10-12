@@ -147,4 +147,50 @@ class InvariantsSuite extends AnalysisSuite {
       Finding.Level.Info
     )
   }
+
+  test("more than three violating sites are counted, not all listed") {
+    val found = findings(
+      "Sizes.scala" -> "object Sizes { def checked(count: Int): Int = { require(count >= 0); count } }",
+      "Main.scala"  ->
+        """object Main {
+          |  val first = Sizes.checked(-1)
+          |  val second = Sizes.checked(-2)
+          |  val third = Sizes.checked(-3)
+          |  val fourth = Sizes.checked(-4)
+          |}""".stripMargin
+    )
+    assertFinding(found, "invariant-violation", "4 calls violate the precondition", "1 more")
+  }
+
+  test("a bound held in a constant val is read") {
+    assertFinding(
+      findings(
+        "Limits.scala" ->
+          """object Limits {
+            |  final val Maximum = 10
+            |  case class Bounded(count: Int) { require(count <= Maximum) }
+            |}""".stripMargin,
+        "Main.scala" -> "object Main { val ok = Limits.Bounded(10); val bad = Limits.Bounded(11) }"
+      ),
+      "invariant-violation",
+      "Bounded: 1 constructions violate the invariant"
+    )
+  }
+
+  test("the state space a decomposition enumerates is capped") {
+    def flags(names: String)   = names.map(letter => s"$letter: Boolean").mkString(", ")
+    def rejects(names: String) = names.map(letter => s"$letter == false").mkString(" || ")
+    val letters                = "abcdefghijklm"
+    val found                  = findings(
+      "Bits.scala" ->
+        s"""case class Small(${flags(letters.take(12))}) {
+           |  require(${rejects(letters.take(12))})
+           |}
+           |case class Big(${flags(letters)}) {
+           |  require(${rejects(letters)})
+           |}""".stripMargin
+    )
+    assertFinding(found, "invariant-sum", "Small: the invariant rejects 1 of 4096 states")
+    assertNoFinding(found)(_.detail.startsWith("Big:"))
+  }
 }

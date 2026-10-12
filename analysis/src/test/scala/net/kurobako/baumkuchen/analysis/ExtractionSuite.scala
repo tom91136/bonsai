@@ -358,6 +358,15 @@ class ExtractionSuite extends AnalysisSuite {
     )
   }
 
+  test("an output directory with no TASTy is an empty build rather than a failure") {
+    val directory = Files.createTempDirectory("baumkuchen-")
+    try {
+      val result = Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, directory)), classpath, Set.empty))
+      assertEquals(result.map(_.graph.nodes.isEmpty), Right(true))
+      assertEquals(result.map(_.problems), Right(Vector.empty[String]))
+    } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+  }
+
   test("an output holding a file that is not TASTy fails the read rather than throwing") {
     val directory = Files.createTempDirectory("baumkuchen-")
     try {

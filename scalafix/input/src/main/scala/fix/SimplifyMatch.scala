@@ -18,4 +18,14 @@ object SimplifyMatch {
   }
   val typed = xs.map((x: Int) => x match { case _ => "other" })
   val captures = xs.map(x => x match { case _ => x.toString })
+
+  val blocked = xs.map(x => { x match {// assert: SimplifyMatch.simplify-match
+    case 1 => "one"
+    case _ => "other"
+  } })
+
+  val assigned: Int => String = x => x match {// assert: SimplifyMatch.simplify-match
+    case 1 => "one"
+    case _ => "other"
+  }
 }

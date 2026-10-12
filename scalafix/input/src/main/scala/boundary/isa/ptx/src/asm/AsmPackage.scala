@@ -11,6 +11,8 @@ PackageBoundary.boundaries = [
  */
 package org.example.isa.ptx.asm
 
+class Emitter
+
 object Printer {
   val rendered = 1
 }

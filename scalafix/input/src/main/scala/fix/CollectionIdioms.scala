@@ -20,6 +20,24 @@ object CollectionIdioms {
   val ok3 = map.getOrElse("a", 0)
   val ok4 = list.slice(1, 3)
 
+  val texts = List("a", "b")
+  val literals = List(2L, 3L)
+  val flags = List(true, false)
+  val characters = List('a', 'b')
+  val longTarget = literals.exists(_ == 2L)// assert: CollectionIdioms.exists-to-contains
+  val stringTarget = texts.exists(_ == "a")// assert: CollectionIdioms.exists-to-contains
+  val charTarget = characters.exists(_ == 'a')// assert: CollectionIdioms.exists-to-contains
+  val booleanTarget = flags.forall(_ != false)// assert: CollectionIdioms.forall-to-not-contains
+  val treeMap = scala.collection.immutable.TreeMap("a" -> 1)
+  val hashMap = scala.collection.immutable.HashMap("b" -> 2)
+  val treeLookup = treeMap.get("a").getOrElse(0)// assert: CollectionIdioms.get-get-or-else
+  val hashLookup = hashMap.get("b").getOrElse(0)// assert: CollectionIdioms.get-get-or-else
+  val range = 1 to 5
+  val rangeSearch = range.exists(_ == 2)// assert: CollectionIdioms.exists-to-contains
+  val rangeSlice = range.drop(1).take(2)// assert: CollectionIdioms.drop-take-to-slice
+  val arraySeq = scala.collection.immutable.ArraySeq(1, 2)
+  val arraySeqSearch = arraySeq.exists(_ == 1)// assert: CollectionIdioms.exists-to-contains
+
   var evaluations = 0
   def next(): Int = { evaluations += 1; evaluations }
   val effects = list.exists(_ == next())

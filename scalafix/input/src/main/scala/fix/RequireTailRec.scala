@@ -20,6 +20,20 @@ object RequireTailRec {
   def annotatedTailRec(n: Int, acc: Int): Int =
     if (n <= 0) acc else annotatedTailRec(n - 1, acc + n)
 
+  def typedTailRec[A](value: A, n: Int): A =// assert: RequireTailRec.missing-tailrec
+    if (n <= 0) value else typedTailRec[A](value, n - 1)
+
+  def matchedTailRec(n: Int): Int =// assert: RequireTailRec.missing-tailrec
+    n match {
+      case 0 => 0
+      case _ => matchedTailRec(n - 1)
+    }
+
+  class FinalHelper {
+    final def finalTailRec(i: Int): Unit =// assert: RequireTailRec.missing-tailrec
+      if (i > 0) finalTailRec(i - 1)
+  }
+
   class Helper {
     private def privateLoop(i: Int): Unit =// assert: RequireTailRec.missing-tailrec
       if (i > 0) privateLoop(i - 1)

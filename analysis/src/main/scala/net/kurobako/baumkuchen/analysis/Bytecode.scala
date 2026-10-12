@@ -78,8 +78,10 @@ object Bytecode {
     val plain    = method.name.stripPrefix("$anonfun$").split('$').find(_.nonEmpty).getOrElse(method.name)
     val shown    = if (lambda) s"$plain (lambda)" else plain
     val owner    = if (topLevel) name.split('.').dropRight(1).mkString(".") + "." + plain else name
-    val node     =
+    // A top-level method's node is its own name, without the `$package$` object the compiler groups it into.
+    val node =
       Iterator.iterate(owner)(_.split('.').dropRight(1).mkString(".")).takeWhile(_.nonEmpty).find(nodes.contains)
+        .orElse(Option.when(topLevel && nodes.contains(plain))(plain))
     val label = node.fold(shown)(key => if (topLevel) shown else s"${key.split('.').last}.$shown")
     (node, label)
   }
