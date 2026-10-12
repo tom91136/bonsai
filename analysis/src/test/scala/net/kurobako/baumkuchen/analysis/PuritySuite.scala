@@ -96,13 +96,16 @@ class PuritySuite extends AnalysisSuite {
     )
   }
 
-  test("functions passed to collection transformations that themselves write state or perform output are reported") {
+  test("functions passed to collection transformations with direct effects of any kind are reported") {
     assertEquals(
       found.filter(_.rule == Finding.Rule.EffectfulTransform).map(_.detail.replaceAll(" at [^ ]+:[0-9]+", "")).sorted,
       Vector(
         "the function passed to filter calls scala.collection.mutable.Growable.+=",
+        "the function passed to filterNot calls java.lang.Thread.currentThread",
+        "the function passed to map calls java.nio.file.Files.readString",
         "the function passed to map calls java.nio.file.Files.writeString",
         "the function passed to map calls scala.Predef.println",
+        "the function passed to map reads total",
         "the function passed to map writes count"
       ).map(_ + "; keep transformations pure and perform effects in foreach or a loop")
     )

@@ -20,6 +20,12 @@ object CollectionNonEmpty {
     val j = list.size >= 0
     val k = list.nonEmpty
     val l = (if (a) list else Nil).size > 0// assert: CollectionIdioms.size-to-non-empty
+    val m = list.size == 0// assert: CollectionIdioms.size-to-is-empty
+    val n = list.size != 0// assert: CollectionIdioms.size-to-non-empty
+    val o = list.length > 0// assert: CollectionIdioms.size-to-non-empty
+    val p = list.length == 0// assert: CollectionIdioms.size-to-is-empty
+    val q = text.length == 0
+    val r = array.length == 0// assert: CollectionIdioms.size-to-is-empty
   }
   class Metric { def size: Int = 3 }
 }

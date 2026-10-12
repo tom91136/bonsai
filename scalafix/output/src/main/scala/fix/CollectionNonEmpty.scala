@@ -17,6 +17,12 @@ object CollectionNonEmpty {
     val j = list.size >= 0
     val k = list.nonEmpty
     val l = (if (a) list else Nil).nonEmpty
+    val m = list.isEmpty
+    val n = list.nonEmpty
+    val o = list.nonEmpty
+    val p = list.isEmpty
+    val q = text.length == 0
+    val r = array.isEmpty
   }
   class Metric { def size: Int = 3 }
 }

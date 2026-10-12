@@ -28,9 +28,9 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
   )
 
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
-    case call: Term.Apply            => rewrite(call) + filterBeforeSorted(call) + emptyCollection(call)
+    case call: Term.Apply => rewrite(call) + filterBeforeSorted(call) + emptyCollection(call) + arrayPrint(call)
     case comparison: Term.ApplyInfix => nonEmpty(comparison)
-    case selection: Term.Select      => redundantConversion(selection)
+    case selection: Term.Select      => redundantConversion(selection) + sizeToLength(selection)
   }.asPatch
 
   private def standardMethod(selection: Term.Select)(using SemanticDocument): Boolean =
@@ -88,6 +88,29 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
             )
           case _ => Patch.empty
         }
+
+      case (drop @ Term.Select(inner: Term.Apply, Term.Name("drop")), List(Lit.Int(from)))
+          if from >= 0 && standardMethod(drop) =>
+        (inner.fun, inner.argClause.values) match {
+          case (take @ Term.Select(receiver, Term.Name("take")), List(Lit.Int(length)))
+              if length >= 0 && standardMethod(take) && strictSequence(receiver) =>
+            replace(
+              call,
+              s"${receiver.syntax}.slice($from, $length)",
+              "take-drop-to-slice",
+              "use slice for constant nonnegative bounds"
+            )
+          case _ => Patch.empty
+        }
+
+      case (drop @ Term.Select(receiver, Term.Name("drop")), List(Lit.Int(0)))
+          if standardMethod(drop) && strictSequence(receiver) =>
+        replace(call, receiver.syntax, "drop-zero", "drop(0) returns the collection itself")
+
+      case (take @ Term.Select(receiver, Term.Name("take")), List(Lit.Int(0)))
+          if standardMethod(take) && strictSequence(receiver) =>
+        lint("take-zero", "take(0) is always empty; return an empty collection or check the bound", call.pos)
+
       case _ => Patch.empty
     }
 
@@ -120,13 +143,78 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
 
   private def nonEmpty(comparison: Term.ApplyInfix)(using SemanticDocument): Patch =
     (comparison.op.value, comparison.lhs, comparison.argClause.values) match {
-      case (">", size @ Term.Select(_, Term.Name("size")), List(Lit.Int(0)))
-          if standardMethod(size) && !size.symbol.value.startsWith("scala/collection/StringOps") =>
-        lint("size-to-non-empty", "use nonEmpty instead of size > 0 on a collection", comparison.pos) +
-          Patch.replaceTree(size.name, "nonEmpty") +
-          Patch.removeTokens(comparison.tokens.drop(size.tokens.length))
+      case (">", size @ Term.Select(_, Term.Name("size" | "length")), List(Lit.Int(0)))
+          if sizeMethod(size) && !size.symbol.value.startsWith("scala/collection/StringOps") =>
+        emptiness(
+          comparison,
+          size,
+          "nonEmpty",
+          "size-to-non-empty",
+          "use nonEmpty instead of a size comparison with zero"
+        )
+      case ("==", size @ Term.Select(_, Term.Name("size" | "length")), List(Lit.Int(0)))
+          if sizeMethod(size) && !size.symbol.value.startsWith("scala/collection/StringOps") =>
+        emptiness(comparison, size, "isEmpty", "size-to-is-empty", "use isEmpty instead of a size comparison with zero")
+      case ("!=", size @ Term.Select(_, Term.Name("size" | "length")), List(Lit.Int(0)))
+          if sizeMethod(size) && !size.symbol.value.startsWith("scala/collection/StringOps") =>
+        emptiness(
+          comparison,
+          size,
+          "nonEmpty",
+          "size-to-non-empty",
+          "use nonEmpty instead of a size comparison with zero"
+        )
       case _ => Patch.empty
     }
+
+  private def sizeMethod(selection: Term.Select)(using SemanticDocument): Boolean =
+    standardMethod(selection) || selection.symbol.value.startsWith("scala/Array#")
+
+  private def emptiness(
+      comparison: Term.ApplyInfix,
+      size: Term.Select,
+      replacement: String,
+      id: String,
+      message: String
+  ): Patch =
+    lint(id, message, comparison.pos) +
+      Patch.replaceTree(size.name, replacement) +
+      Patch.removeTokens(comparison.tokens.drop(size.tokens.length))
+
+  // Array and String sizes come through implicit conversions; length is their own method. A comparison with zero is
+  // rewritten to isEmpty or nonEmpty instead, so the two rewrites never overlap.
+  private def sizeToLength(selection: Term.Select)(using SemanticDocument): Patch = selection match {
+    case Term.Select(receiver, Term.Name("size"))
+        if standardMethod(selection) && (arrayType(receiver) || stringType(receiver)) && !zeroComparison(selection) =>
+      replace(selection, s"${receiver.syntax}.length", "size-to-length", "use length on an array or string")
+    case _ => Patch.empty
+  }
+
+  private def zeroComparison(selection: Term.Select): Boolean = selection.parent.exists {
+    case comparison: Term.ApplyInfix =>
+      comparison.argClause.values match {
+        case List(Lit.Int(0)) => comparison.op.value == ">" || comparison.op.value == "==" ||
+          comparison.op.value == "!="
+        case _ => false
+      }
+    case _ => false
+  }
+
+  private def arrayType(term: Term)(using SemanticDocument): Boolean = typeSymbol(term).contains("scala/Array#")
+
+  private def stringType(term: Term)(using SemanticDocument): Boolean = typeSymbol(term).exists(_.endsWith("String#"))
+
+  // An array printed directly renders its identity, not its elements.
+  private def arrayPrint(call: Term.Apply)(using SemanticDocument): Patch = call.fun match {
+    case print @ Term.Name("println" | "print") if printing(print) && call.argClause.values.exists(arrayType(_)) =>
+      lint("array-to-string", "printing an array renders its identity; use mkString or print its elements", call.pos)
+    case _ => Patch.empty
+  }
+
+  private def printing(name: Term.Name)(using SemanticDocument): Boolean = {
+    val symbol = name.symbol.value
+    symbol.startsWith("scala/Predef.print") || symbol.startsWith("scala/Console.print")
+  }
 
   // reports only: reordering changes predicate and ordering evaluation
   private def filterBeforeSorted(call: Term.Apply)(using SemanticDocument): Patch = call.fun match {

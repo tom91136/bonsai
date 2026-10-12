@@ -14,11 +14,25 @@ object CollectionIdioms {
   val fa2 = list.forall(x => x != 2)// assert: CollectionIdioms.forall-to-not-contains
   val gg1 = map.get("a").getOrElse(0)// assert: CollectionIdioms.get-get-or-else
   val dt1 = list.drop(1).take(2)// assert: CollectionIdioms.drop-take-to-slice
+  val td1 = list.take(2).drop(1)// assert: CollectionIdioms.take-drop-to-slice
+  val dz1 = list.drop(0)// assert: CollectionIdioms.drop-zero
+  val tz1 = list.take(0)// assert: CollectionIdioms.take-zero
+  val array = Array(1, 2, 3)
+  val text = "abc"
+  val as1 = array.size// assert: CollectionIdioms.size-to-length
+  val ts1 = text.size// assert: CollectionIdioms.size-to-length
+  val ap1 = println(array)// assert: CollectionIdioms.array-to-string
 
   val ok1 = list.contains(2)
   val ok2 = !list.contains(2)
   val ok3 = map.getOrElse("a", 0)
   val ok4 = list.slice(1, 3)
+  val ok5 = list.drop(1)
+  val ok6 = list.take(1)
+  val ok7 = map.size
+  val ok8 = array.length
+  val ok9 = text.length
+  val ok10 = println(text)
 
   val texts = List("a", "b")
   val literals = List(2L, 3L)

@@ -303,6 +303,44 @@ class LintSuite extends FunSuite {
     assertEquals(warnings("object Lints { def check(bytes: Array[Byte]) = bytes == null || null != bytes }"), Nil)
   }
 
+  test("iterators compare by reference and are consumed") {
+    assertWarns(
+      "object Lints { def check(left: Iterator[Int], right: Iterator[Int]) = left == right }",
+      "iterators compare by reference"
+    )
+    assertEquals(warnings("object Lints { def check(left: List[Int], right: Vector[Int]) = left == right }"), Nil)
+    assertEquals(warnings("object Lints { def check(left: Iterator[Int]) = left == null }"), Nil)
+    assertEquals(
+      warnings("object Lints { def check(left: Array[Int], right: Array[Int]) = left == right }"),
+      List("arrays compare by reference; compare their elements with sameElements [baumkuchen:array-equality]")
+    )
+  }
+
+  test("sameElements and corresponds on unordered collections are unpredictable") {
+    assertWarns(
+      "object Lints { def check(left: Set[Int], right: Set[Int]) = left.corresponds(right)(_ == _) }",
+      "unordered collection"
+    )
+    assertWarns(
+      "object Lints { def check(left: Map[Int, Int], right: Map[Int, Int]) = left.corresponds(right)(_ == _) }",
+      "unordered collection"
+    )
+    assert(
+      warnings("object Lints { def check(left: Set[Int], right: Set[Int]) = left.sameElements(right) }")
+        .exists(_.contains("unordered collection"))
+    )
+    assertEquals(
+      warnings("object Lints { def check(left: List[Int], right: List[Int]) = left.corresponds(right)(_ == _) }"),
+      Nil
+    )
+    assert(
+      !warnings(
+        """import scala.collection.immutable.SortedSet
+          |object Lints { def check(left: SortedSet[Int], right: SortedSet[Int]) = left.corresponds(right)(_ == _) }""".stripMargin
+      ).exists(_.contains("unordered collection"))
+    )
+  }
+
   test("conversions to the same type do nothing") {
     val found = warnings(
       "object Lints { def check(count: Int, name: String, values: List[Int]) = (count.toInt, name.toString, values.toList, count.toLong) }"
@@ -535,6 +573,8 @@ class LintSuite extends FunSuite {
       Set(
         "acyclic",
         "array-equality",
+        "iterator-equality",
+        "unordered-comparison",
         "swapped-arguments",
         "nested-future",
         "long-arguments",

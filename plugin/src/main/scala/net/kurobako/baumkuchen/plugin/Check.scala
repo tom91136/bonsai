@@ -6,6 +6,8 @@ package net.kurobako.baumkuchen.plugin
 private enum Check(val id: String, val strict: Boolean = false) {
   case Acyclic               extends Check("acyclic", strict = true)
   case ArrayEquality         extends Check("array-equality", strict = true)
+  case IteratorEquality      extends Check("iterator-equality", strict = true)
+  case UnorderedComparison   extends Check("unordered-comparison", strict = true)
   case LongArguments         extends Check("long-arguments", strict = true)
   case SameTypeArguments     extends Check("same-type-arguments", strict = true)
   case SwappedArguments      extends Check("swapped-arguments", strict = true)

@@ -11,11 +11,25 @@ object CollectionIdioms {
   val fa2 = !(list.contains(2))
   val gg1 = map.getOrElse("a", 0)
   val dt1 = list.slice(1, 3)
+  val td1 = list.slice(1, 2)
+  val dz1 = list
+  val tz1 = list.take(0)
+  val array = Array(1, 2, 3)
+  val text = "abc"
+  val as1 = array.length
+  val ts1 = text.length
+  val ap1 = println(array)
 
   val ok1 = list.contains(2)
   val ok2 = !list.contains(2)
   val ok3 = map.getOrElse("a", 0)
   val ok4 = list.slice(1, 3)
+  val ok5 = list.drop(1)
+  val ok6 = list.take(1)
+  val ok7 = map.size
+  val ok8 = array.length
+  val ok9 = text.length
+  val ok10 = println(text)
 
   val texts = List("a", "b")
   val literals = List(2L, 3L)

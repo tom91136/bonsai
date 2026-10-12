@@ -77,6 +77,8 @@ private class LintPhase(
         case tpd.Apply(tpd.Select(receiver, nme.map), List(function)) => unitInMap(tree, receiver, function)
         case tpd.Apply(select: tpd.Select, Nil) if select.symbol.name == nme.toString_ =>
           conversion(tree, select.qualifier)
+        case tpd.Apply(function, List(argument)) =>
+          orderedComparison(function).foreach(select => unordered(tree, select.qualifier, argument))
         case _ => ()
       }
     }
@@ -166,12 +168,54 @@ private class LintPhase(
     tree
   }
 
-  // Unrelated types and collection kinds are already compile errors under multiversal equality; arrays are not, and
-  // comparing one with null is an ordinary null check.
+  /** Collections of different kinds and unrelated types are compile errors under equality checking; iterators and
+    * arrays are not, and comparing anything with null is an ordinary null check.
+    */
   private def comparison(tree: tpd.Tree, left: tpd.Tree, right: tpd.Tree)(using Context): Unit = {
     val types = List(left.tpe.widen, right.tpe.widen)
-    if (types.exists(_.isRef(defn.ArrayClass)) && !types.exists(_.isRef(defn.NullClass)))
+    if (types.exists(_.isRef(defn.NullClass))) ()
+    else if (types.exists(iterator(_)))
+      checks(
+        Check.IteratorEquality,
+        "iterators compare by reference and are consumed by the comparison; compare materialised collections or use sameElements",
+        tree.srcPos
+      )
+    else if (types.forall(_.isRef(defn.ArrayClass)))
       checks(Check.ArrayEquality, "arrays compare by reference; compare their elements with sameElements", tree.srcPos)
+  }
+
+  private def iterator(tpe: Type)(using Context): Boolean = {
+    val cls = tpe.classSymbol
+    cls.exists && cls.isClass &&
+    (cls.derivesFrom(requiredClass("scala.collection.Iterator")) ||
+      cls.derivesFrom(requiredClass("java.util.Iterator")))
+  }
+
+  /** The `sameElements` or `corresponds` selection behind a call, through the type arguments both take. */
+  private def orderedComparison(function: tpd.Tree): Option[tpd.Select] = function match {
+    case select: tpd.Select if select.name.toString == "sameElements" || select.name.toString == "corresponds" =>
+      Some(select)
+    case tpd.TypeApply(inner, _) => orderedComparison(inner)
+    case _                       => None
+  }
+
+  /** `sameElements` and `corresponds` compare in iteration order, which an unordered Set or Map does not define. */
+  private def unordered(tree: tpd.Tree, receiver: tpd.Tree, argument: tpd.Tree)(using Context): Unit =
+    if (List(receiver.tpe.widen, argument.tpe.widen).exists(unordered(_)))
+      checks(
+        Check.UnorderedComparison,
+        "sameElements and corresponds on an unordered collection are unpredictable; compare with ==, subsetOf, or after sorting",
+        tree.srcPos
+      )
+
+  private def unordered(tpe: Type)(using Context): Boolean = {
+    val cls                   = tpe.classSymbol
+    def derived(name: String) = cls.exists && cls.isClass && cls.derivesFrom(requiredClass(name))
+    (derived("scala.collection.Set") && !derived("scala.collection.SortedSet") &&
+      !derived("scala.collection.immutable.ListSet") && !derived("scala.collection.mutable.LinkedHashSet")) ||
+    (derived("scala.collection.Map") && !derived("scala.collection.SortedMap") &&
+      !derived("scala.collection.immutable.ListMap") && !derived("scala.collection.immutable.SeqMap") &&
+      !derived("scala.collection.mutable.LinkedHashMap"))
   }
 
   private val MaximumPositional = 4

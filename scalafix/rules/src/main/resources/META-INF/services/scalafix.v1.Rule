@@ -1,4 +1,5 @@
 net.kurobako.baumkuchen.scalafix.BannedSyntax
+net.kurobako.baumkuchen.scalafix.CollectionChains
 net.kurobako.baumkuchen.scalafix.CollectionIdioms
 net.kurobako.baumkuchen.scalafix.CompanionOrder
 net.kurobako.baumkuchen.scalafix.ExplicitEtaExpansion
@@ -8,6 +9,7 @@ net.kurobako.baumkuchen.scalafix.ForbiddenAPIs
 net.kurobako.baumkuchen.scalafix.NamespaceImports
 net.kurobako.baumkuchen.scalafix.NoBoxedPrimitives
 net.kurobako.baumkuchen.scalafix.NoPackagePrivate
+net.kurobako.baumkuchen.scalafix.OptionIdioms
 net.kurobako.baumkuchen.scalafix.PackageBoundary
 net.kurobako.baumkuchen.scalafix.RedundantCaseClassVal
 net.kurobako.baumkuchen.scalafix.RequireTailRec

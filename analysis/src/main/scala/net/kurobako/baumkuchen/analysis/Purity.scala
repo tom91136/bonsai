@@ -702,15 +702,16 @@ object Purity {
         (site.method, site.name, site.tree)
     }
 
-    /** Element-wise transformations of collections whose functions themselves write state or perform output, with the
-      * first such effect. Effects of the build's methods they call are often caches, and folds are loops that may stop
-      * early, which foreach cannot; neither counts here.
+    /** Element-wise transformations of collections whose functions themselves read or write state, perform output, or
+      * are nondeterministic, with the first such effect. Effects that only come through the build's methods they call
+      * are often caches, and folds are loops that may stop early, which foreach cannot; neither counts here.
       */
     def effectful: Vector[(Symbol, String, String, tpd.Tree, Boolean)] = transforms.toVector.flatMap { site =>
       resolve(site.lambda, frame(site.method, None), None).effects.toVector.filter(effect =>
-        Set(Kind.Writes, Kind.Output)(effect.kind) && effect.via.isEmpty
+        Set(Kind.Reads, Kind.Writes, Kind.Input, Kind.Output, Kind.Random)(effect.kind) && effect.via.isEmpty
       )
-        .sortBy(_.shown).headOption.map(effect => (site.method, site.operation, effect.shown, site.tree, site.view))
+        .sortBy(effect => (Priority.indexOf(effect.kind), effect.shown)).headOption
+        .map(effect => (site.method, site.operation, effect.shown, site.tree, site.view))
     }
 
     /** Assignments to shared variables by functions other threads run, by enclosing method, with the variable, the

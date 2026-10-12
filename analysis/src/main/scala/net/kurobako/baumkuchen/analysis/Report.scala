@@ -26,6 +26,7 @@ object Report {
       Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph)) ++
       Bytecode.findings(result.bytecode, result.graph.nodes) ++
       Complexity.findings(result.complexities, result.graph.nodes) ++
+      Pipelines.findings(result.pipelines, result.graph.nodes) ++
       Megamorphic.findings(result.megamorphic, result.graph.nodes) ++
       Purity.findings(result.purity, result.graph.nodes)
 

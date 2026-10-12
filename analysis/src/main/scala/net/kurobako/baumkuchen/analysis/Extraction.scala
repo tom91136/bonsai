@@ -52,6 +52,7 @@ object Extraction {
       clones: Vector[Clones.Group],
       bytecode: Vector[Bytecode.Method],
       complexities: Vector[Complexity.Summary],
+      pipelines: Vector[Pipelines.Chain],
       megamorphic: Vector[Megamorphic.Site],
       purity: Purity.Model,
       problems: Vector[String]
@@ -110,6 +111,7 @@ object Extraction {
         Vector.empty,
         Vector.empty,
         Vector.empty,
+        Vector.empty,
         Purity.Model.empty,
         Vector.empty
       ))
@@ -143,6 +145,7 @@ object Extraction {
         phase.duplicates,
         Bytecode.read(manifest.outputs.map(_.path)),
         phase.complexities,
+        phase.pipelines,
         phase.megamorphic,
         phase.purity,
         problems
@@ -281,6 +284,7 @@ object Extraction {
     private val bodies          = mutable.Map.empty[Symbol, tpd.DefDef]
     private val costed          = mutable.ArrayBuffer.empty[Symbol]
     private val complexityList  = mutable.ArrayBuffer.empty[Complexity.Summary]
+    private val pipelineList    = mutable.ArrayBuffer.empty[Pipelines.Chain]
     private val classes         = mutable.ArrayBuffer.empty[Symbol]
     private val templates       = mutable.Map.empty[Symbol, tpd.Template]
     private val reachable       = mutable.Map.empty[Symbol, Option[Vector[Symbol]]]
@@ -374,6 +378,13 @@ object Extraction {
           key(method).map(Complexity.Summary(qualifiedName(method), _, terms))
         )
       )
+      val chains = Chains()
+      pipelineList ++= bodies.toVector.flatMap { (method, definition) =>
+        for {
+          node <- key(method)
+          if method.owner.isClass && !method.is(Flags.Synthetic) && nodes.get(node).exists(!_.generated)
+        } yield chains.of(qualifiedName(method), node, definition.rhs)
+      }.flatten
       purities += purity()
       units
     }
@@ -432,6 +443,8 @@ object Extraction {
     )
 
     def complexities: Vector[Complexity.Summary] = complexityList.toVector
+
+    def pipelines: Vector[Pipelines.Chain] = pipelineList.toVector
 
     def megamorphic: Vector[Megamorphic.Site] = megamorphicList.toVector
 
