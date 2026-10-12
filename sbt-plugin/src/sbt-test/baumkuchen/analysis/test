@@ -1,0 +1,22 @@
+# unused members are reported while developing and fail in CI
+> baumkuchenAnalyse
+> set ThisBuild / baumkuchenMode := BaumkuchenMode.CI
+-> baumkuchenAnalyse
+# a baseline holds existing findings without failing
+> baumkuchenBaselineWrite
+$ exists baumkuchen-baseline.tsv
+> baumkuchenAnalyse
+$ delete baumkuchen-baseline.tsv
+-> baumkuchenAnalyse
+> set baumkuchenDisabled += "unused-member"
+> baumkuchenAnalyse
+# a rule the mode makes fail can be kept a warning
+> set baumkuchenDisabled -= "unused-member"
+-> baumkuchenAnalyse
+> set baumkuchenWarnings += "unused-member"
+> baumkuchenAnalyse
+> set baumkuchenWarnings -= "unused-member"
+-> baumkuchenAnalyse
+# a library's public API is used by other builds; a project with a main class is not a library unless set
+> set baumkuchenLibrary := true
+> baumkuchenAnalyse

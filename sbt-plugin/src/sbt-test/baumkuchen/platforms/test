@@ -1,0 +1,13 @@
+# the Native twin's copy of the shared sources is not analysed as a second copy
+> baumkuchenAnalyse
+> checkManifest
+# a source copied between the platform directories is reported
+> set ThisBuild / baumkuchenErrors += "platform-duplicate-source"
+-> baumkuchenAnalyse
+$ copy-file changes/Digest.scala native/demo/Digest.scala
+> baumkuchenAnalyse
+# in the ci mode, a project whose warnings never fail the build is reported
+> set ThisBuild / baumkuchenErrors += "warnings-not-fatal"
+-> baumkuchenAnalyse
+> set ThisBuild / scalacOptions += "-Werror"
+> baumkuchenAnalyse

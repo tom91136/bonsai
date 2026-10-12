@@ -1,0 +1,17 @@
+**/target/
+/.bloop/
+**/.bsp/
+/.metals/
+**/.scala-build/
+/.idea/
+/.vscode/
+*.class
+*.tasty
+*.semanticdb
+*.iml
+
+*.log
+*.swp
+*.tmp
+*~
+.DS_Store

@@ -1,0 +1,18 @@
+# a cycle only warns while developing
+> compile
+> baumkuchenCheck
+> set ThisBuild / baumkuchenMode := BaumkuchenMode.CI
+-> compile
+-> baumkuchenCheck
+# a project can keep a check a warning, or escalate one the mode leaves a warning
+> set baumkuchenWarnings += "acyclic"
+> compile
+> set baumkuchenWarnings -= "acyclic"
+-> compile
+> set baumkuchenDisabled += "acyclic"
+> compile
+> set ThisBuild / baumkuchenMode := BaumkuchenMode.Dev
+> set baumkuchenDisabled -= "acyclic"
+> compile
+> set baumkuchenErrors += "acyclic"
+-> compile

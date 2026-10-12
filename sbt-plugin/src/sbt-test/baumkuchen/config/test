@@ -1,0 +1,14 @@
+# the build sets nothing of baumkuchen's; the file at its root configures it
+> compile
+$ copy-file changes/errors.conf .baumkuchen.conf
+> reload
+-> compile
+# a project's own section overrides the build's
+$ copy-file changes/project.conf .baumkuchen.conf
+> reload
+> compile
+# a project the build does not have, or a key no setting reads, fails the load
+$ copy-file changes/stranger.conf .baumkuchen.conf
+-> reload
+$ copy-file changes/unknown.conf .baumkuchen.conf
+-> reload

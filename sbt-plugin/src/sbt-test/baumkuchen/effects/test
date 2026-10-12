@@ -1,0 +1,12 @@
+# a package the effects policy keeps pure fails on a method with effects, until the policy allows them
+-> baumkuchenAnalyse
+$ copy-file changes/allowed.conf .baumkuchen.conf
+> reload
+> baumkuchenAnalyse
+# methods recorded as pure fail once they are not, until recorded again
+> baumkuchenPurityWrite
+$ exists baumkuchen-purity.tsv
+$ copy-file changes/Core.scala src/main/scala/demo/core/Core.scala
+-> baumkuchenAnalyse
+> baumkuchenPurityWrite
+> baumkuchenAnalyse

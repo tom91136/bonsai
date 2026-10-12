@@ -1,0 +1,81 @@
+package net.kurobako.baumkuchen.analysis
+
+import java.nio.file.Files
+import java.nio.file.Path
+import munit.FunSuite
+import scala.jdk.CollectionConverters.*
+import scala.util.Using
+
+class BuildSuite extends FunSuite {
+  private val directory = FunFixture[Path](
+    setup = _ => Files.createTempDirectory("baumkuchen-build-"),
+    teardown = root => Using.resource(Files.walk(root))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+  )
+
+  private def write(root: Path, relative: String, content: String): Path = {
+    val file = root.resolve(relative)
+    Files.createDirectories(file.getParent)
+    Files.writeString(file, content)
+  }
+
+  directory.test("the manifest carries compiler options and hand-written sources") { root =>
+    val manifest = write(
+      root,
+      "manifest.tsv",
+      s"option\tcore\t-Werror\noption\tcore\t-deprecation\nsource\tcore\tmain\t${root.resolve("A.scala")}\nroot\t$root\n"
+    )
+    val read = Manifest.read(manifest)
+    assertEquals(read.map(_.options), Right(Map("core" -> Vector("-Werror", "-deprecation"))))
+    assertEquals(read.map(_.sources), Right(Vector(Output("core", Output.Scope.Main, root.resolve("A.scala")))))
+    assertEquals(read.map(_.root), Right(Some(root)))
+  }
+
+  test("modules without fatal warnings are reported") {
+    val manifest = Manifest(
+      Vector.empty,
+      Vector.empty,
+      Set.empty,
+      options = Map(
+        "core"   -> Vector("-Werror"),
+        "api"    -> Vector("-deprecation"),
+        "legacy" -> Vector("-Xfatal-warnings"),
+        "root"   -> Vector("-deprecation"),
+        "mixed"  -> Vector("-deprecation", "-Werror")
+      ),
+      sources = Vector("core", "api", "legacy", "mixed").map(module =>
+        Output(module, Output.Scope.Main, Path.of(s"$module.scala"))
+      )
+    )
+    assertEquals(Build.fatal(manifest).map(_.node.name), Vector("api"))
+  }
+
+  directory.test("identical sources under the directories of different platforms are reported once per copy set") {
+    root =>
+      val jvm      = write(root, "api/src/main/scalajvm/Digest.scala", "object Digest")
+      val native   = write(root, "api/src/main/scalanative/Digest.scala", "object Digest")
+      val js       = write(root, "api/src/main/scalajs/Digest.scala", "object Digest { def js = 1 }")
+      val shared   = write(root, "api/src/main/scala/Shared.scala", "object Shared")
+      val testJvm  = write(root, "api/src/test/scalajvm/Fixture.scala", "object Fixture")
+      val testJs   = write(root, "api/src/test/scalajs/Fixture.scala", "object Fixture")
+      val mainCopy = write(root, "api/src/main/scalajvm/Mixed.scala", "object Mixed")
+      val testCopy = write(root, "api/src/test/scalajs/Mixed.scala", "object Mixed")
+      val manifest = Manifest(
+        Vector.empty,
+        Vector.empty,
+        Set.empty,
+        sources = Vector(jvm, native, js, shared).flatMap(path =>
+          Vector(Output("api", Output.Scope.Main, path), Output("api-native", Output.Scope.Main, path))
+        ) ++ Vector(testJvm, testJs, testCopy).map(Output("api", Output.Scope.Test, _)) :+
+          Output("api", Output.Scope.Main, mainCopy),
+        root = Some(root)
+      )
+      assertEquals(
+        Build.duplicates(manifest).map(finding => (finding.node.name, finding.level)),
+        Vector(
+          "api/src/main/scalajvm/Digest.scala" -> Finding.Level.Warning,
+          "api/src/main/scalajvm/Mixed.scala"  -> Finding.Level.Warning,
+          "api/src/test/scalajs/Fixture.scala" -> Finding.Level.Info
+        )
+      )
+  }
+}

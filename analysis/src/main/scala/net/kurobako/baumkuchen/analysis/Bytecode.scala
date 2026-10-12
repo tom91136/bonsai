@@ -1,0 +1,146 @@
+package net.kurobako.baumkuchen.analysis
+
+import java.io.ByteArrayInputStream
+import java.io.DataInputStream
+import java.nio.file.Files
+import java.nio.file.Path
+import scala.collection.mutable
+import scala.jdk.CollectionConverters.*
+import scala.util.Using
+
+/** Method sizes read from compiled class files, against the limits HotSpot and the class file format impose. */
+object Bytecode {
+
+  /** The code length of method `name` in the class with binary name `owner`, such as `p/Outer$Inner$`. */
+  case class Method(owner: String, name: String, size: Int)
+
+  // HotSpot's HugeMethodLimit: with the default DontCompileHugeMethods, larger methods are only ever interpreted.
+  private val HugeMethod = 8000
+  private val Limit      = 65535
+  private val NearLimit  = 0.8
+
+  def read(directories: Vector[Path]): Vector[Method] = directories.filter(Files.isDirectory(_)).flatMap { directory =>
+    Using.resource(Files.walk(directory))(_.toList.asScala.toVector.filter(_.toString.endsWith(".class")))
+      .flatMap(file => methods(Files.readAllBytes(file)))
+  }
+
+  def findings(methods: Vector[Method], nodes: Map[String, Node]): Vector[Finding] = {
+    // The compiler writes fromOrdinal on the companion of every enum with singleton cases, and valueOf only when none
+    // of them passes arguments to the enum's constructor.
+    val enumerations = methods.filter(_.name == "fromOrdinal").map(_.owner).toSet
+    methods.filter(method => method.size > HugeMethod && !once(method)).flatMap { method =>
+      val (node, shown) = describe(method, nodes)
+      val detail        = s"$shown has ${method.size} bytes of bytecode"
+      val written       = enumerations(method.owner) && (method.name == "valueOf" || method.name == "fromOrdinal")
+      node.flatMap(key =>
+        if (method.size > Limit * NearLimit)
+          Finding.at(
+            nodes,
+            key,
+            Finding.Rule.MethodLimit,
+            s"$detail, ${method.size * 100 / Limit}% of the 64 KB method limit"
+          )
+        else if (written)
+          Finding.at(
+            nodes,
+            key,
+            Finding.Rule.HugeMethod,
+            s"$detail, which the compiler writes for an enum this large; HotSpot interprets it, and only splitting the " +
+              "enum shrinks it",
+            Finding.Level.Info
+          )
+        else
+          Finding.at(
+            nodes,
+            key,
+            Finding.Rule.HugeMethod,
+            s"$detail; HotSpot interprets methods over $HugeMethod bytes instead of compiling them"
+          )
+      )
+    }
+  }
+
+  // Static and object initialisers and lazy value initialisers run once, so interpreting them costs nothing lasting.
+  private def once(method: Method): Boolean =
+    method.name == "<clinit>" || method.name.contains("$lzyINIT") ||
+      method.name == "<init>" && method.owner.endsWith("$")
+
+  /** The node a method belongs to and its readable name, with lambda bodies shown under their defining method. */
+  private def describe(method: Method, nodes: Map[String, Node]): (Option[String], String) = {
+    val binary = method.owner.replace('/', '.')
+    val outer  = binary.indexOf("$$") match {
+      case -1    => binary
+      case index => binary.take(index)
+    }
+    val topLevel = outer.endsWith("$package$")
+    val name     = outer.stripSuffix("$").split('$').filter(_.nonEmpty).mkString(".")
+    val lambda   = method.name.contains("$anonfun$")
+    val plain    = method.name.stripPrefix("$anonfun$").split('$').find(_.nonEmpty).getOrElse(method.name)
+    val shown    = if (lambda) s"$plain (lambda)" else plain
+    val owner    = if (topLevel) name.split('.').dropRight(1).mkString(".") + "." + plain else name
+    val node     =
+      Iterator.iterate(owner)(_.split('.').dropRight(1).mkString(".")).takeWhile(_.nonEmpty).find(nodes.contains)
+    val label = node.fold(shown)(key => if (topLevel) shown else s"${key.split('.').last}.$shown")
+    (node, label)
+  }
+
+  /** The code length of every method in a class file. */
+  private def methods(bytes: Array[Byte]): Vector[Method] = {
+    val input     = DataInputStream(ByteArrayInputStream(bytes))
+    val _         = (input.readInt(), input.readUnsignedShort(), input.readUnsignedShort())
+    val count     = input.readUnsignedShort()
+    val constants = mutable.Map.empty[Int, String]
+    val classes   = mutable.Map.empty[Int, Int]
+    Iterator.iterate(1)(index =>
+      input.readUnsignedByte() match {
+        case 1 =>
+          constants(index) = input.readUTF()
+          index + 1
+        case 7 =>
+          classes(index) = input.readUnsignedShort()
+          index + 1
+        case 5 | 6 =>
+          input.skipNBytes(8)
+          index + 2
+        case 3 | 4 | 9 | 10 | 11 | 12 | 17 | 18 =>
+          input.skipNBytes(4)
+          index + 1
+        case 15 =>
+          input.skipNBytes(3)
+          index + 1
+        case 8 | 16 | 19 | 20 =>
+          input.skipNBytes(2)
+          index + 1
+        case tag => throw IllegalArgumentException(s"unknown constant pool tag $tag")
+      }
+    ).dropWhile(_ < count).next(): Unit
+    input.skipNBytes(2)
+    val owner = constants(classes(input.readUnsignedShort()))
+    input.skipNBytes(2)
+    input.skipNBytes(2L * input.readUnsignedShort())
+    members(input, constants): Unit
+    members(input, constants).map((name, size) => Method(owner, name, size))
+  }
+
+  /** The name and code length of each field or method in the table at the stream's position. */
+  private def members(input: DataInputStream, constants: collection.Map[Int, String]): Vector[(String, Int)] =
+    Vector.fill(input.readUnsignedShort()) {
+      input.skipNBytes(2)
+      val name = constants(input.readUnsignedShort())
+      input.skipNBytes(2)
+      val sizes = Vector.fill(input.readUnsignedShort()) {
+        val attribute = constants(input.readUnsignedShort())
+        val length    = input.readInt()
+        if (attribute == "Code") {
+          input.skipNBytes(4)
+          val size = input.readInt()
+          input.skipNBytes(length - 8L)
+          Some(size)
+        } else {
+          input.skipNBytes(length.toLong)
+          None
+        }
+      }
+      sizes.flatten.headOption.map(name -> _)
+    }.flatten
+}

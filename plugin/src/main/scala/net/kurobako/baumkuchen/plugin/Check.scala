@@ -1,0 +1,38 @@
+package net.kurobako.baumkuchen.plugin
+
+/** The checks of the compiler plugin, named by the ids its options and messages use; `strict` checks are errors in the
+  * ci mode.
+  */
+private enum Check(val id: String, val strict: Boolean = false) {
+  case Acyclic               extends Check("acyclic", strict = true)
+  case ArrayEquality         extends Check("array-equality", strict = true)
+  case LongArguments         extends Check("long-arguments", strict = true)
+  case SameTypeArguments     extends Check("same-type-arguments", strict = true)
+  case SwappedArguments      extends Check("swapped-arguments", strict = true)
+  case BooleanArgument       extends Check("boolean-argument", strict = true)
+  case OpenTypeTest          extends Check("open-type-test")
+  case ExtractorTypeTest     extends Check("extractor-type-test", strict = true)
+  case NamedPattern          extends Check("named-pattern", strict = true)
+  case UnitMap               extends Check("unit-map", strict = true)
+  case RedundantConversion   extends Check("redundant-conversion", strict = true)
+  case NestedFuture          extends Check("nested-future", strict = true)
+  case LinearInLoop          extends Check("linear-in-loop", strict = true)
+  case LoopBoxing            extends Check("loop-boxing")
+  case StrictChain           extends Check("strict-chain")
+  case LocalThrow            extends Check("local-throw", strict = true)
+  case ThrowInDefault        extends Check("throw-in-default", strict = true)
+  case ThrowingHelper        extends Check("throwing-helper", strict = true)
+  case PartialInTry          extends Check("partial-in-try", strict = true)
+  case RedundantTry          extends Check("redundant-try", strict = true)
+  case BroadCatch            extends Check("broad-catch", strict = true)
+  case DiscardedCause        extends Check("discarded-cause", strict = true)
+  case EagerEffect           extends Check("eager-effect")
+  case IdentityToken         extends Check("identity-token")
+  case BlockingCommonPool    extends Check("blocking-common-pool")
+  case UnguardedClose        extends Check("unguarded-close")
+  case OrphanThread          extends Check("orphan-thread")
+  case ReimplementedJoin     extends Check("reimplemented-join")
+  case UnboundedWait         extends Check("unbounded-wait")
+  case MessageClassification extends Check("message-classification")
+  case WriteOnlyField        extends Check("write-only-field")
+}

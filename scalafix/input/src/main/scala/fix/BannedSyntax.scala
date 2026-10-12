@@ -1,0 +1,101 @@
+/*
+rule = BannedSyntax
+ */
+package fix
+
+import java.util.concurrent.locks.ReentrantLock
+
+final class FinalClass                   // assert: BannedSyntax.final-class
+final case class FinalRecord(value: Int) // assert: BannedSyntax.final-class
+
+object ClassModifiers {
+  private final class Nested // assert: BannedSyntax.final-class
+  class Plain
+  case class Record(value: Int)
+  open class Extensible
+  sealed class Closed
+  final val MaximumBytes = 64
+  final def value: Int   = MaximumBytes
+
+  @SuppressWarnings(Array("scalafix:BannedSyntax.final-class"))
+  final class Exception
+}
+
+object ExplicitNew {
+  val rejected  = new StringBuilder() // assert: BannedSyntax.explicit-new
+  val anonymous = new Runnable {      // assert: BannedSyntax.anonymous-allocation
+    override def run(): Unit = ()
+  }
+  val accepted   = StringBuilder()
+  val suppressed = new StringBuilder() // scalafix:ok BannedSyntax
+
+  class Secret private (val value: String)
+  object Secret {
+    def apply(value: String): Secret = new Secret(value)
+    def empty: Secret                = new Secret("")
+  }
+
+  class Bare(val value: Int)
+  object Bare {
+    def zero: Bare = new Bare(0) // assert: BannedSyntax.explicit-new
+  }
+}
+
+object IntrinsicLocks {
+  private val monitor = Object()
+  private val lock    = ReentrantLock()
+
+  def rejected(): Unit            = monitor.synchronized(()) // assert: BannedSyntax.intrinsic-lock
+  def rejectedUnqualified(): Unit = synchronized(())         // assert: BannedSyntax.intrinsic-lock
+  def accepted(): Unit            = {
+    lock.lock()
+    try ()
+    finally lock.unlock()
+  }
+  def suppressed(): Unit = monitor.synchronized(()) // scalafix:ok BannedSyntax
+}
+
+object Iterators {
+  val scalaValues = List(1, 2, 3).iterator                // assert: BannedSyntax.no-iterator
+  val javaValues  = java.util.List.of(1, 2, 3).iterator() // assert: BannedSyntax.no-iterator
+  val mapKeys     = Map(1 -> 2).keysIterator              // assert: BannedSyntax.no-iterator
+  val mapValues   = Map(1 -> 2).valuesIterator            // assert: BannedSyntax.no-iterator
+  val lazyValues  = List(1, 2, 3).view
+}
+
+object ProductTraversal {
+  def inspect(value: Any): String = value match {
+    case product: Product => product.toString // assert: BannedSyntax.product-traversal
+    case number: Int      => number.toString
+    case _                => "other"
+  }
+
+  def qualified(value: Any): Boolean = value match {
+    case _: scala.Product => true // assert: BannedSyntax.product-traversal
+    case _                => false
+  }
+
+  def rooted(value: Any): Boolean = value match {
+    case _: _root_.scala.Product => true // assert: BannedSyntax.product-traversal
+    case _                       => false
+  }
+
+  def fields(value: Product) = value.productIterator       // assert: BannedSyntax.product-traversal
+  def field(value: Product)  = value.productElement(0)     // assert: BannedSyntax.product-traversal
+  def names(value: Product)  = value.productElementNames   // assert: BannedSyntax.product-traversal
+  def name(value: Product)   = value.productElementName(0) // assert: BannedSyntax.product-traversal
+  def arity(value: Product)  = value.productArity          // assert: BannedSyntax.product-traversal
+
+  case class Node(value: Int)
+  def typed(value: Node): Int = value match {
+    case Node(number) => number
+  }
+
+  @SuppressWarnings(Array("scalafix:BannedSyntax.product-traversal"))
+  def derivedField(value: Product): Any = value.productElement(0)
+}
+
+object Conditionals {
+  val accepted = if (1 > 0) "positive" else "non-positive"
+  val rejected = if 1 > 0 then "positive" else "non-positive" // assert: BannedSyntax.no-then
+}
