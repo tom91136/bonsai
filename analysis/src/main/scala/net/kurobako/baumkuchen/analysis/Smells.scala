@@ -5,8 +5,10 @@ import Algebra.*
 /** Design smells that need every call site, implementation or signature of the build as evidence. */
 object Smells {
 
-  /** A method of the build; `overriding` marks signatures fixed by a supertype, and `exported` those other builds call
-    * as part of a library's public API.
+  /** A method of the build; `overriding` marks signatures fixed by a supertype, `exported` those other builds call as
+    * part of a library's public API, `stored` the indices of the parameters its body only passes to constructors, and
+    * `inlined` those of its inline parameters, which each expansion specialises on; an `inline` method folds the
+    * literals it is passed at each expansion.
     */
   case class Method(
       name: String,
@@ -16,7 +18,10 @@ object Smells {
       overriding: Boolean,
       exported: Boolean,
       generated: Boolean,
-      test: Boolean
+      test: Boolean,
+      stored: Set[Int] = Set.empty,
+      inlined: Set[Int] = Set.empty,
+      inline: Boolean = false
   ) {
     def short: String = Finding.short(name)
   }
@@ -24,8 +29,18 @@ object Smells {
   /** How often a method returning a value is called, and how often its value is dropped. */
   case class Usage(method: Method, result: String, calls: Int, discarded: Int, testCalls: Int)
 
-  /** A trait or abstract class with the concrete classes, objects and lambdas that implement it. */
-  case class Abstraction(name: String, node: String, module: String, implementations: Vector[(String, String)])
+  /** A trait or abstract class with the concrete classes, objects and lambdas that implement it; `functional` when only
+    * lambdas do, as for a trait standing in for a function type that would box its primitives, and `specialised` when
+    * an implementation fixes one of its type parameters to a primitive, whose code the generic one would box.
+    */
+  case class Abstraction(
+      name: String,
+      node: String,
+      module: String,
+      implementations: Vector[(String, String)],
+      functional: Boolean = false,
+      specialised: Boolean = false
+  )
 
   /** The type arguments given for one type parameter at every call or construction. */
   case class Instantiation(
@@ -54,10 +69,15 @@ object Smells {
   private val MaximumClumpFields    = 6
   private val MaximumClumpSignature = 10
   private val MinimumClumpMethods   = 3
-  private val MaxReportedClumps     = 20
   private val Shown                 = 6
 
-  def findings(model: Model, products: Vector[Algebra.Product], nodes: Map[String, Node]): Vector[Finding] = {
+  /** `hot` holds the nodes of the classes the build marks hot, when it marks any. */
+  def findings(
+      model: Model,
+      products: Vector[Algebra.Product],
+      nodes: Map[String, Node],
+      hot: Option[Set[String]] = None
+  ): Vector[Finding] = {
     val reviewed = model.methods.filterNot(method => method.overriding || method.generated)
     // The callers in this build do not settle the API of a library, which other builds call.
     val arguments = reviewed.filterNot(_.exported).flatMap { method =>
@@ -80,18 +100,22 @@ object Smells {
         onlyTests = usage.testCalls == usage.calls
       )
     }
-    val implementations = model.abstractions.filter(_.implementations.size == 1).flatMap { abstraction =>
-      val (implementation, module) = abstraction.implementations.head
-      // An implementation in another module is often a deliberate port; one beside its interface rarely is.
-      val level = if (module == abstraction.module) Finding.Level.Warning else Finding.Level.Info
-      Finding.at(
-        nodes,
-        abstraction.node,
-        Finding.Rule.SingleImplementation,
-        s"${abstraction.name} has a single implementation, $implementation",
-        level
-      )
-    }
+    val implementations =
+      model.abstractions.filter(abstraction =>
+        abstraction.implementations.size == 1 && !abstraction.functional && !abstraction.specialised
+      ).flatMap {
+        abstraction =>
+          val (implementation, module) = abstraction.implementations.head
+          // An implementation in another module is often a deliberate port; one beside its interface rarely is.
+          val level = if (module == abstraction.module) Finding.Level.Warning else Finding.Level.Info
+          Finding.at(
+            nodes,
+            abstraction.node,
+            Finding.Rule.SingleImplementation,
+            s"${abstraction.name} has a single implementation, $implementation",
+            level
+          )
+      }
     val fixed = model.instantiations.filter(instantiation =>
       !instantiation.varied && instantiation.arguments.size == 1 && instantiation.arguments.values.sum >= MinimumCalls
     ).flatMap { instantiation =>
@@ -118,7 +142,7 @@ object Smells {
       )
     }
     arguments ++ results ++ implementations ++ fixed ++ redundant ++
-      clumps(reviewed.filterNot(_.test), products).flatMap((key, detail) =>
+      clumps(reviewed.filterNot(_.test), products, hot.getOrElse(Set.empty)).flatMap((key, detail) =>
         Finding.at(nodes, key, Finding.Rule.DataClump, detail)
       )
   }
@@ -132,7 +156,9 @@ object Smells {
         Some(Finding.Rule.ConstantArgument ->
           s"${method.short}.${field.name} is always ${values.head.shown} across ${sites.size} calls")
       else
-        Option.when(field.kind == Kind.Flag) {
+        // A flag the method only stores is data of the value it builds, which no branch splits, and an inline method
+        // is specialised on its literal at every expansion already.
+        Option.when(field.kind == Kind.Flag && !method.stored(index) && !method.inline) {
           val enabled = values.count(_ == Argument.True)
           val detail  = s"${method.short}.${field.name} is a literal at all ${sites.size} calls " +
             s"($enabled true, ${sites.size - enabled} false); each value selects a different method"
@@ -141,10 +167,19 @@ object Smells {
     }
 
   /** Parameter groups that recur together across methods of different types, which a parameter object would name. */
-  private def clumps(methods: Vector[Method], products: Vector[Algebra.Product]): Vector[(String, String)] = {
-    val signatures = methods.filter(method => method.fields.size >= MinimumClumpFields).map(method =>
-      method -> method.fields.map(field => s"${field.name}: ${field.shape}").distinct.sorted
-    )
+  private def clumps(
+      methods: Vector[Method],
+      products: Vector[Algebra.Product],
+      hot: Set[String]
+  ): Vector[(String, String)] = {
+    // An inline method is specialised at every expansion, which a parameter object would undo, and in hot code an
+    // object of primitives allocates on every call.
+    val signatures = methods.filterNot(_.inline).map(method =>
+      method -> method.fields.zipWithIndex.collect {
+        case (field, index) if !method.inlined(index) && !(field.primitive && hot(method.node)) =>
+          s"${field.name}: ${field.shape}"
+      }.distinct.sorted
+    ).filter((_, items) => items.size >= MinimumClumpFields)
     val support = signatures.flatMap { (method, items) =>
       val sizes =
         if (items.size > MaximumClumpSignature) Vector(MinimumClumpFields) else MinimumClumpFields to MaximumClumpFields
@@ -161,7 +196,7 @@ object Smells {
       val distinct = kept.forall((_, methods) =>
         methods.intersect(candidate._2).size * 2 < methods.union(candidate._2).size
       )
-      if (distinct && kept.size < MaxReportedClumps) kept :+ candidate else kept
+      if (distinct) kept :+ candidate else kept
     }
     chosen.map { (items, methods) =>
       val owners   = methods.map(_.owner).size

@@ -26,8 +26,33 @@ import scalafix.sbt.ScalafixPlugin.autoImport.*
   * purity     = baumkuchen-purity.tsv
   * effects    { "demo.*.core" = [], "demo.io" = [input, output] }
   * concurrent = [demo.WorkerPool.parallelFor]
+  * hot        = [demo.kernel.**, "!**.*Suite"]
+  * reflective = [demo.rendered.*]
+  * checked    = [demo.constraint.where]
   * projects.api { library = true }
   * }}}
+  *
+  * `text` configures rules over every file git sees, whatever its language, which `baumkuchenAnalyse` checks. Globs
+  * match the path from the build root with a leading slash, and `**` crosses directories; every rule takes `files`,
+  * `exclude` and a `level` of `error`, the default, `warning` or `info`; and a line containing
+  * `baumkuchen:ignore <rule id>` exempts itself and the line after it:
+  * {{{
+  * text {
+  *   exclude  = ["**.min.js"]
+  *   terms    = [{ words = [plan], files = ["**.{scala,md}"] }]
+  *   patterns = [{ pattern = "\\bUINT64_C\\b", message = "write uint64_t{n}", files = ["**.cpp"] }]
+  *   binary   = { level = warning }
+  *   preceded = [{ pattern = "^TEST_CASE\\(", message = "put a blank line before a test case" }]
+  *   followed = [{ pattern = "^#include\\b", neutral = "^#", message = "put a blank line after the includes" }]
+  * }
+  * }}}
+  * Their rule ids are `forbidden-term`, `forbidden-pattern`, `binary-file`, `blank-line-before` and `blank-line-after`;
+  * `followed` blocks go on through lines its `pattern`, `continues` or `neutral` matches.
+  *
+  * `@SuppressWarnings(Array("baumkuchen:<id>"))` on an enclosing definition suppresses a check or analysis rule, and
+  * `"baumkuchen"` all of them. `@nowarn("msg=baumkuchen:<id>")` suppresses the compiler plugin's checks too, but the
+  * compiler sees no warning of an analysis rule for it to suppress and reports it under `-Wunused:nowarn`, so the
+  * analysis rules take `@SuppressWarnings`.
   */
 object BaumkuchenPlugin extends AutoPlugin {
   override def requires: Plugins      = ScalafixPlugin
@@ -58,8 +83,27 @@ object BaumkuchenPlugin extends AutoPlugin {
       "Kinds of effects (reads, writes, input, output, random, unknown) the methods of a package or class may have, by " +
         "its qualified name, with * for any one name; the most specific entry decides"
     )
+    val baumkuchenGenerated = settingKey[Set[String]](
+      "Globs of sources the build generates, such as **/src/generated/**, which no check reports; every source is " +
+        "checked by default"
+    )
     val baumkuchenConcurrent =
       settingKey[Set[String]]("Methods, by qualified name, that run the functions passed to them on other threads")
+    val baumkuchenHot = settingKey[Set[String]](
+      "Globs of the classes and objects whose code runs hot, by qualified name, with * for one name segment and ** " +
+        "for any number, and ! before a glob leaving out what it matches; boxing-fold, megamorphic-call, and " +
+        "invariant-in-loop on matches whose arms vary, report only in them"
+    )
+    val baumkuchenReflective = settingKey[Set[String]](
+      "Globs of the classes and objects, by qualified name as for baumkuchenHot, that code outside the sources names, " +
+        "as text compiled later or reflection does; they and their public members are used"
+    )
+    val baumkuchenChecked = settingKey[Set[String]](
+      "Refinement types, by qualified name, whose checked extensions and overloads a conversion can bypass, and whose " +
+        "inferred refinements the compiler plugin reports"
+    )
+    val baumkuchenAnalysisHeap =
+      settingKey[String]("The largest heap the forked analysis may take, as -Xmx takes it, such as 4g")
     val baumkuchenAnalyse       = taskKey[Unit]("Analyse this project and the projects it aggregates as one build")
     val baumkuchenBaselineWrite = taskKey[File]("Record the current analysis warnings in baumkuchenBaseline")
     val baumkuchenPurityWrite   = taskKey[File]("Record the methods of main code that are pure in baumkuchenPurity")
@@ -109,6 +153,11 @@ object BaumkuchenPlugin extends AutoPlugin {
       purity: Option[String],
       effects: Option[Map[String, Set[String]]],
       concurrent: Option[Set[String]],
+      generated: Option[Set[String]],
+      hot: Option[Set[String]],
+      reflective: Option[Set[String]],
+      checked: Option[Set[String]],
+      text: Vector[String],
       projects: Map[String, Settings]
   )
 
@@ -141,7 +190,13 @@ object BaumkuchenPlugin extends AutoPlugin {
     baumkuchenPurity :=
       IO.resolve(baseDirectory.value, file(baumkuchenConfiguration.value.purity.getOrElse("baumkuchen-purity.tsv"))),
     baumkuchenEffects    := baumkuchenConfiguration.value.effects.getOrElse(Map.empty),
-    baumkuchenConcurrent := baumkuchenConfiguration.value.concurrent.getOrElse(Set.empty)
+    baumkuchenConcurrent := baumkuchenConfiguration.value.concurrent.getOrElse(Set.empty),
+    baumkuchenGenerated  := baumkuchenConfiguration.value.generated.getOrElse(Set.empty),
+    baumkuchenHot        := baumkuchenConfiguration.value.hot.getOrElse(Set.empty),
+    baumkuchenReflective := baumkuchenConfiguration.value.reflective.getOrElse(Set.empty),
+    baumkuchenChecked    := baumkuchenConfiguration.value.checked.getOrElse(Set.empty),
+    // The JVM would otherwise take a quarter of the host's memory, which a shared machine runs out of.
+    baumkuchenAnalysisHeap := "4g"
   )
 
   override def projectSettings: Seq[Setting[?]] = Seq(
@@ -195,9 +250,12 @@ object BaumkuchenPlugin extends AutoPlugin {
       def option(name: String, ids: Set[String]) = (ids & Checks).toSeq.sorted.map(id => s"-P:baumkuchen:$name=$id")
       if (!supported(scalaVersion.value)) Nil
       else
-        s"-P:baumkuchen:mode=${baumkuchenModeId.value}" +:
+        (s"-P:baumkuchen:mode=${baumkuchenModeId.value}" +:
           (option("disable", baumkuchenDisabled.value) ++ option("error", baumkuchenErrors.value) ++
-            option("warn", baumkuchenWarnings.value) :+ s"-P:baumkuchen:wildcards=${baumkuchenWildcards.value}")
+            option("warn", baumkuchenWarnings.value) :+ s"-P:baumkuchen:wildcards=${baumkuchenWildcards.value}")) ++
+          baumkuchenGenerated.value.toSeq.sorted.map(glob => s"-P:baumkuchen:generated=$glob") ++
+          baumkuchenHot.value.toSeq.sorted.map(glob => s"-P:baumkuchen:hot=$glob") ++
+          baumkuchenChecked.value.toSeq.sorted.map(tpe => s"-P:baumkuchen:checked=$tpe")
     },
     semanticdbEnabled := true,
     // The rules are a Scala 3 artifact, while sbt-scalafix resolves %% rules against Scala 2.13.
@@ -211,6 +269,12 @@ object BaumkuchenPlugin extends AutoPlugin {
       Rules.filter(baumkuchenWarnings.value),
       Bans.filter(_ => !baumkuchenDisabled.value("DisableSyntax")).partition(!baumkuchenDisabled.value(_))
     )),
+    Compile / scalafix / unmanagedSources := (Compile / unmanagedSources).value.filterNot(
+      generated(baumkuchenGenerated.value, _)
+    ),
+    Test / scalafix / unmanagedSources := (Test / unmanagedSources).value.filterNot(
+      generated(baumkuchenGenerated.value, _)
+    ),
     Compile / scalafix := (Compile / scalafix).dependsOn(baumkuchenScalafixConfig).evaluated,
     Test / scalafix    := (Test / scalafix).dependsOn(baumkuchenScalafixConfig).evaluated,
     scalafixAll        := scalafixAll.dependsOn(baumkuchenScalafixConfig).evaluated,
@@ -235,7 +299,20 @@ object BaumkuchenPlugin extends AutoPlugin {
     configured.projects.get(project)
 
   private def configured(file: File): Configuration =
-    if (!file.exists) Configuration(Settings(None, None, None, None, None), None, None, None, None, Map.empty)
+    if (!file.exists)
+      Configuration(
+        Settings(None, None, None, None, None),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Vector.empty,
+        Map.empty
+      )
     else
       try {
         val config   = ConfigFactory.parseFile(file).resolve()
@@ -247,7 +324,22 @@ object BaumkuchenPlugin extends AutoPlugin {
         }
         def path(key: String) = Option.when(config.hasPath(key))(config.getString(key))
         Configuration(
-          settings(config, "", Set("baseline", "purity", "effects", "concurrent", "projects")),
+          settings(
+            config,
+            "",
+            Set(
+              "baseline",
+              "purity",
+              "effects",
+              "concurrent",
+              "generated",
+              "hot",
+              "reflective",
+              "checked",
+              "text",
+              "projects"
+            )
+          ),
           path("baseline"),
           path("purity"),
           Option.when(config.hasPath("effects"))(config.getConfig("effects")).map(effects =>
@@ -256,11 +348,58 @@ object BaumkuchenPlugin extends AutoPlugin {
             ).toMap
           ),
           Option.when(config.hasPath("concurrent"))(config.getStringList("concurrent").asScala.toSet),
+          Option.when(config.hasPath("generated"))(config.getStringList("generated").asScala.toSet),
+          Option.when(config.hasPath("hot"))(config.getStringList("hot").asScala.toSet),
+          Option.when(config.hasPath("reflective"))(config.getStringList("reflective").asScala.toSet),
+          Option.when(config.hasPath("checked"))(config.getStringList("checked").asScala.toSet),
+          Option.when(config.hasPath("text"))(config.getConfig("text")).fold(Vector.empty)(texts(_)),
           projects
         )
       } catch {
         case error: ConfigException => throw MessageOnlyException(s"baumkuchen: $file: ${error.getMessage}")
       }
+
+  private val TextKinds  = Seq("terms", "patterns", "binary", "preceded", "followed")
+  private val TextFields = Map(
+    "terms"    -> Set("words", "message"),
+    "patterns" -> Set("pattern", "message"),
+    "binary"   -> Set("message"),
+    "preceded" -> Set("pattern", "message"),
+    "followed" -> Set("pattern", "continues", "neutral", "message")
+  ).view.mapValues(_ ++ Set("files", "exclude", "level")).toMap
+  private val TextLists = Set("words", "files", "exclude")
+
+  /** The manifest lines of the text rules: the exclusions, then each rule's fields by its index. */
+  private def texts(config: Config): Vector[String] = {
+    def known(found: Set[String], keys: Set[String], where: String) = {
+      val unknown = found -- keys
+      if (unknown.nonEmpty)
+        throw MessageOnlyException(
+          s"baumkuchen: .baumkuchen.conf has unknown keys ${unknown.toSeq.sorted.map(where + _).mkString(", ")}; the " +
+            s"keys are ${keys.toSeq.sorted.mkString(", ")}"
+        )
+    }
+    // The manifest is tab-separated, one entry a line.
+    def plain(value: String) =
+      if (value.exists(character => character == '\t' || character == '\n'))
+        throw MessageOnlyException(s"baumkuchen: .baumkuchen.conf text values cannot hold tabs or newlines: $value")
+      else value
+    known(config.root.keySet.asScala.toSet, TextKinds.toSet + "exclude", "text.")
+    val exclusions = Option.when(config.hasPath("exclude"))(config.getStringList("exclude").asScala.toVector)
+      .getOrElse(Vector.empty).map(glob => s"text-exclude\t${plain(glob)}")
+    val rules = TextKinds.flatMap(kind =>
+      if (!config.hasPath(kind)) Nil
+      else if (kind == "binary") List(kind -> config.getConfig(kind))
+      else config.getConfigList(kind).asScala.toList.map(kind -> _)
+    )
+    exclusions ++ rules.zipWithIndex.flatMap { case ((kind, rule), index) =>
+      known(rule.root.keySet.asScala.toSet, TextFields(kind), s"text.$kind.")
+      s"text\t$index\tkind\t$kind" +: rule.root.keySet.asScala.toVector.sorted.flatMap(field =>
+        (if (TextLists(field)) rule.getStringList(field).asScala.toVector else Vector(rule.getString(field)))
+          .map(value => s"text\t$index\t$field\t${plain(value)}")
+      )
+    }
+  }
 
   private def settings(config: Config, where: String, others: Set[String]): Settings = {
     val keys    = Set("disabled", "errors", "warnings", "wildcards", "library")
@@ -279,6 +418,9 @@ object BaumkuchenPlugin extends AutoPlugin {
       Option.when(config.hasPath("library"))(config.getBoolean("library"))
     )
   }
+
+  private def generated(globs: Set[String], source: File): Boolean =
+    globs.exists(glob => java.nio.file.FileSystems.getDefault.getPathMatcher(s"glob:$glob").matches(source.toPath))
 
   private def supported(scalaVersion: String): Boolean = BaumkuchenArtifacts.scalaVersions.contains(scalaVersion)
 
@@ -309,12 +451,17 @@ object BaumkuchenPlugin extends AutoPlugin {
     val data    = buildStructure.value.data
     val enabled = thisProjectRef.all(ScopeFilter(inAggregates(ThisProject))).value
       .filter(ref => (ref / baumkuchenEnabled).get(data).contains(true))
-    // Scala Native and Scala.js twins compile the JVM project's sources again, so the JVM copy stands for them.
+    // Scala Native and Scala.js twins compile the JVM project's sources again, so the JVM copy stands for those, and
+    // the analysis reads only the classes of their own sources.
     def twin(ref: ProjectRef) = (ref / thisProject).get(data).exists(_.autoPlugins.exists(plugin =>
       plugin.label.endsWith("ScalaNativePlugin") || plugin.label.endsWith("ScalaJSPlugin")
     ))
-    val jvm      = enabled.filterNot(twin(_))
-    val analysed = ScopeFilter(inProjects((if (jvm.nonEmpty) jvm else enabled)*), inConfigurations(Compile, Test))
+    val (twins, jvm) = enabled.partition(twin(_))
+    val platforms    = if (jvm.nonEmpty) twins.map(_.project).toSet else Set.empty[String]
+    val analysed     = ScopeFilter(inProjects(enabled*), inConfigurations(Compile, Test))
+    // The JVM projects' libraries come first, so they decide where a platform's library has the same classes.
+    val jvmLibraries      = ScopeFilter(inProjects(jvm*), inConfigurations(Compile, Test))
+    val platformLibraries = ScopeFilter(inProjects(twins*), inConfigurations(Compile, Test))
     // A project that other projects depend on only from their tests, as fixtures are, is test code itself.
     val dependents = buildStructure.value.allProjectRefs.flatMap(ref =>
       (ref / thisProject).get(data).toList.flatMap(_.dependencies)
@@ -325,6 +472,13 @@ object BaumkuchenPlugin extends AutoPlugin {
             mappings.split(';').forall(_.trim.takeWhile(_ != '-') == Test.name)
           )) => id
     }.toSet
+    // The projects an analysed project depends on, analysed or not, are read from the classpath.
+    val external = Def.task {
+      val converter = fileConverter.value
+      (externalDependencyClasspath.value ++ internalDependencyClasspath.value).map(entry =>
+        converter.toPath(entry.data).toString
+      )
+    }
     Def.task {
       val outputs = Def.task {
         val _       = (compile.value, copyResources.value)
@@ -333,10 +487,10 @@ object BaumkuchenPlugin extends AutoPlugin {
         val library = Option.when(scope == "main" && baumkuchenLibrary.value)(s"library\t$id")
         s"output\t$id\t$scope\t${classDirectory.value}" +: library.toSeq
       }.all(analysed).value.flatten
-      val classpath = Def.task {
-        val converter = fileConverter.value
-        externalDependencyClasspath.value.map(entry => converter.toPath(entry.data).toString)
-      }.all(analysed).value.flatten.distinct.map(entry => s"classpath\t$entry")
+      val analysedOutputs = outputs.collect { case s"output\t$_\t$_\t$directory" => directory }.toSet
+      val classpath       = (external.all(jvmLibraries).value ++ external.all(platformLibraries).value).flatten.distinct
+        .filterNot(analysedOutputs).map(entry => s"classpath\t$entry")
+      val platform        = platforms.toSeq.sorted.map(id => s"platform\t$id")
       val compilerOptions = Def.task {
         val id = thisProject.value.id
         if (fixtures(id)) Nil else scalacOptions.value.map(option => s"option\t$id\t$option")
@@ -352,7 +506,11 @@ object BaumkuchenPlugin extends AutoPlugin {
       val purity   = baumkuchenPurity.value
       val manifest = target.value / "baumkuchen" / "manifest.tsv"
       val root     = s"root\t${(ThisBuild / baseDirectory).value}"
-      IO.write(manifest, (outputs ++ classpath ++ compilerOptions ++ sources :+ root).mkString("", "\n", "\n"))
+      val text     = baumkuchenConfiguration.value.text
+      IO.write(
+        manifest,
+        (outputs ++ platform ++ classpath ++ compilerOptions ++ sources ++ text :+ root).mkString("", "\n", "\n")
+      )
       val tool = analysisClasspath(dependencyResolution.value, scalaVersion.value, target.value, log)
       def option(name: String, ids: Set[String]) = (ids & Findings).toSeq.sorted.flatMap(id => Seq(s"--$name", id))
       val options = Seq("--mode", baumkuchenModeId.value) ++ option("disable", baumkuchenDisabled.value) ++
@@ -361,9 +519,12 @@ object BaumkuchenPlugin extends AutoPlugin {
         baumkuchenEffects.value.toSeq.sortBy(_._1).flatMap((prefix, kinds) =>
           Seq("--effects", s"$prefix=${kinds.toSeq.sorted.mkString(",")}")
         ) ++ baumkuchenConcurrent.value.toSeq.sorted.flatMap(method => Seq("--concurrent", method)) ++
+        baumkuchenGenerated.value.toSeq.sorted.flatMap(glob => Seq("--generated", glob)) ++
+        baumkuchenReflective.value.toSeq.sorted.flatMap(glob => Seq("--reflective", glob)) ++
+        baumkuchenHot.value.toSeq.sorted.flatMap(glob => Seq("--hot", glob)) ++
         extra(baseline, purity)
       Fork.java(
-        ForkOptions(),
+        ForkOptions().withRunJVMOptions(Vector(s"-Xmx${baumkuchenAnalysisHeap.value}")),
         Seq(
           "-cp",
           tool.mkString(java.io.File.pathSeparator),

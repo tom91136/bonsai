@@ -34,6 +34,30 @@ private object definitions {
     }
   }
 
+  /** Comparisons of a size with zero that state emptiness. */
+  val zeroComparisons: Set[String] = Set(">", "==", "!=")
+
+  /** Whether `size` is compared with zero, which states emptiness rather than counting. */
+  def zeroComparison(size: Term): Boolean = size.parent.exists {
+    case comparison: Term.ApplyInfix =>
+      comparison.argClause.values match {
+        case List(Lit.Int(0)) => zeroComparisons(comparison.op.value)
+        case _                => false
+      }
+    case _ => false
+  }
+
+  /** Whether `mods` carry an annotation named `name`, written bare or qualified. */
+  def annotated(mods: List[Mod], name: String): Boolean = mods.exists {
+    case Mod.Annot(init) =>
+      init.tpe match {
+        case Type.Name(annotation)                 => annotation == name
+        case Type.Select(_, Type.Name(annotation)) => annotation == name
+        case _                                     => false
+      }
+    case _ => false
+  }
+
   /** The trees enclosing `tree`, innermost first. */
   def ancestors(tree: Tree): List[Tree] =
     Iterator.iterate(tree.parent)(_.flatMap(_.parent)).takeWhile(_.isDefined).flatten.toList
@@ -76,6 +100,7 @@ private object definitions {
     def resolve(tpe: SemanticType, visited: Set[Symbol]): Option[Symbol] = tpe match {
       case ExistentialType(inner, _)                       => resolve(inner, visited)
       case AnnotatedType(_, inner)                         => resolve(inner, visited)
+      case ByNameType(inner)                               => resolve(inner, visited)
       case TypeRef(_, reference, _) if !visited(reference) =>
         reference.info.map(_.signature) match {
           case Some(TypeSignature(_, lower, upper)) if lower == upper => resolve(upper, visited + reference)
@@ -88,6 +113,19 @@ private object definitions {
       case MethodSignature(_, Nil, tpe) => resolve(tpe, Set.empty)
       case _                            => None
     }
+  }
+
+  /** The type constructor of a named value, through aliases. */
+  def typeSymbol(term: Term)(using SemanticDocument): Option[String] = (term match {
+    case reference: (Term.Name | Term.Select) => Some(reference.symbol)
+    case _                                    => None
+  }).flatMap(valueType(_)).map(_.value)
+
+  def mapType(term: Term)(using SemanticDocument): Boolean = typeSymbol(term).exists(_.endsWith("Map#"))
+
+  def isNone(tree: Term)(using SemanticDocument): Boolean = tree match {
+    case Term.Name("None") | Term.Select(_, Term.Name("None")) => tree.symbol.value == "scala/None."
+    case _                                                     => false
   }
 
   /** Statements of an object, class or trait body. */

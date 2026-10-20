@@ -40,6 +40,7 @@ class PuritySuite extends AnalysisSuite {
         |    val stream = java.io.ByteArrayInputStream(Array[Byte](1))
         |    val _ = stream.read()
         |    val _ = xs.copyToArray(Array.ofDim[Int](1))
+        |    val _ = Array(1, 2).copyToArray(Array.ofDim[Int](2))
         |    val _ = buffer.dropRightInPlace(1)
         |    val _ = java.util.Objects.checkIndex(0, 1)
         |  }
@@ -88,6 +89,7 @@ class PuritySuite extends AnalysisSuite {
   }
 
   private lazy val found = Purity.findings(result.purity, result.graph.nodes)
+  private val Located    = " at [^ ]+:[0-9]+".r
 
   test("dropping the result of a call with no effects is reported, but not of calls that act, throw or construct") {
     assertEquals(
@@ -96,16 +98,16 @@ class PuritySuite extends AnalysisSuite {
     )
   }
 
-  test("functions passed to collection transformations with direct effects of any kind are reported") {
+  test(
+    "functions passed to collection transformations that write state, perform output or are nondeterministic are reported"
+  ) {
     assertEquals(
-      found.filter(_.rule == Finding.Rule.EffectfulTransform).map(_.detail.replaceAll(" at [^ ]+:[0-9]+", "")).sorted,
+      found.filter(_.rule == Finding.Rule.EffectfulTransform).map(finding => Located.replaceAllIn(finding.detail, ""))
+        .sorted,
       Vector(
         "the function passed to filter calls scala.collection.mutable.Growable.+=",
-        "the function passed to filterNot calls java.lang.Thread.currentThread",
-        "the function passed to map calls java.nio.file.Files.readString",
         "the function passed to map calls java.nio.file.Files.writeString",
         "the function passed to map calls scala.Predef.println",
-        "the function passed to map reads total",
         "the function passed to map writes count"
       ).map(_ + "; keep transformations pure and perform effects in foreach or a loop")
     )
@@ -306,6 +308,9 @@ class PuritySuite extends AnalysisSuite {
           |  def owned(): Future[Int] = Future { var own = 0; own += 1; own }
           |  def pooled(pool: Pool): Unit = pool.run(() => total += 1)
           |  def viewed(xs: List[Int]): List[Int] = xs.view.map { x => println(x); x }.toList
+          |  def deferred(xs: List[Int]): scala.collection.View[Int] = xs.view.filter(_ > 0).map { x => println(x); x }
+          |  def first(xs: List[Int]): Option[Int] =
+          |    xs.view.map { x => println(x); x }.filter(_ > 1).collectFirst { case x if x > 2 => x }
           |}
           |class Remembering(val n: Int) { override def hashCode: Int = lib.Memo.remember(n) }
           |object Debug {
@@ -342,8 +347,11 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(contracted.purity.verdicts("Debug.traced"), Purity.Verdict.Pure)
   }
 
-  test("an effectful function passed to a view is reported as running again on every traversal") {
-    assertFinding(contracts, "effectful-transform", "calls scala.Predef.println", "a view runs it again")
+  test("an effectful function passed to a view is reported as running again on every traversal it escapes to") {
+    val viewed = contracts.filter(_.rule == Finding.Rule.EffectfulTransform).map(_.detail)
+    assertEquals(viewed.count(_.contains("a view runs it again")), 1, viewed.mkString("\n"))
+    assertEquals(viewed.count(_.contains("keep transformations pure")), 1, viewed.mkString("\n"))
+    assertEquals(viewed.size, 2, viewed.mkString("\n"))
   }
 
   private lazy val known = extract(

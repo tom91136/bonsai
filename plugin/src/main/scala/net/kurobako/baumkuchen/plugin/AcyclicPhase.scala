@@ -34,16 +34,19 @@ private class AcyclicPhase(analysis: Analysis, checks: Checks) extends PluginPha
     }
     val graph = paths.map(path => path -> Set.empty[String]).toMap ++
       checked.keys.toVector.groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap
+    // One shortest cycle shows a dependency to break; the other files of the component follow, to break theirs.
     for (group <- DependencyGraph.components(graph).filter(_.size > 1)) {
-      val members  = group.toSet
-      val internal = checked.toVector.filter { case ((from, to), _) => members(from) && members(to) }.sortBy(_._1)
-      val details  = internal.map { case ((from, to), dependencies) =>
-        s"  $from:${dependencies.minBy(_._2.start)._2.line + 1} -> $to"
-      }
-      val remainder = if (details.size > 12) s"\n  ${details.size - 12} more dependencies" else ""
-      val message   = s"Cyclic source dependency (${group.size} files):\n${details.take(12).mkString("\n")}$remainder"
-      val position  = internal.head._2.head._2
-      checks(Check.Acyclic, message, position)
+      val cycle = DependencyGraph.shortest(graph, group)
+      val steps = (cycle :+ cycle.head).sliding(2).toVector.map(pair => (pair(0), pair(1)))
+        .map(step => step -> checked(step).minBy(_._2.start)._2)
+      val details = steps.map { case ((from, to), position) => s"  $from:${position.line + 1} -> $to" }
+      val others  = group.filterNot(cycle.toSet)
+      val files   = if (others.size == 1) "file" else "files"
+      val rest    =
+        if (others.isEmpty) "" else s"\nand ${others.size} more $files on cycles with it:\n  ${others.mkString("\n  ")}"
+      val message =
+        s"Cyclic source dependency (${group.size} files), through the shortest cycle:\n${details.mkString("\n")}$rest"
+      checks(Check.Acyclic, message, steps.head._2)
     }
     units
   }

@@ -14,6 +14,7 @@ import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.core.Types.TermRef
 import dotty.tools.dotc.core.Types.ThisType
 import dotty.tools.dotc.core.Types.Type
+import dotty.tools.dotc.util.Spans.Span
 import scala.collection.mutable
 import scala.util.control.NonFatal
 
@@ -129,6 +130,14 @@ object Purity {
 
   private val Shown = 25
 
+  private val Contracted = Set(Kind.Writes, Kind.Output, Kind.Input, Kind.Random)
+  private val TupleApply = "Tuple[0-9]+\\.apply".r
+  // Calls that traverse a view only until they find their answer, as a loop that breaks does.
+  private val Stopping =
+    Set("collectFirst", "find", "exists", "forall", "contains", "indexWhere", "indexOf", "head", "headOption")
+  // Packages whose companions build collections that can be mutated.
+  private val MutablePackages = Vector("scala.collection.mutable.", "java.util.")
+
   def findings(model: Model, nodes: Map[String, Node]): Vector[Finding] =
     model.discards.flatMap(discard =>
       Finding.at(
@@ -150,7 +159,7 @@ object Purity {
       method.role.flatMap(role =>
         method.effects.find(effect =>
           // Writes on the receiver or in library bodies are caches far more often than not.
-          Set(Kind.Writes, Kind.Output, Kind.Input, Kind.Random)(effect.kind) &&
+          Contracted(effect.kind) &&
             !(effect.kind == Kind.Writes && (effect.receiver || effect.library))
         ).flatMap(effect =>
           Finding.at(
@@ -332,8 +341,10 @@ object Purity {
     private val facts         = mutable.Map.empty[Symbol, Facts]
     private val fresh         = mutable.Set.empty[Symbol]
     private val transforms    = mutable.ArrayBuffer.empty[TransformSite]
-    private val discards      = mutable.ArrayBuffer.empty[DiscardSite]
-    private val writes        = mutable.ArrayBuffer.empty[WriteSite]
+    // View transformations a strict call traverses once, and whether that call may stop before the end.
+    private val consumed = mutable.Map.empty[Span, Boolean]
+    private val discards = mutable.ArrayBuffer.empty[DiscardSite]
+    private val writes   = mutable.ArrayBuffer.empty[WriteSite]
 
     // Methods that run the functions passed to them on other threads.
     private val Spawning = Set(
@@ -616,6 +627,7 @@ object Purity {
       "java.util.concurrent.atomic.AtomicReference"
     ).map(requiredClass(_)) :+ defn.ArrayClass
     private val Randoms = Vector(requiredClass("java.util.Random"), requiredClass("scala.util.Random"))
+    private val View    = requiredClass("scala.collection.View")
     private val Outputs = Vector(requiredClass("java.io.OutputStream"), requiredClass("java.io.Writer"))
 
     /** How many library bodies the inference read. */
@@ -702,16 +714,18 @@ object Purity {
         (site.method, site.name, site.tree)
     }
 
-    /** Element-wise transformations of collections whose functions themselves read or write state, perform output, or
-      * are nondeterministic, with the first such effect. Effects that only come through the build's methods they call
-      * are often caches, and folds are loops that may stop early, which foreach cannot; neither counts here.
+    /** Element-wise transformations of collections whose functions themselves write state, perform output, or are
+      * nondeterministic, with the first such effect; reading state or input there runs once per element and hides
+      * nothing. Effects that only come through the build's methods they call are often caches, and folds are loops that
+      * may stop early, which foreach cannot; neither counts here.
       */
     def effectful: Vector[(Symbol, String, String, tpd.Tree, Boolean)] = transforms.toVector.flatMap { site =>
-      resolve(site.lambda, frame(site.method, None), None).effects.toVector.filter(effect =>
-        Set(Kind.Reads, Kind.Writes, Kind.Input, Kind.Output, Kind.Random)(effect.kind) && effect.via.isEmpty
-      )
-        .sortBy(effect => (Priority.indexOf(effect.kind), effect.shown)).headOption
-        .map(effect => (site.method, site.operation, effect.shown, site.tree, site.view))
+      val once = consumed.get(site.tree.span).filter(_ => site.view)
+      if (once.contains(true)) None
+      else
+        resolve(site.lambda, frame(site.method, None), None).effects.filter(effect =>
+          Observable(effect.kind) && effect.via.isEmpty
+        ).minOption.map(effect => (site.method, site.operation, effect.shown, site.tree, site.view && once.isEmpty))
     }
 
     /** Assignments to shared variables by functions other threads run, by enclosing method, with the variable, the
@@ -722,10 +736,12 @@ object Purity {
 
     private val Priority =
       Vector(Kind.Output, Kind.Input, Kind.Random, Kind.Writes, Kind.Reads, Kind.Unknown, Kind.Throws)
+    private val Observable = Set(Kind.Writes, Kind.Output, Kind.Random)
 
-    private def ordered(method: Symbol): Vector[Effect] = summaries.get(Key(method, None)).fold(Vector.empty)(
-      _.effects.toVector.sortBy(effect => (Priority.indexOf(effect.kind), effect.shown))
-    )
+    private given Ordering[Effect] = Ordering.by(effect => (Priority.indexOf(effect.kind), effect.shown))
+
+    private def ordered(method: Symbol): Vector[Effect] =
+      summaries.get(Key(method, None)).fold(Vector.empty)(_.effects.toVector.sorted)
 
     /** Each kind of effect `method` has, by its first cause, apart on its receiver alone and elsewhere, and in library
       * bodies and the build.
@@ -1269,7 +1285,7 @@ object Purity {
             // A tuple is dropped to name what must be evaluated, as sbt's task dependencies are.
             dropped(statement).filter(_ =>
               depth == 0 && calls.size > callsBefore && invokes.size == invokesBefore && !calls.last.constructs &&
-                !calls.last.name.matches("Tuple[0-9]+\\.apply")
+                !TupleApply.matches(calls.last.name)
             ).foreach(tree =>
               discards += DiscardSite(
                 root,
@@ -1372,6 +1388,8 @@ object Purity {
         val passed     = arguments.zipAll(parameters, tpd.EmptyTree, method).collect {
           case (argument, parameter) if !argument.isEmpty => classify(argument, parameter)
         }.toVector
+        if (depth == 0 && !tree.tpe.widen.derivesFrom(View))
+          qualifier.foreach(pipeline(_).foreach(consumed(_) = Stopping(method.name.toString)))
         if (depth == 0 && Transformations(method.name.toString) && transformed(qualifier))
           passed.zip(arguments).foreach {
             case (Argument.Function(lambda), argument) if Traversals.lambda(argument).isDefined =>
@@ -1530,6 +1548,7 @@ object Purity {
           owner.startsWith("java.util.concurrent.atomic.")
         )
           if (name == "length" && received.exists(_.derivesFrom(defn.ArrayClass))) Summary(Set.empty, runs)
+          else if (Filling(name)) effect(Kind.Writes)
           else stateful(if (mutates(name)) Kind.Writes else Kind.Reads)
         else if (
           Pure.exists(owner.startsWith(_)) || method.is(Flags.Synthetic) || method.name.is(DefaultGetterName) ||
@@ -1563,7 +1582,14 @@ object Purity {
 
       // Collections and iterators; for comprehensions over options and results sequence effects by design.
       private def viewed(qualifier: Option[tpd.Tree]): Boolean =
-        qualifier.exists(q => unconverted(q).tpe.widen.derivesFrom(requiredClass("scala.collection.View")))
+        qualifier.exists(q => unconverted(q).tpe.widen.derivesFrom(View))
+
+      /** The view transformations a strict call on `tree` runs in its one traversal. */
+      private def pipeline(tree: tpd.Tree): List[Span] = unconverted(tree) match {
+        case application: tpd.Apply if application.tpe.widen.derivesFrom(View) =>
+          application.span :: Traversals.selected(application.fun).fold(Nil)(select => pipeline(select.qualifier))
+        case _ => Nil
+      }
 
       private def spawns(method: Symbol): Boolean = {
         val name = qualified(method)
@@ -1607,7 +1633,7 @@ object Purity {
         val factory       = Traversals.selected(function).map(_.qualifier.symbol).exists(module =>
           module.is(Flags.Module) &&
             (module == defn.ArrayModule ||
-              Vector("scala.collection.mutable.", "java.util.").exists(qualified(module).startsWith(_)))
+              MutablePackages.exists(qualified(module).startsWith(_)))
         )
         method.isConstructor || Set("iterator", "toArray", "toBuffer", "clone")(name) ||
         factory && Set("apply", "empty", "from", "ofDim", "fill", "tabulate", "newBuilder")(name)

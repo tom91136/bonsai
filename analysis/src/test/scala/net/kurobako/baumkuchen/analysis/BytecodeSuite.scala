@@ -12,10 +12,9 @@ class BytecodeSuite extends AnalysisSuite {
   private def method(name: String, count: Int): String =
     s"  def $name(values: Array[Int]): Int = {\n    var total = 0\n${statements(count)}\n    total\n  }"
 
-  private lazy val found = {
-    val result = extract(Seq(
-      "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Kernel.small(Array(1))) }",
-      "Kernel.scala" -> s"""object Kernel {
+  private lazy val result = extract(Seq(
+    "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Kernel.small(Array(1))) }",
+    "Kernel.scala" -> s"""object Kernel {
                            |${method("huge", 1000)}
                            |${method("limit", 3800)}
                            |${method("small", 10)}
@@ -33,11 +32,23 @@ class BytecodeSuite extends AnalysisSuite {
                            |  case Vendor(value: String) extends Modifier(value)
                            |}
                            |class Lazy { lazy val values: Vector[Int] = Vector(${(1 to 2000).mkString(
-                            ", "
-                          )}) }""".stripMargin,
-      "Top.scala" -> s"def topHuge(values: Array[Int]): Int = {\n  var total = 0\n${statements(1000)}\n  total\n}"
-    ))
-    Bytecode.findings(result.bytecode, result.graph.nodes)
+                          ", "
+                        )}) }""".stripMargin,
+    "Top.scala"      -> s"def topHuge(values: Array[Int]): Int = {\n  var total = 0\n${statements(1000)}\n  total\n}",
+    "Packaged.scala" ->
+      s"package demo\ndef packagedHuge(values: Array[Int]): Int = {\n  var total = 0\n${statements(1000)}\n  total\n}"
+  ))
+
+  private lazy val found = Bytecode.findings(result.bytecode, result.graph.nodes, None)
+
+  test("where the build marks classes hot, huge methods elsewhere are information, and the 64 KB limit still fails") {
+    val marked = Bytecode.findings(result.bytecode, result.graph.nodes, Some(Set("Kernel")))
+    assertFinding(marked, "huge-method", "Kernel.huge has")
+    assertFinding(marked, "method-limit", "Kernel.limit has")
+    assertFinding(marked, "huge-method", "topHuge has", "outside the classes the build marks hot")(using
+      Finding.Level.Info
+    )
+    assertNoFinding(marked)(finding => finding.detail.startsWith("topHuge") && finding.level == Finding.Level.Warning)
   }
 
   test("methods past HotSpot's huge method limit are reported, as are methods near the 64 KB limit") {
@@ -52,6 +63,7 @@ class BytecodeSuite extends AnalysisSuite {
 
   test("huge top-level methods are reported under their own name") {
     assertFinding(found, "huge-method", "topHuge has")
+    assertFinding(found, "huge-method", "packagedHuge has")
   }
 
   test("a malformed class file fails the read rather than being skipped") {

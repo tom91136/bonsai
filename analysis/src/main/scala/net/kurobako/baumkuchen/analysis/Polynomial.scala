@@ -62,8 +62,8 @@ object Polynomial {
     case Factor.Power(base, exponent) => s"(${base.render(full)})^(${exponent.render(full)})"
   }
 
-  // Strips package prefixes from every qualified name inside a possibly applied type.
-  private val Qualifier = java.util.regex.Pattern.compile("""[\w$]+\.""")
+  // Strips package prefixes from every qualified name inside a possibly applied type, keeping the types that hold it.
+  private val Qualifier = java.util.regex.Pattern.compile("""\b[a-z][\w$]*\.""")
 
   private def brief(name: String): String = Qualifier.matcher(name).replaceAll("")
 
@@ -94,9 +94,10 @@ case class Polynomial(terms: Map[Polynomial.Monomial, BigInt]) {
   def *(that: Polynomial): Polynomial =
     if (terms.size * that.terms.size > MaxTerms) opaque(Vector(key, that.key).sorted.mkString("(", ")*(", ")"))
     else {
+      val rights   = that.terms.toVector
       val products = for {
         (left, leftCount)   <- terms.toVector
-        (right, rightCount) <- that.terms.toVector
+        (right, rightCount) <- rights
       } yield right.foldLeft(left) { case (monomial, (factor, times)) =>
         monomial.updated(factor, monomial.getOrElse(factor, 0) + times)
       } -> leftCount * rightCount

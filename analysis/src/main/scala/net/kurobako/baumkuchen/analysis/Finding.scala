@@ -11,6 +11,7 @@ object Finding {
     case UnusedMember            extends Rule("unused-member", strict = true)
     case TestOnlyMember          extends Rule("test-only-member", strict = true)
     case DuplicateCode           extends Rule("duplicate-code", strict = true)
+    case NearDuplicateCode       extends Rule("near-duplicate-code")
     case InvariantViolation      extends Rule("invariant-violation", strict = true)
     case InvariantSum            extends Rule("invariant-sum")
     case InvariantRedundant      extends Rule("invariant-redundant")
@@ -47,10 +48,29 @@ object Finding {
     case EffectfulTransform      extends Rule("effectful-transform")
     case WarningsNotFatal        extends Rule("warnings-not-fatal")
     case PlatformDuplicate       extends Rule("platform-duplicate-source")
+    case DetachedCompanion       extends Rule("detached-companion")
+    case AliasWithOperations     extends Rule("alias-with-operations")
+    case ReceiverParameter       extends Rule("receiver-parameter")
+    case NumberedFamily          extends Rule("numbered-family")
+    case FieldStutter            extends Rule("field-stutter")
+    case StaleNameString         extends Rule("stale-name-string")
+    case ParameterAliasFamily    extends Rule("parameter-alias-family")
+    case PackageSplitCandidate   extends Rule("package-split-candidate")
+    case BaseClassSingleSubclass extends Rule("base-class-single-subclass")
+    case DisjointObject          extends Rule("disjoint-object")
+    case MisplacedMember         extends Rule("misplaced-member")
+    case SatelliteType           extends Rule("satellite-type")
+    case EnumDispatchFunction    extends Rule("enum-dispatch-function")
+    case ForbiddenTerm           extends Rule("forbidden-term")
+    case ForbiddenPattern        extends Rule("forbidden-pattern")
+    case BinaryFile              extends Rule("binary-file")
+    case BlankLineBefore         extends Rule("blank-line-before")
+    case BlankLineAfter          extends Rule("blank-line-after")
   }
 
-  /** Warnings call for a change; information describes structure worth reviewing. */
+  /** Errors fail in every mode, warnings call for a change, and information describes structure worth reviewing. */
   enum Level(val id: String) {
+    case Error   extends Level("error")
     case Warning extends Level("warning")
     case Info    extends Level("info")
   }

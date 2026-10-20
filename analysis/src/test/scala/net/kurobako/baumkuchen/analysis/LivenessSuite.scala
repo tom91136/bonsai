@@ -200,10 +200,13 @@ class LivenessSuite extends AnalysisSuite {
 
   test("generated sources are categorised by path") {
     val graph =
-      extract(Seq(
-        "src/generated/main/scala/Table.scala" -> "object Table",
-        "src/main/scala/Code.scala"            -> "object Code"
-      )).graph
+      extract(
+        Seq(
+          "src/generated/main/scala/Table.scala" -> "object Table",
+          "src/main/scala/Code.scala"            -> "object Code"
+        ),
+        generated = GeneratedSources
+      ).graph
     assertEquals(
       graph.nodes.values.map(node => node.name -> node.generated).toMap,
       Map("Table" -> true, "Code" -> false)

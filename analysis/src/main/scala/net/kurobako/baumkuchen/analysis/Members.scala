@@ -7,7 +7,8 @@ object Members {
     *
     * `inherited` holds when a member it overrides is referenced or declared outside the build, so calls can reach it
     * through dynamic dispatch; `rooted` when it overrides a member of the build, which is reported instead; `constant`
-    * when it is a `var` nothing assigns after initialisation.
+    * when it is a `var` nothing assigns after initialisation; `detachable` when it is a member of an object that names
+    * nothing else of the object.
     */
   case class Member(
       name: String,
@@ -19,6 +20,7 @@ object Members {
       deferred: Boolean,
       public: Boolean,
       constant: Boolean,
+      detachable: Boolean,
       test: Boolean,
       generated: Boolean,
       suppressed: Set[String]
@@ -49,7 +51,27 @@ object Members {
 
   /** Members of `live` nodes; members of unreachable types are covered by the type-level liveness findings. */
   def findings(model: Model, nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
-    anonymous(model.givens, nodes, live) ++ hidden(model.nested, nodes, live) ++ visibility(model.members, nodes, live)
+    anonymous(model.givens, nodes, live) ++ hidden(model.nested, nodes, live) ++
+      grouped(visibility(model.members, nodes, live)) ++ misplaced(model.members, nodes, live)
+
+  private val Shown = 6
+
+  // Members of one type that only tests use say the same of the type, as of a builder only tests drive, so they are
+  // one finding.
+  private def grouped(findings: Vector[Finding]): Vector[Finding] = {
+    val (tested, others) = findings.partition(_.rule == Finding.Rule.TestOnlyMember)
+    others ++ tested.groupBy(_.node.name).toVector.sortBy(_._1).flatMap {
+      case (_, Vector(single)) => Vector(single)
+      case (owner, several)    =>
+        val members = several.map(_.detail.stripSuffix(" is referenced only from tests")).sorted
+        Vector(
+          several.head.copy(detail =
+            s"${members.size} members of ${owner.split('.').last} are referenced only from tests: " +
+              Finding.listed(members, Shown)
+          )
+        )
+    }
+  }
 
   private def visibility(members: Vector[Member], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
     members.filter(member => !member.test && !member.generated && live(member.node)).flatMap {
@@ -75,6 +97,29 @@ object Members {
         val mutability = Option.when(used && member.constant)(s"${member.short} is never reassigned; it can be a val")
           .flatMap(Finding.at(nodes, member.node, Finding.Rule.VarCouldBeVal, _))
         (access ++ mutability).filterNot(_.suppressedBy(member.suppressed))
+    }
+
+  /** Members of objects that need nothing else of their object and that one other type of the build uses, and nothing
+    * else, not even their own object.
+    */
+  private def misplaced(members: Vector[Member], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
+    members.filter(member =>
+      member.detachable && member.public && !member.test && !member.generated && !member.overriding &&
+        !member.inherited && live(member.node)
+    ).flatMap { member =>
+      member.users.toVector match {
+        case Vector(user)
+            if !Node.within(nodes, user, member.node) && !Node.within(nodes, member.node, user) &&
+              nodes.get(user).exists(node => !node.test && !node.generated) =>
+          Finding.at(
+            nodes,
+            member.node,
+            Finding.Rule.MisplacedMember,
+            s"${member.short} is used only by ${user.split('.').last}; move it there",
+            Finding.Level.Info
+          ).filterNot(_.suppressedBy(member.suppressed))
+        case _ => None
+      }
     }
 
   // A name is part of the API: renaming the type renames an anonymous given, so this is information, not a warning.

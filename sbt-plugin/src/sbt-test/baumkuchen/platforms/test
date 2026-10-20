@@ -1,6 +1,9 @@
-# the Native twin's copy of the shared sources is not analysed as a second copy
+# the Native twin's own sources are analysed, so a shared member only they use is used, while its copy of the shared
+# sources is not analysed as a second copy
+> set ThisBuild / baumkuchenErrors += "unused-member"
 > baumkuchenAnalyse
 > checkManifest
+> set ThisBuild / baumkuchenErrors -= "unused-member"
 # a source copied between the platform directories is reported
 > set ThisBuild / baumkuchenErrors += "platform-duplicate-source"
 -> baumkuchenAnalyse

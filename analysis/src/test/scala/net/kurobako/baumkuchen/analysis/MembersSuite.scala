@@ -12,7 +12,23 @@ class MembersSuite extends AnalysisSuite {
     val found =
       findings(Seq(entry("println(Tools.used)"), "Tools.scala" -> "object Tools { def used = 1; def spare = 2 }"))
     assertFinding(found, "unused-member", "Tools.spare is never referenced")
-    assertNoFinding(found)(_.detail.contains("Tools.used"))
+    assertNoFinding(found)(finding =>
+      finding.rule != Finding.Rule.MisplacedMember && finding.detail.contains("Tools.used")
+    )
+  }
+
+  test("a public member only one other type uses belongs in that type") {
+    val found = findings(Seq(
+      entry("println(Worker().run + Pair().run)"),
+      "Tools.scala" ->
+        """object Tools { def helper: Int = 1; def shared: Int = 2; def own: Int = 3; def local: Int = own }
+          |class Worker { def run: Int = Tools.helper + Tools.shared + Tools.local }
+          |class Pair { def run: Int = Tools.shared }""".stripMargin
+    ))
+    assertFinding(found, "misplaced-member", "Tools.helper is used only by Worker")(using Finding.Level.Info)
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.MisplacedMember && !finding.detail.startsWith("Tools.helper")
+    )
   }
 
   test("members sharing a name are told apart by their parameter types") {
@@ -28,7 +44,10 @@ class MembersSuite extends AnalysisSuite {
     ))
     assertFinding(found, "unused-member", "Tools.twice(Long) is never referenced")
     assertFinding(found, "unused-member", "Tools.>(Int)(Long) is never referenced")
-    assertNoFinding(found)(finding => finding.detail.contains("twice(Int)") || finding.detail.startsWith("Tools.> "))
+    assertNoFinding(found)(finding =>
+      finding.rule != Finding.Rule.MisplacedMember &&
+        (finding.detail.contains("twice(Int)") || finding.detail.startsWith("Tools.> "))
+    )
   }
 
   test("public and protected members of a library's public types are its API") {
@@ -56,6 +75,49 @@ class MembersSuite extends AnalysisSuite {
     )
   }
 
+  test("types named only in strings, and what they declare, are used when the build declares them reflective") {
+    val sources = Seq(
+      entry("""println(Class.forName("app.Warp"))"""),
+      "Warp.scala" ->
+        """package app
+          |object Warp {
+          |  def lane: Int = 1
+          |  class Mask { def bits: Int = 2 }
+          |}
+          |private[app] object Launch {
+          |  def grid: Int = 3
+          |  private[app] def block: Int = 4
+          |}""".stripMargin
+    )
+    def found(reflective: Vector[String]) = {
+      val result = extract(sources, reflective = reflective)
+      Liveness.findings(result.graph) ++
+        Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
+    }
+    def unused(reflective: Vector[String]) =
+      found(reflective).map(finding => finding.rule.id -> finding.node.name).sorted
+    assertEquals(unused(Vector.empty), Vector("unused" -> "app.Launch", "unused" -> "app.Warp"))
+    assertEquals(unused(Vector("app.Warp")), Vector("unused" -> "app.Launch"))
+    assertEquals(found(Vector("app.*")), Vector.empty)
+  }
+
+  test("members used only from a platform twin's own sources are used, and shared types stay the JVM module's") {
+    val result = extract(
+      Seq(entry("println(Model.shown)"), "Model.scala" -> "object Model { def shown = 1; def assemble = 2 }"),
+      twins =
+        Seq(Seq("Explorer.scala" ->
+          "object Explorer { def main(args: Array[String]): Unit = println(Model.assemble) }"))
+    )
+    assertEquals(result.graph.nodes.get("Model").map(_.module), Some("m"))
+    assertEquals(result.graph.nodes.get("Explorer").map(_.module), Some("t0"))
+    assertEquals(
+      Liveness.findings(result.graph) ++
+        Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
+          .filterNot(_.rule == Finding.Rule.MisplacedMember),
+      Vector.empty
+    )
+  }
+
   test("dynamic dispatch reaches implementations, and an unused declaration is reported once") {
     val found = findings(Seq(
       entry("val shape: Shape = Square(); println(shape.area)"),
@@ -65,6 +127,17 @@ class MembersSuite extends AnalysisSuite {
     ))
     assertFinding(found, "unused-member", "Shape.perimeter is never referenced")
     assertNoFinding(found)(finding => finding.detail.contains("Square.") || finding.detail.contains("Shape.area"))
+  }
+
+  test("several members of one type that only tests use are one finding") {
+    val found = findings(
+      Seq(entry("println(Builder.used)"), "Builder.scala" -> "object Builder { def used = 1; def a = 2; def b = 3 }"),
+      Seq("BuilderCheck.scala" -> "class BuilderCheck { val values = (Builder.a, Builder.b) }")
+    ).filter(_.rule == Finding.Rule.TestOnlyMember)
+    assertEquals(
+      found.map(_.detail),
+      Vector("2 members of Builder are referenced only from tests: Builder.a, Builder.b")
+    )
   }
 
   test("members used only by tests are test-only") {
@@ -234,6 +307,7 @@ class MembersSuite extends AnalysisSuite {
     deferred = false,
     public = true,
     constant = false,
+    detachable = false,
     test = false,
     generated = false,
     suppressed = Set.empty

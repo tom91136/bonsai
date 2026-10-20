@@ -38,7 +38,7 @@ class AcyclicSuite extends FunSuite {
     val errors = compile(sources*)
     assertEquals(errors.size, 1, errors.mkString("\n"))
     assert(errors.head.startsWith("Cyclic source dependency ("), errors.head)
-    sources.foreach { case (name, _) => assert(errors.head.contains(s"$name:1 ->"), errors.head) }
+    sources.foreach { case (name, _) => assert(errors.head.contains(name), errors.head) }
   }
 
   private val reported = Seq(
@@ -94,6 +94,22 @@ class AcyclicSuite extends FunSuite {
   )
 
   for ((name, sources) <- reported) test(s"reports a cycle: $name")(assertCycle(sources*))
+
+  test("a cycle is shown as its shortest cycle, then the other files of the group") {
+    val errors = compile(
+      "A.scala" -> "class A(val b: B)",
+      "B.scala" -> "class B(val a: A, val c: C)",
+      "C.scala" -> "class C(val d: D)",
+      "D.scala" -> "class D(val b: B)"
+    )
+    assertEquals(errors.size, 1, errors.mkString("\n"))
+    val lines = errors.head.linesIterator.toVector
+    assert(lines.head.startsWith("Cyclic source dependency (4 files), through the shortest cycle:"), errors.head)
+    assert(lines(1).contains("A.scala:1 ->") && lines(1).endsWith("B.scala"), errors.head)
+    assert(lines(2).contains("B.scala:1 ->") && lines(2).endsWith("A.scala"), errors.head)
+    assert(lines(3).startsWith("and 2 more files on cycles with it:"), errors.head)
+    assert(lines(4).endsWith("C.scala") && lines(5).contains("D.scala"), errors.head)
+  }
 
   test("cycles are warnings unless the check is escalated") {
     val (errors, warnings) = run(Nil, Seq("A.scala" -> "class A(val b: B)", "B.scala" -> "class B(val a: A)"))

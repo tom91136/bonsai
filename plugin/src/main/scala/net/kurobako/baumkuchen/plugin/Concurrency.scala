@@ -24,6 +24,9 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   private val Barrier       = requiredClass("java.util.concurrent.CyclicBarrier")
   private val Semaphore     = requiredClass("java.util.concurrent.Semaphore")
   private val BlockingQueue = requiredClass("java.util.concurrent.BlockingQueue")
+  private val Executor      = requiredClass("java.util.concurrent.Executor")
+  private val Executing     = requiredClass("scala.concurrent.ExecutionContext")
+  private val Service       = requiredClass("java.util.concurrent.ExecutorService")
 
   private val Blocking = Set(
     "java.lang.Thread.sleep",
@@ -43,8 +46,12 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   // recorded as finishing everything.
   private val done    = mutable.Stack(Set.empty[Symbol])
   private val waiting = mutable.Stack(false)
-  private val Finish  = Set("isDone", "run", "destroyForcibly", "orTimeout", "completeOnTimeout")
-  private val Waits   = Set("await", "join")
+  // A close that interrupts its threads joins them as the barrier of its shutdown, and an executor's execute starts the
+  // threads it runs tasks on, which it owns.
+  private val stopping  = mutable.Stack(false)
+  private val executing = mutable.Stack(false)
+  private val Finish    = Set("isDone", "run", "destroyForcibly", "orTimeout", "completeOnTimeout")
+  private val Waits     = Set("await", "join")
 
   override def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
     case definition: tpd.DefDef if definition.symbol.is(Flags.Synthetic) && !definition.symbol.isAnonymousFunction =>
@@ -56,12 +63,19 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
         case tpd.Select(_, name) => Finish(name.toString)
         case _                   => false
       }.collect { case tpd.Select(target, _) => target.symbol }
-      done.push(done.top ++ finished)
+      done.push(done.top ++ finished ++ invoked(definition.rhs))
       waiting.push(waiting.top || Waits.exists(word => named(definition.name.toString, word)))
+      stopping.push(stopping.top || definition.name.toString == "close" && definition.rhs.existsSubTree {
+        case tpd.Select(thread, name) => name.toString == "interrupt" && thread.tpe.widen.derivesFrom(Thread)
+        case _                        => false
+      })
+      executing.push(executing.top || executor(definition.symbol))
       try traverseChildren(tree)
       finally {
         done.pop()
-        waiting.pop(): Unit
+        waiting.pop()
+        stopping.pop()
+        executing.pop(): Unit
       }
     case application: tpd.Apply =>
       pooled(application)
@@ -132,7 +146,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   private def unbounded(application: tpd.Apply): Unit = {
     val symbol  = application.fun.symbol
     val name    = symbol.name.toString
-    val untimed = application.args.isEmpty && !synchronous(application) &&
+    val untimed = application.args.isEmpty && !synchronous(application) && !(stopping.top && name == "join") &&
       !waiting.top && !Trees.selected(application.fun).exists(select => bounded(select.qualifier)) &&
       blocking(application).exists(Set("get", "join", "waitFor", "await", "wait"))
     val unlimited = Set("scala.concurrent.Await.result", "scala.concurrent.Await.ready")(Trees.qualified(symbol)) &&
@@ -172,7 +186,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
 
   private def started(application: tpd.Apply): Unit = application match {
     case tpd.Apply(tpd.Select(thread, name), Nil)
-        if name.toString == "start" && thread.tpe.widen.derivesFrom(Thread) && constructed(thread) =>
+        if !executing.top && name.toString == "start" && thread.tpe.widen.derivesFrom(Thread) && constructed(thread) =>
       checks(
         Check.OrphanThread,
         "the thread started here is never joined or interrupted; keep it and stop it when its owner shuts down",
@@ -181,28 +195,59 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
     case _ => ()
   }
 
-  /** Local threads used only through members other than those that stop them. */
-  private def orphans(definition: tpd.DefDef): Unit = definition.rhs.filterSubTrees {
-    case value: tpd.ValDef =>
-      value.symbol.exists && !value.symbol.owner.isClass && value.symbol.info.derivesFrom(Thread) &&
-      constructed(value.rhs)
-    case _ => false
-  }.foreach { value =>
-    val references = definition.rhs.filterSubTrees {
-      case reference: tpd.Ident => reference.symbol == value.symbol
-      case _                    => false
-    }
-    val members = definition.rhs.filterSubTrees {
-      case tpd.Select(reference: tpd.Ident, _) => reference.symbol == value.symbol
-      case _                                   => false
-    }.collect { case select: tpd.Select => select.name.toString }
-    if (references.size == members.size && members.contains("start") && !members.exists(Stops))
-      checks(
-        Check.OrphanThread,
-        s"${value.symbol.name} is started but never joined or interrupted; stop it when its owner shuts down",
-        value.srcPos
-      )
+  private def executor(method: Symbol): Boolean = method.name.toString == "execute" &&
+    method.allOverriddenSymbols.exists(overridden => overridden.owner == Executor || overridden.owner == Executing)
+
+  /** Futures that `invokeAll` returns, which it returns only once they are all complete: the values holding its result,
+    * and the parameters of the functions run over it.
+    */
+  private def invoked(body: tpd.Tree): Set[Symbol] = body.filterSubTrees {
+    case _: tpd.ValDef | _: tpd.Apply => true
+    case _                            => false
+  }.foldLeft(Set.empty[Symbol]) {
+    case (complete, value: tpd.ValDef) if completed(value.rhs, complete) => complete + value.symbol
+    case (complete, application: tpd.Apply)
+        if Trees.selected(application.fun).exists(select => completed(select.qualifier, complete)) =>
+      complete ++ application.args.flatMap(Trees.lambda(_)).flatMap(_.termParamss.flatten.headOption.map(_.symbol))
+    case (complete, _) => complete
   }
+
+  // Conversions and collection operations keep the futures of an invokeAll result.
+  private def completed(tree: tpd.Tree, complete: Set[Symbol]): Boolean = Trees.unwrap(tree) match {
+    case application: tpd.Apply
+        if application.fun.symbol.name.toString == "invokeAll" && application.fun.symbol.owner.derivesFrom(Service) =>
+      true
+    case tpd.Apply(function, List(argument)) if function.symbol.is(Flags.Implicit) => completed(argument, complete)
+    case application: tpd.Apply                                                    =>
+      Trees.selected(application.fun).exists(select => completed(select.qualifier, complete))
+    case tpd.Select(qualifier, _) => completed(qualifier, complete)
+    case reference: tpd.Ident     => complete(reference.symbol)
+    case _                        => false
+  }
+
+  /** Local threads used only through members other than those that stop them. */
+  private def orphans(definition: tpd.DefDef): Unit = if (!executing.top && !executor(definition.symbol))
+    definition.rhs.filterSubTrees {
+      case value: tpd.ValDef =>
+        value.symbol.exists && !value.symbol.owner.isClass && value.symbol.info.derivesFrom(Thread) &&
+        constructed(value.rhs)
+      case _ => false
+    }.foreach { value =>
+      val references = definition.rhs.filterSubTrees {
+        case reference: tpd.Ident => reference.symbol == value.symbol
+        case _                    => false
+      }
+      val members = definition.rhs.filterSubTrees {
+        case tpd.Select(reference: tpd.Ident, _) => reference.symbol == value.symbol
+        case _                                   => false
+      }.collect { case select: tpd.Select => select.name.toString }
+      if (references.size == members.size && members.contains("start") && !members.exists(Stops))
+        checks(
+          Check.OrphanThread,
+          s"${value.symbol.name} is started but never joined or interrupted; stop it when its owner shuts down",
+          value.srcPos
+        )
+    }
 
   // CompletableFuture.join waits through interrupts, leaving the interrupt flag set.
   private def join(definition: tpd.DefDef): Unit = {

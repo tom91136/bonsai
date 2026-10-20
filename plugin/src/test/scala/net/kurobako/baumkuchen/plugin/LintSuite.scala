@@ -29,15 +29,26 @@ class LintSuite extends FunSuite {
   }
 
   private def run(path: String, source: String, options: String*): (List[String], List[String], String) = {
-    val (errors, warnings, content) = report(path, source, options*)
+    val (errors, warnings, _, content) = report(path, source, options*)
     (errors, warnings.map(_._1), content)
   }
 
+  /** The information, warnings and errors the checks report, tagged with their levels. */
+  private def diagnostics(source: String, options: String*): List[String] = {
+    val (errors, warnings, infos, _) = report("Lints.scala", source, options*)
+    errors.map("error: " + _) ++ warnings.map("warning: " + _._1) ++ infos.map("info: " + _)
+  }
+
   /** Warnings with their lines and columns, since a console reporter shows only one warning per position. */
-  private def positioned(source: String): List[(String, Int, Int)] = report("Lints.scala", source)._2
+  private def positioned(source: String): List[(String, Int, Int)] =
+    report("Lints.scala", source)._2.map((message, line, column, _) => (message, line, column))
+
+  /** Warnings with the lines their positions start and end on. */
+  private def spanned(source: String): List[(String, Int, Int)] =
+    report("Lints.scala", source)._2.map((message, line, _, end) => (message, line, end))
 
   private def report(path: String, source: String, options: String*)
-      : (List[String], List[(String, Int, Int)], String) = {
+      : (List[String], List[(String, Int, Int, Int)], List[String], String) = {
     val directory = Files.createTempDirectory("baumkuchen-")
     try {
       val output = Files.createDirectory(directory.resolve("classes"))
@@ -58,7 +69,12 @@ class LintSuite extends FunSuite {
       )
       (
         result.allErrors.map(_.message).toList,
-        result.allWarnings.map(warning => (warning.message, warning.pos.line, warning.pos.column)).toList,
+        result.allWarnings.map(warning =>
+          (warning.message, warning.pos.line, warning.pos.column, if (warning.pos.exists) warning.pos.endLine else -1)
+        ).toList,
+        result.removeBufferedMessages(using dotty.tools.dotc.core.Contexts.NoContext).collect {
+          case info if info.level == dotty.tools.dotc.interfaces.Diagnostic.INFO => info.message
+        },
         Files.readString(file)
       )
     } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
@@ -339,6 +355,14 @@ class LintSuite extends FunSuite {
           |object Lints { def check(left: SortedSet[Int], right: SortedSet[Int]) = left.corresponds(right)(_ == _) }""".stripMargin
       ).exists(_.contains("unordered collection"))
     )
+    assert(
+      !warnings(
+        """import scala.collection.immutable.VectorMap
+          |object Lints {
+          |  def check(left: VectorMap[Int, Int], right: VectorMap[Int, Int]) = left.corresponds(right)(_ == _)
+          |}""".stripMargin
+      ).exists(_.contains("unordered collection"))
+    )
   }
 
   test("conversions to the same type do nothing") {
@@ -373,6 +397,71 @@ class LintSuite extends FunSuite {
     )
   }
 
+  test("parameters of inline methods: functions only called, arguments run per use, and abstract inline receivers") {
+    val found = warnings(
+      """import scala.language.implicitConversions
+        |trait Algebra { inline def add(left: Long, right: Long): Long }
+        |trait Kernel { def apply(value: Int): Int }
+        |class Wrapped(val value: Int)
+        |object Lints {
+        |  implicit def wrap(value: Int): Wrapped = Wrapped(value)
+        |  inline def mapped(values: Array[Int], f: Int => Int): Unit = {
+        |    var index = 0
+        |    while (index < values.length) { values(index) = f(values(index)); index += 1 }
+        |  }
+        |  inline def kerneled(value: Int, kernel: Kernel): Int     = kernel(value)
+        |  inline def stored(f: Int => Int): Int => Int             = f
+        |  inline def passed(f: Int => Int): Int                    = List(1).map(f).sum
+        |  inline def expanded(inline f: Int => Int): Int           = f(1)
+        |  inline def twice(inline value: Int): Int                 = value + value
+        |  inline def guarded(flag: Boolean, inline value: Int): Int = if (flag) value else 0
+        |  inline def fallback(flag: Boolean)(inline value: => Int): Int = if (flag) value else 0
+        |  inline def once(inline value: Int): Int                  = value * 2
+        |  inline def sum(algebra: Algebra, value: Long): Long      = algebra.add(value, value)
+        |  inline def inlined(inline algebra: Algebra, value: Long): Long = algebra.add(value, value)
+        |  inline def text(inline value: String): String = { net.kurobako.baumkuchen.plugin.Macros.checked(value); value }
+        |  inline def described(inline value: Int): String = scala.compiletime.codeOf(value) + value.toString
+        |  inline def forwarded(inline value: Int): Int = twice(value)
+        |  inline def chosen(inline flag: Boolean, inline value: Int): Int = inline if (flag) value + 1 else value - 1
+        |  inline def dispatched(kind: Int, inline value: Int): Int =
+        |    kind match { case 0 => value; case 1 => value + 1; case _ => value * 3 }
+        |  inline def repeated(kind: Int, inline value: Int): Int = kind match { case 0 => value + value; case _ => value }
+        |  inline def doubled(inline value: Wrapped): Int = value.value + value.value
+        |  inline def dot(inline accumulator: Int, inline width: Int, inline lanes: Int): Int =
+        |    width + width + width + lanes * lanes + accumulator
+        |  inline def named(inline width: Int): Int = dot(1, lanes = 32 / width, width = width)
+        |  def calls(values: List[Int], count: Int): Int =
+        |    twice(values.size) + twice(count) + twice(count + 1) + guarded(count > 0, { println(count); count }) +
+        |      guarded(count > 1, values.head) + fallback(count > 2) { println(count); count } + once(values.size) +
+        |      dispatched(count, values.size) + repeated(count, values.size) + doubled(5)
+        |  def checks(values: List[Int]): Int =
+        |    text(s"size ${values.size}").length + described(values.size).length + forwarded(values.size) +
+        |      chosen(true, values.size)
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "inline-function-parameter"),
+      List(
+        "f is only called, so each call site allocates a closure for it and calls it through apply",
+        "kernel is only called, so each call site allocates a closure for it and calls it through apply"
+      ).sorted
+    )
+    assertEquals(
+      tagged(found, "inline-parameter-reuse"),
+      List(
+        "the expansion of forwarded evaluates this argument to value 2 times on some path",
+        "the expansion of guarded evaluates this argument to value only where its use is reached, so its effects run " +
+          "only there",
+        "the expansion of repeated evaluates this argument to value 2 times on some path",
+        "the expansion of twice evaluates this argument to value 2 times on some path"
+      )
+    )
+    assertEquals(
+      tagged(found, "inline-instance-parameter"),
+      List("add is an abstract inline method, which expands only on an inline algebra")
+    )
+  }
+
   test("positional arguments that are easy to misorder are reported") {
     val found = warnings(
       """object Geometry {
@@ -383,6 +472,8 @@ class LintSuite extends FunSuite {
         |  def less(left: Int, right: Int): Boolean = left < right
         |  def record(name: String, count: Int, ratio: Double, mark: Char, size: Long): Int = count
         |  def command(name: String, help: String): String = name
+        |  def blend(first: Int, second: Int, third: Int, fourth: Int, fifth: Int): Int = first
+        |  def pair(operand1: Int, operand2: Int): Int = operand1
         |}
         |object Calls {
         |  val width     = 3
@@ -407,12 +498,15 @@ class LintSuite extends FunSuite {
         |  val oneWay      = Geometry.less(right, shifted)
         |  val partial     = List(1).map(Geometry.rectangle(height, _))
         |  val expressed   = Geometry.rectangle(height, width * 2)
+        |  val ordinal     = Geometry.blend(1, 2, 3, 4, 5)
+        |  val indexed     = Geometry.pair(1, 2)
         |}""".stripMargin
     )
     assertEquals(
       found.filter(_.contains("share a type")),
       List(
-        "width and height share a type; name the arguments so they cannot be swapped [baumkuchen:same-type-arguments]"
+        "width and height share a type; name the arguments, or take them together as a named tuple or a case class, " +
+          "so they cannot be swapped [baumkuchen:same-type-arguments]"
       )
     )
     assert(found.exists(_.contains("height is passed to width")), found.mkString("\n"))
@@ -428,7 +522,13 @@ class LintSuite extends FunSuite {
         |sealed trait Colour
         |abstract class Animal
         |case class Square(side: Int) extends Shape
+        |trait State
+        |trait LocalView extends State
+        |trait ForeignView extends munit.Assertions
         |object Lints {
+        |  def local(state: State): Int = state match { case _: LocalView => 1; case _ => 0 }
+        |  def foreign(state: munit.Assertions): Int = state match { case _: ForeignView => 1; case _ => 0 }
+        |  def checked(state: munit.Assertions): Boolean = state.isInstanceOf[ForeignView]
         |  def area(shape: Shape): Int = shape match { case square: Square => square.side; case _ => 0 }
         |  def open(value: Any): Boolean = value.isInstanceOf[Shape] || value.isInstanceOf[Square]
         |  def animal(value: Any): Int = value match { case _: Animal => 1; case _: Colour => 2; case _: Product => 3; case _ => 0 }
@@ -436,6 +536,8 @@ class LintSuite extends FunSuite {
     )
     assertEquals(found.count(_.contains("type test on Shape")), 1, found.mkString("\n"))
     assertEquals(found.count(_.contains("type test on Animal")), 1, found.mkString("\n"))
+    assertEquals(found.count(_.contains("type test on LocalView")), 1, found.mkString("\n"))
+    assertEquals(found.count(_.contains("type test on ForeignView")), 0, found.mkString("\n"))
     assert(
       !found.exists(found => found.contains("Square") || found.contains("Colour") || found.contains("Product")),
       found.mkString("\n")
@@ -591,12 +693,17 @@ class LintSuite extends FunSuite {
         "partial-in-try",
         "redundant-try",
         "broad-catch",
-        "discarded-cause"
+        "discarded-cause",
+        "shadowed-extension"
       )
+    )
+    assertEquals(
+      Check.values.filter(_.severity == Severity.Error).map(_.id).toSet,
+      Set("accidental-self-call", "unrelated-type-test")
     )
   }
 
-  test("generated sources are not linted") {
+  test("sources are linted wherever they are, unless the build marks them generated") {
     val source = """import scala.concurrent.Future
                    |object Lints {
                    |  def check(left: Array[Int], right: Array[Int]) = left == right
@@ -604,7 +711,8 @@ class LintSuite extends FunSuite {
                    |  def nested: Future[Future[Int]] = ???
                    |}""".stripMargin
     assertEquals(warningsAt("src/main/scala/Lints.scala", source).size, 3)
-    assertEquals(warningsAt("src/generated/scala/Lints.scala", source), Nil)
+    assertEquals(warningsAt("src/generated/scala/Lints.scala", source).size, 3)
+    assertEquals(warningsAt("src/generated/scala/Lints.scala", source, "generated=**/src/generated/**"), Nil)
     assertEquals(warningsAt("gen/Lints.scala", source, "generated=**/gen/**"), Nil)
     assertEquals(warningsAt("src/generated/scala/Lints.scala", source, "generated=**/gen/**").size, 3)
   }
@@ -752,6 +860,749 @@ class LintSuite extends FunSuite {
         "map then filter builds an intermediate collection",
         "filter then map builds an intermediate collection"
       ).sorted
+    )
+  }
+
+  test("regexes compiled from literals on every call, or on every iteration, are reported") {
+    val found = warnings(
+      """class Lints {
+        |  val field              = "a".r
+        |  lazy val deferred      = java.util.regex.Pattern.compile("b")
+        |  val table              = List("x").map(_ => "c".r)
+        |  "d".r.matches("d")
+        |  def parse(s: String)   = "e+".r.matches(s)
+        |  def lambda(xs: List[String]) = xs.map(x => "f+".r.matches(x))
+        |  def compile(s: String) = java.util.regex.Pattern.compile("g+", 0).matcher(s)
+        |  def grouped            = "(h)".r("group")
+        |  def local(s: String)   = { val pattern = "i+".r; pattern.matches(s) }
+        |  def raw(s: String)     = raw"\d+".r.matches(s)
+        |  def escapes(s: String) = s"\\s+".r.matches(s)
+        |  def built(s: String, n: Int) = s"x{$n}".r.matches(s)
+        |  def dynamic(s: String) = s.r
+        |  def reused(s: String)  = field.matches(s)
+        |  def split(lines: Vector[String])     = lines.map(_.split(",\\s*"))
+        |  def comma(lines: Vector[String])     = lines.map(_.split(","))
+        |  def escaped(lines: Vector[String])   = lines.map(_.split("\\|"))
+        |  def spaced(lines: Vector[String])    = lines.map(_.split(raw"\s+"))
+        |  def piped(lines: Vector[String])     = lines.map(_.split(raw"\|"))
+        |  def dot(lines: Vector[String])       = lines.map(_.split("."))
+        |  def replaced(lines: Vector[String])  = lines.map(_.replaceAll("j+", "k"))
+        |  def first(lines: Vector[String])     = lines.map(_.replaceFirst("l+", "m"))
+        |  def matched(lines: Vector[String])   = lines.count(_.matches("[0-9]+"))
+        |  def plain(lines: Vector[String])     = lines.map(_.replace("n", "o"))
+        |  def once(line: String)               = line.replaceAll("p+", "q")
+        |  def variable(lines: Vector[String], separator: String) = lines.map(_.split(separator))
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "regex-in-def"),
+      List(
+        "\"e+\".r compiles the pattern on every call",
+        "\"f+\".r compiles the pattern on every call",
+        "java.util.regex.Pattern.compile(\"g+\", 0) compiles the pattern on every call",
+        "\"(h)\".r compiles the pattern on every call",
+        "\"i+\".r compiles the pattern on every call",
+        "raw\"\\d+\".r compiles the pattern on every call",
+        "s\"\\\\s+\".r compiles the pattern on every call",
+        "split compiles its literal regex on every iteration",
+        "split compiles its literal regex on every iteration",
+        "split compiles its literal regex on every iteration",
+        "replaceAll compiles its literal regex on every iteration",
+        "replaceFirst compiles its literal regex on every iteration",
+        "matches compiles its literal regex on every iteration"
+      ).sorted
+    )
+  }
+
+  test("function types Scala does not specialise for their primitive type arguments are reported where declared") {
+    val found = warnings(
+      """class Visitor(visit: (Long, Long, Int) => Unit, val each: Long => String)
+        |case class Holder(f: (Int, Int, Int) => Int)
+        |trait Walk { def walk(visit: (Long, Int, Boolean) => Unit): Unit }
+        |object Lints extends Walk {
+        |  def walk(visit: (Long, Int, Boolean) => Unit): Unit       = visit(1L, 2, true)
+        |  val ternary: (Long, Long, Long) => Long                   = (a, b, c) => a
+        |  val inferred                                              = (a: Double, b: Double, c: Double) => a
+        |  var updated: (Long, Int, Boolean) => Unit                 = (_, _, _) => ()
+        |  def unary(f: Long => Long): Long                          = f(1L)
+        |  def binary(f: (Int, Double) => Boolean): Boolean          = f(1, 2.0)
+        |  def floats(f: (Float, Float) => Float): Float             = f(1, 2)
+        |  def short(f: Short => Int): Int                           = f(1)
+        |  def char(f: Int => Char): Char                            = f(1)
+        |  def text(f: String => Long): Long                         = f("")
+        |  def references(f: (String, String, String) => String)    = f("", "", "")
+        |  def thunk(f: () => Long): Long                            = f()
+        |  def effect(f: String => Unit): Unit                       = f("")
+        |  def predicate(f: String => Boolean): Boolean              = f("")
+        |  def flags(f: (Boolean, Boolean) => Boolean): Boolean      = f(true, false)
+        |  def tested(f: (String, Long) => Boolean): Boolean         = f("", 1L)
+        |  inline def inlined(inline f: (Long, Long, Long) => Unit)  = f(1L, 2L, 3L)
+        |  def take(f: (Long, Int, Boolean) => Unit): Unit           = f(1L, 2, true)
+        |  def lambda(): Unit                                        = take((a, b, c) => ())
+        |  def local(): Int = { val g: (Byte, Byte) => Int = (a, b) => a + b; g(1, 2) }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "unspecialised-function"),
+      List(
+        "Function3[Long, Long, Int, Unit] is not specialised and boxes its primitive arguments on every call",
+        "Function1[Long, String] is not specialised and boxes its primitive arguments on every call",
+        "Function3[Int, Int, Int, Int] is not specialised and boxes its primitive arguments on every call",
+        "Function3[Long, Int, Boolean, Unit] is not specialised and boxes its primitive arguments on every call",
+        "Function3[Long, Long, Long, Long] is not specialised and boxes its primitive arguments on every call",
+        "Function3[Double, Double, Double, Double] is not specialised and boxes its primitive arguments on every call",
+        "Function3[Long, Int, Boolean, Unit] is not specialised and boxes its primitive arguments on every call",
+        "Function2[Float, Float, Float] is not specialised and boxes its primitive arguments on every call",
+        "Function1[Short, Int] is not specialised and boxes its primitive arguments on every call",
+        "Function1[Int, Char] is not specialised and boxes its primitive arguments on every call",
+        "Function1[String, Long] is not specialised and boxes its primitive result on every call",
+        "Function3[Long, Int, Boolean, Unit] is not specialised and boxes its primitive arguments on every call",
+        "Function2[Byte, Byte, Int] is not specialised and boxes its primitive arguments on every call",
+        "Function2[String, Long, Boolean] is not specialised and boxes its primitive arguments on every call"
+      ).sorted
+    )
+  }
+
+  test("appending to an accumulator that copies on every append is reported") {
+    val found = warnings(
+      """import scala.collection.immutable.ArraySeq
+        |import scala.collection.immutable.Queue
+        |object Lints {
+        |  def hex(tokens: Vector[String]): Either[String, ArraySeq[Byte]] =
+        |    tokens.foldLeft[Either[String, ArraySeq[Byte]]](Right(ArraySeq.empty)) {
+        |      case (Right(bytes), token) => Right(bytes ++ ArraySeq(token.toByte))
+        |      case (left, _)             => left
+        |    }
+        |  def mapped(tokens: Vector[String]): Either[String, ArraySeq[Byte]] =
+        |    tokens.foldLeft[Either[String, ArraySeq[Byte]]](Right(ArraySeq.empty))((result, token) =>
+        |      result.map(bytes => bytes :+ token.toByte)
+        |    )
+        |  def text(words: Vector[String]): String            = words.foldLeft("")((line, word) => line + word)
+        |  def arrays(rows: Vector[Array[Int]]): Array[Int]    = rows.foldLeft(Array.empty[Int])(_ ++ _)
+        |  def joined(words: Vector[String]): String = {
+        |    var line  = ""
+        |    var index = 0
+        |    while (index < words.length) { line += words(index); index += 1 }
+        |    line
+        |  }
+        |  def appended(values: Vector[Int]): ArraySeq[Int] = {
+        |    var all = ArraySeq.empty[Int]
+        |    values.foreach(value => all :+= value)
+        |    all
+        |  }
+        |  def concatenated(values: Vector[ArraySeq[Int]]): ArraySeq[Int] = {
+        |    var all = ArraySeq.empty[Int]
+        |    for (value <- values) all = all ++ value
+        |    all
+        |  }
+        |  def vectors(values: Vector[Int]): Vector[Int]      = values.foldLeft(Vector.empty[Int])(_ :+ _)
+        |  def queued(values: Vector[Int]): Queue[Int]        = values.foldLeft(Queue.empty[Int])(_ :+ _)
+        |  def sum(values: Vector[Int]): Int                  = values.foldLeft(0)(_ + _)
+        |  def fresh(words: Vector[String]): Vector[String]   = words.map(word => word + "!")
+        |  def once(left: ArraySeq[Int], right: ArraySeq[Int]) = left ++ right
+        |  def local(rows: Vector[Vector[String]]): Vector[String] =
+        |    rows.map { row => var line = ""; line = line + row.size; line }
+        |  def lists(values: Vector[Int]): List[Int]          = values.foldLeft(List.empty[Int])(_ :+ _)
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "accumulating-concat"),
+      List(
+        "++ on the ArraySeq accumulator copies it on every step, which is quadratic",
+        ":+ on the ArraySeq accumulator copies it on every step, which is quadratic",
+        "+ on the String accumulator copies it on every step, which is quadratic",
+        "++ on the Array accumulator copies it on every step, which is quadratic",
+        "+ on the String accumulator copies it on every step, which is quadratic",
+        ":+ on the ArraySeq accumulator copies it on every step, which is quadratic",
+        "++ on the ArraySeq accumulator copies it on every step, which is quadratic"
+      ).sorted
+    )
+    assert(tagged(found, "linear-in-loop").contains(":+ on a List copies it on every iteration"))
+  }
+
+  test("tuples destructured from branches inside loops are reported") {
+    val found = warnings(
+      """object Lints {
+        |  def branches(values: Vector[Int], flag: Boolean): Int = values.map { value =>
+        |    val (low, high) = if (flag) (value, value + 1) else (value + 1, value)
+        |    low + high
+        |  }.sum
+        |  def matched(values: Vector[Int]): Int = {
+        |    var total = 0
+        |    var index = 0
+        |    while (index < values.size) {
+        |      val (sign, size) = values(index) match {
+        |        case 0          => (0, 0)
+        |        case v if v > 0 => (1, v)
+        |        case v          => { val n = -v; (-1, n) }
+        |      }
+        |      total += sign * size
+        |      index += 1
+        |    }
+        |    total
+        |  }
+        |  def nested(values: Vector[Int], flag: Boolean): Int = values.map { value =>
+        |    val (a, b) = if (flag) (1, value) else if (value > 0) (value, 4) else throw IllegalStateException("x")
+        |    a + b
+        |  }.sum
+        |  def outside(flag: Boolean): Int = { val (a, b) = if (flag) (1, 2) else (3, 4); a + b }
+        |  def direct(values: Vector[Int]): Int = values.map { value => val (a, b) = (value, value + 1); a + b }.sum
+        |  def named(values: Vector[(Int, Int)], fallback: (Int, Int), flag: Boolean): Int =
+        |    values.map { pair => val (a, b) = if (flag) pair else fallback; a + b }.sum
+        |  def mixed(values: Vector[(Int, Int)], flag: Boolean): Int =
+        |    values.map { pair => val (a, b) = if (flag) pair else (0, 0); a + b }.sum
+        |  def kept(values: Vector[Int], flag: Boolean): Int =
+        |    values.map { value => val pair = if (flag) (value, 1) else (1, value); pair._1 }.sum
+        |  def extracted(values: Vector[Int]): Int =
+        |    values.map { value => val Seq(a, b) = (Seq(value, value + 1): @unchecked); a + b }.sum
+        |  def thrown(values: Vector[Int], flag: Boolean): Int =
+        |    values.map { value => val (a, b) = if (flag) (value, 1) else throw IllegalStateException("x"); a + b }.sum
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "tuple-destructure-in-loop"),
+      List.fill(3)(
+        "the tuple destructured here is built in every branch and allocated where they merge, which the JIT cannot scalar-replace"
+      )
+    )
+  }
+
+  test("functions passed to inline parameters of inline methods are loop bodies") {
+    val found = warnings(
+      """trait Sinks { inline def block(inline body: Int => Unit): Unit }
+        |object Lanes {
+        |  inline def foreachActive(mask: Long)(inline body: Int => Unit): Unit = {
+        |    var lane = 0
+        |    while (lane < 64) { if ((mask >>> lane & 1L) != 0L) body(lane); lane += 1 }
+        |  }
+        |  inline def once(inline body: Int => Unit, eager: Int => Unit): Unit = { body(0); eager(1) }
+        |  inline def let(value: Int)(inline body: Int => Unit): Unit = body(value)
+        |  inline def forward(mask: Long)(inline body: Int => Unit): Unit = foreachActive(mask)(body)
+        |  inline def each(values: Vector[Int])(inline body: Int => Unit): Unit = values.foreach(value => body(value))
+        |  inline def single(inline body: Int => Unit): Unit = let(0)(body)
+        |  def call(body: Int => Unit): Unit = body(0)
+        |  def swapped(mask: Long, flag: Boolean, sink: Array[Int]): Unit = foreachActive(mask) { lane =>
+        |    val (low, high) = if (flag) (lane, 1) else (1, lane)
+        |    sink(lane) = low + high
+        |  }
+        |  def forwarded(mask: Long, flag: Boolean, sink: Array[Int]): Unit =
+        |    forward(mask) { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
+        |  def traversed(values: Vector[Int], flag: Boolean, sink: Array[Int]): Unit =
+        |    each(values) { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
+        |  def bound(flag: Boolean, sink: Array[Int]): Unit =
+        |    let(1) { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
+        |  def passed(flag: Boolean, sink: Array[Int]): Unit =
+        |    single { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
+        |  inline def abstracted(inline sinks: Sinks, flag: Boolean, sink: Array[Int]): Unit =
+        |    sinks.block { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
+        |  def eager(flag: Boolean, sink: Array[Int]): Unit =
+        |    once(_ => (), { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high })
+        |  def plain(flag: Boolean, sink: Array[Int]): Unit =
+        |    call { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
+        |}""".stripMargin
+    )
+    assertEquals(tagged(found, "tuple-destructure-in-loop").size, 4, found.mkString("\n"))
+  }
+
+  test("a warning on an expression spanning several lines is shown at its first line, so its rendering stays small") {
+    val table = (1 to 400).map(index => s"    \"row$index\"").mkString(",\n")
+    val found = spanned(s"object Lints {\n  def rows: Array[String] = Array[String](\n$table\n  )\n}")
+      .filter(_._1.contains("literal-table-in-def"))
+    assertEquals(found.map((_, line, end) => (line, end)), List((1, 1)), found.mkString("\n"))
+  }
+
+  test("tables of constants built on every call are reported once, at the outermost table") {
+    val found = warnings(
+      """enum Shape { case Square, Wide }
+        |object Lints {
+        |  val shapes                          = Vector((2, 2), (3, 3))
+        |  def matrices: Vector[(Int, Int)]    = Vector((2, 2), (3, 3), (2, 3))
+        |  def names: List[String]             = List("x", "y", "z")
+        |  def kinds: Vector[Shape]            = Vector(Shape.Square, Shape.Wide)
+        |  def nested: List[List[Int]]         = List(List(1, 2), List(3))
+        |  def lanes(values: Vector[Int]): Int = values.map(value => List((1, 2), (3, 4)).size + value).sum
+        |  def single: List[Int]               = List(1)
+        |  def computed(x: Int): List[Int]     = List(x, 2)
+        |  def tested(name: String): Boolean   = Set("a", "b")(name)
+        |  def tagged: Array[Int]              = Array(1, 2, 3)
+        |  def keyed: Map[String, List[Int]]   = Map("a" -> List(1, 2), "b" -> List(3))
+        |  def picked(points: Vector[(Double, Double)]): Vector[(Double, Double)] = Vector(points(0), points(1))
+        |  def operands(kind: String): List[String] = kind match {
+        |    case "VOP2" => List("VDST", "SRC0", "VSRC1")
+        |    case _      => { List("VDST", "SRC0") ++ List("A", "B", "C") }
+        |  }
+        |  def picks(flag: Boolean): List[Int]     = if (flag) List(1, 2, 3) else List(4, 5, 6)
+        |  def same(mods: Set[Int]): Boolean       = mods == Set(1, 2, 3)
+        |  def within(mods: Set[Int]): Boolean     = mods.subsetOf(Set(4, 5, 6))
+        |}
+        |enum Form(val names: List[String]) { case Add extends Form(List("a", "b", "c")) }
+        |object Generated {
+        |  val forms = Vector(first(), second())
+        |  private def first(): List[String]  = List("x", "y", "z")
+        |  private def second(): List[String] = third()
+        |  private def third(): List[String]  = List("u", "v", "w")
+        |  private def shared(): List[String] = List("p", "q", "r")
+        |  val initial = shared()
+        |  def again: List[String] = shared()
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "literal-table-in-def"),
+      List(
+        "Vector((2, 2), (3, 3), (2, 3)) is a table of constants built on every call",
+        "Array(1, 2, 3) is a table of constants built on every call",
+        "Map(\"a\" -> List(1, 2), \"b\" -> List(3)) is a table of constants built on every call",
+        "List(\"x\", \"y\", \"z\") is a table of constants built on every call",
+        "List(List(1, 2), List(3)) is a table of constants built on every call",
+        "List((1, 2), (3, 4)) is a table of constants built on every call",
+        "List(\"A\", \"B\", \"C\") is a table of constants built on every call",
+        "List(\"p\", \"q\", \"r\") is a table of constants built on every call"
+      ).sorted
+    )
+    assertEquals(tagged(found, "invariant-in-loop"), Nil)
+  }
+
+  test("a settled match whose arms depend on the loop is reported only in hot code, where restructuring pays") {
+    val source =
+      """enum Format { case F32, F16 }
+                   |object Lints {
+                   |  def formats(values: Vector[Float], format: Format, scale: Float): Float =
+                   |    values.map(value => format match { case Format.F32 => value; case Format.F16 => value * scale }).sum
+                   |  def widths(values: Vector[Int], format: Format): Int =
+                   |    values.map(value => format match { case Format.F32 => 4; case Format.F16 => 2 }).sum
+                   |  def long(values: Vector[Float], format: Format, scale: Float): Float =
+                   |    values.map { value =>
+                   |      val step1 = value * 1
+                   |      val step2 = value * 2
+                   |      val step3 = value * 3
+                   |      val step4 = value * 4
+                   |      val step5 = value * 5
+                   |      val step6 = value * 6
+                   |      val step7 = value * 7
+                   |      val step8 = value * 8
+                   |      val step9 = value * 9
+                   |      val step10 = value * 10
+                   |      val step11 = value * 11
+                   |      format match { case Format.F32 => value + step1; case Format.F16 => value * scale + step11 }
+                   |    }.sum
+                   |}""".stripMargin
+    assertEquals(tagged(warnings(source), "invariant-in-loop").size, 1)
+    assertEquals(
+      tagged(warnings(source, "hot=Lints"), "invariant-in-loop"),
+      List(
+        "the match on format does not depend on the loop",
+        "the match on format does not depend on the loop, but its cases do"
+      )
+    )
+  }
+
+  test("a check on an expression is suppressed by @nowarn ascribed to it, which then counts as used") {
+    val source =
+      """import scala.annotation.nowarn
+        |enum Format { case F32, F16 }
+        |object Lints {
+        |  def widths(values: Vector[Int], format: Format): Int =
+        |    values.map(value =>
+        |      (format match {
+        |        case Format.F32 => 4
+        |        case Format.F16 => 2
+        |      }): @nowarn("msg=baumkuchen:invariant-in-loop")
+        |    ).sum
+        |}""".stripMargin
+    assertEquals(warnings(source, "-Wunused:nowarn"), Nil)
+    val nested =
+      """import scala.annotation.nowarn
+        |object Lints {
+        |  def run(values: Vector[Int], barrier: Option[Int]): Vector[Either[String, Int]] =
+        |    values.map { value =>
+        |      (for {
+        |        a <- Right[String, Int](value)
+        |        b <- barrier match {
+        |          case Some(word) => Right(word + a)
+        |          case None       => Right(a)
+        |        }
+        |      } yield b): @nowarn("msg=baumkuchen:invariant-in-loop")
+        |    }
+        |}""".stripMargin
+    assertEquals(warnings(nested, "-Wunused:nowarn", "hot=Lints"), Nil)
+    assertEquals(warnings(nested.replace(": @nowarn(\"msg=baumkuchen:invariant-in-loop\")", ""), "hot=Lints").size, 1)
+  }
+
+  private val refinement =
+    """import scala.language.implicitConversions
+      |object constraint {
+      |  sealed trait AtLeast[N]
+      |  sealed trait GreaterThan[N]
+      |  infix opaque type where[A, P] = A
+      |  object where {
+      |    implicit def literal[P](value: Int & Singleton): Int where P = value
+      |    implicit def unrefine[A, P](value: A where P): A = value
+      |  }
+      |  infix type >=[A, N] = A where AtLeast[N]
+      |  extension (value: Int where AtLeast[0]) {
+      |    def +(other: Int >= 0): Int where AtLeast[0] = value + (other: Int)
+      |    def toLong: Long where AtLeast[0]          = (value: Int).toLong
+      |  }
+      |  extension (value: Int where GreaterThan[0]) def -(other: Int where GreaterThan[0]): Int = (value: Int) - (other: Int)
+      |}
+      |""".stripMargin
+
+  test("an extension a member of the type's upper bound replaces never runs") {
+    val bounded                  = refinement.replace("opaque type where[A, P] = A", "opaque type where[A, P] <: A = A")
+    def shadowed(source: String) = tagged(warnings(source), "shadowed-extension")
+    assertEquals(
+      shadowed(bounded),
+      List(
+        "the extension + on Int where constraint.AtLeast[(0 : Int)] never runs: Int has the member +(x: Int): Int, " +
+          "which calls take before any extension",
+        "the extension - on Int where constraint.GreaterThan[(0 : Int)] never runs: Int has the member -(x: Int): " +
+          "Int, which calls take before any extension",
+        "the extension toLong on Int where constraint.AtLeast[(0 : Int)] never runs: Int has the member toLong=> " +
+          "Long, which calls take before any extension"
+      )
+    )
+    assertEquals(shadowed(refinement), Nil)
+    assertEquals(
+      tagged(
+        warnings("object Lints {\n  type Count = Int\n  extension (count: Count) def toLong: Long = 1L\n}"),
+        "shadowed-extension"
+      )
+        .size,
+      1
+    )
+  }
+
+  test("a method whose whole body calls itself recurses until the stack overflows, and fails the build") {
+    val found = diagnostics(
+      """object Lints {
+        |  def apply(value: Long): Long          = apply(value)
+        |  def shifted(value: Int): Int          = shifted(value - 1)
+        |  def guarded(value: Int): Int          = if (value > 0) guarded(value - 1) else 0
+        |  def other(lints: Inner, n: Int): Int  = lints.other(lints, n)
+        |  class Inner { def other(lints: Inner, n: Int): Int = n }
+        |  class Chain(next: Chain) { def size(n: Int): Int = next.size(n) }
+        |  def overloaded(value: Int): Int       = overloaded(value.toLong).toInt
+        |  def overloaded(value: Long): Long     = value
+        |}""".stripMargin
+    ).filter(_.endsWith("[baumkuchen:accidental-self-call]")).map(_.takeWhile(_ != ',')).sorted
+    assertEquals(
+      found,
+      List(
+        "error: apply does nothing but call itself",
+        "error: shifted does nothing but call itself"
+      )
+    )
+  }
+
+  test("a conversion that bypasses a checked extension, and a refinement inferred from mixed values, are information") {
+    val source = refinement +
+      """object Lints {
+        |  import constraint.*
+        |  def plain(n: Int >= 0, k: Int): Int = n * k
+        |  def checked(n: Int >= 0, k: Int >= 0): Int >= 0 = n + k
+        |  def bypassed(n: Int >= 0, k: Int): Int = n - k
+        |  @scala.annotation.targetName("scaleChecked") def scale(n: Int where GreaterThan[0]): Int = 1
+        |  def scale(n: Int): Int = 2
+        |  def scaled(m: Int >= 0): Int = scale(m)
+        |  def mixed(n: Int >= 0) = n + 1
+        |  def defaulted(n: Int >= 0 = 1): Int = n
+        |  def longs(n: Long >= 0, k: Long): Long = n - k
+        |  def copied(n: Int >= 0) = n
+        |  def written(n: Int >= 0): Int >= 0 = n + 1
+        |}""".stripMargin
+    val all = diagnostics(source, "checked=constraint.where")
+    assertEquals(all.filter(_.startsWith("error")), Nil)
+    val found = all.filter(_.contains("[baumkuchen:"))
+    assertEquals(
+      found.map(_.takeWhile(_ != ';')).sorted,
+      List(
+        "info: - on Int >= (0 : Int) converts it and runs Int.-, unchecked: the checked extension - takes other " +
+          "refinements",
+        "info: mixed is inferred as Int where constraint.AtLeast[(0 : Int)] from refined and plain values, so later " +
+          "calls on it resolve by that refinement",
+        "info: scale takes the unchecked overload, since this argument's refinement Int >= (0 : Int) does not conform " +
+          "to the overload taking a checked type"
+      )
+    )
+    assertEquals(diagnostics(source).filter(_.contains("[baumkuchen:")), Nil)
+  }
+
+  test("comparisons that box an opaque primitive, and for floats are not IEEE equality, are reported") {
+    val source =
+      """object units {
+        |  opaque type Tagged[A] = A
+        |  object Tagged {
+        |    def apply[A](value: A): Tagged[A] = value
+        |    given [A]: CanEqual[Tagged[A], A] = CanEqual.derived
+        |    given [A]: CanEqual[A, Tagged[A]] = CanEqual.derived
+        |  }
+        |}
+        |object Lints {
+        |  import units.*
+        |  def floats(a: Tagged[Double], b: Tagged[Double]): Boolean = a == b
+        |  def literals(a: Tagged[Double]): Int = a match { case 0.0 => 1; case _ => 0 }
+        |  def ints(a: Tagged[Int]): Int = a match { case 1 => 1; case _ => 0 }
+        |  def explicit(a: Tagged[Int], b: Tagged[Int]): Boolean = a.equals(b)
+        |  def wider(a: Tagged[Int], b: Any): Boolean = a == b
+        |  def bound(a: Tagged[Int]): Int = a match { case value => 0 }
+        |}""".stripMargin
+    def boxed(options: String*) = tagged(warnings(source, options*), "boxed-opaque-equality")
+    assertEquals(
+      boxed(),
+      List(
+        "on units.Tagged[Double], an opaque Double, this matches each literal case with Objects.equals on boxed values, " +
+          "not a switch, where -0.0 differs from 0.0 and NaN equals NaN"
+      )
+    )
+    assertEquals(boxed("hot=Lints").size, 4)
+  }
+
+  test("a type test no value of the static type can pass is an error, inside tuple patterns too") {
+    val found = diagnostics(
+      """object Lints {
+        |  class Form; case class Move(to: Int) extends Form; case class Load(from: Int) extends Form
+        |  class Other
+        |  trait Marked
+        |  def moved(pair: (Load, Int)): Int = pair match { case (_: Move, n) => n; case _ => 0 }
+        |  def other(form: Form): Int = (form, 1) match { case (_: Other, n) => n; case _ => 0 }
+        |  def marked(load: Load): Int = (load, 1) match { case (_: Marked, n) => n; case _ => 0 }
+        |  def open(form: Form): Int = (form, 1) match { case (_: Marked, n) => n; case _ => 0 }
+        |  def fine(form: Form): Int = (form, 1) match { case (_: Move, n) => n; case _ => 0 }
+        |}""".stripMargin
+    ).filter(_.endsWith("[baumkuchen:unrelated-type-test]")).map(_.takeWhile(_ != ',')).sorted
+    assertEquals(
+      found,
+      List(
+        "error: no Lints.Form is a Lints.Other",
+        "error: no Lints.Load is a Lints.Marked",
+        "error: no Lints.Load is a Lints.Move"
+      )
+    )
+  }
+
+  test("tests against constants written in place are reported for the concept they leave unnamed") {
+    val found = warnings(
+      """enum Isa { case Gfx9, Gfx11, Rdna4 }
+        |object Lints {
+        |  def directive(name: String): Int = name match {
+        |    case alias if Set(".set", ".equ")(alias) => 1
+        |    case _                                   => 0
+        |  }
+        |  def halves(isa: Isa): Boolean                         = Set(Isa.Gfx11, Isa.Rdna4)(isa)
+        |  def guard(binding: String): Boolean                   = Set("Pg", "UPg")(binding)
+        |  def operand(binding: String, known: Boolean): Boolean = Set("UPg", "Pg").contains(binding) || known
+        |  def parts(parts: Vector[String]): Int                 = parts.count(part => Set("x", "y", "z").contains(part))
+        |  def rows(rows: Vector[Vector[Int]]): Int              = rows.map(row => row.count(Set(1, 2))).sum
+        |  def widths(widths: Vector[Int]): Vector[Int]          = widths.filter(Set(8, 16))
+        |  def once(name: String): Boolean                       = Set("a", "b")(name)
+        |  def scoped(name: String, outer: Int): Int             = outer match { case 1 if Set("c", "d")(name) => 1; case _ => 0 }
+        |  def computed(name: String, other: String): Boolean    = Set("e", other)(name)
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "inline-set-membership"),
+      List(
+        "Set(\".set\", \".equ\") in a guard tests what the pattern binds",
+        "Set(Isa.Gfx11, Isa.Rdna4) names a category of Isa",
+        "Set(\"Pg\", \"UPg\") appears 2 times in this file",
+        "Set(\"UPg\", \"Pg\") appears 2 times in this file",
+        "what does Set(\"x\", \"y\", \"z\") stand for? it is rebuilt and hashed on every iteration",
+        "Set(1, 2) is a table rebuilt on every iteration"
+      ).sorted
+    )
+    assertEquals(tagged(found, "invariant-in-loop"), Nil)
+  }
+
+  test("allocations, matches and traversals inside loops that do not depend on the loop are reported") {
+    val found = warnings(
+      """import scala.collection.mutable
+        |case class Point(x: Int, y: Int)
+        |enum Format { case F32, F16 }
+        |class Counter(start: Int) { var count = start }
+        |class Walker(start: Int, end: Int) { val seen = mutable.Set(start, end) }
+        |class Cell { var value = 0 }
+        |class Emitter { private val emitted = mutable.Buffer.empty[Int]; def fresh(v: Int): Int = { emitted += v; emitted.size } }
+        |trait Context { def emit(v: Int): Unit; final def temp(v: Int): Int = { emit(v); v } }
+        |object Lints {
+        |  val table = Vector("x").map(_ => "b+".r)
+        |  def id(name: String): Int = name.length
+        |  def sets(values: Vector[Long]): Int = values.count(value => Set(1L, 2L, 4L, 8L).contains(value))
+        |  def ids(values: Vector[Int], operands: Vector[String]): Int = values.map(value => operands.map(id(_)).size + value).sum
+        |  def formats(values: Array[Float], format: Format, scale: Int): Float = {
+        |    var total = 0f
+        |    var index = 0
+        |    while (index < values.length) {
+        |      total += (format match { case Format.F32 => values(index); case Format.F16 => values(index) * scale })
+        |      index += 1
+        |    }
+        |    total
+        |  }
+        |  def points(values: Vector[Int], x: Int): Vector[Point]     = values.map(value => Point(x, 1))
+        |  def regex(lines: Vector[String], prefix: String): Int      = lines.count(line => prefix.r.matches(line))
+        |  def converted(values: Vector[Int], keys: List[Int]): Int   = values.count(value => keys.toSet(value))
+        |  def nested(rows: Vector[Vector[Int]], key: Int): Int       =
+        |    rows.map(row => row.count(value => List(key, 2).contains(value))).sum
+        |  def element(values: Vector[Int]): Vector[Point]            = values.map(value => Point(value, 1))
+        |  def mapped(values: Vector[Int], keys: Vector[Int]): Int    = values.map(value => keys.map(_ + value).sum).sum
+        |  def accessors(values: Vector[Int], point: Point): Int      = values.map(value => point.x + value * 2).sum
+        |  def strings(values: Vector[Int], name: String): Int        = values.map(value => new String(name).length).sum
+        |  def buffers(values: Vector[Int]): Int                      = values.map(value => mutable.ArrayBuffer(1, 2).size).sum
+        |  def mutated(values: Vector[Int]): Int = {
+        |    val seen = mutable.ArrayBuffer.empty[Int]
+        |    values.map { value => seen += value; seen.toVector.size }.sum
+        |  }
+        |  def reassigned(values: Vector[Int], start: List[Int]): Int = {
+        |    var keys = start
+        |    values.count { value => keys = value :: keys; keys.toSet(value) }
+        |  }
+        |  def deferred(values: Vector[Int], cache: Option[Set[Long]]): Int =
+        |    values.count(value => cache.getOrElse(Set(1L, 2L)).contains(value.toLong))
+        |  def lazily(values: Vector[Int]): Int = values.count { value => lazy val keys = Set(1, 2); value > 0 && keys(value) }
+        |  def thrown(values: Vector[Int], message: String): Int =
+        |    values.map(value => if (value < 0) throw IllegalArgumentException(message) else value).sum
+        |  def counters(values: Vector[Int]): Int = values.map(value => Counter(1).count).sum
+        |  def once(x: Int): Point = Point(x, 1)
+        |  def matched(values: Vector[Int]): Int = values.map(value => value match { case 0 => 1; case _ => 2 }).sum
+        |  def hoisted(values: Vector[Int], older: Vector[Int], newer: Vector[Int]): Int =
+        |    values.count(value => (older ++ newer).exists(_ == value))
+        |  def literal(lines: Vector[String]): Int = lines.count(line => "a+".r.matches(line))
+        |  def interpolated(values: Vector[Int], name: String): Vector[String] = values.map(value => s"$name!")
+        |  def wrapped(values: Vector[Option[Int]], key: Int): Int = values.count(value => value == Some(key))
+        |  def single(values: Vector[Int], flag: Boolean): Vector[Int] = values.flatMap(value => if (flag) Vector(2) else Nil)
+        |  def walkers(values: Vector[Int]): Int = values.map(value => Walker(1, 2).seen.size).sum
+        |  def widths(values: Vector[Int], format: Format): Int =
+        |    values.map(value => format match { case Format.F32 => 4; case Format.F16 => 2 }).sum
+        |  def sampled(runs: Vector[Int], kinds: Vector[Int], random: scala.util.Random): Int =
+        |    runs.map(run => kinds.map(kind => random.nextInt(kind)).sum).sum
+        |  def waits(cells: Vector[Cell], rounds: Int): Int = (0 until rounds).map(_ => cells.map(_.value).sum).sum
+        |  def emitted(rows: Vector[Int], inputs: Vector[Int], emitter: Emitter): Int =
+        |    rows.map(row => inputs.map(emitter.fresh).sum).sum
+        |  def lowered(rows: Vector[Int], inputs: Vector[Int])(using context: Context): Int =
+        |    rows.map(row => inputs.map(context.temp).sum).sum
+        |}""".stripMargin,
+      "hot=Lints"
+    )
+    assertEquals(
+      tagged(found, "invariant-in-loop"),
+      List(
+        "\"b+\".r does not depend on the loop",
+        "operands.map(id(_)) does not depend on the loop",
+        "the match on format does not depend on the loop",
+        "the match on format does not depend on the loop, but its cases do",
+        "Point(x, 1) does not depend on the loop",
+        "prefix.r does not depend on the loop",
+        "keys.toSet does not depend on the loop",
+        "List(key, 2) does not depend on the loop"
+      ).sorted
+    )
+    assertEquals(
+      tagged(found, "linear-in-loop"),
+      List("++ on a Vector rebuilds the same collection on every iteration")
+    )
+    assertEquals(tagged(found, "regex-in-def"), List("\"a+\".r compiles the pattern on every call"))
+  }
+
+  test("searches by key inside loops are reported where the owner of the sequence already keys it") {
+    val found = warnings(
+      """case class Form(name: String, id: Int)
+        |object Database {
+        |  val forms: Vector[Form]            = Vector.empty
+        |  lazy val byForm: Map[String, Form] = forms.map(form => form.name -> form).toMap
+        |}
+        |class Layout(val format: String)
+        |object Layouts {
+        |  val layouts: List[Layout]                                = Nil
+        |  private val byFormat: Map[String, Layout]                = Map.empty
+        |  def forFormat(isa: Int, format: String): Option[Layout] = byFormat.get(format)
+        |}
+        |object Plain { val forms: Vector[Form] = Vector.empty }
+        |object Ids   { val forms: Vector[Form] = Vector.empty; val byName: Map[String, Form] = Map.empty }
+        |object Lints {
+        |  def names(keys: Vector[String]): Vector[Option[Form]] = keys.map(key => Database.forms.find(_.name == key))
+        |  def present(keys: Vector[String]): Int                = keys.count(key => Database.forms.exists(form => key == form.name))
+        |  def positions(keys: Vector[String]): Vector[Int]      = keys.map(key => Database.forms.indexWhere(_.name == key))
+        |  def first(keys: Vector[String]): Vector[Form]         = keys.map(key => Database.forms.filter(_.name == key).head)
+        |  def layouts(formats: Vector[String]): Vector[Option[Layout]] =
+        |    formats.map(format => Layouts.layouts.find(_.format == format))
+        |  def plain(keys: Vector[String]): Vector[Option[Form]] = keys.map(key => Plain.forms.find(_.name == key))
+        |  def ids(keys: Vector[Int]): Vector[Option[Form]]      = keys.map(key => Ids.forms.find(_.id == key))
+        |  def once(key: String): Option[Form]                   = Database.forms.find(_.name == key)
+        |  def prefixed(keys: Vector[String]): Vector[Option[Form]] =
+        |    keys.map(key => Database.forms.find(_.name.startsWith(key)))
+        |}""".stripMargin
+    )
+    assertEquals(
+      lines(found, "keyed-lookup-in-loop").sorted,
+      List(
+        "find over Database.forms scans it on every iteration; use byForm instead [baumkuchen:keyed-lookup-in-loop]",
+        "exists over Database.forms scans it on every iteration; use byForm instead [baumkuchen:keyed-lookup-in-loop]",
+        "indexWhere over Database.forms scans it on every iteration; use byForm instead [baumkuchen:keyed-lookup-in-loop]",
+        "filter over Database.forms scans it on every iteration; use byForm instead [baumkuchen:keyed-lookup-in-loop]",
+        "find over Layouts.layouts scans it on every iteration; use forFormat instead [baumkuchen:keyed-lookup-in-loop]"
+      ).sorted
+    )
+  }
+
+  test("folds and per-element tuples that box primitives are reported in the classes the build marks hot") {
+    val source =
+      """package demo.kernel
+                   |object Lanes {
+                   |  def sum(values: Array[Long]): Long        = values.foldLeft(0L)(_ + _)
+                   |  def ranged(count: Int): Double             = (0 until count).foldLeft(0.0)((total, index) => total + index)
+                   |  def indices(values: Vector[Long]): Long    = values.indices.foldLeft(0L)((total, index) => total + values(index))
+                   |  def pairs(values: IndexedSeq[Long]): (Long, Long) =
+                   |    values.foldLeft((0L, 0L))((pair, value) => (pair._1 + value, pair._2.max(value)))
+                   |  def optional(values: Array[Int]): Option[Int] =
+                   |    values.foldLeft(Option.empty[Int])((best, value) => best.map(_.max(value)).orElse(Some(value)))
+                   |  def reduced(values: Array[Double]): Double       = values.reduce(_ + _)
+                   |  def scanned(values: Array[Float]): Array[Float]  = values.scanLeft(0f)(_ + _)
+                   |  def right(values: Vector[Long]): Long            = values.foldRight(0L)(_ + _)
+                   |  def streamed(values: Iterator[Double]): Double   = values.foldLeft(0.0)(_ + _)
+                   |  def tabulated: IndexedSeq[(Int, Long)]           = IndexedSeq.tabulate(32)(index => (index, index.toLong))
+                   |  def indexed(values: Array[Long]): Array[(Long, Int)] = values.zipWithIndex
+                   |  def zipped(left: Array[Int], right: Array[Int]): Array[(Int, Int)] = left.zip(right)
+                   |  def lanes(values: Vector[Int]): Int              = values.zipWithIndex.map(_._2).sum
+                   |  def counted(values: Array[Int]): Int             = values.foldLeft(0)(_ + _)
+                   |  def errors(values: Vector[String]): Either[String, Long] =
+                   |    values.foldLeft[Either[String, Long]](Right(0L))((total, value) => total.map(_ + value.length))
+                   |  def texts(values: Vector[String]): Option[String] =
+                   |    values.foldLeft(Option.empty[String])((first, value) => first.orElse(Some(value)))
+                   |  def listed(values: List[Long]): Long              = values.foldLeft(0L)(_ + _)
+                   |  def names(values: Vector[String]): Vector[(String, Int)] = values.zipWithIndex
+                   |}""".stripMargin
+    val expected = List(
+      "foldLeft with a Long accumulator boxes it on every step",
+      "foldLeft with a Double accumulator boxes it on every step",
+      "foldLeft with a Long accumulator boxes it on every step",
+      "foldLeft with a (Long, Long) accumulator boxes it on every step",
+      "foldLeft with an Option[Int] accumulator boxes it on every step",
+      "reduce with a Double accumulator boxes it on every step",
+      "scanLeft with a Float accumulator boxes it on every step",
+      "foldRight with a Long accumulator boxes it on every step",
+      "foldLeft with a Double accumulator boxes it on every step",
+      "tabulate builds a boxed (Int, Long) for every element",
+      "zipWithIndex builds a boxed (Long, Int) for every element",
+      "zipWithIndex builds a boxed (Int, Int) for every element",
+      "zip builds a boxed (Int, Int) for every element"
+    ).sorted
+    assertEquals(tagged(warnings(source, "hot=demo.kernel.**"), "boxing-fold"), expected)
+    assertEquals(tagged(warnings(source, "hot=demo.*.Lanes"), "boxing-fold"), expected)
+    assertEquals(tagged(warnings(source, "hot=**.Lanes", "hot=demo.other.*"), "boxing-fold"), expected)
+    assertEquals(tagged(warnings(source, "hot=demo.kern*.*"), "boxing-fold"), expected)
+    assertEquals(tagged(warnings(source), "boxing-fold"), Nil)
+    assertEquals(tagged(warnings(source, "hot=demo.other.**"), "boxing-fold"), Nil)
+    assertEquals(tagged(warnings(source, "hot=demo.*"), "boxing-fold"), Nil)
+    assertEquals(tagged(warnings(source, "hot=demo.**", "hot=!**.Lanes"), "boxing-fold"), Nil)
+    assertEquals(tagged(warnings(source, "hot=demo.**", "hot=!**.Other"), "boxing-fold"), expected)
+    assertEquals(
+      tagged(
+        warnings(
+          source.replace("object Lanes", "@SuppressWarnings(Array(\"baumkuchen:boxing-fold\")) object Lanes"),
+          "hot=**"
+        ),
+        "boxing-fold"
+      ),
+      Nil
     )
   }
 
@@ -957,6 +1808,44 @@ class LintSuite extends FunSuite {
     )
   }
 
+  test("waits on futures invokeAll completed, joins in a close that interrupts, and threads an executor starts") {
+    val found = warnings(
+      """import java.util.concurrent.Callable
+        |import java.util.concurrent.ExecutorService
+        |import scala.jdk.CollectionConverters.*
+        |object Pools {
+        |  def all(pool: ExecutorService, tasks: java.util.List[Callable[Int]]): Int =
+        |    pool.invokeAll(tasks).asScala.toVector.map(_.get).sum
+        |  def held(pool: ExecutorService, tasks: java.util.List[Callable[Int]]): Int = {
+        |    val futures = pool.invokeAll(tasks)
+        |    futures.asScala.map(future => future.get()).sum
+        |  }
+        |  def submitted(pool: ExecutorService, task: Callable[Int]): Int = pool.submit(task).get()
+        |}
+        |class Workers(threads: Vector[Thread]) extends AutoCloseable {
+        |  def close(): Unit = { threads.foreach(_.interrupt()); threads.foreach(_.join()) }
+        |}
+        |class Waiting(threads: Vector[Thread]) extends AutoCloseable {
+        |  def close(): Unit = threads.foreach(_.join())
+        |}
+        |class Daemons extends java.util.concurrent.Executor {
+        |  def execute(task: Runnable): Unit = { val thread = Thread(task); thread.setDaemon(true); thread.start() }
+        |}
+        |object Contexts extends scala.concurrent.ExecutionContext {
+        |  def execute(task: Runnable): Unit = Thread(task).start()
+        |  def reportFailure(cause: Throwable): Unit = ()
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "unbounded-wait"),
+      List(
+        "get waits with no limit, so a stuck task hangs its caller",
+        "join waits with no limit, so a stuck task hangs its caller"
+      )
+    )
+    assertEquals(tagged(found, "orphan-thread"), Nil)
+  }
+
   test("closeable locals closed after statements that can fail first") {
     val found = warnings(
       """class Resource extends AutoCloseable { def use(): Int = 1; def close(): Unit = () }
@@ -967,6 +1856,19 @@ class LintSuite extends FunSuite {
         |  def immediate(): Unit = { val resource = Resource(); resource.close() }
         |  def guarded(): Int = { val resource = Resource(); try resource.use() finally resource.close() }
         |  def managed(): Int = scala.util.Using.resource(Resource())(_.use())
+        |  def registered(): Int = scala.util.Using.Manager { use =>
+        |    val resource = use(Resource())
+        |    val result   = resource.use()
+        |    resource.close()
+        |    result
+        |  }.get
+        |  def twice(check: (=> Unit) => Unit): Int = {
+        |    val resource = Resource()
+        |    check(resource.close())
+        |    val result = resource.use()
+        |    resource.close()
+        |    result
+        |  }
         |}""".stripMargin
     )
     assertEquals(
@@ -1077,7 +1979,28 @@ class LintSuite extends FunSuite {
       "reimplemented-join" ->
         """def await(future: java.util.concurrent.CompletableFuture[Int]): Int =
           |    try future.get() catch { case _: InterruptedException => Thread.currentThread.interrupt(); 0 }""".stripMargin,
-      "eager-effect" -> "def effect[F[_]](unit: Int => F[Int]): F[Int] = { println(1); unit(1) }"
+      "eager-effect"              -> "def effect[F[_]](unit: Int => F[Int]): F[Int] = { println(1); unit(1) }",
+      "regex-in-def"              -> "def parse(s: String): Boolean = \"a+\".r.matches(s)",
+      "unspecialised-function"    -> "def visit(f: (Long, Long, Int) => Unit): Unit = f(1L, 2L, 3)",
+      "accumulating-concat"       -> "def text(words: Vector[String]): String = words.foldLeft(\"\")(_ + _)",
+      "tuple-destructure-in-loop" ->
+        "def pairs(values: Vector[Int], flag: Boolean): Vector[Int] = values.map { v => val (a, b) = if (flag) (v, 1) else (1, v); a + b }",
+      "invariant-in-loop" ->
+        "def ids(values: Vector[Int], operands: Vector[String]): Int = values.map(_ + operands.map(_.length).size).sum",
+      "inline-set-membership" -> "def parts(parts: Vector[String]): Int = parts.count(part => Set(\"x\", \"y\")(part))",
+      "literal-table-in-def"  -> "def shapes: Vector[(Int, Int)] = Vector((2, 2), (3, 3))",
+      "inline-function-parameter" -> "inline def run(f: Int => Int): Int = f(1)",
+      "inline-parameter-reuse"    ->
+        "def use(values: List[Int]): Int = twice(values.size)\n  inline def twice(inline value: Int): Int = value + value",
+      "inline-instance-parameter" ->
+        "inline def twice(algebra: Algebra): Long = algebra.add(1L)\n  trait Algebra { inline def add(left: Long): Long }",
+      "keyed-lookup-in-loop" ->
+        """object Db {
+          |    case class Form(name: String)
+          |    val forms: Vector[Form]       = Vector()
+          |    val byName: Map[String, Form] = Map()
+          |    def names(keys: Vector[String]): Vector[Option[Form]] = keys.map(key => forms.find(_.name == key))
+          |  }""".stripMargin
     )
     bodies.foreach { (id, body) =>
       val plain = warnings(s"object Lints {\n  $body\n}")

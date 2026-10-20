@@ -87,6 +87,25 @@ class SmellsSuite extends AnalysisSuite {
     )
   }
 
+  test("a flag a method only passes to a constructor is data the value stores, not a choice between methods") {
+    val found = findings(
+      "Mesh.scala" ->
+        """case class Vertex(x: Int, bgra: Boolean)
+          |object Mesh { def uniform(x: Int, bgra: Boolean): Vertex = Vertex(x * 2, bgra) }""".stripMargin,
+      "Main.scala" -> "object Main { val bgra = Mesh.uniform(1, true); val rgba = Mesh.uniform(2, false) }"
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.FlagArgument)
+  }
+
+  test("an inline method is specialised on the literal flags it is passed, so they select nothing at run time") {
+    val found = findings(
+      "Draw.scala" ->
+        "object Draw { inline def draw(shape: String, filled: Boolean): String = if (filled) shape else shape.toLowerCase }",
+      "Main.scala" -> "object Main { val solid = Draw.draw(\"a\", true); val hollow = Draw.draw(\"b\", false) }"
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.FlagArgument)
+  }
+
   test("signatures fixed by a supertype are not blamed for their callers") {
     val found = findings(
       "Shapes.scala" ->
@@ -155,6 +174,21 @@ class SmellsSuite extends AnalysisSuite {
     )
   }
 
+  test("inline parameters, which each expansion specialises, are no data clump") {
+    val found = findings(
+      "Semantics.scala" ->
+        """trait Algebra { def add(left: Long, right: Long): Long }
+          |object Integer {
+          |  inline def sum(inline algebra: Algebra, inline width: Int, inline signed: Boolean, value: Long): Long = algebra.add(value, width)
+          |}
+          |object Float {
+          |  inline def sum(inline algebra: Algebra, inline width: Int, inline signed: Boolean, value: Long): Long = algebra.add(value, 1L)
+          |  inline def max(inline algebra: Algebra, inline width: Int, inline signed: Boolean, value: Long): Long = algebra.add(value, 2L)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.DataClump)
+  }
+
   test("an abstraction with one implementation beside it is speculative") {
     val found = findings(
       "Store.scala" -> """trait Store { def get(key: String): Option[String] }
@@ -165,6 +199,33 @@ class SmellsSuite extends AnalysisSuite {
     )
     assertFinding(found, "single-implementation", "Store has a single implementation, MemoryStore")
     assertNoFinding(found)(_.detail.contains("Codec"))
+  }
+
+  test(
+    "an abstraction whose one implementation fixes its type parameter to a primitive keeps the implementation fast"
+  ) {
+    val found = findings(
+      "Operands.scala" ->
+        """abstract class Operands[A] { def first: A; def both: (A, A) = (first, first) }
+          |class Longs(values: Array[Long]) extends Operands[Long] { def first: Long = values(0) }
+          |abstract class Labels[A] { def first: A }
+          |class Names extends Labels[String] { def first: String = "" }""".stripMargin
+    )
+    assertFinding(found, "single-implementation", "Labels has a single implementation, Names")
+    assertNoFinding(found)(_.detail.contains("Operands"))
+  }
+
+  test("a trait only lambdas implement stands in for a function type, and is not speculative") {
+    val found = findings(
+      "Kernels.scala" ->
+        """trait Kernel { def apply(left: Long, right: Long): Long }
+          |object Kernels {
+          |  def run(kernel: Kernel): Long = kernel(1L, 2L)
+          |  val sum: Long  = run((left, right) => left + right)
+          |  val diff: Long = run((left, right) => left - right)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.SingleImplementation)
   }
 
   test("type parameters always given the same type are fixed") {
@@ -179,6 +240,19 @@ class SmellsSuite extends AnalysisSuite {
     )
     assertFinding(found, "fixed-type-parameter", "Lists.first: type parameter A is always String across 2 uses")
     assertNoFinding(found)(_.detail.startsWith("Box:"))
+  }
+
+  test("literal types given as type arguments are told apart, not widened to their class") {
+    val found = findings(
+      "Floats.scala" ->
+        """case class FloatingPoint[W <: Int](bits: Long)
+          |object Floats {
+          |  def negate[W <: Int](value: FloatingPoint[W]): FloatingPoint[W] = FloatingPoint[W](-value.bits)
+          |  val half   = negate(FloatingPoint[16](1L))
+          |  val single = negate(FloatingPoint[32](1L))
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.FixedTypeParameter)
   }
 
   test("parameters of recursive methods carry state rather than select behaviour") {
@@ -332,8 +406,10 @@ class SmellsSuite extends AnalysisSuite {
     assertNoFinding(found)(_.detail.contains("unknown"))
   }
 
-  private def group(prefix: String, names: String*)(owners: String*): Vector[Smells.Method] =
-    owners.toVector.map(owner => method(s"$owner.$prefix", owner, names.toVector.map(field(_))))
+  private def group(prefix: String, names: String*)(owners: String*): Vector[Smells.Method] = {
+    val fields = names.toVector.map(field(_))
+    owners.toVector.map(owner => method(s"$owner.$prefix", owner, fields))
+  }
 
   private def clumps(methods: Vector[Smells.Method]): Vector[Finding] =
     smells(model(methods = methods)).filter(_.rule == Finding.Rule.DataClump)
@@ -365,20 +441,36 @@ class SmellsSuite extends AnalysisSuite {
     )
   }
 
-  test("at most twenty data clumps are reported") {
+  test("primitive parameters in hot classes, and inline methods, are no data clump, since an object would allocate") {
+    val primitive = (name: String) => Algebra.Field(name, Polynomial.atom("Int"), Algebra.Kind.Number, primitive = true)
+    val methods   = Vector("one.A", "one.B", "two.C").map(owner =>
+      method(s"$owner.run", owner, Vector("a", "b", "c").map(primitive(_)))
+    )
+    val keys                                             = methods.map(_.node)
+    def found(hot: Option[Set[String]], inline: Boolean) =
+      Smells.findings(
+        model(methods = methods.map(_.copy(inline = inline))),
+        Vector.empty,
+        keys.map(key => key -> node(key)).toMap,
+        hot
+      ).filter(_.rule == Finding.Rule.DataClump)
+    assertEquals(found(None, inline = false).size, 1)
+    assertEquals(found(Some(Set("one.A.run")), inline = false).size, 0)
+    assertEquals(found(None, inline = true).size, 0)
+  }
+
+  test("every data clump is reported, so a fix shows as one fewer") {
     val methods = (1 to 21).toVector.flatMap(index =>
       group("run", s"a$index", s"b$index", s"c$index")(s"g$index.X", s"g$index.Y", s"g$index.Z")
     )
-    assertEquals(clumps(methods).size, 20)
+    assertEquals(clumps(methods).size, 21)
   }
 
   test("long signatures only contribute their smallest groups to data clumps") {
-    def signatures(size: Int) = Vector("p.A", "p.B", "p.C").map(owner =>
-      method(
-        s"$owner.run",
-        owner,
-        (Vector("a", "b", "c", "d") ++ (5 to size).map(index => s"$owner$index")).map(field(_))
-      )
+    val owners                = Vector("p.A", "p.B", "p.C")
+    val shared                = Vector("a", "b", "c", "d")
+    def signatures(size: Int) = owners.map(owner =>
+      method(s"$owner.run", owner, (shared ++ (5 to size).map(index => s"$owner$index")).map(field(_)))
     )
     def widest(size: Int) = clumps(signatures(size)).map(_.detail.takeWhile(_ != ')').count(_ == ':'))
     assertEquals(widest(10), Vector(4))

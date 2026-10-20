@@ -3,6 +3,8 @@ package net.kurobako.baumkuchen.analysis
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
+import dotty.tools.dotc.core.Names.Name
+import dotty.tools.dotc.core.Names.termName
 import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.Type
 import scala.collection.mutable
@@ -23,69 +25,65 @@ object Pipelines {
       Finding.Level.Info
     )
   }
-}
 
-/** Finds the longest chain of strict transformations in each method body. */
-private class Chains(using Context) {
-  private val subtrees        = Children()
-  private val Transformations = Set("map", "flatMap", "filter", "filterNot", "collect")
+  /** Finds the longest chain of strict transformations in each method body. */
+  class Chains(using Context) {
+    private val subtrees                   = Children()
+    private val Transformations: Set[Name] = Set("map", "flatMap", "filter", "filterNot", "collect").map(termName(_))
+    private val ArrayOps                   = requiredClass("scala.collection.ArrayOps")
+    private val Iterable                   = requiredClass("scala.collection.Iterable")
+    private val View                       = requiredClass("scala.collection.View")
+    private val LazyList                   = requiredClass("scala.collection.immutable.LazyList")
 
-  def of(name: String, node: String, body: tpd.Tree): Vector[Pipelines.Chain] = {
-    val found                      = mutable.ArrayBuffer.empty[Vector[String]]
-    val spine                      = mutable.Set.empty[tpd.Tree]
-    def walk(tree: tpd.Tree): Unit = tree match {
-      // A nested method is scanned on its own when the build declares it; a local one is not scanned at all.
-      case definition: tpd.DefDef if !definition.symbol.isAnonymousFunction => ()
-      case _                                                                =>
-        if (!spine(tree))
-          chain(tree).collect { case (methods, steps) if methods.size > 1 => (methods, steps) }.foreach {
-            (methods, steps) =>
+    def of(name: String, node: String, body: tpd.Tree): Vector[Pipelines.Chain] = {
+      val found                      = mutable.ArrayBuffer.empty[Vector[String]]
+      val spine                      = mutable.Set.empty[tpd.Tree]
+      def walk(tree: tpd.Tree): Unit = tree match {
+        // A nested method is scanned on its own when the build declares it; a local one is not scanned at all.
+        case definition: tpd.DefDef if !definition.symbol.isAnonymousFunction => ()
+        case _                                                                =>
+          if (!spine(tree))
+            chain(tree).filter(_._1.size > 1).foreach { (methods, steps) =>
               found += methods
               spine ++= steps
-          }
-        subtrees.of(tree).foreach(walk)
-    }
-    walk(body)
-    found.toVector.map(methods => Pipelines.Chain(name, node, methods))
-  }
-
-  /** The transformations ending at `tree`, in the order they run, with the applications they run through. */
-  private def chain(tree: tpd.Tree): Option[(Vector[String], Vector[tpd.Apply])] = tree match {
-    case application: tpd.Apply =>
-      transformation(application).map { select =>
-        val outer = select.name.toString
-        chain(converted(select.qualifier)) match {
-          case Some((methods, steps)) => (methods :+ outer, application +: steps)
-          case None                   => (Vector(outer), Vector(application))
-        }
+            }
+          subtrees.of(tree).foreach(walk(_))
       }
-    case _ => None
-  }
+      walk(body)
+      found.toVector.map(methods => Pipelines.Chain(name, node, methods))
+    }
 
-  // Only the application that names the transformation counts, not one that supplies its implicit arguments.
-  private def transformation(tree: tpd.Tree): Option[tpd.Select] = tree match {
-    case tpd.Apply(function: (tpd.Select | tpd.TypeApply), _) =>
-      selected(function).filter(select => Transformations(select.name.toString) && strict(select.qualifier.tpe.widen))
-    case _ => None
-  }
+    /** The transformations ending at `tree`, in the order they run, with the applications they run through. */
+    private def chain(tree: tpd.Tree): Option[(Vector[String], Vector[tpd.Apply])] = tree match {
+      case application: tpd.Apply =>
+        transformation(application).map { select =>
+          val outer = select.name.toString
+          chain(converted(select.qualifier)) match {
+            case Some((methods, steps)) => (methods :+ outer, application +: steps)
+            case None                   => (Vector(outer), Vector(application))
+          }
+        }
+      case _ => None
+    }
 
-  @annotation.tailrec
-  private def selected(function: tpd.Tree): Option[tpd.Select] = function match {
-    case select: tpd.Select      => Some(select)
-    case tpd.TypeApply(inner, _) => selected(inner)
-    case _                       => None
-  }
+    // Only the application that names the transformation counts, not one that supplies its implicit arguments.
+    private def transformation(tree: tpd.Tree): Option[tpd.Select] = tree match {
+      case tpd.Apply(function: (tpd.Select | tpd.TypeApply), _) =>
+        Traversals.selected(function).filter(select =>
+          Transformations(select.name) && strict(select.qualifier.tpe.widen)
+        )
+      case _ => None
+    }
 
-  @annotation.tailrec
-  private def converted(tree: tpd.Tree): tpd.Tree = tree match {
-    case tpd.Apply(function, List(wrapped)) if function.symbol.is(Flags.Implicit)       => converted(wrapped)
-    case tpd.Apply(inner: tpd.Apply, arguments) if arguments.forall(_.span.isSynthetic) => converted(inner)
-    case other                                                                          => other
-  }
+    @annotation.tailrec
+    private def converted(tree: tpd.Tree): tpd.Tree = tree match {
+      case tpd.Apply(function, List(wrapped)) if function.symbol.is(Flags.Implicit)       => converted(wrapped)
+      case tpd.Apply(inner: tpd.Apply, arguments) if arguments.forall(_.span.isSynthetic) => converted(inner)
+      case other                                                                          => other
+    }
 
-  private def strict(receiver: Type): Boolean =
-    receiver.derivesFrom(requiredClass("scala.collection.ArrayOps")) ||
-      receiver.derivesFrom(requiredClass("scala.collection.Iterable")) &&
-      !receiver.derivesFrom(requiredClass("scala.collection.View")) &&
-      !receiver.derivesFrom(requiredClass("scala.collection.immutable.LazyList"))
+    private def strict(receiver: Type): Boolean =
+      receiver.derivesFrom(ArrayOps) ||
+        receiver.derivesFrom(Iterable) && !receiver.derivesFrom(View) && !receiver.derivesFrom(LazyList)
+  }
 }

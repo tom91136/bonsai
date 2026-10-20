@@ -10,7 +10,7 @@ class AlgebraSuite extends AnalysisSuite {
   private def findings(sources: (String, String)*): Vector[Finding] = findingsWithTests(sources, Nil)
 
   private def findingsWithTests(main: Seq[(String, String)], test: Seq[(String, String)]): Vector[Finding] = {
-    val result = extract(main, test)
+    val result = extract(main, test, generated = GeneratedSources)
     Algebra.findings(result.algebra, result.graph.nodes)
   }
 
@@ -48,6 +48,14 @@ class AlgebraSuite extends AnalysisSuite {
     assertFinding(found, "duplicate-shape", "P, Q")
     assertFinding(found, "duplicate-shape", "R, S")
     assertNoFinding(found)(_.detail.contains("T"))
+  }
+
+  test("function types with named parameters are plain functions") {
+    val found = findings(
+      "P.scala" -> "case class P(x: Int, y: String, f: (Long, Char) => Byte)",
+      "Q.scala" -> "case class Q(y: String, f: (count: Long, symbol: Char) => Byte, x: Int)"
+    )
+    assertFinding(found, "duplicate-shape", "P, Q")
   }
 
   test("context functions are not curried plain functions") {
@@ -134,13 +142,13 @@ class AlgebraSuite extends AnalysisSuite {
     assertFinding(found, "constant-field", "Load.coherent is always False across 2 constructions")
   }
 
-  test("unknown arguments keep conclusions open") {
+  test("an unknown construction, which may set both options, leaves their exclusion unsettled") {
     val found = findings(
       "Hit.scala"  -> "case class Hit(first: Option[Int], second: Option[Int])",
       "Main.scala" ->
         "object Main { def make(value: Option[Int]) = List(Hit(value, value), Hit(Some(1), None), Hit(None, Some(2))) }"
     )
-    assertFinding(found, "exclusive-options", "2 of 3 constructions determined, 1 unknown")
+    assertNoFinding(found)(_.rule == Finding.Rule.ExclusiveOptions)
   }
 
   test("fields shared by every alternative are a warning") {
@@ -435,6 +443,36 @@ class AlgebraSuite extends AnalysisSuite {
     assertEquals(shown(found), Vector("S: 3 of 4 cases share (w: W, z: Z): B, C, D" -> Finding.Level.Info))
   }
 
+  test("a factor every case of a generated sum shares is reported, whatever partial factor outranks it") {
+    val cases =
+      Vector("V1", "V2", "V3").map(name => Algebra.Variant(name, ints("mpabc") :+ field("own", atom(name)))) :+
+        Algebra.Variant("V4", ints("mp"))
+    val sum   = Algebra.Sum("S", "S", cases)
+    val found = analyse(model(sums = Vector(sum)), node("S", generated = true))
+      .filter(_.rule == Finding.Rule.CommonFactor).map(_.detail)
+    assertEquals(found, Vector("S: 4 of 4 cases share (m: Int, p: Int): V1, V2, V3, V4"))
+  }
+
+  test("the types of different newtypes, and cases of sums told apart by name, are no duplicate shape") {
+    val found = findings(
+      "Types.scala" ->
+        """trait Newtype[A] { opaque type Type = A; def apply(value: A): Type = value }
+          |object Register extends Newtype[Int]
+          |object Predicate extends Newtype[Int]
+          |case class Move(target: Register.Type, source: Register.Type)
+          |case class Test(target: Predicate.Type, source: Predicate.Type)
+          |enum Error { case Ambiguous(name: String, line: Int); case Unsupported(name: String, line: Int) }
+          |case class Located(name: String, line: Int)
+          |object Ids { object Region extends Newtype[Long] }
+          |case class Range(first: Ids.Region.Type, last: Ids.Region.Type, step: Ids.Region.Type)
+          |case class Span(first: Ids.Region.Type, last: Ids.Region.Type, step: Ids.Region.Type)""".stripMargin
+    )
+    assertEquals(
+      found.filter(_.rule == Finding.Rule.DuplicateShape).map(_.detail),
+      Vector("2 types with the same field names of shape Ids.Region.Type^3: Range, Span")
+    )
+  }
+
   test("alternatives with more than twelve fields only contribute pairs to common factors") {
     def factors(size: Int) = {
       val wide = (1 to 4).toVector.map(index =>
@@ -455,14 +493,18 @@ class AlgebraSuite extends AnalysisSuite {
   private val first  = field("first", One + a, Algebra.Kind.Optional)
   private val second = field("second", One + b, Algebra.Kind.Optional)
 
-  test("options present one at a time are exactly exclusive, counting only fully known constructions") {
+  test("options present one at a time across fully known constructions are exactly exclusive") {
     import Algebra.Argument.*
     assertEquals(
-      constructed(first, second)(Vector(Present, Absent), Vector(Absent, Present), Vector(Unknown, Present)),
+      constructed(first, second)(Vector(Present, Absent), Vector(Absent, Present), Vector(Absent, Present)),
       Vector(
-        "Load: exactly one of (first, second) is present; 2 of 3 constructions determined, 1 unknown; " +
+        "Load: exactly one of (first, second) is present; 3 of 3 constructions determined; " +
           "(1 + A)*(1 + B) used as 1 + A + B, never A*B"
       )
+    )
+    assertEquals(
+      constructed(first, second)(Vector(Present, Absent), Vector(Absent, Present), Vector(Unknown, Present)),
+      Vector.empty
     )
   }
 

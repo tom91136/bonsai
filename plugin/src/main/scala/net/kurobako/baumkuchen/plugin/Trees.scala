@@ -2,6 +2,8 @@ package net.kurobako.baumkuchen.plugin
 
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.core.Contexts.Context
+import dotty.tools.dotc.core.Flags
+import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Symbols.requiredClass
@@ -50,6 +52,42 @@ private object Trees {
     case _                                                       => None
   }
 
+  /** The elements of a collection built in place by the apply of a companion, as `Set(a, b)` or `Vector(a, b)`. */
+  def built(tree: tpd.Tree)(using Context): Option[List[tpd.Tree]] = {
+    val collection = unwrap(tree).tpe.widen
+    if (collection.derivesFrom(requiredClass("scala.collection.Iterable")) || collection.derivesFrom(defn.ArrayClass))
+      varargs(unwrap(tree))
+    else None
+  }
+
+  // Companions such as Array's take a ClassTag in an implicit argument list after the elements, and Array takes its
+  // first primitive element apart from the rest.
+  @annotation.tailrec
+  private def varargs(tree: tpd.Tree)(using Context): Option[List[tpd.Tree]] = tree match {
+    case tpd.Apply(inner: tpd.Apply, _) if inner.tpe.widen.isImplicitMethod => varargs(inner)
+    case tpd.Apply(function, arguments :+ last)
+        if selected(function).exists(_.qualifier.tpe.widen.classSymbol.is(Flags.Module)) &&
+          function.symbol.name == nme.apply =>
+      unwrap(last) match {
+        case tpd.SeqLiteral(elements, element) if arguments.forall(_.tpe <:< element.tpe) => Some(arguments ++ elements)
+        case _                                                                            => None
+      }
+    case _ => None
+  }
+
+  /** A literal, or a case of an enum or a case object. */
+  def constant(tree: tpd.Tree)(using Context): Boolean = unwrap(tree) match {
+    case _: tpd.Literal => true
+    case other          => enumerated(other)
+  }
+
+  def enumerated(tree: tpd.Tree)(using Context): Boolean = unwrap(tree) match {
+    case reference @ (_: tpd.Ident | _: tpd.Select) =>
+      val symbol = reference.symbol
+      symbol.isTerm && symbol.is(Flags.Case) && (symbol.is(Flags.Enum) || symbol.is(Flags.Module))
+    case _ => false
+  }
+
   // Curried methods such as foldLeft take their function in a later argument list.
   @annotation.tailrec
   def selected(function: tpd.Tree): Option[tpd.Select] = function match {
@@ -70,6 +108,12 @@ private object Trees {
 
   /** The full name of a symbol; static members of Java classes belong to a module class, whose name ends in `$`. */
   def qualified(symbol: Symbol)(using Context): String = symbol.fullName.toString.replace("$.", ".")
+
+  /** Whether a type is one of the primitives the JVM boxes: a number, a character or a Boolean. */
+  def primitive(tpe: Type)(using Context): Boolean = {
+    val symbol = tpe.widen.dealias.typeSymbol
+    symbol == defn.BooleanClass || defn.ScalaNumericValueClasses().contains(symbol)
+  }
 
   def byName(parameter: Symbol)(using Context): Boolean = parameter.exists && parameter.info.isInstanceOf[ExprType]
 

@@ -1,10 +1,16 @@
 package net.kurobako.baumkuchen.analysis
 
 class MegamorphicSuite extends AnalysisSuite {
+  private val shapes = """trait Shape { def area: Int }
+                         |class Circle extends Shape { def area = 1 }
+                         |class Square extends Shape { def area = 2 }
+                         |class Triangle extends Shape { def area = 3 }""".stripMargin
+
   private lazy val found = {
-    val result = extract(Seq(
-      "Main.scala" ->
-        """object Main {
+    val result = extract(
+      Seq(
+        "Main.scala" ->
+          """object Main {
                         |  def main(args: Array[String]): Unit =
                         |    println((total(Nil), once(Circle()), pairs(Nil), sizes(Nil), solos(Nil), looped(Array.empty), shown(Nil), local(Nil)))
                         |  def total(shapes: List[Shape]): Int = shapes.map(_.area).sum
@@ -27,7 +33,7 @@ class MegamorphicSuite extends AnalysisSuite {
                         |    result
                         |  }
                         |}""".stripMargin,
-      "Shapes.scala" -> """trait Shape { def area: Int }
+        "Shapes.scala" -> """trait Shape { def area: Int }
                           |class Circle extends Shape { def area = 1 }
                           |class Square extends Shape { def area = 2 }
                           |class Triangle extends Shape { def area = 3 }
@@ -39,8 +45,62 @@ class MegamorphicSuite extends AnalysisSuite {
                           |class Medium extends Base { override def size = 1 }
                           |class Large extends Base { override def size = 2 }
                           |final class Solo { def weight: Int = 1 }""".stripMargin
-    ))
+      ),
+      hot = Vector("Main")
+    )
     Megamorphic.findings(result.megamorphic, result.graph.nodes)
+  }
+
+  test("inline bodies, receivers the loop does not change, and implementations of other type arguments do not count") {
+    val result = extract(
+      Seq(
+        "Main.scala" ->
+          """object Main {
+            |  def main(args: Array[String]): Unit =
+            |    println((total(Nil), fixed(Nil, Circle()), longs(Nil), mixed(Nil), held(Nil)))
+            |  def total(shapes: List[Shape]): Int = shapes.map(_.area).sum
+            |  inline def expanded(shapes: List[Shape]): Int = shapes.map(_.area).sum
+            |  def fixed(rounds: List[Int], shape: Shape): Int = rounds.map(_ => shape.area).sum
+            |  def longs(values: List[Operands[Long]]): Long = values.map(_.first).sum
+            |  def mixed[A](values: List[Operands[A]]): Int = values.map(_.first).size
+            |  def held(values: List[Int]): Int = { val shape: Shape = Square(); values.map(_ => shape.area).sum }
+            |}""".stripMargin,
+        "Shapes.scala" ->
+          (shapes + """
+            |trait Operands[A] { def first: A }
+            |class Longs extends Operands[Long] { def first = 1L }
+            |class Wides extends Operands[Long] { def first = 2L }
+            |class Names extends Operands[String] { def first = "a" }
+            |class Labels extends Operands[String] { def first = "b" }""".stripMargin)
+      ),
+      hot = Vector("Main")
+    )
+    assertEquals(
+      Megamorphic.findings(result.megamorphic, result.graph.nodes).map(_.detail.takeWhile(_ != ',')).sorted,
+      Vector("Main.mixed calls Operands.first in a loop", "Main.total calls Shape.area in a loop")
+    )
+  }
+
+  test("calls in loops are megamorphic only in the classes the build marks hot, and never in a platform twin's code") {
+    val main = "Main.scala" ->
+      """object Main {
+        |  def main(args: Array[String]): Unit = println(total(Nil))
+        |  def total(shapes: List[Shape]): Int = shapes.map(_.area).sum
+        |}""".stripMargin
+    def megamorphic(result: Extraction.Result) = Megamorphic.findings(result.megamorphic, result.graph.nodes)
+    assertEquals(megamorphic(extract(Seq(main, "Shapes.scala" -> shapes))), Vector.empty)
+    assertEquals(megamorphic(extract(Seq(main, "Shapes.scala" -> shapes), hot = Vector("**", "!Main"))), Vector.empty)
+    assertEquals(megamorphic(extract(Seq(main, "Shapes.scala" -> shapes), hot = Vector("**"))).size, 1)
+    val twin = extract(
+      Seq("Shapes.scala" -> shapes),
+      twins = Seq(Seq("Explorer.scala" ->
+        """object Explorer {
+          |  def main(args: Array[String]): Unit = println(total(Nil))
+          |  def total(shapes: List[Shape]): Int = shapes.map(_.area).sum
+          |}""".stripMargin)),
+      hot = Vector("**")
+    )
+    assertEquals(megamorphic(twin), Vector.empty)
   }
 
   test("calls in loops to methods with three or more implementations are megamorphic") {

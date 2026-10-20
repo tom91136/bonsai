@@ -12,8 +12,9 @@ object Node {
       })
 }
 
-/** A type, with its companion merged in, or a top-level definition; `exported` when it is part of the public API of a
-  * library, and `suppressed` holds the rule ids its suppressing annotations name, with `*` for every rule.
+/** A type, with its companion merged in, or a top-level definition; `exported` when code outside the build uses it, as
+  * the public API of a library or a type the build names reflectively, and `suppressed` holds the rule ids its
+  * suppressing annotations name, with `*` for every rule.
   */
 case class Node(
     name: String,

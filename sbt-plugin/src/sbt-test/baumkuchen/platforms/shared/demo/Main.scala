@@ -10,4 +10,6 @@ object Report {
     val lines   = counted.map((word, count) => s"$word: $count")
     lines.mkString("\n")
   }
+
+  def native(words: List[String]): String = words.mkString(" ")
 }

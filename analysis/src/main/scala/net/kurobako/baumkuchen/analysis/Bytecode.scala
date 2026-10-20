@@ -24,7 +24,10 @@ object Bytecode {
       .flatMap(file => methods(Files.readAllBytes(file)))
   }
 
-  def findings(methods: Vector[Method], nodes: Map[String, Node]): Vector[Finding] = {
+  /** Methods near the 64 KB limit, and those HotSpot only interprets, which matter in the `hot` nodes when the build
+    * marks any.
+    */
+  def findings(methods: Vector[Method], nodes: Map[String, Node], hot: Option[Set[String]]): Vector[Finding] = {
     // The compiler writes fromOrdinal on the companion of every enum with singleton cases, and valueOf only when none
     // of them passes arguments to the enum's constructor.
     val enumerations = methods.filter(_.name == "fromOrdinal").map(_.owner).toSet
@@ -49,12 +52,21 @@ object Bytecode {
               "enum shrinks it",
             Finding.Level.Info
           )
-        else
+        else if (hot.forall(_(key)))
           Finding.at(
             nodes,
             key,
             Finding.Rule.HugeMethod,
             s"$detail; HotSpot interprets methods over $HugeMethod bytes instead of compiling them"
+          )
+        else
+          Finding.at(
+            nodes,
+            key,
+            Finding.Rule.HugeMethod,
+            s"$detail; HotSpot interprets methods over $HugeMethod bytes, which costs little outside the classes the " +
+              "build marks hot",
+            Finding.Level.Info
           )
       )
     }
@@ -77,11 +89,11 @@ object Bytecode {
     val lambda   = method.name.contains("$anonfun$")
     val plain    = method.name.stripPrefix("$anonfun$").split('$').find(_.nonEmpty).getOrElse(method.name)
     val shown    = if (lambda) s"$plain (lambda)" else plain
-    val owner    = if (topLevel) name.split('.').dropRight(1).mkString(".") + "." + plain else name
-    // A top-level method's node is its own name, without the `$package$` object the compiler groups it into.
-    val node =
+    // A top-level method's node is its own name in its package, without the object named after its source file that
+    // the compiler groups it into.
+    val owner = if (topLevel) (name.split('.').dropRight(2) :+ plain).mkString(".") else name
+    val node  =
       Iterator.iterate(owner)(_.split('.').dropRight(1).mkString(".")).takeWhile(_.nonEmpty).find(nodes.contains)
-        .orElse(Option.when(topLevel && nodes.contains(plain))(plain))
     val label = node.fold(shown)(key => if (topLevel) shown else s"${key.split('.').last}.$shown")
     (node, label)
   }

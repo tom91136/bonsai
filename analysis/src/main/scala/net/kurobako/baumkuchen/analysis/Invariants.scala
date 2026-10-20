@@ -7,9 +7,11 @@ object Invariants {
 
   private val MaxAssignments = 4096
   private val MaxShownSites  = 3
+  private val OptionalValues = Vector(Argument.Absent, Argument.Present)
+  private val FlagValues     = Vector(Argument.False, Argument.True)
 
   /** Kleene evaluation: `None` when the arguments do not decide the predicate. */
-  private def evaluate(predicate: Predicate, value: Int => Argument): Option[Boolean] = predicate match {
+  private def evaluate(predicate: Predicate, value: IndexedSeq[Argument]): Option[Boolean] = predicate match {
     case Predicate.Known(known)    => Some(known)
     case Predicate.Present(field)  => decide(value(field), Argument.Present, Argument.Absent)
     case Predicate.Flag(field)     => decide(value(field), Argument.True, Argument.False)
@@ -29,12 +31,9 @@ object Invariants {
         case (Some(true), Some(true))            => Some(true)
         case _                                   => None
       }
+    // De Morgan's laws hold in Kleene logic too.
     case Predicate.Or(left, right) =>
-      (evaluate(left, value), evaluate(right, value)) match {
-        case (Some(true), _) | (_, Some(true)) => Some(true)
-        case (Some(false), Some(false))        => Some(false)
-        case _                                 => None
-      }
+      evaluate(Predicate.Not(Predicate.And(Predicate.Not(left), Predicate.Not(right))), value)
   }
 
   private def decide(argument: Argument, yes: Argument, no: Argument): Option[Boolean] =
@@ -57,8 +56,8 @@ object Invariants {
   }
 
   private def values(kind: Kind): Vector[Argument] = kind match {
-    case Kind.Optional   => Vector(Argument.Absent, Argument.Present)
-    case Kind.Flag       => Vector(Argument.False, Argument.True)
+    case Kind.Optional   => OptionalValues
+    case Kind.Flag       => FlagValues
     case Kind.Tag(cases) => cases.map(Argument.Tag(_))
     case _               => Vector.empty
   }
@@ -103,7 +102,10 @@ object Invariants {
         } yield assignment.updated(index, value)
       }
       val valid = assignments.filter(assignment =>
-        evaluate(product.invariant, index => assignment.getOrElse(index, Argument.Unknown)) != Some(false)
+        evaluate(
+          product.invariant,
+          Vector.tabulate(product.fields.size)(index => assignment.getOrElse(index, Argument.Unknown))
+        ) != Some(false)
       )
       val excluded = assignments.size - valid.size
       if (excluded == 0 || valid.isEmpty) Vector.empty
@@ -150,7 +152,7 @@ object Invariants {
 
   /** Constructions or calls whose known arguments definitely violate the invariant, with those sites. */
   private def violations(subject: Subject, sites: Vector[Algebra.Site]) = {
-    val failing = sites.filter(site => evaluate(subject.product.invariant, site.arguments(_)) == Some(false))
+    val failing = sites.filter(site => evaluate(subject.product.invariant, site.arguments) == Some(false))
     Option.when(failing.nonEmpty)(
       s"${subject.name}: ${failing.size} ${subject.uses} violate the ${subject.condition}: " +
         Finding.listed(failing.map(_.location), MaxShownSites) -> failing

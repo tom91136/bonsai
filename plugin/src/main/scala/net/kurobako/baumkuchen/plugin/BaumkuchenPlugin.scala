@@ -6,6 +6,7 @@ import dotty.tools.dotc.plugins.PluginPhase
 import dotty.tools.dotc.plugins.StandardPlugin
 import dotty.tools.dotc.report
 import java.nio.file.FileSystems
+import scala.util.matching.Regex
 
 class BaumkuchenPlugin extends StandardPlugin {
   val name        = "baumkuchen"
@@ -13,11 +14,11 @@ class BaumkuchenPlugin extends StandardPlugin {
 
   private val analysis         = Analysis()
   private val DefaultWildcards = 2
-  private val DefaultGenerated = List("**/src/generated/**", "src/generated/**")
   // Mutation testing compiles rewritten copies of the sources from a temporary directory, which no check judges.
   private val Instrumented = List("**/stryker4s-*/**", "stryker4s-*/**")
   private val Modes        = List("dev", "ci")
-  private val Keys         = Set("mode", "disable", "error", "warn", "wildcards", "generated", "partial", "throws")
+  private val Keys         =
+    Set("mode", "disable", "error", "warn", "wildcards", "generated", "partial", "throws", "hot", "checked")
 
   override def initialize(options: List[String])(using Context): List[PluginPhase] = {
     options.filterNot {
@@ -32,11 +33,8 @@ class BaumkuchenPlugin extends StandardPlugin {
         DefaultWildcards
       }
     )
-    val generated = values("generated") match {
-      case Nil   => DefaultGenerated
-      case globs => globs
-    }
-    val mode = values("mode").lastOption.getOrElse("dev")
+    val generated = values("generated")
+    val mode      = values("mode").lastOption.getOrElse("dev")
     if (!Modes.contains(mode)) report.error(s"baumkuchen option mode must be one of ${Modes.mkString(", ")}, not $mode")
     val disabled = checks("disable")
     val errors   = checks("error")
@@ -64,19 +62,35 @@ class BaumkuchenPlugin extends StandardPlugin {
         report.error(s"baumkuchen option throws must be <method pattern>:<exception>, not $option")
         table
     }
+    // `checked=<type>` names, by its qualified name, a refinement type whose checked operations the others bypass.
+    // `hot=<glob>` marks the classes whose code runs hot, by the qualified name of the class or object, and
+    // `hot=!<glob>` leaves out classes the others mark, such as the suites of a hot package.
+    val (excluded, included)          = values("hot").partition(_.startsWith("!"))
+    val hot                           = included.map(qualifiedNames(_))
+    val cold                          = excluded.map(glob => qualifiedNames(glob.drop(1)))
     val escalated                     = strict ++ errors -- warnings
     def matchers(globs: List[String]) = globs.map(glob => FileSystems.getDefault.getPathMatcher(s"glob:$glob"))
     List(
       // A cycle through a generated source still ties together the handwritten sources on it.
-      AcyclicPhase(analysis, Checks(disabled, escalated, matchers(Instrumented))),
+      AcyclicPhase(analysis, Checks(disabled, escalated, warnings, matchers(Instrumented))),
       LintPhase(
         wildcards,
-        Checks(disabled, escalated, matchers(generated ++ Instrumented)),
+        Checks(disabled, escalated, warnings, matchers(generated ++ Instrumented)),
         partials,
-        throwing.toList.map((pattern, exceptions) => pattern.r -> exceptions)
+        throwing.toList.map((pattern, exceptions) => pattern.r -> exceptions),
+        name => hot.exists(_.matches(s"$name.")) && !cold.exists(_.matches(s"$name.")),
+        values("checked").toSet
       )
     )
   }
+
+  /** A glob over qualified names, matched against a name with a dot appended: `*` stands for one name segment or part
+    * of one, and `**` for any number of segments.
+    */
+  private def qualifiedNames(glob: String): Regex = glob.split('.').map {
+    case "**"    => "(?:[^.]+\\.)*"
+    case segment => segment.split("\\*", -1).map(Regex.quote).mkString("[^.]*") + "\\."
+  }.mkString.r
 
   /** The checks an option names: one by its id, or every check with `*`. */
   private def named(id: String)(using Context): List[Check] =

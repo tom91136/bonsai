@@ -39,4 +39,21 @@ private object DependencyGraph {
     }
     result.result().sortBy(_.head)
   }
+
+  /** The shortest cycle through the members of a component, as its files in order, searching breadth-first from each
+    * member back to itself.
+    */
+  def shortest(graph: Map[String, Set[String]], members: Vector[String]): Vector[String] = {
+    val inside                   = members.toSet
+    def successors(node: String) = graph(node).filter(inside).toVector.sorted
+    @annotation.tailrec
+    def search(start: String, paths: Vector[Vector[String]], seen: Set[String]): Option[Vector[String]] =
+      paths.find(path => graph(path.last)(start)) match {
+        case Some(path) => Some(path)
+        case None       =>
+          val next = paths.flatMap(path => successors(path.last).filterNot(seen).map(path :+ _)).distinctBy(_.last)
+          if (next.isEmpty) None else search(start, next, seen ++ next.map(_.last))
+      }
+    members.flatMap(start => search(start, Vector(Vector(start)), Set(start))).minBy(_.size)
+  }
 }

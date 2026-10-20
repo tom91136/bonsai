@@ -27,14 +27,7 @@ class TargetName extends SyntacticRule("TargetName") {
 
   private def symbolic(name: String): Boolean = name.headOption.exists(head => !head.isLetterOrDigit && head != '_')
 
-  private def annotated(mods: List[Mod]): Boolean = mods.exists {
-    case Mod.Annot(init) => init.tpe match {
-        case Type.Name("targetName")                 => true
-        case Type.Select(_, Type.Name("targetName")) => true
-        case _                                       => false
-      }
-    case _ => false
-  }
+  private def annotated(mods: List[Mod]): Boolean = definitions.annotated(mods, "targetName")
 
   // Extension methods of every group in a scope are members of the same owner, so they clash with each other.
   @annotation.tailrec

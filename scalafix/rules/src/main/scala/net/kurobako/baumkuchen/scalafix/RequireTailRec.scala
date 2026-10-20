@@ -20,15 +20,7 @@ class RequireTailRec extends SemanticRule("RequireTailRec") {
         )
   }.asPatch
 
-  private def hasTailrec(defn: Defn.Def): Boolean = defn.mods.exists {
-    case Mod.Annot(init) =>
-      init.tpe match {
-        case Type.Name("tailrec")                 => true
-        case Type.Select(_, Type.Name("tailrec")) => true
-        case _                                    => false
-      }
-    case _ => false
-  }
+  private def hasTailrec(defn: Defn.Def): Boolean = definitions.annotated(defn.mods, "tailrec")
 
   private def isEligible(defn: Defn.Def): Boolean =
     defn.mods.exists(m => m.isInstanceOf[Mod.Private] || m.isInstanceOf[Mod.Final]) ||

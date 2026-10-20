@@ -29,3 +29,5 @@ net.kurobako.baumkuchen.scalafix.QualifiedPrivate
 net.kurobako.baumkuchen.scalafix.ApiConsistency
 net.kurobako.baumkuchen.scalafix.CodecNaming
 net.kurobako.baumkuchen.scalafix.ContextBoundSyntax
+net.kurobako.baumkuchen.scalafix.ConfiguredIdioms
+net.kurobako.baumkuchen.scalafix.QualifiedCollectionNamespaces

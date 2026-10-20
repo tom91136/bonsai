@@ -17,7 +17,7 @@ object CollectionNonEmpty {
     val g = custom.size > 0
     val h = text.size > 0
     val i = list.size > 1
-    val j = list.size >= 0
+    val j = list.size >= 0// assert: CollectionIdioms.tautological-size-comparison
     val k = list.nonEmpty
     val l = (if (a) list else Nil).size > 0// assert: CollectionIdioms.size-to-non-empty
     val m = list.size == 0// assert: CollectionIdioms.size-to-is-empty

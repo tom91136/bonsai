@@ -12,26 +12,29 @@ import dotty.tools.dotc.reporting.Diagnostic.OriginWarning
 import dotty.tools.dotc.reporting.NoExplanation
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import dotty.tools.dotc.util.SourceFile
+import dotty.tools.dotc.util.SourcePosition
 import dotty.tools.dotc.util.Spans.Span
 import dotty.tools.dotc.util.SrcPos
 import java.nio.file.Path
 import java.nio.file.PathMatcher
 import scala.collection.mutable
 
-/** Reports each check as a warning unless it is disabled, escalated to an error, or found in a `generated` source.
-  * Messages end with the check id, so `@nowarn("msg=baumkuchen:<id>")` suppresses one check's warnings. As for the
-  * analysis, `@SuppressWarnings("baumkuchen:<id>")`, or `"baumkuchen"` for every check, on an enclosing definition
-  * suppresses its warnings and errors. A warning carries its `fix` as a code action, which `-rewrite` applies and
-  * editors offer.
+/** Reports each check at its severity unless it is disabled, escalated to an error, kept as a warning by `lenient`, or
+  * found in a `generated` source. Messages end with the check id, so `@nowarn("msg=baumkuchen:<id>")` suppresses one
+  * check's warnings. As for the analysis, `@SuppressWarnings("baumkuchen:<id>")`, or `"baumkuchen"` for every check, on
+  * an enclosing definition suppresses its warnings, errors and information. A warning carries its `fix` as a code
+  * action, which `-rewrite` applies and editors offer.
   */
-private class Checks(disabled: Set[Check], errors: Set[Check], generated: List[PathMatcher]) {
+private class Checks(disabled: Set[Check], errors: Set[Check], lenient: Set[Check], generated: List[PathMatcher]) {
   def apply(check: Check, message: String, position: SrcPos, fix: List[ActionPatch] = Nil)(using Context): Unit =
     if (
       !disabled(check) && !generated.exists(_.matches(Path.of(position.sourcePos.source.path))) &&
       !suppressed(check, position)
     ) {
       val tagged = s"$message [baumkuchen:${check.id}]"
-      if (errors(check)) report.error(tagged, position)
+      val shown  = start(position)
+      if (errors(check) || check.severity == Severity.Error && !lenient(check)) report.error(tagged, shown)
+      else if (check.severity == Severity.Info && !lenient(check)) report.echo(tagged, shown)
       else
         report.warning(
           NoExplanation(tagged).withActions(Option.when(fix.nonEmpty)(CodeAction(
@@ -39,10 +42,16 @@ private class Checks(disabled: Set[Check], errors: Set[Check], generated: List[P
             None,
             fix
           )).toList*),
-          position,
+          shown,
           OriginWarning.NoOrigin
         )
     }
+
+  // The compiler shows every line a position spans, which for a table of thousands of lines exhausts the heap.
+  private def start(position: SrcPos)(using Context): SourcePosition = {
+    val source = position.sourcePos
+    if (!source.exists || source.startLine == source.endLine) source else source.withSpan(source.span.startPos)
+  }
 
   // The definitions of each source annotated with the checks they suppress, read from the source's own unit.
   private val suppressions = mutable.Map.empty[SourceFile, List[(Span, Set[String])]]

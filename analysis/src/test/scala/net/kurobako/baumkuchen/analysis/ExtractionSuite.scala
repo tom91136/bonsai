@@ -46,9 +46,10 @@ class ExtractionSuite extends AnalysisSuite {
   }
 
   test("megamorphic sites list implementations by simple name unless two collide, count vals, and skip universals") {
-    val result = extract(Seq(
-      "Shapes.scala" ->
-        """package shapes
+    val result = extract(
+      Seq(
+        "Shapes.scala" ->
+          """package shapes
           |trait Shape { def area: Int; val sides: Int }
           |class Circle extends Shape { def area = 1; val sides = 0; override def toString = "circle" }
           |class Square extends Shape { def area = 2; val sides = 4; override def toString = "square" }
@@ -66,7 +67,9 @@ class ExtractionSuite extends AnalysisSuite {
           |  def shown(shapes: List[Shape]): Int = shapes.map(_.toString.length).sum
           |  def names(values: List[Named]): Int = values.map(_.name.length).sum
           |}""".stripMargin
-    ))
+      ),
+      hot = Vector("**")
+    )
     assertEquals(
       result.megamorphic.map(site => (site.caller, site.callee, site.implementations.sorted)).toSet,
       Set(
@@ -127,9 +130,10 @@ class ExtractionSuite extends AnalysisSuite {
     )
   }
 
-  private lazy val hierarchies = extract(Seq(
-    "Hierarchies.scala" ->
-      """sealed trait Shape
+  private lazy val hierarchies = extract(
+    Seq(
+      "Hierarchies.scala" ->
+        """sealed trait Shape
         |final class Plain(val size: Int) extends Shape
         |case class Round(radius: Int) extends Shape
         |case object Dot extends Shape
@@ -141,9 +145,11 @@ class ExtractionSuite extends AnalysisSuite {
         |case object Outside extends Mixed
         |sealed trait Spread
         |object Spread { case object Near extends Spread; case object Far extends Spread }""".stripMargin,
-    "src/generated/Generated.scala" ->
-      "sealed trait Generated; case object First extends Generated; case object Second extends Generated"
-  ))
+      "src/generated/Generated.scala" ->
+        "sealed trait Generated; case object First extends Generated; case object Second extends Generated"
+    ),
+    generated = GeneratedSources
+  )
 
   test("only case class alternatives of a sum carry fields") {
     assertEquals(

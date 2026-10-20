@@ -2,7 +2,9 @@ package net.kurobako.baumkuchen.analysis
 
 /** Checks over the algebraic shapes of products and sums, and over the values passed where products are built. */
 object Algebra {
-  case class Field(name: String, shape: Polynomial, kind: Kind)
+
+  /** A field or parameter; `primitive` when its type is a primitive, or an opaque type standing for one. */
+  case class Field(name: String, shape: Polynomial, kind: Kind, primitive: Boolean = false)
 
   /** Field kinds whose values can be read off construction sites and invariants. */
   enum Kind {
@@ -128,8 +130,13 @@ object Algebra {
           Finding.at(nodes, sum.node, Finding.Rule.CommonFactor, detail, level)
         }
     }
+    // Cases of sums are told apart by their names, as separate instructions or errors are, and identical-cases reports
+    // those within one sum.
     val duplicates =
-      model.products.sortBy(_.name).filter(_.shape.weight >= MinimumDuplicateWeight).groupBy(_.shape.key).values
+      model.products.sortBy(_.name).filter(product =>
+        product.parents.isEmpty && product.shape.weight >= MinimumDuplicateWeight
+      )
+        .groupBy(_.shape.key).values
         .flatMap { group =>
           val named = group.groupBy(_.fields.map(_.name).sorted).values.collect {
             case named if named.size > 1 => true -> named
@@ -213,9 +220,11 @@ object Algebra {
       candidates.collect { case fields if Itemsets.maximal(fields, candidates) => Factor(fields, cases) }
     }.filterNot(factor => groups.exists(factor.cases.subsetOf))
       .sortBy(factor => (-factor.fields.size * factor.cases.size, factor.fields.toVector.sorted.mkString))
-    // Greedily keep factors over mostly different alternatives; overlapping ones describe the same refactoring.
-    maximal.foldLeft(Vector.empty[Factor]) { (chosen, candidate) =>
-      val distinct = chosen.forall(factor =>
+    // Greedily keep factors over mostly different alternatives; overlapping ones describe the same refactoring. Factors
+    // over every alternative come first, whatever outranks them, since hoisting those is never a judgement call.
+    val complete = maximal.filter(_.cases.size == sum.cases.size)
+    complete ++ maximal.foldLeft(Vector.empty[Factor]) { (chosen, candidate) =>
+      val distinct = (chosen ++ complete).forall(factor =>
         factor.cases.intersect(candidate.cases).size * 2 < factor.cases.union(candidate.cases).size
       )
       if (distinct && chosen.size < MaxReportedFactors) chosen :+ candidate else chosen
@@ -245,7 +254,8 @@ object Algebra {
       val determined = complete(indices)
       val present    = determined.map(site => indices.count(site.arguments(_) == Argument.Present))
       val varied     = indices.count(index => determined.exists(_.arguments(index) == Argument.Present))
-      Option.when(determined.size > 1 && varied > 1 && present.forall(_ <= 1)) {
+      // A construction whose options are unknown may set both, so it leaves the correlation unsettled.
+      Option.when(determined.size == sites.size && determined.size > 1 && varied > 1 && present.forall(_ <= 1)) {
         val exactly = if (present.forall(_ == 1)) "exactly" else "at most"
         val shapes  = optional.map(_._1.shape)
         val asSum   = Polynomial.One + Polynomial.sum(shapes.map(_ - Polynomial.One))

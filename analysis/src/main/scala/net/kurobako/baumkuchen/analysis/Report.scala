@@ -3,8 +3,16 @@ package net.kurobako.baumkuchen.analysis
 /** Selects the findings to report and decides which fail the build. */
 object Report {
 
-  /** The warnings of `failing` rules fail, except findings whose keys are in `baseline`. */
-  case class Options(disabled: Set[String], failing: Set[String], baseline: Set[String], info: Boolean)
+  /** The warnings of `failing` rules fail, as do errors except those of `lenient` rules, and in either case except
+    * findings whose keys are in `baseline`.
+    */
+  case class Options(
+      disabled: Set[String],
+      failing: Set[String],
+      baseline: Set[String],
+      info: Boolean,
+      lenient: Set[String] = Set.empty
+  )
 
   /** A reported finding with its level: `error`, `warning` or `info`. */
   case class Line(level: String, finding: Finding) {
@@ -21,10 +29,11 @@ object Report {
   def findings(result: Extraction.Result): Vector[Finding] =
     Liveness.findings(result.graph) ++ Algebra.findings(result.algebra, result.graph.nodes) ++
       Invariants.findings(result.algebra, result.graph.nodes) ++
-      Smells.findings(result.smells, result.algebra.products, result.graph.nodes) ++
+      Smells.findings(result.smells, result.algebra.products, result.graph.nodes, result.hot) ++
+      Designs.findings(result.designs, result.graph.nodes) ++ Structures.findings(result.structures, result.graph) ++
       Clones.findings(result.clones, result.graph.nodes) ++
       Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph)) ++
-      Bytecode.findings(result.bytecode, result.graph.nodes) ++
+      Bytecode.findings(result.bytecode, result.graph.nodes, result.hot) ++
       Complexity.findings(result.complexities, result.graph.nodes) ++
       Pipelines.findings(result.pipelines, result.graph.nodes) ++
       Megamorphic.findings(result.megamorphic, result.graph.nodes) ++
@@ -33,11 +42,17 @@ object Report {
   def apply(findings: Vector[Finding], nodes: Map[String, Node], options: Options): Vector[Line] =
     findings.filter(finding =>
       !options.disabled(finding.rule.id) && !suppressed(finding, nodes, Some(finding.node.name)) &&
-        (options.info || finding.level == Finding.Level.Warning)
+        (options.info || finding.level != Finding.Level.Info)
     ).sorted.map { finding =>
-      val escalated = finding.level == Finding.Level.Warning &&
-        options.failing(finding.rule.id) && !options.baseline(finding.key)
-      Line(if (escalated) "error" else finding.level.id, finding)
+      val id        = finding.rule.id
+      val escalated = !options.baseline(finding.key) &&
+        (finding.level match {
+          case Finding.Level.Error   => !options.lenient(id)
+          case Finding.Level.Warning => options.failing(id)
+          case Finding.Level.Info    => false
+        })
+      val level = if (finding.level == Finding.Level.Info) "info" else "warning"
+      Line(if (escalated) "error" else level, finding)
     }
 
   /** The baseline text recording `lines`, one finding key per line. */

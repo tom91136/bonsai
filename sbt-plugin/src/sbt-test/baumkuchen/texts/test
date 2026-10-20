@@ -1,0 +1,14 @@
+> gitInit
+# a forbidden term in a file git sees fails the analysis
+-> baumkuchenAnalyse
+# a marker exempts its line and the next
+$ copy-file changes/ignored.md notes/plan.md
+> baumkuchenAnalyse
+# kept as a warning, the term reports without failing
+$ copy-file changes/plan.md notes/plan.md
+$ copy-file changes/warnings.conf .baumkuchen.conf
+> reload
+> baumkuchenAnalyse
+# a key no text rule reads fails the load
+$ copy-file changes/unknown.conf .baumkuchen.conf
+-> reload

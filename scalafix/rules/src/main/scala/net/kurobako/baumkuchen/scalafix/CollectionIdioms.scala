@@ -1,6 +1,7 @@
 package net.kurobako.baumkuchen.scalafix
 
 import scala.meta.*
+import scala.meta.tokens.Token
 import scalafix.v1.*
 
 /** Collection rewrites with bounded arithmetic and unchanged evaluation of user expressions. */
@@ -29,7 +30,7 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
 
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
     case call: Term.Apply => rewrite(call) + filterBeforeSorted(call) + emptyCollection(call) + arrayPrint(call)
-    case comparison: Term.ApplyInfix => nonEmpty(comparison)
+    case comparison: Term.ApplyInfix => nonEmpty(comparison) + tautology(comparison)
     case selection: Term.Select      => redundantConversion(selection) + sizeToLength(selection)
   }.asPatch
 
@@ -37,13 +38,7 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
     selection.symbol.value.startsWith("scala/collection/")
 
   private def strictSequence(term: Term)(using SemanticDocument): Boolean =
-    typeSymbol(term).exists(strictSequences)
-
-  private def typeSymbol(term: Term)(using SemanticDocument): Option[String] = (term match {
-    case reference: Term.Name   => Some(reference.symbol)
-    case selection: Term.Select => Some(selection.symbol)
-    case _                      => None
-  }).flatMap(definitions.valueType(_)).map(_.value)
+    definitions.typeSymbol(term).exists(strictSequences)
 
   private def rewrite(call: Term.Apply)(using SemanticDocument): Patch =
     (call.fun, call.argClause.values) match {
@@ -51,7 +46,7 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
           if standardMethod(selection) && strictSequence(receiver) =>
         constantTarget(predicate, if (method == "exists") "==" else "!=").map { target =>
           val replacement = s"${receiver.syntax}.contains(${target.syntax})"
-          replace(
+          lint.replace(
             call,
             if (method == "exists") replacement else s"!($replacement)",
             if (method == "exists") "exists-to-contains" else "forall-to-not-contains",
@@ -63,9 +58,8 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
           if outer.symbol.value.startsWith("scala/Option#getOrElse") =>
         (inner.fun, inner.argClause.values) match {
           case (get @ Term.Select(receiver, Term.Name("get")), List(key))
-              if get.symbol.value.startsWith("scala/collection/") &&
-                typeSymbol(receiver).exists(strictMaps) =>
-            replace(
+              if standardMethod(get) && definitions.typeSymbol(receiver).exists(strictMaps) =>
+            lint.replace(
               call,
               s"${receiver.syntax}.getOrElse(${key.syntax}, ${default.syntax})",
               "get-get-or-else",
@@ -80,7 +74,7 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
           case (drop @ Term.Select(receiver, Term.Name("drop")), List(Lit.Int(from)))
               if from >= 0 && from.toLong + length <= Int.MaxValue &&
                 standardMethod(drop) && strictSequence(receiver) =>
-            replace(
+            lint.replace(
               call,
               s"${receiver.syntax}.slice($from, ${from + length})",
               "drop-take-to-slice",
@@ -94,7 +88,7 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
         (inner.fun, inner.argClause.values) match {
           case (take @ Term.Select(receiver, Term.Name("take")), List(Lit.Int(length)))
               if length >= 0 && standardMethod(take) && strictSequence(receiver) =>
-            replace(
+            lint.replace(
               call,
               s"${receiver.syntax}.slice($from, $length)",
               "take-drop-to-slice",
@@ -105,7 +99,7 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
 
       case (drop @ Term.Select(receiver, Term.Name("drop")), List(Lit.Int(0)))
           if standardMethod(drop) && strictSequence(receiver) =>
-        replace(call, receiver.syntax, "drop-zero", "drop(0) returns the collection itself")
+        lint.replace(call, receiver.syntax, "drop-zero", "drop(0) returns the collection itself")
 
       case (take @ Term.Select(receiver, Term.Name("take")), List(Lit.Int(0)))
           if standardMethod(take) && strictSequence(receiver) =>
@@ -143,32 +137,125 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
 
   private def nonEmpty(comparison: Term.ApplyInfix)(using SemanticDocument): Patch =
     (comparison.op.value, comparison.lhs, comparison.argClause.values) match {
-      case (">", size @ Term.Select(_, Term.Name("size" | "length")), List(Lit.Int(0)))
-          if sizeMethod(size) && !size.symbol.value.startsWith("scala/collection/StringOps") =>
-        emptiness(
-          comparison,
-          size,
-          "nonEmpty",
-          "size-to-non-empty",
-          "use nonEmpty instead of a size comparison with zero"
-        )
-      case ("==", size @ Term.Select(_, Term.Name("size" | "length")), List(Lit.Int(0)))
-          if sizeMethod(size) && !size.symbol.value.startsWith("scala/collection/StringOps") =>
-        emptiness(comparison, size, "isEmpty", "size-to-is-empty", "use isEmpty instead of a size comparison with zero")
-      case ("!=", size @ Term.Select(_, Term.Name("size" | "length")), List(Lit.Int(0)))
-          if sizeMethod(size) && !size.symbol.value.startsWith("scala/collection/StringOps") =>
-        emptiness(
-          comparison,
-          size,
-          "nonEmpty",
-          "size-to-non-empty",
-          "use nonEmpty instead of a size comparison with zero"
-        )
+      case (operator, size @ Term.Select(_, Term.Name("size" | "length")), List(Lit.Int(0)))
+          if definitions.zeroComparisons(operator) && sizeMethod(size) =>
+        val (method, id) = if (operator == "==") ("isEmpty", "size-to-is-empty") else ("nonEmpty", "size-to-non-empty")
+        emptiness(comparison, size, method, id, s"use $method instead of a size comparison with zero")
       case _ => Patch.empty
     }
 
-  private def sizeMethod(selection: Term.Select)(using SemanticDocument): Boolean =
-    standardMethod(selection) || selection.symbol.value.startsWith("scala/Array#")
+  private def sizeMethod(selection: Term.Select)(using SemanticDocument): Boolean = {
+    val symbol = selection.symbol.value
+    (symbol.startsWith("scala/collection/") && !symbol.startsWith("scala/collection/StringOps")) ||
+    symbol.startsWith("scala/Array#")
+  }
+
+  private val Mirrored = Map("<" -> ">", ">" -> "<", "<=" -> ">=", ">=" -> "<=", "==" -> "==", "!=" -> "!=")
+
+  /** The receiver, operator and literal of a comparison of a size with an integer, read with the size on the left. */
+  private def sizeComparison(term: Term)(using SemanticDocument): Option[(Term, String, Int)] = term match {
+    case comparison: Term.ApplyInfix =>
+      (comparison.lhs, comparison.op.value, comparison.argClause.values) match {
+        case (size @ Term.Select(receiver, Term.Name("size" | "length")), operator, List(Lit.Int(value)))
+            if Mirrored.contains(operator) && sizeMethod(size) =>
+          Some((receiver, operator, value))
+        case (Lit.Int(value), operator, List(size @ Term.Select(receiver, Term.Name("size" | "length"))))
+            if Mirrored.contains(operator) && sizeMethod(size) =>
+          Some((receiver, Mirrored(operator), value))
+        case _ => None
+      }
+    case _ => None
+  }
+
+  private def sizeComparison(term: Term, operator: String)(using SemanticDocument): Option[(Term, Int)] =
+    sizeComparison(term).collect { case (receiver, `operator`, value) => receiver -> value }
+
+  /** The receiver of a test for emptiness, and whether the test holds when it is empty. */
+  private def emptinessTest(term: Term)(using SemanticDocument): Option[(Term, Boolean)] = term match {
+    case test @ Term.Select(receiver, Term.Name(name @ ("isEmpty" | "nonEmpty"))) if sizeMethod(test) =>
+      Some(receiver -> (name == "isEmpty"))
+    case _ => sizeComparison(term).flatMap((receiver, operator, value) =>
+        (operator, value) match {
+          case ("==" | "<=", 0) | ("<", 1) => Some(receiver -> true)
+          case ("!=" | ">", 0) | (">=", 1) => Some(receiver -> false)
+          case _                           => None
+        }
+      )
+  }
+
+  private def tautology(comparison: Term.ApplyInfix)(using SemanticDocument): Patch =
+    (comparison.op.value, sizeComparison(comparison)) match {
+      case (_, Some((_, operator @ (">=" | "<"), 0))) if !impliedOperand(comparison) =>
+        lint(
+          "tautological-size-comparison",
+          s"a size is never negative, so this comparison is always ${operator == ">="}",
+          comparison.pos
+        )
+      case (operator @ ("||" | "&&"), _) if complementary(comparison, operator) =>
+        lint(
+          "tautological-size-comparison",
+          s"a collection is either empty or not, so this ${if (operator == "||") "disjunction" else "conjunction"} " +
+            s"is always ${operator == "||"}",
+          comparison.pos
+        )
+      case ("&&", _) => impliedBound(comparison).fold(Patch.empty) { disjuncts =>
+          val clause    = comparison.argClause
+          val brackets  = clause.tokens.headOption.exists { case _: Token.LeftParen => true; case _ => false }
+          val redundant = brackets && (disjuncts == 1 || !leadingConjunct(comparison))
+          lint("tautological-size-comparison", "the size equalities imply the lower bound; remove it", comparison.pos) +
+            Patch.removeTokens(comparison.tokens.takeWhile(_.start < clause.pos.start)) +
+            (if (redundant) Patch.removeToken(clause.tokens.head) + Patch.removeToken(clause.tokens.last)
+             else Patch.empty)
+        }
+      case _ => Patch.empty
+    }
+
+  private def impliedOperand(comparison: Term.ApplyInfix)(using SemanticDocument): Boolean =
+    comparison.parent.exists {
+      case conjunction: Term.ApplyInfix => conjunction.lhs == comparison && impliedBound(conjunction).isDefined
+      case _                            => false
+    }
+
+  /** The number of disjuncts in `x.size >= n && (x.size == m || ...)` when every `m` is at least `n`. */
+  private def impliedBound(conjunction: Term.ApplyInfix)(using SemanticDocument): Option[Int] =
+    (conjunction.op.value, conjunction.argClause.values) match {
+      case ("&&", List(rhs)) => sizeComparison(conjunction.lhs, ">=").flatMap { (receiver, lower) =>
+          val equalities = operands(rhs, "||")
+          Option.when(stable(receiver) && equalities.forall(sizeComparison(_, "==").exists { (other, value) =>
+            value >= lower && other.structure == receiver.structure
+          }))(equalities.size)
+        }
+      case _ => None
+    }
+
+  private def operands(term: Term, operator: String): List[Term] = term match {
+    case chain: Term.ApplyInfix if chain.op.value == operator && chain.argClause.values.size == 1 =>
+      operands(chain.lhs, operator) ++ operands(chain.argClause.values.head, operator)
+    case other => List(other)
+  }
+
+  /** Whether a whole chain of `||` or `&&` tests one stable collection for emptiness and for the opposite. */
+  private def complementary(chain: Term.ApplyInfix, operator: String)(using SemanticDocument): Boolean =
+    !chain.parent.exists {
+      case outer: Term.ApplyInfix => outer.op.value == operator
+      case _                      => false
+    } && operands(chain, operator).flatMap(emptinessTest(_)).filter((receiver, _) => stable(receiver))
+      .groupBy((receiver, _) => receiver.structure).values.exists(_.map(_._2).distinct.size > 1)
+
+  // dropping the bound drops one evaluation of the receiver
+  @scala.annotation.tailrec
+  private def stable(term: Term): Boolean = term match {
+    case _: Term.Name | _: Term.This => true
+    case Term.Select(qualifier, _)   => stable(qualifier)
+    case _                           => false
+  }
+
+  // A disjunction left in place of a conjunction that leads a further `&&` or a tighter operator would regroup.
+  private def leadingConjunct(conjunction: Term.ApplyInfix): Boolean = conjunction.parent.exists {
+    case outer: Term.ApplyInfix =>
+      outer.lhs == conjunction && outer.op.value != "||" && outer.tokens.head.start == conjunction.pos.start
+    case _ => false
+  }
 
   private def emptiness(
       comparison: Term.ApplyInfix,
@@ -185,24 +272,14 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
   // rewritten to isEmpty or nonEmpty instead, so the two rewrites never overlap.
   private def sizeToLength(selection: Term.Select)(using SemanticDocument): Patch = selection match {
     case Term.Select(receiver, Term.Name("size"))
-        if standardMethod(selection) && (arrayType(receiver) || stringType(receiver)) && !zeroComparison(selection) =>
-      replace(selection, s"${receiver.syntax}.length", "size-to-length", "use length on an array or string")
+        if standardMethod(selection) && !definitions.zeroComparison(selection) &&
+          definitions.typeSymbol(receiver).exists(symbol => symbol == "scala/Array#" || symbol.endsWith("String#")) =>
+      lint.replace(selection, s"${receiver.syntax}.length", "size-to-length", "use length on an array or string")
     case _ => Patch.empty
   }
 
-  private def zeroComparison(selection: Term.Select): Boolean = selection.parent.exists {
-    case comparison: Term.ApplyInfix =>
-      comparison.argClause.values match {
-        case List(Lit.Int(0)) => comparison.op.value == ">" || comparison.op.value == "==" ||
-          comparison.op.value == "!="
-        case _ => false
-      }
-    case _ => false
-  }
-
-  private def arrayType(term: Term)(using SemanticDocument): Boolean = typeSymbol(term).contains("scala/Array#")
-
-  private def stringType(term: Term)(using SemanticDocument): Boolean = typeSymbol(term).exists(_.endsWith("String#"))
+  private def arrayType(term: Term)(using SemanticDocument): Boolean =
+    definitions.typeSymbol(term).contains("scala/Array#")
 
   // An array printed directly renders its identity, not its elements.
   private def arrayPrint(call: Term.Apply)(using SemanticDocument): Patch = call.fun match {
@@ -243,10 +320,14 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
   private def redundantConversion(selection: Term.Select)(using SemanticDocument): Patch = selection match {
     case Term.Select(receiver, Term.Name(conversion))
         if standardMethod(selection) &&
-          (identityConversions.get(conversion).exists(typeSymbol(receiver).contains) ||
+          (identityConversions.get(conversion).exists(definitions.typeSymbol(receiver).contains) ||
             (conversion == "toSeq" && strictSequence(receiver) && assertionArgument(selection))) =>
-      Patch.replaceTree(selection, receiver.syntax) +
-        lint("redundant-collection-conversion", "remove the identity collection conversion", selection.pos)
+      lint.replace(
+        selection,
+        receiver.syntax,
+        "redundant-collection-conversion",
+        "remove the identity collection conversion"
+      )
     case _ => Patch.empty
   }
 
@@ -305,11 +386,13 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
         case reference: (Term.Name | Term.Select)
             if reference.symbol.value.startsWith("scala/") && reference.symbol.isGlobal &&
               reference.symbol.value.endsWith(".") && companions(reference.symbol.displayName) =>
-          replace(call, s"${companion.syntax}.empty$types", "empty-collection", "use empty for an empty collection")
+          lint.replace(
+            call,
+            s"${companion.syntax}.empty$types",
+            "empty-collection",
+            "use empty for an empty collection"
+          )
         case _ => Patch.empty
       }
     }
-
-  private def replace(tree: Tree, replacement: String, id: String, message: String): Patch =
-    Patch.replaceTree(tree, replacement) + lint(id, message, tree.pos)
 }

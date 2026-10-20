@@ -13,6 +13,8 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.NameKinds.DefaultGetterName
 import dotty.tools.dotc.core.Names.DerivedName
 import dotty.tools.dotc.core.Names.TermName
+import dotty.tools.dotc.core.Names.termName
+import dotty.tools.dotc.core.Names.typeName
 import dotty.tools.dotc.core.Phases.Phase
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.NoSymbol
@@ -20,13 +22,16 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.AppliedType
+import dotty.tools.dotc.core.Types.ConstantType
 import dotty.tools.dotc.core.Types.NamedType
 import dotty.tools.dotc.core.Types.Type
+import dotty.tools.dotc.core.Types.TypeRef
 import dotty.tools.dotc.core.Types.TypeTraverser
 import dotty.tools.dotc.core.tasty.TastyUnpickler
 import dotty.tools.dotc.fromtasty.ReadTasty
 import dotty.tools.dotc.fromtasty.TASTYCompiler
 import dotty.tools.dotc.reporting.StoreReporter
+import dotty.tools.dotc.util.Spans.Span
 import dotty.tools.io.AbstractFile
 import java.io.File
 import java.nio.file.FileSystems
@@ -39,26 +44,30 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Try
 import scala.util.Using
 import scala.util.control.NonFatal
+import scala.util.matching.Regex
 
 /** Builds the reference graph and algebraic model of a whole build from the TASTy in its outputs. */
 object Extraction {
 
-  /** The extracted model, with classes that could not be read or analysed listed as problems. */
+  /** The extracted model, with classes that could not be read or analysed listed as problems; `hot` holds the nodes of
+    * the classes the build marks hot, when it marks any.
+    */
   case class Result(
       graph: Graph,
       algebra: Algebra.Model,
       smells: Smells.Model,
+      designs: Designs.Model,
+      structures: Structures.Model,
       members: Members.Model,
       clones: Vector[Clones.Group],
       bytecode: Vector[Bytecode.Method],
       complexities: Vector[Complexity.Summary],
       pipelines: Vector[Pipelines.Chain],
       megamorphic: Vector[Megamorphic.Site],
+      hot: Option[Set[String]],
       purity: Purity.Model,
       problems: Vector[String]
   )
-
-  val DefaultGenerated: Vector[String] = Vector("glob:**/src/generated/**", "glob:src/generated/**")
 
   // The TASTy unpickler recurses over long import selector lists and deep trees.
   private val StackSize = 1L << 30
@@ -66,18 +75,30 @@ object Extraction {
   // A hierarchy of one case is a single implementation, which another rule reports.
   private val MinimumCases = 2
 
+  // A string naming a member, alone or at the head of a call: `Owner.member`, `pkg.Owner.member` or `Owner.member(...`.
+  private val Reference = """((?:[a-z][A-Za-z0-9_]*\.)*)([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(\(.*)?""".r
+
+  private val Width = "[0-9]+".r
+
+  // File names read like references to members.
+  private val Extensions =
+    Set("scala", "sc", "sbt", "java", "class", "tasty", "jar", "md", "txt", "json", "conf", "xml")
+
   /** Extracts the build `manifest` describes; `concurrent` names methods that run the functions passed to them on other
-    * threads, beside the standard ones.
+    * threads, beside the standard ones, `reflective` globs the types the build names only in strings, and `hot` the
+    * classes whose code runs hot, with `!` before a glob leaving out what it matches.
     */
   def read(
       manifest: Manifest,
-      generated: Vector[String] = DefaultGenerated,
-      concurrent: Set[String] = Set.empty
+      generated: Vector[String] = Vector.empty,
+      concurrent: Set[String] = Set.empty,
+      reflective: Vector[String] = Vector.empty,
+      hot: Vector[String] = Vector.empty
   ): Either[Vector[String], Result] = {
     val result = Promise[Either[Vector[String], Result]]()
     val thread = Thread(
       Thread.currentThread.getThreadGroup,
-      () => result.complete(Try(extract(manifest, generated, concurrent))): Unit,
+      () => result.complete(Try(extract(manifest, generated, concurrent, reflective, hot))): Unit,
       "baumkuchen-extraction",
       StackSize
     )
@@ -91,12 +112,22 @@ object Extraction {
   private def extract(
       manifest: Manifest,
       generated: Vector[String],
-      concurrent: Set[String]
+      concurrent: Set[String],
+      reflective: Vector[String],
+      hot: Vector[String]
   ): Either[Vector[String], Result] = {
     // The compiler aborts the whole run on a file whose names or sections it cannot index, so those are set aside.
-    val (tasty, unreadable) =
-      manifest.outputs.flatMap(output => files(output.path).filter(_.toString.endsWith(".tasty")))
-        .partition(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess)
+    // A platform twin compiles the shared sources again, so only the classes the JVM modules lack are its own. The
+    // compiler finds every class through the directories of the files it reads, in their order, so the JVM modules'
+    // come first and the shared classes resolve to their copies.
+    val (twins, primary)    = manifest.outputs.partition(output => manifest.platforms(output.module))
+    val shared              = primary.flatMap(output => files(output.path).map(output.path.relativize(_))).toSet
+    val (tasty, unreadable) = (primary ++ twins).flatMap(output =>
+      files(output.path).filter(file =>
+        file.toString.endsWith(".tasty") &&
+          !(manifest.platforms(output.module) && shared(output.path.relativize(file)))
+      )
+    ).partition(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess)
     val skipped =
       unreadable.map(file => s"class file ${file.getFileName.toString.stripSuffix(".tasty")} could not be read")
     val roots = manifest.outputs.flatMap(output => entryPoints(output.path)).toSet
@@ -106,12 +137,15 @@ object Extraction {
         Graph(Map.empty, Map.empty, roots),
         Algebra.Model(Vector.empty, Vector.empty, Map.empty, Vector.empty, Vector.empty),
         Smells.Model(Vector.empty, Map.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty),
+        Designs.Model.empty,
+        Structures.Model.empty,
         Members.Model.empty,
         Vector.empty,
         Vector.empty,
         Vector.empty,
         Vector.empty,
         Vector.empty,
+        None,
         Purity.Model.empty,
         Vector.empty
       ))
@@ -121,7 +155,8 @@ object Extraction {
           manifest.outputs,
           manifest.libraries,
           generated.map(FileSystems.getDefault.getPathMatcher(_)),
-          concurrent
+          concurrent,
+          reflective.map(qualifiedNames(_))
         )
       val arguments = Array(
         "-from-tasty",
@@ -136,17 +171,37 @@ object Extraction {
       val reporter = Reader(phase).process(arguments, StoreReporter())
       val problems = skipped ++ phase.problems ++ reporter.allErrors.map(_.message).distinct
       val graph    = phase.graph(roots)
+      // A platform twin replaces some sources with its own of the same name, so the types in them cannot move.
+      val twinned = manifest.sources.filter(source => manifest.platforms(source.module)).groupMap(_.module)(_.path)
+        .values.map(paths => (paths.toSet, paths.map(_.getFileName).toSet)).toVector
+      val replaced = manifest.sources.collect {
+        case source
+            if !manifest.platforms(source.module) &&
+              twinned.exists((paths, names) => !paths(source.path) && names(source.path.getFileName)) =>
+          source.path
+      }
+      val structures = phase.structures.copy(extents =
+        phase.structures.extents.filter((key, _) =>
+          graph.nodes.get(key).forall(node => !replaced.exists(_.endsWith(node.source)))
+        )
+      )
       if (graph.nodes.isEmpty && problems.nonEmpty) Left(problems)
       else Right(Result(
         graph,
         phase.algebra,
         phase.smells,
+        phase.designs,
+        structures,
         phase.memberships,
         phase.duplicates,
-        Bytecode.read(manifest.outputs.map(_.path)),
+        Bytecode.read(primary.map(_.path)),
         phase.complexities,
         phase.pipelines,
-        phase.megamorphic,
+        // Megamorphic calls cost only where the JVM compiles hot code, which a platform twin never runs on.
+        phase.megamorphic.filter(site =>
+          graph.nodes.get(site.node).exists(node => !manifest.platforms(node.module) && heated(hot, node.name))
+        ),
+        Option.when(hot.nonEmpty)(graph.nodes.keySet.filter(heated(hot, _))),
         phase.purity,
         problems
       ))
@@ -171,6 +226,22 @@ object Extraction {
   } yield artifactDirectory ->
     (version.split("[.-]").toVector.map(_.takeWhile(_.isDigit)).takeWhile(_.nonEmpty).map(BigInt(_)), version)
 
+  // The compiler plugin, which depends on nothing of the analysis, reads its hot globs the same way.
+  /** A glob over qualified names, matched against a name with a dot appended: `*` stands for one name segment or part
+    * of one, and `**` for any number of segments.
+    */
+  @SuppressWarnings(Array("baumkuchen:duplicate-code"))
+  private def qualifiedNames(glob: String): Regex = glob.split('.').map {
+    case "**"    => "(?:[^.]+\\.)*"
+    case segment => segment.split("\\*", -1).map(Regex.quote).mkString("[^.]*") + "\\."
+  }.mkString.r
+
+  private def heated(globs: Vector[String], name: String): Boolean = {
+    val (excluded, included) = globs.partition(_.startsWith("!"))
+    included.exists(qualifiedNames(_).matches(s"$name.")) &&
+    !excluded.exists(glob => qualifiedNames(glob.drop(1)).matches(s"$name."))
+  }
+
   private def files(directory: Path): Vector[Path] =
     if (!Files.isDirectory(directory)) Vector.empty
     else Using.resource(Files.walk(directory))(_.toList.asScala.toVector.filter(Files.isRegularFile(_)))
@@ -179,12 +250,11 @@ object Extraction {
   private def entryPoints(directory: Path): Vector[String] = {
     val services = files(directory.resolve("META-INF/services")).flatMap(Files.readAllLines(_).asScala)
       .map(_.takeWhile(_ != '#').trim)
-    val plugins = Some(directory.resolve("plugin.properties")).filter(Files.isRegularFile(_)).toVector
-      .flatMap(Files.readAllLines(_).asScala).collect {
-        case line if line.startsWith("pluginClass=") => line.stripPrefix("pluginClass=").trim
-      }
-    val autoplugins = Some(directory.resolve("sbt/sbt.autoplugins")).filter(Files.isRegularFile(_)).toVector
-      .flatMap(Files.readAllLines(_).asScala).map(_.trim)
+    def lines(file: Path) = Some(file).filter(Files.isRegularFile(_)).toVector.flatMap(Files.readAllLines(_).asScala)
+    val plugins           = lines(directory.resolve("plugin.properties")).collect {
+      case line if line.startsWith("pluginClass=") => line.stripPrefix("pluginClass=").trim
+    }
+    val autoplugins = lines(directory.resolve("sbt/sbt.autoplugins")).map(_.trim)
     (services ++ plugins ++ autoplugins).filter(_.nonEmpty).map(_.stripSuffix("$").replace('$', '.'))
   }
 
@@ -241,30 +311,47 @@ object Extraction {
       outputs: Vector[Output],
       libraries: Set[String],
       generated: Vector[PathMatcher],
-      concurrent: Set[String]
+      concurrent: Set[String],
+      reflective: Vector[Regex]
   ) extends Phase {
-    private val roots           = outputs.map(output => output -> output.path.toAbsolutePath.normalize)
-    private val nodes           = mutable.Map.empty[String, Node]
-    private val edges           = mutable.Map.empty[String, mutable.Set[String]]
-    private val mainRoots       = mutable.Set.empty[String]
-    private val registered      = mutable.Map.empty[Symbol, Option[String]]
-    private val keys            = mutable.Map.empty[Symbol, Option[String]]
-    private val parameters      = mutable.Map.empty[Symbol, Vector[Algebra.Field]]
-    private val tracked         = mutable.Map.empty[Symbol, Boolean]
-    private val products        = mutable.Map.empty[Symbol, Algebra.Product]
-    private val required        = mutable.Map.empty[Symbol, Algebra.Product]
-    private val sums            = mutable.Map.empty[String, Algebra.Sum]
-    private val pending         = mutable.ArrayBuffer.empty[Pending]
-    private val sites           = mutable.Map.empty[String, Vector[Algebra.Site]]
-    private val bindings        = mutable.Map.empty[Symbol, tpd.Tree]
-    private val defaults        = mutable.Map.empty[Symbol, tpd.Tree]
-    private val failures        = mutable.ArrayBuffer.empty[String]
-    private val methods         = mutable.Map.empty[Symbol, Smells.Method]
-    private val results         = mutable.Map.empty[Symbol, Option[String]]
-    private val calls           = mutable.Map.empty[Symbol, (Int, Int)]
-    private val discards        = mutable.Map.empty[Symbol, Int]
-    private val abstracts       = mutable.Map.empty[Symbol, (String, String, String)]
-    private val implements      = mutable.Map.empty[Symbol, mutable.Set[(String, String)]]
+    private val roots      = outputs.map(output => output -> output.path.toAbsolutePath.normalize)
+    private val nodes      = mutable.Map.empty[String, Node]
+    private val reflected  = mutable.Set.empty[String]
+    private val edges      = mutable.Map.empty[String, mutable.Set[String]]
+    private val mainRoots  = mutable.Set.empty[String]
+    private val registered = mutable.Map.empty[Symbol, Option[String]]
+    private val keys       = mutable.Map.empty[Symbol, Option[String]]
+    private val parameters = mutable.Map.empty[Symbol, Vector[Algebra.Field]]
+    private val tracked    = mutable.Map.empty[Symbol, Boolean]
+    private val products   = mutable.Map.empty[Symbol, Algebra.Product]
+    private val required   = mutable.Map.empty[Symbol, Algebra.Product]
+    private val sums       = mutable.Map.empty[String, Algebra.Sum]
+    private val pending    = mutable.ArrayBuffer.empty[Pending]
+    private val sites      = mutable.Map.empty[String, Vector[Algebra.Site]]
+    private val bindings   = mutable.Map.empty[Symbol, tpd.Tree]
+    private val defaults   = mutable.Map.empty[Symbol, tpd.Tree]
+    private val failures   = mutable.ArrayBuffer.empty[String]
+    private val methods    = mutable.Map.empty[Symbol, Smells.Method]
+    private val results    = mutable.Map.empty[Symbol, Option[String]]
+    private val calls      = mutable.Map.empty[Symbol, (Int, Int)]
+    private val discards   = mutable.Map.empty[Symbol, Int]
+    private val abstracts  = mutable.Map.empty[Symbol, (String, String, String)]
+    private val implements = mutable.Map.empty[Symbol, mutable.Set[(String, String)]]
+    private val designed   = mutable.ArrayBuffer.empty[Designs.Method]
+    private val aliases    = mutable.ArrayBuffer.empty[Designs.Alias]
+    private val stuttering = mutable.Map.empty[Symbol, (String, String)]
+    private val echoes     = mutable.Map.empty[Symbol, Int]
+    private val literals   = mutable.ArrayBuffer.empty[(String, String, String, String, Node)]
+    private val applied    = mutable.ArrayBuffer.empty[Structures.Applied]
+    private val built      = mutable.Map.empty[Symbol, Int]
+    private val grouped    = mutable.ArrayBuffer.empty[Structures.Member]
+    private val detachable = mutable.Set.empty[Symbol]
+    private val dispatched = mutable.ArrayBuffer.empty[Structures.Dispatch]
+    private val extents    = mutable.Map.empty[String, (Int, Int)]
+    private val structured = mutable.ArrayBuffer.empty[Structures.Model]
+    // Abstractions some class implements, beside those only lambdas implement.
+    private val subclassed      = mutable.Set.empty[Symbol]
+    private val specialised     = mutable.Set.empty[Symbol]
     private val generics        = mutable.Map.empty[Symbol, (String, String, Vector[String])]
     private val arguments       = mutable.Map.empty[(Symbol, Int), mutable.Map[String, Int]]
     private val testUses        = mutable.Map.empty[(Symbol, Int), Int]
@@ -292,7 +379,7 @@ object Extraction {
     private val hierarchies     = mutable.ArrayBuffer.empty[(Symbol, String, String)]
     private val bodied          = mutable.Set.empty[Symbol]
     private val enumerations    = mutable.ArrayBuffer.empty[Algebra.Enumeration]
-    private val dispatches      = mutable.Map.empty[(Symbol, Symbol), String]
+    private val dispatches      = mutable.Map.empty[(Symbol, Symbol), (String, Type)]
     private val megamorphicList = mutable.ArrayBuffer.empty[Megamorphic.Site]
 
     def phaseName: String = "baumkuchen-collect"
@@ -337,6 +424,7 @@ object Extraction {
           definition.deferred,
           definition.public,
           definition.variable && !assigned(symbol),
+          detachable(symbol),
           definition.info.test,
           definition.info.generated,
           definition.suppressed
@@ -354,13 +442,14 @@ object Extraction {
         )
       )
       clones ++= fragments.groups()
-      megamorphicList ++= dispatches.toVector.flatMap { case ((caller, callee), node) =>
+      val candidates = classes.toVector
+      megamorphicList ++= dispatches.toVector.flatMap { case ((caller, callee), (node, receiver)) =>
         // Test doubles never reach a call in main code at run time.
         val test            = nodes.get(node).exists(_.test)
-        val implementations = classes.toVector.flatMap { cls =>
+        val implementations = candidates.flatMap { cls =>
           Option.when(
             !cls.isOneOf(Flags.Trait | Flags.Abstract) && cls.derivesFrom(callee.owner) &&
-              (test || !key(cls).flatMap(nodes.get).exists(_.test))
+              (test || !key(cls).flatMap(nodes.get).exists(_.test)) && reaches(cls, callee.owner, receiver)
           )(
             callee.denot.matchingMember(cls.thisType)
           ).filter(implementation => implementation.exists && !implementation.is(Flags.Deferred))
@@ -378,14 +467,12 @@ object Extraction {
           key(method).map(Complexity.Summary(qualifiedName(method), _, terms))
         )
       )
-      val chains = Chains()
-      pipelineList ++= bodies.toVector.flatMap { (method, definition) =>
-        for {
-          node <- key(method)
-          if method.owner.isClass && !method.is(Flags.Synthetic) && nodes.get(node).exists(!_.generated)
-        } yield chains.of(qualifiedName(method), node, definition.rhs)
-      }.flatten
+      val chains = Pipelines.Chains()
+      pipelineList ++= bodies.toVector.filter((method, _) => handwritten(method)).flatMap((method, definition) =>
+        key(method).toVector.flatMap(chains.of(qualifiedName(method), _, definition.rhs))
+      )
       purities += purity()
+      structured += structure()
       units
     }
 
@@ -419,7 +506,14 @@ object Extraction {
         } yield Smells.Usage(method, result, total, discards.getOrElse(symbol, 0), tests)
       },
       abstracts.toVector.map { case (symbol, (name, node, module)) =>
-        Smells.Abstraction(name, node, module, implements.get(symbol).fold(Vector.empty)(_.toVector.sorted))
+        Smells.Abstraction(
+          name,
+          node,
+          module,
+          implements.get(symbol).fold(Vector.empty)(_.toVector.sorted),
+          functional = implements.contains(symbol) && !subclassed(symbol),
+          specialised = specialised(symbol)
+        )
       },
       arguments.toVector.flatMap { case ((symbol, index), types) =>
         generics.get(symbol).map((owner, node, parameters) =>
@@ -459,9 +553,6 @@ object Extraction {
             val position = tree.sourcePos
             node -> (if (position.exists) s"${position.source.path}:${position.line + 1}" else "unknown")
         }
-      val authored = bodies.keys.filter(method =>
-        method.owner.isClass && !method.is(Flags.Synthetic) && key(method).flatMap(nodes.get).exists(!_.generated)
-      )
       Purity.Model(
         effects.pointless.flatMap((method, callee, tree) =>
           site(method, tree).map((node, location) => Purity.Discard(callee, node, location))
@@ -472,7 +563,7 @@ object Extraction {
         effects.shared.flatMap((method, variable, entry, tree) =>
           site(method, tree).map((node, location) => Purity.SharedWrite(variable, entry, node, location))
         ),
-        authored.flatMap(method =>
+        bodies.keys.filter(handwritten(_)).flatMap(method =>
           key(method).map(node =>
             qualifiedName(method) ->
               Purity.Method(node, effects.verdict(method), effects.observed(method), effects.role(method))
@@ -516,7 +607,20 @@ object Extraction {
     private val MaximumInlinedReceivers = 2
 
     /** Records a virtual call made inside a loop by `caller`, owned by `node`. */
-    def dispatch(callee: Symbol, caller: Option[Symbol], node: Option[String])(using Context): Unit = {
+    /** Whether a value of `cls` can be the receiver of static type `receiver` at a call of a member of `owner`: a class
+      * extending `owner` with other concrete type arguments than the receiver's never is.
+      */
+    private def reaches(cls: Symbol, owner: Symbol, receiver: Type)(using Context): Boolean = {
+      def concrete(tpe: Type) =
+        tpe.widenDealias.typeSymbol.isClass && !tpe.existsPart(_.typeSymbol.isOneOf(Flags.TypeParam | Flags.Deferred))
+      val expected = receiver.widen.baseType(owner).argInfos
+      val actual   = cls.typeRef.baseType(owner).argInfos
+      expected.size != actual.size || expected.zip(actual).forall((left, right) =>
+        !concrete(left) || !concrete(right) || left <:< right || right <:< left
+      )
+    }
+
+    def dispatch(callee: Symbol, caller: Option[Symbol], node: Option[String], receiver: Type)(using Context): Unit = {
       val universal = Set[Symbol](defn.AnyClass, defn.ObjectClass, defn.ProductClass, defn.SerializableClass)
       if (
         // A val is read through a getter, which dispatches like any other method.
@@ -526,8 +630,12 @@ object Extraction {
       ) for {
         method <- caller
         key    <- node
-      } dispatches((method, callee)) = key
+      } dispatches((method, callee)) = (key, receiver)
     }
+
+    // The build's own methods: members of its classes, neither synthetic nor generated.
+    private def handwritten(method: Symbol)(using Context): Boolean =
+      method.owner.isClass && !method.is(Flags.Synthetic) && key(method).flatMap(nodes.get).exists(!_.generated)
 
     /** Records a method body for cost bounds, reported for the methods of build classes. */
     def body(symbol: Symbol, definition: tpd.DefDef)(using Context): Unit =
@@ -577,7 +685,13 @@ object Extraction {
             // Other builds can implement what a library exports, unless it is sealed.
             if (!cls.is(Flags.Enum) && !info.generated && !info.test && (cls.is(Flags.Sealed) || !exported(cls)))
               abstracts(cls) = (name, key, info.module)
-          } else cls.asClass.baseClasses.drop(1).foreach(implement(_, name, info.module))
+          } else
+            cls.asClass.baseClasses.drop(1).foreach { parent =>
+              subclassed += parent
+              implement(parent, name, info.module)
+              if (cls.typeRef.baseType(parent).argInfos.exists(_.widenDealias.typeSymbol.isPrimitiveValueClass))
+                specialised += parent
+            }
         }
       }
     }
@@ -614,7 +728,7 @@ object Extraction {
       implements.getOrElseUpdate(abstraction, mutable.Set.empty) += (name -> module): Unit
 
     /** Records a method signature of the build for the argument, result and parameter group checks. */
-    def signature(method: Symbol)(using Context): Unit =
+    def signature(method: Symbol, body: tpd.Tree)(using Context): Unit =
       key(method).flatMap(nodes.get).foreach { info =>
         val fields = fieldsOf(method)
         methods(method) = Smells.Method(
@@ -625,9 +739,286 @@ object Extraction {
           method.allOverriddenSymbols.hasNext,
           exported(method),
           info.generated,
-          info.test
+          info.test,
+          stored(method, body),
+          method.paramSymss.find(_.headOption.exists(_.isTerm)).getOrElse(Nil).zipWithIndex.collect {
+            case (parameter, index) if parameter.is(Flags.Inline) => index
+          }.toSet,
+          method.is(Flags.Inline)
         )
       }
+
+    /** The parameters of the first term parameter list that `body` passes only to constructors, by index. */
+    private def stored(method: Symbol, body: tpd.Tree)(using Context): Set[Int] = {
+      def constructs(application: tpd.Apply) = application.symbol.isConstructor ||
+        application.symbol.name == nme.apply && application.symbol.is(Flags.Synthetic)
+      val passed = body.filterSubTrees {
+        case application: tpd.Apply => constructs(application)
+        case _                      => false
+      }.collect { case application: tpd.Apply => application.args }.flatten.map(Predicates.unwrap(_).symbol)
+      def uses(parameter: Symbol) = body.filterSubTrees {
+        case reference: tpd.Ident => reference.symbol == parameter
+        case _                    => false
+      }.size
+      method.paramSymss.find(_.headOption.exists(_.isTerm)).getOrElse(Nil).zipWithIndex.collect {
+        case (parameter, index) if uses(parameter) > 0 && uses(parameter) == passed.count(_ == parameter) => index
+      }.toSet
+    }
+
+    def designs: Designs.Model = Designs.Model(designed.toVector, aliases.toVector)
+
+    /** Records a method of a type of the build for the design rules. */
+    def design(method: Symbol, body: tpd.Tree)(using Context): Unit = {
+      val owner = method.owner
+      // A supertype fixes the name and signature of a method that implements it.
+      if (
+        owner.isClass && !owner.isAnonymousClass && !method.isOneOf(Flags.Synthetic | Flags.Accessor) &&
+        !method.isSetter && !method.name.is(DefaultGetterName) && !method.allOverriddenSymbols.hasNext
+      )
+        key(method).flatMap(nodes.get).foreach { info =>
+          val parameters = method.paramSymss.find(_.headOption.exists(_.isTerm)).getOrElse(Nil)
+          val first      = parameters.headOption
+          designed += Designs.Method(
+            qualifiedName(method),
+            qualifiedName(owner),
+            info.name,
+            owner.is(Flags.ModuleClass),
+            implementing(owner),
+            !method.isOneOf(Flags.Private | Flags.Protected) && !method.privateWithin.exists,
+            first.map(_.info.widenDealias.typeSymbol).filter(_.isClass).map(qualifiedName(_)),
+            parameters.map(_.info.widenDealias.show).toVector,
+            method.info.finalResultType.widenDealias.show,
+            // An extension method is what the rule would make of it already.
+            !method.is(Flags.ExtensionMethod) && first.exists(receiving(method, _, body)),
+            info.generated,
+            info.test
+          )
+          if (!info.generated && !method.is(Flags.ExtensionMethod)) dispatch(method, parameters, body, info)
+        }
+    }
+
+    /** Records a method whose result is a match on an enum of the build that it takes as a parameter. */
+    private def dispatch(method: Symbol, parameters: List[Symbol], body: tpd.Tree, info: Node)(using Context): Unit =
+      concluding(body) match {
+        case tpd.Match(selector, cases) =>
+          val parameter   = Predicates.unwrap(selector).symbol
+          val enumeration = parameter.info.widenDealias.typeSymbol
+          // A function that needs more of its owner than the enum cannot move into it.
+          val anchored = body.existsSubTree {
+            case reference: tpd.RefTree =>
+              reference.symbol.exists && reference.symbol.owner == method.owner &&
+              reference.symbol != method && reference.symbol != enumeration.companionModule
+            case _ => false
+          }
+          if (
+            parameters.contains(parameter) && enumeration.isClass && enumeration.is(Flags.Enum) &&
+            !enumeration.is(Flags.Case) && method.owner != enumeration && !anchored
+          )
+            key(enumeration).flatMap(nodes.get).foreach { owned =>
+              val children = enumeration.children.toSet
+              val covered  = mutable.Set.empty[Symbol]
+              cases.foreach(_.pat.foreachSubTree(pattern =>
+                covered ++= List(pattern.symbol, pattern.tpe.typeSymbol, pattern.tpe.termSymbol).filter(children)
+              ))
+              dispatched += Structures.Dispatch(
+                qualifiedName(method),
+                qualifiedName(method.owner),
+                info.name,
+                qualifiedName(enumeration),
+                parameter.name.toString,
+                covered.size,
+                children.size,
+                method.owner == enumeration.companionModule.moduleClass || owned.source == info.source
+              )
+            }
+        case _ => ()
+      }
+
+    @annotation.tailrec
+    private def concluding(tree: tpd.Tree): tpd.Tree = Predicates.unwrap(tree) match {
+      case tpd.Block(_, expression) => concluding(expression)
+      case other                    => other
+    }
+
+    // Traits the compiler gives case classes and objects, which say nothing of what they implement.
+    private val Markers = Set("scala.Product", "scala.Equals", "java.io.Serializable")
+
+    // An object implementing a trait, as a type-class instance does, is more than a holder of functions.
+    private def implementing(cls: Symbol)(using Context): Boolean = cls.asClass.parentSyms.exists { parent =>
+      val name = parent.fullName.toString
+      parent.is(Flags.Trait) && !Markers(name) && !name.startsWith("scala.deriving.")
+    }
+
+    /** Whether every method `body` calls, beside those of objects, is called on `parameter`, and nothing in it names
+      * another member of the method's owner.
+      */
+    private def receiving(method: Symbol, parameter: Symbol, body: tpd.Tree)(using Context): Boolean = {
+      val receivers = body.filterSubTrees {
+        case select: tpd.Select =>
+          select.symbol.is(Flags.Method) && select.qualifier.isTerm &&
+          !select.qualifier.symbol.isOneOf(Flags.Module | Flags.Package)
+        case _ => false
+      }.collect { case select: tpd.Select => Predicates.unwrap(select.qualifier).symbol }
+      val owned = body.existsSubTree {
+        case reference: tpd.Ident =>
+          reference.symbol.exists && reference.symbol.owner == method.owner && reference.symbol != method
+        case tpd.This(_) => true
+        case _           => false
+      }
+      receivers.nonEmpty && receivers.forall(_ == parameter) && !owned
+    }
+
+    /** Records a transparent alias beside an object of the same name. */
+    def alias(symbol: Symbol)(using Context): Unit = {
+      // A top-level alias belongs to its file's wrapper object, beside which the package holds the object.
+      val scope     = if (symbol.owner.isTopLevelDefinitionsObject) symbol.owner.owner else symbol.owner
+      val companion = scope.info.member(symbol.name.toTermName).symbol
+      val target    = symbol.info.hiBound
+      // An alias of a type its object holds, as the opaque type of a newtype, names what the object already defines.
+      val held = target match {
+        case reference: TypeRef => reference.prefix.termSymbol == companion
+        case _                  => false
+      }
+      if (companion.is(Flags.Module) && !held)
+        key(symbol).foreach { node =>
+          val element    = target.widenDealias.baseType(requiredClass("scala.collection.Iterable")).argInfos.lastOption
+          val operations = companion.moduleClass.info.decls.toList.count(member =>
+            member.is(Flags.Method) && !member.isOneOf(Flags.Synthetic | Flags.Private) && !member.isConstructor
+          )
+          aliases += Designs.Alias(
+            qualifiedName(symbol),
+            node,
+            target.show,
+            element.exists(tpe => defn.isTupleNType(tpe.widenDealias) || tpe.typeSymbol.name.toString == "NamedTuple"),
+            operations
+          )
+        }
+      if (!companion.is(Flags.Module)) target match {
+        case constructed: AppliedType if constructed.args.exists {
+              case ConstantType(_) => true
+              case _               => false
+            } =>
+          key(symbol).foreach(node =>
+            applied += Structures.Applied(
+              qualifiedName(symbol),
+              node,
+              qualifiedName(scope),
+              qualifiedName(constructed.tycon.typeSymbol)
+            )
+          )
+        case _ => ()
+      }
+    }
+
+    def structures: Structures.Model = structured.lastOption.getOrElse(Structures.Model.empty)
+
+    /** Records the extent of a class of the build, the constructions its parents make, and its fields named like it. */
+    def structure(cls: Symbol, definition: tpd.TypeDef, template: tpd.Template)(using Context): Unit =
+      key(cls).flatMap(nodes.get).filterNot(_.generated).foreach { info =>
+        // An anonymous class is a construction of what it extends.
+        if (!cls.isAnonymousClass) {
+          template.parents.foreach(_.foreachSubTree {
+            case tpd.New(tpt) => built(tpt.tpe.typeSymbol) = built.getOrElse(tpt.tpe.typeSymbol, 0) - 1
+            case _            => ()
+          })
+          if (info.outer.isEmpty && info.name == qualifiedName(cls) && definition.span.exists) {
+            // A companion spans its own lines, and a synthetic one those of its class.
+            val position     = definition.sourcePos
+            val (start, end) = extents.getOrElse(info.name, (position.startLine, position.endLine))
+            extents(info.name) = (start.min(position.startLine), end.max(position.endLine))
+          }
+          if (!cls.is(Flags.ModuleClass))
+            cls.asClass.paramAccessors.filter(field =>
+              !field.is(Flags.Private) && stutters(cls.name.toString, field.name.toString)
+            ).foreach(field => stuttering(field) = (qualifiedName(cls), info.name))
+        }
+      }
+
+    // A field named like its class reads `graph.graph` wherever a value is named for its type.
+    private def stutters(cls: String, field: String): Boolean =
+      Vector(cls, s"${cls}s", s"${cls}es").exists(field.equalsIgnoreCase(_))
+
+    /** Records a member of an object with what its definition names: whether it names anything else of its object, and
+      * for an object that is neither a companion nor an instance, the members and types it names.
+      */
+    def group(member: Symbol, definition: tpd.ValOrDefDef)(using Context): Unit = {
+      val owner = member.owner
+      if (
+        owner.is(Flags.ModuleClass) && !owner.isTopLevelDefinitionsObject &&
+        !member.isOneOf(Flags.Synthetic | Flags.Module) && !member.isConstructor &&
+        !member.name.is(DefaultGetterName) && !member.allOverriddenSymbols.hasNext
+      )
+        key(member).flatMap(nodes.get).filterNot(_.generated).foreach { info =>
+          val siblings = mutable.Set.empty[String]
+          val types    = mutable.Set.empty[String]
+          definition.foreachSubTree { tree =>
+            if (tree.symbol.exists && tree.symbol.owner == owner && tree.symbol != member)
+              siblings += tree.symbol.name.toString
+            key(tree.tpe.typeSymbol).foreach(types += _)
+          }
+          if (siblings.isEmpty && !types(info.name)) detachable += member
+          if (!info.test && !owner.companionClass.exists && !implementing(owner))
+            grouped += Structures.Member(
+              member.name.toString,
+              qualifiedName(owner),
+              info.name,
+              siblings.toSet,
+              types.toSet - info.name
+            )
+        }
+    }
+
+    /** Records the field reads, constructions and member names in strings the structure rules count. */
+    def observe(tree: tpd.Tree, from: Option[String])(using Context): Unit = tree match {
+      case tpd.Select(qualifier, name)
+          if tree.symbol.is(Flags.ParamAccessor) && qualifier.symbol.exists && qualifier.symbol.name == name =>
+        echoes(tree.symbol) = echoes.getOrElse(tree.symbol, 0) + 1
+      case tpd.New(tpt) => built(tpt.tpe.typeSymbol) = built.getOrElse(tpt.tpe.typeSymbol, 0) + 1
+      case tpd.Literal(constant) if constant.tag == Constants.StringTag =>
+        constant.stringValue match {
+          case Reference(path, owner, member, _) if !Extensions(member) =>
+            from.flatMap(nodes.get).filterNot(_.generated).foreach(info =>
+              literals += ((constant.stringValue, path, owner, member, info))
+            )
+          case _ => ()
+        }
+      case _ => ()
+    }
+
+    private def structure()(using Context): Structures.Model = {
+      val types    = classes.toVector.filter(cls => !cls.isAnonymousClass && key(cls).isDefined)
+      val named    = types.groupBy(_.effectiveName.toString)
+      val mentions = literals.toVector.flatMap { (text, path, owner, member, info) =>
+        val candidates =
+          named.getOrElse(owner, Vector.empty).filter(cls => path.isEmpty || qualifiedName(cls) == path + owner)
+        Option.when(candidates.nonEmpty && !candidates.exists(cls =>
+          cls.info.member(termName(member)).exists || cls.info.member(typeName(member)).exists
+        ))(Structures.Mention(text, owner, member, info.name, info.test))
+      }
+      val concretes = types.filterNot(_.is(Flags.Trait)).flatMap(cls =>
+        key(cls).flatMap(nodes.get).filterNot(_.generated).map(info =>
+          Structures.Concrete(
+            qualifiedName(cls),
+            info.name,
+            !cls.isOneOf(Flags.Abstract | Flags.ModuleClass | Flags.Enum | Flags.Case) && built.getOrElse(cls, 0) <= 0,
+            cls.asClass.parentSyms.collect {
+              case parent if !parent.is(Flags.Trait) && key(parent).isDefined => qualifiedName(parent)
+            }.toVector
+          )
+        )
+      )
+      Structures.Model(
+        stuttering.toVector.map { case (field, (owner, node)) =>
+          Structures.Stutter(owner, node, field.name.toString, echoes.getOrElse(field, 0))
+        },
+        mentions,
+        applied.toVector,
+        concretes,
+        grouped.toVector,
+        dispatched.toVector,
+        extents.view.mapValues((start, end) => end - start + 1).toMap
+      )
+    }
 
     /** Counts a statement whose value is dropped, for methods whose results are tracked. */
     def discard(statement: tpd.Tree)(using Context): Unit = {
@@ -670,7 +1061,11 @@ object Extraction {
           val test = owner.flatMap(nodes.get).exists(_.test)
           types.zipWithIndex.foreach { (argument, index) =>
             val slot = generic -> (offset + index)
-            val bare = argument.widenDealias
+            // A literal type such as the 16 of FloatingPoint[16] is an argument of its own, not its class.
+            val bare = argument.dealias match {
+              case literal: ConstantType => literal
+              case _                     => argument.widenDealias
+            }
             if (!bare.typeSymbol.isClass || bare.existsPart(_.typeSymbol.is(Flags.TypeParam))) varied += slot
             else if (!bare.isRef(defn.NothingClass)) {
               val counts = arguments.getOrElseUpdate(slot, mutable.Map.empty)
@@ -956,13 +1351,16 @@ object Extraction {
 
     /** Whether other builds can use `symbol` as part of the public API of a library. */
     private def exported(symbol: Symbol)(using Context): Boolean =
-      key(symbol).flatMap(nodes.get).exists(_.exported) && !symbol.is(Flags.Private) && !symbol.privateWithin.exists
+      key(symbol).flatMap(nodes.get).exists(node =>
+        node.exported && !symbol.is(Flags.Private) && (reflected(node.name) || !symbol.privateWithin.exists)
+      )
 
     /** The rules suppressed on a definition or, for a type, on its companion: by
       * `@SuppressWarnings("baumkuchen[:<rule>]")`, by `@nowarn`, bare or filtering on `msg=baumkuchen[:<rule>]` as for
-      * the compiler plugin's warnings, and by `@unused` for the liveness rules.
+      * the compiler plugin's warnings, and by `@unused` for the liveness rules. The compiler reports a `@nowarn` that
+      * names only analysis rules as unused, as it suppresses none of its warnings.
       */
-    private def suppressions(symbol: Symbol)(using Context): Set[String] = {
+    def suppressions(symbol: Symbol)(using Context): Set[String] = {
       val annotated =
         if (!symbol.isClass) Set(symbol)
         else
@@ -1009,8 +1407,12 @@ object Extraction {
             val source = sourcePath(symbol)
             val outer  = register(node(symbol.owner))
             val line   = if (symbol.source.exists && symbol.span.exists) symbol.sourcePos.line + 1 else 0
-            // Other builds can name a public type of a library, unless its enclosing type hides it.
-            val exported = libraries(output.module) && output.scope == Output.Scope.Main &&
+            // Other builds can name a public type of a library, unless its enclosing type hides it. Code the build
+            // only names in strings, compiled where the names are visible, can name a reflective type and the types
+            // inside it whatever their qualifier.
+            val reflected = reflective.exists(_.matches(s"$name.")) || outer.exists(this.reflected)
+            if (reflected) this.reflected += name
+            val exported = reflected || libraries(output.module) && output.scope == Output.Scope.Main &&
               (symbol :: Option.when(symbol.is(Flags.ModuleClass))(symbol.sourceModule).toList)
                 .forall(part => !part.is(Flags.Private) && !part.privateWithin.exists) &&
               outer.forall(nodes.get(_).exists(_.exported))
@@ -1071,8 +1473,9 @@ object Extraction {
   private class References(collector: Collector, fragments: Fragments)(using Context) extends tpd.TreeTraverser {
     private val owners  = mutable.Stack.empty[Option[String]]
     private val methods = mutable.Stack.empty[Symbol]
-    // Whether the tree being traversed runs once per iteration of a loop.
+    // Whether the tree being traversed runs once per iteration of a loop, and the extent of the innermost loop.
     private val looping = mutable.Stack(false)
+    private val loops   = mutable.Stack(Span(0))
     // Synthetic methods such as case class `apply` and `copy` forward their parameters, which says nothing about callers.
     private val synthetic = mutable.Stack(false)
     // Inline expansion happens after pickling, so the givens it summons are only visible through their imports.
@@ -1101,23 +1504,30 @@ object Extraction {
         collector.enclosed(symbol)
         collector.expose(symbol)
         definition match {
-          case tpd.TypeDef(_, template: tpd.Template) if symbol.isClass => collector.define(symbol, template)
+          case typed @ tpd.TypeDef(_, template: tpd.Template) if symbol.isClass =>
+            collector.define(symbol, template)
+            collector.structure(symbol, typed, template)
           case value: tpd.ValDef if symbol.is(Flags.Synthetic) && !symbol.owner.isClass =>
             collector.bind(symbol, value.rhs)
           case method: tpd.DefDef if symbol.name.is(DefaultGetterName) => collector.default(symbol, method.rhs)
-          case tpd.TypeDef(_, _) if symbol.isAliasType && !symbol.is(Flags.Opaque)        => collector.member(symbol)
+          case tpd.TypeDef(_, _) if symbol.isAliasType && !symbol.is(Flags.Opaque) =>
+            collector.member(symbol)
+            collector.alias(symbol)
           case method: tpd.DefDef if !symbol.is(Flags.Synthetic) && !symbol.isConstructor =>
             collector.body(symbol, method)
             collector.precondition(symbol, method.rhs)
-            collector.signature(symbol)
+            collector.signature(symbol, method.rhs)
+            collector.design(symbol, method.rhs)
+            collector.group(symbol, method)
             collector.member(symbol)
-            if (symbol.owner.isClass) body(method.rhs, node)
+            if (symbol.owner.isClass) body(symbol, method.rhs, node)
           case value: tpd.ValDef if symbol.owner.isClass && !symbol.is(Flags.Synthetic) =>
-            body(value.rhs, node)
+            body(symbol, value.rhs, node)
+            collector.group(symbol, value)
             collector.member(symbol)
           // A pattern definition keeps its authored right-hand side in a synthetic val.
           case value: tpd.ValDef if symbol.owner.isClass && value.rhs.span.exists && !value.rhs.span.isSynthetic =>
-            body(value.rhs, node)
+            body(symbol, value.rhs, node)
           case _ => ()
         }
         pushing(synthetic, synthetic.top || symbol.isAllOf(Flags.SyntheticMethod) && !symbol.isAnonymousFunction) {
@@ -1144,17 +1554,22 @@ object Extraction {
             owner.flatMap(collector.described(_)).foreach(node =>
               collector.implement(closure.tpt.tpe.classSymbol, s"a lambda in ${node.name}", node.module)
             )
-          case select: tpd.Select if looping.top && !synthetic.top =>
+          // An inline body runs as the code of each expansion, where its receivers have their own types, and a receiver
+          // the loop does not change dispatches to one class throughout it.
+          case select: tpd.Select
+              if looping.top && !synthetic.top && !methods.exists(_.is(Flags.Inline)) && !settled(select.qualifier) =>
             collector.dispatch(
               select.symbol,
               methods.find(method => method.is(Flags.Method) && method.owner.isClass),
-              owner
+              owner,
+              select.qualifier.tpe
             )
           case _ => ()
         }
         collector.refer(owner, tree.symbol)
         collector.use(tree.symbol, owner, methods.contains(tree.symbol))
         collector.mention(tree)
+        collector.observe(tree, owner)
         types.traverse(tree.tpe)
         children(tree)
     }
@@ -1169,23 +1584,72 @@ object Extraction {
     // While bodies and the function arguments of collection traversals run once per iteration.
     private def children(tree: tpd.Tree): Unit = tree match {
       case tpd.WhileDo(condition, body) =>
-        pushing(looping, value = true) {
-          traverse(condition)
-          traverse(body)
+        pushing(loops, tree.span) {
+          pushing(looping, value = true) {
+            traverse(condition)
+            traverse(body)
+          }
         }
       case tpd.Apply(function, arguments) if Traversals.traversal(function) =>
         traverse(function)
-        arguments.foreach(argument =>
-          pushing(looping, looping.top || Traversals.lambda(argument).isDefined)(traverse(argument))
-        )
+        arguments.foreach { argument =>
+          val lambda = Traversals.lambda(argument).isDefined
+          pushing(loops, if (lambda) argument.span else loops.top) {
+            pushing(looping, looping.top || lambda)(traverse(argument))
+          }
+        }
       case _ => traverseChildren(tree)
     }
 
-    // Generated code is expected to repeat itself, so only authored bodies are hashed for duplicates.
-    private def body(tree: tpd.Tree, node: Option[String]): Unit =
+    /** A receiver that is the same on every iteration of the innermost loop: this, or a value defined outside the loop
+      * that nothing reassigns, or a stable path from one.
+      */
+    private def settled(receiver: tpd.Tree)(using Context): Boolean = Predicates.unwrap(receiver) match {
+      case tpd.This(_)          => true
+      case reference: tpd.Ident =>
+        val symbol = reference.symbol
+        symbol.isTerm && !symbol.isOneOf(Flags.Mutable | Flags.Method) && symbol.span.exists &&
+        !loops.top.contains(symbol.span)
+      case select: tpd.Select => select.symbol.isStableMember && !select.symbol.is(Flags.Mutable) &&
+        settled(select.qualifier)
+      case _ => false
+    }
+
+    // Generated code is expected to repeat itself, so only authored bodies are hashed for duplicates, unless the
+    // definition suppresses them, as a copy kept between artefacts that cannot share code is.
+    private def body(symbol: Symbol, tree: tpd.Tree, node: Option[String])(using Context): Unit =
       node.flatMap(collector.described(_)).filterNot(_.generated).foreach(info =>
-        if (!tree.isEmpty) fragments.add(tree, info.name, info.test)
+        if (!tree.isEmpty && !collector.suppressions(symbol).exists(Set("*", Finding.Rule.DuplicateCode.id)))
+          fragments.add(tree, info.name, info.test, symbol.is(Flags.Method), family(symbol), specialising(symbol, tree))
       )
+
+    /** The overloads, or methods named alike but for a width, that a method belongs to: those that take parameters of
+      * different types, one per width, as numbered-family asks for.
+      */
+    private def family(symbol: Symbol)(using Context): String = {
+      def unsized(name: String) = Width.replaceAllIn(name, "#")
+      val owner                 = symbol.owner
+      val name                  = unsized(symbol.name.toString)
+      val alike                 = owner.info.decls.toList.filter(member =>
+        member.is(Flags.Method) && unsized(member.name.toString) == name
+      )
+      if (symbol.is(Flags.Method) && owner.isClass && alike.map(_.info.firstParamTypes.map(_.show)).distinct.size > 1)
+        s"${owner.fullName}.$name"
+      else ""
+    }
+
+    // An inline method that expands inline methods on literals specialises them, as staged code does.
+    private def specialising(symbol: Symbol, body: tpd.Tree)(using Context): Boolean =
+      symbol.is(Flags.Inline) && body.existsSubTree {
+        case application: tpd.Apply =>
+          application.fun.symbol.is(Flags.Inline) && application.args.exists(argument =>
+            Predicates.unwrap(argument) match {
+              case tpd.Literal(_) => true
+              case _              => false
+            }
+          )
+        case _ => false
+      }
 
     private def importedSymbols(imported: tpd.Import): List[Symbol] =
       imported.expr.symbol ::

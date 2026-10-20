@@ -7,6 +7,10 @@ $ copy-file changes/errors.conf .baumkuchen.conf
 $ copy-file changes/project.conf .baumkuchen.conf
 > reload
 > compile
+# the refinement types it names reach the compiler plugin
+$ copy-file changes/checked.conf .baumkuchen.conf
+> reload
+> checkChecked
 # a project the build does not have, or a key no setting reads, fails the load
 $ copy-file changes/stranger.conf .baumkuchen.conf
 -> reload

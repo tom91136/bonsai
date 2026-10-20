@@ -9,8 +9,9 @@ ThisBuild / scalaVersion      := scala3Version
 ThisBuild / semanticdbEnabled := true
 ThisBuild / semanticdbVersion := scalafixSemanticdb.revision
 
-lazy val analysisManifest = taskKey[File]("Write the whole-build analysis manifest of this build.")
-lazy val analyse          = taskKey[Unit]("Run the whole-build analysis over this build.")
+lazy val analysisManifest  = taskKey[File]("Write the whole-build analysis manifest of this build.")
+lazy val analyse           = taskKey[Unit]("Run the whole-build analysis over this build.")
+lazy val analysisClasspath = taskKey[Unit]("Print the classpath that runs the analysis, for scripts to run it with.")
 
 lazy val analysedOutputs =
   ScopeFilter(
@@ -136,7 +137,8 @@ lazy val analysis = analysed(project.in(file("analysis")))
       scalacOptions.value.filterNot(option => mutating && option.startsWith("-Wconf:") && option.endsWith(":error"))
     },
     Test / javaOptions +=
-      "-Dbaumkuchen.analysis.classpath=" + classpathOf((Test / fullClasspath).value, fileConverter.value)
+      "-Dbaumkuchen.analysis.classpath=" + classpathOf((Test / fullClasspath).value, fileConverter.value),
+    analysisClasspath := Def.uncached(println(classpathOf((Runtime / fullClasspath).value, fileConverter.value)))
   )
 
 lazy val annotation =

@@ -7,7 +7,8 @@ object CLI {
   private val usage =
     "usage: baumkuchen-analysis --manifest <file> [--generated <glob>]... [--info] [--purity] [--mode dev|ci] " +
       "[--disable <rule>]... [--error <rule>]... [--warn <rule>]... [--baseline <file>] [--write-baseline <file>] " +
-      "[--purity-lock <file>] [--write-purity-lock <file>] [--effects <prefix>=<kind>,...]... [--concurrent <method>]..."
+      "[--purity-lock <file>] [--write-purity-lock <file>] [--effects <prefix>=<kind>,...]... [--concurrent <method>]... " +
+      "[--reflective <glob>]... [--hot <glob>]..."
 
   /** The ci mode fails on the warnings of strict rules. */
   enum Mode(val id: String) {
@@ -34,7 +35,9 @@ object CLI {
       lock: Option[Path] = None,
       relock: Option[Path] = None,
       policies: Vector[Purity.Policy] = Vector.empty,
-      concurrent: Set[String] = Set.empty
+      concurrent: Set[String] = Set.empty,
+      reflective: Vector[String] = Vector.empty,
+      hot: Vector[String] = Vector.empty
   ) {
 
     /** The rules whose warnings fail: those named, every rule with `*`, and the strict rules in the ci mode, except
@@ -56,8 +59,10 @@ object CLI {
       result   <-
         Extraction.read(
           manifest,
-          if (options.generated.isEmpty) Extraction.DefaultGenerated else options.generated,
-          options.concurrent
+          options.generated,
+          options.concurrent,
+          options.reflective,
+          options.hot
         ).left.map(_.mkString("\n"))
     } yield {
       result.problems.foreach(problem => Console.err.println(s"problem: $problem"))
@@ -65,7 +70,18 @@ object CLI {
       val locked = options.lock.filter(Files.exists(_)).fold(Set.empty[String])(file =>
         Purity.locked(Files.readString(file))
       )
-      val findings = Report.findings(result) ++ Build.duplicates(manifest) ++
+      val texts = Texts.rules(manifest.texts).flatMap(rules =>
+        manifest.root.toRight("the manifest names no root for the text rules").flatMap(root =>
+          Texts.findings(root, Texts.matchers(manifest.textExclusions), rules)
+        )
+      ).fold(
+        problem => {
+          Console.err.println(s"problem: $problem")
+          Vector.empty
+        },
+        identity
+      )
+      val findings = Report.findings(result) ++ Build.duplicates(manifest) ++ texts ++
         (if (options.mode == Mode.CI) Build.fatal(manifest) else Vector.empty) ++
         Purity.regressions(result.purity, result.graph.nodes, locked) ++
         Purity.violations(result.purity, result.graph.nodes, options.policies)
@@ -73,7 +89,7 @@ object CLI {
       val baseline = options.baseline.filter(Files.exists(_)).fold(Set.empty[String])(file =>
         Report.baseline(Files.readString(file))
       )
-      val report = Report.Options(options.disabled, options.failing, baseline, options.info)
+      val report = Report.Options(options.disabled, options.failing, baseline, options.info, options.warnings)
       options.record.foreach(file =>
         Files.writeString(file, Report.write(Report(findings, result.graph.nodes, report.copy(info = false)))): Unit
       )
@@ -102,6 +118,8 @@ object CLI {
     case "--purity-lock" :: path :: rest       => parse(rest, options.copy(lock = Some(Path.of(path))))
     case "--write-purity-lock" :: path :: rest => parse(rest, options.copy(relock = Some(Path.of(path))))
     case "--concurrent" :: method :: rest      => parse(rest, options.copy(concurrent = options.concurrent + method))
+    case "--reflective" :: glob :: rest        => parse(rest, options.copy(reflective = options.reflective :+ glob))
+    case "--hot" :: glob :: rest               => parse(rest, options.copy(hot = options.hot :+ glob))
     case "--effects" :: policy :: rest         =>
       Purity.Policy.parse(policy) match {
         case Left(error)   => Left(s"$error\n$usage")
