@@ -1,0 +1,34 @@
+# the rules resolve: a rule with nothing to report passes
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
+> scalafixAll --check
+# rules listed in .scalafix.conf run alongside bonsai's
+$ copy-file changes/Counter.scala src/main/scala/demo/Counter.scala
+-> scalafixAll --check
+$ delete src/main/scala/demo/Counter.scala
+> scalafixAll --check
+# ForbiddenAPIs has no symbols of its own, so this fails only through the settings in .scalafix.conf
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "ForbiddenAPIs"
+-> scalafixAll --check
+# a rule kept a warning reports without failing
+> set ThisBuild / bonsaiWarnings += "ForbiddenAPIs"
+> scalafixAll --check
+> set ThisBuild / bonsaiWarnings := Set.empty
+> set ThisBuild / bonsaiDisabled := Set.empty
+-> scalafixAll --check
+# a project setting overrides the build-wide one
+> set bonsaiDisabled += "ForbiddenAPIs"
+> scalafixAll --check
+# sources the build generates are checked like any other, and marking them generated only labels them
+> set Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "generated" / "scala"
+$ copy-file changes/Counter.scala src/generated/scala/demo/Counter.scala
+-> scalafixAll --check
+> set ThisBuild / bonsaiGenerated += "**/src/generated/**"
+-> scalafixAll --check
+$ delete src/generated/scala/demo/Counter.scala
+# the generated configuration survives clean
+> clean
+> scalafixAll --check
+> Compile/scalafix --check
+# every tool's ids are accepted, and ids no tool knows are rejected
+> set bonsaiDisabled ++= Set("TargetName", "strict-chain", "megamorphic-call")
+-> set bonsaiDisabled += "Bogus"

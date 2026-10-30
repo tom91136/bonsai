@@ -1,2 +1,0 @@
-# a project only other projects' tests depend on is test code, so its members are not test-only
-> baumkuchenAnalyse

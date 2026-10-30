@@ -13,7 +13,7 @@ fi
 name=$(basename "$project")
 classpath=$(cd "$project" && scala-cli compile . --test --platform jvm --server=false --print-class-path)
 scala=$(tr ':' '\n' <<<"$classpath" | grep -o 'scala3-library_3/[^/]*' | head -1 | cut -d/ -f2)
-manifest="$project/.scala-build/baumkuchen/manifest.tsv"
+manifest="$project/.scala-build/bonsai/manifest.tsv"
 mkdir -p "$(dirname "$manifest")"
 {
   printf 'root\t%s\n' "$project"
@@ -31,5 +31,5 @@ runner=$(mktemp -d)
 trap 'rm -rf "$runner"' EXIT
 cd "$runner"
 scala-cli run --server=false --platform jvm -S "$scala" \
-  --dep "net.kurobako:baumkuchen-analysis_$scala:0.1.0-SNAPSHOT" --java-opt -Xss1g --java-opt -Xmx4g \
-  -M net.kurobako.baumkuchen.analysis.CLI -- --manifest "$manifest" "$@"
+  --dep "net.kurobako:bonsai-analysis_$scala:0.1.0-SNAPSHOT" --java-opt -Xss1g --java-opt -Xmx4g \
+  -M net.kurobako.bonsai.analysis.CLI -- --manifest "$manifest" "$@"

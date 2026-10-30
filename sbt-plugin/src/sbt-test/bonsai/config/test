@@ -1,0 +1,24 @@
+# the build sets nothing of bonsai's; the file at its root configures it
+> compile
+$ copy-file changes/errors.conf .bonsai.conf
+> reload
+-> compile
+# a project's own section overrides the build's
+$ copy-file changes/project.conf .bonsai.conf
+> reload
+> compile
+# the refinement types it names reach the compiler plugin
+$ copy-file changes/checked.conf .bonsai.conf
+> reload
+> checkChecked
+# a project the build does not have, or a key no setting reads, fails the load
+$ copy-file changes/stranger.conf .bonsai.conf
+-> reload
+$ copy-file changes/unknown.conf .bonsai.conf
+-> reload
+# the limits of the nesting rule it names reach the analysis, and a limit it does not have fails the load
+$ copy-file changes/nesting.conf .bonsai.conf
+> reload
+> checkNesting
+$ copy-file changes/nesting-unknown.conf .bonsai.conf
+-> reload

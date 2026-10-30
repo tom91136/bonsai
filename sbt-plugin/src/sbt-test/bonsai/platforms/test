@@ -1,0 +1,16 @@
+# the Native twin's own sources are analysed, so a shared member only they use is used, while its copy of the shared
+# sources is not analysed as a second copy
+> set ThisBuild / bonsaiErrors += "unused-member"
+> bonsaiAnalyse
+> checkManifest
+> set ThisBuild / bonsaiErrors -= "unused-member"
+# a source copied between the platform directories is reported
+> set ThisBuild / bonsaiErrors += "platform-duplicate-source"
+-> bonsaiAnalyse
+$ copy-file changes/Digest.scala native/demo/Digest.scala
+> bonsaiAnalyse
+# in the ci mode, a project whose warnings never fail the build is reported
+> set ThisBuild / bonsaiErrors += "warnings-not-fatal"
+-> bonsaiAnalyse
+> set ThisBuild / scalacOptions += "-Werror"
+> bonsaiAnalyse

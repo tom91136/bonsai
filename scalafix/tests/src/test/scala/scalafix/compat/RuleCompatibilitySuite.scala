@@ -30,7 +30,7 @@ class RuleCompatibilitySuite extends AnyFunSuite {
   import RuleCompatibilitySuite.*
 
   private val props   = TestkitProperties.loadFromResources()
-  private val outputs = Classpath(readResource("baumkuchen-output-classpath.txt"))
+  private val outputs = Classpath(readResource("bonsai-output-classpath.txt"))
   private val args    = Args.default.copy(
     scalaVersion = ScalaVersion.from(props.scalaVersion).get,
     scalacOptions = props.scalacOptions,

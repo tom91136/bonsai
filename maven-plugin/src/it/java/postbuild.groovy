@@ -1,6 +1,6 @@
 // The compiler collects the model of the Java code of the main sources and of the test sources.
-def main = new File(basedir, "target/baumkuchen/model/main.tsv")
-def test = new File(basedir, "target/baumkuchen/model/test.tsv")
+def main = new File(basedir, "target/bonsai/model/main.tsv")
+def test = new File(basedir, "target/bonsai/model/test.tsv")
 assert main.exists() : "the model of the main code is missing"
 assert test.exists() : "the model of the test code is missing"
 def nodes = main.readLines()
@@ -10,7 +10,7 @@ assert testNodes.any { it.startsWith("node\tdemo.CounterCheck\t") } : "the model
 assert !testNodes.any { it.startsWith("node\tdemo.Counter\t") } : "the model of the test code holds the main code"
 
 // The analysis reads the model, so the manifest names it and the analysis reports the class nothing refers to.
-def manifest = new File(basedir, "target/baumkuchen/manifest.tsv").readLines()
+def manifest = new File(basedir, "target/bonsai/manifest.tsv").readLines()
 assert manifest.any { it.startsWith("model\tjava\tmain\t") } : "the manifest does not name the model"
 def log = new File(basedir, "build.log").text
 assert log.contains("demo.Unused") : "the analysis did not read the model of the Java code"

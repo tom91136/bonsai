@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>net.kurobako.baumkuchen.it</groupId>
+        <groupId>net.kurobako.bonsai.it</groupId>
         <artifactId>reactor</artifactId>
         <version>1.0</version>
     </parent>

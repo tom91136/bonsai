@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>net.kurobako.baumkuchen.it</groupId>
+    <groupId>net.kurobako.bonsai.it</groupId>
     <artifactId>java</artifactId>
     <version>1.0</version>
     <packaging>jar</packaging>
@@ -13,12 +13,12 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>17</maven.compiler.release>
         <!-- The version of the plugin, which the invoker names; the value here is the one it has by default. -->
-        <baumkuchen.version>0.1.0-SNAPSHOT</baumkuchen.version>
+        <bonsai.version>0.1.0-SNAPSHOT</bonsai.version>
     </properties>
 
     <build>
         <plugins>
-            <!-- The compiler finds the javac plugin on its processor path, which the goal of baumkuchen names, and
+            <!-- The compiler finds the javac plugin on its processor path, which the goal of bonsai names, and
                  the plugin takes the file of the model from its argument. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -26,15 +26,15 @@
                 <configuration>
                     <compilerArgs>
                         <arg>-processorpath</arg>
-                        <arg>${baumkuchen.java.plugin}</arg>
-                        <arg>-Xplugin:baumkuchen ${baumkuchen.model}</arg>
+                        <arg>${bonsai.java.plugin}</arg>
+                        <arg>-Xplugin:bonsai ${bonsai.model}</arg>
                     </compilerArgs>
                 </configuration>
             </plugin>
             <plugin>
                 <groupId>net.kurobako</groupId>
-                <artifactId>baumkuchen-maven-plugin</artifactId>
-                <version>${baumkuchen.version}</version>
+                <artifactId>bonsai-maven-plugin</artifactId>
+                <version>${bonsai.version}</version>
                 <executions>
                     <execution>
                         <id>java</id>

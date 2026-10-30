@@ -5,12 +5,12 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>net.kurobako</groupId>
-    <artifactId>baumkuchen-maven-plugin</artifactId>
+    <artifactId>bonsai-maven-plugin</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <packaging>maven-plugin</packaging>
 
-    <name>baumkuchen-maven-plugin</name>
-    <description>The baumkuchen tools for a Maven build</description>
+    <name>bonsai-maven-plugin</name>
+    <description>The bonsai tools for a Maven build</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -70,7 +70,7 @@
                 <artifactId>maven-plugin-plugin</artifactId>
                 <version>${maven.plugin.tools.version}</version>
                 <configuration>
-                    <goalPrefix>baumkuchen</goalPrefix>
+                    <goalPrefix>bonsai</goalPrefix>
                 </configuration>
             </plugin>
             <plugin>
@@ -95,7 +95,7 @@
                     <projectsDirectory>src/it</projectsDirectory>
                     <cloneProjectsTo>${project.build.directory}/it</cloneProjectsTo>
                     <filterProperties>
-                        <baumkuchen.version>${project.version}</baumkuchen.version>
+                        <bonsai.version>${project.version}</bonsai.version>
                     </filterProperties>
                     <showErrors>true</showErrors>
                 </configuration>

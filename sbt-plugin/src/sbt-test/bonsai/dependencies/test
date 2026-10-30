@@ -1,0 +1,3 @@
+# a project analysed on its own reads the projects it depends on from the classpath
+> app/bonsaiAnalyse
+> bonsaiAnalyse

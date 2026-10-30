@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>net.kurobako.baumkuchen.it</groupId>
+    <groupId>net.kurobako.bonsai.it</groupId>
     <artifactId>scalafix-reactor</artifactId>
     <version>1.0</version>
     <packaging>pom</packaging>
@@ -18,7 +18,7 @@
         <maven.compiler.release>17</maven.compiler.release>
         <scala.version>3.10.0</scala.version>
         <!-- The version of the plugin, which the invoker names; the value here is the one it has by default. -->
-        <baumkuchen.version>0.1.0-SNAPSHOT</baumkuchen.version>
+        <bonsai.version>0.1.0-SNAPSHOT</bonsai.version>
     </properties>
 
     <dependencies>
@@ -47,14 +47,14 @@
                     <scalaVersion>${scala.version}</scalaVersion>
                     <args>
                         <arg>-Werror</arg>
-                        <arg>@${baumkuchen.scalac.args}</arg>
+                        <arg>@${bonsai.scalac.args}</arg>
                     </args>
                 </configuration>
             </plugin>
             <plugin>
                 <groupId>net.kurobako</groupId>
-                <artifactId>baumkuchen-maven-plugin</artifactId>
-                <version>${baumkuchen.version}</version>
+                <artifactId>bonsai-maven-plugin</artifactId>
+                <version>${bonsai.version}</version>
                 <executions>
                     <execution>
                         <id>prepare</id>

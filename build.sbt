@@ -42,7 +42,7 @@ lazy val commonSettings = Seq(
 
 lazy val rules = project.in(file("scalafix/rules"))
   .settings(
-    name := "baumkuchen-scalafix",
+    name := "bonsai-scalafix",
     scalacOptions ++= Seq("-deprecation", "-Wunused:all"),
     // The rules lint themselves from their own classes, which a project dependency on itself cannot express.
     ScalafixConfig / products := (Compile / products).value,
@@ -51,10 +51,10 @@ lazy val rules = project.in(file("scalafix/rules"))
         .cross(CrossVersion.for3Use2_13),
     // The names the rules have, in a resource a plugin reads, so that it cannot drift from them.
     Compile / resourceGenerators += Def.task {
-      val file   = (Compile / resourceManaged).value / "META-INF/baumkuchen/rules.id"
+      val file   = (Compile / resourceManaged).value / "META-INF/bonsai/rules.id"
       val source = (ThisBuild / baseDirectory).value /
         "scalafix/rules/src/main/resources/META-INF/services/scalafix.v1.Rule"
-      IO.write(file, BaumkuchenIds.of(source, BaumkuchenIds.Rules).mkString("\n"))
+      IO.write(file, BonsaiIds.of(source, BonsaiIds.Rules).mkString("\n"))
       Seq(file)
     }.taskValue
   )
@@ -93,7 +93,7 @@ lazy val ruleTests = project.in(file("scalafix/tests"))
       }.toSeq
       val classpath = ((ruleOutput / Compile / fullClasspath).value
         .map(entry => converter.toPath(entry.data).toString) ++ semanticdb).mkString(java.io.File.pathSeparator)
-      val file      = (Test / managedResourceDirectories).value.head / "baumkuchen-output-classpath.txt"
+      val file      = (Test / managedResourceDirectories).value.head / "bonsai-output-classpath.txt"
       IO.write(file, classpath)
       Seq(file)
     }.taskValue
@@ -104,13 +104,13 @@ lazy val plugin = project.in(file("plugin"))
   // The ids of the lints of the Java code, which the checks of the plugin must not be the ids of.
   .dependsOn(javaPlugin % "compile->test")
   .settings(
-    name                 := "baumkuchen-plugin",
+    name                 := "bonsai-plugin",
     Compile / packageBin := {
       val packaged      = (Compile / packageBin).value
       val converter     = fileConverter.value
       val original      = converter.toPath(packaged)
       val fingerprinted =
-        original.resolveSibling(s"baumkuchen-plugin-${sbt.io.Hash.toHex(sbt.io.Hash(original.toFile))}.jar")
+        original.resolveSibling(s"bonsai-plugin-${sbt.io.Hash.toHex(sbt.io.Hash(original.toFile))}.jar")
       java.nio.file.Files.copy(original, fingerprinted, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
       val output = converter.toVirtualFile(fingerprinted)
       Def.declareOutput(output)
@@ -126,43 +126,43 @@ lazy val plugin = project.in(file("plugin"))
     ),
     // The ids the checks have, in a resource a plugin reads, so that it cannot drift from them.
     Compile / resourceGenerators += Def.task {
-      val file   = (Compile / resourceManaged).value / "META-INF/baumkuchen/checks.id"
+      val file   = (Compile / resourceManaged).value / "META-INF/bonsai/checks.id"
       val source = (ThisBuild / baseDirectory).value /
-        "plugin/src/main/scala/net/kurobako/baumkuchen/plugin/Check.scala"
-      IO.write(file, BaumkuchenIds.of(source, BaumkuchenIds.Checks).mkString("\n"))
+        "plugin/src/main/scala/net/kurobako/bonsai/plugin/Check.scala"
+      IO.write(file, BonsaiIds.of(source, BonsaiIds.Checks).mkString("\n"))
       Seq(file)
     }.taskValue,
     Test / fork := true,
     Test / javaOptions ++= {
       val converter = fileConverter.value
       Seq(
-        s"-Dbaumkuchen.plugin.jar=${converter.toPath((Compile / packageBin).value)}",
-        "-Dbaumkuchen.plugin.classpath=" + classpathOf((Test / fullClasspath).value, converter)
+        s"-Dbonsai.plugin.jar=${converter.toPath((Compile / packageBin).value)}",
+        "-Dbonsai.plugin.classpath=" + classpathOf((Test / fullClasspath).value, converter)
       )
     }
   )
 
-/** A module linted by baumkuchen's scalafix rules and checked by its own compiler plugin, with every check an error. */
+/** A module linted by bonsai's scalafix rules and checked by its own compiler plugin, with every check an error. */
 def analysed(module: Project): Project = module
   .dependsOn(rules % ScalafixConfig, plugin % "plugin->compile")
-  .settings(commonSettings, scalacOptions += "-P:baumkuchen:error=*")
+  .settings(commonSettings, scalacOptions += "-P:bonsai:error=*")
 
 lazy val analysis = analysed(project.in(file("analysis")))
   .dependsOn(javaPlugin)
   .settings(
-    name                                    := "baumkuchen-analysis",
+    name                                    := "bonsai-analysis",
     crossVersion                            := CrossVersion.full,
     crossScalaVersions                      := scala3Versions,
     libraryDependencies += "org.scala-lang" %% "scala3-compiler" % scalaVersion.value,
     // The ids the rules have, in a resource a plugin reads, so that it cannot drift from them.
     Compile / resourceGenerators += Def.task {
-      val file   = (Compile / resourceManaged).value / "META-INF/baumkuchen/findings.id"
+      val file   = (Compile / resourceManaged).value / "META-INF/bonsai/findings.id"
       val source = (ThisBuild / baseDirectory).value /
-        "analysis/src/main/scala/net/kurobako/baumkuchen/analysis/Finding.scala"
+        "analysis/src/main/scala/net/kurobako/bonsai/analysis/Finding.scala"
       // The lints of the Java code are reported as findings of their own, so their ids are published alike.
       val lints = (ThisBuild / baseDirectory).value /
-        "java-plugin/src/main/scala/net/kurobako/baumkuchen/java/JavaLint.scala"
-      val ids = BaumkuchenIds.of(source, BaumkuchenIds.Findings) ++ BaumkuchenIds.of(lints, BaumkuchenIds.Lints)
+        "java-plugin/src/main/scala/net/kurobako/bonsai/java/JavaLint.scala"
+      val ids = BonsaiIds.of(source, BonsaiIds.Findings) ++ BonsaiIds.of(lints, BonsaiIds.Lints)
       IO.write(file, ids.mkString("\n"))
       Seq(file)
     }.taskValue,
@@ -179,17 +179,17 @@ lazy val analysis = analysed(project.in(file("analysis")))
       scalacOptions.value.filterNot(option => mutating && option.startsWith("-Wconf:") && option.endsWith(":error"))
     },
     Test / javaOptions +=
-      "-Dbaumkuchen.analysis.classpath=" + classpathOf((Test / fullClasspath).value, fileConverter.value),
+      "-Dbonsai.analysis.classpath=" + classpathOf((Test / fullClasspath).value, fileConverter.value),
     analysisClasspath := Def.uncached(println(classpathOf((Runtime / fullClasspath).value, fileConverter.value)))
   )
 
 lazy val annotation =
-  analysed(project.in(file("annotation"))).settings(name := "baumkuchen-annotation", publish / skip := true)
+  analysed(project.in(file("annotation"))).settings(name := "bonsai-annotation", publish / skip := true)
 
 lazy val javaPlugin = project.in(file("java-plugin"))
   .settings(
     commonSettings,
-    name := "baumkuchen-java-plugin",
+    name := "bonsai-java-plugin",
     // The plugin runs inside the compiler of the build, so it must not drag the compiler of the tools along.
     libraryDependencies += "org.scala-lang" %% "scala3-library" % scalaVersion.value,
     // The nullness lint reads the JSpecify annotations the code of the build writes.
@@ -199,40 +199,40 @@ lazy val javaPlugin = project.in(file("java-plugin"))
     Test / fork                             := true
   )
 
-lazy val sbtBaumkuchen = project.in(file("sbt-plugin"))
+lazy val sbtBonsai = project.in(file("sbt-plugin"))
   .enablePlugins(SbtPlugin)
   .disablePlugins(_root_.scalafix.sbt.ScalafixPlugin)
   .settings(
-    name         := "sbt-baumkuchen",
+    name         := "sbt-bonsai",
     scalaVersion := "3.8.4",
     scalacOptions ++= Seq("-deprecation", "-Wunused:all"),
     addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % "0.14.9"),
     Compile / sourceGenerators += Def.task {
-      val file = (Compile / sourceManaged).value / "BaumkuchenArtifacts.scala"
+      val file = (Compile / sourceManaged).value / "BonsaiArtifacts.scala"
       // The ids each tool accepts, read from the tools themselves so the sbt plugin cannot drift from them.
       def ids(source: File, pattern: scala.util.matching.Regex): Seq[String] =
-        BaumkuchenIds.of(source, pattern).map(id => s"\"$id\"")
+        BonsaiIds.of(source, pattern).map(id => s"\"$id\"")
       val checks = ids(
-        (plugin / baseDirectory).value / "src/main/scala/net/kurobako/baumkuchen/plugin/Check.scala",
-        BaumkuchenIds.Checks
+        (plugin / baseDirectory).value / "src/main/scala/net/kurobako/bonsai/plugin/Check.scala",
+        BonsaiIds.Checks
       )
       // The lints of the Java code are reported as findings of their own, so their ids are published alike.
       val findings = ids(
-        (analysis / baseDirectory).value / "src/main/scala/net/kurobako/baumkuchen/analysis/Finding.scala",
-        BaumkuchenIds.Findings
+        (analysis / baseDirectory).value / "src/main/scala/net/kurobako/bonsai/analysis/Finding.scala",
+        BonsaiIds.Findings
       ) ++ ids(
-        (javaPlugin / baseDirectory).value / "src/main/scala/net/kurobako/baumkuchen/java/JavaLint.scala",
-        BaumkuchenIds.Lints
+        (javaPlugin / baseDirectory).value / "src/main/scala/net/kurobako/bonsai/java/JavaLint.scala",
+        BonsaiIds.Lints
       )
       val scalafix = ids(
         (rules / baseDirectory).value / "src/main/resources/META-INF/services/scalafix.v1.Rule",
-        BaumkuchenIds.Rules
+        BonsaiIds.Rules
       )
       IO.write(
         file,
-        s"""package net.kurobako.baumkuchen.sbt
+        s"""package net.kurobako.bonsai.sbt
            |
-           |private object BaumkuchenArtifacts {
+           |private object BonsaiArtifacts {
            |  val organization: String       = "${organization.value}"
            |  val version: String            = "${version.value}"
            |  val scalaVersions: Set[String] = Set(${scala3Versions.map(version => s"\"$version\"").mkString(", ")})
@@ -258,9 +258,9 @@ lazy val sbtBaumkuchen = project.in(file("sbt-plugin"))
 
 lazy val root = project.in(file("."))
   .disablePlugins(_root_.scalafix.sbt.ScalafixPlugin)
-  .aggregate(rules, ruleInput, ruleOutput, ruleTests, plugin, analysis, annotation, javaPlugin, sbtBaumkuchen)
+  .aggregate(rules, ruleInput, ruleOutput, ruleTests, plugin, analysis, annotation, javaPlugin, sbtBonsai)
   .settings(
-    name             := "baumkuchen",
+    name             := "bonsai",
     publish / skip   := true,
     analysisManifest := Def.uncached {
       val outputs = Def.task {
@@ -272,7 +272,7 @@ lazy val root = project.in(file("."))
         val converter = fileConverter.value
         externalDependencyClasspath.value.map(entry => converter.toPath(entry.data).toString)
       }.all(analysedOutputs).value.flatten.distinct.map(entry => s"classpath\t$entry")
-      val manifest = target.value.toPath.resolve("baumkuchen/manifest.tsv")
+      val manifest = target.value.toPath.resolve("bonsai/manifest.tsv")
       java.nio.file.Files.createDirectories(manifest.getParent)
       java.nio.file.Files.writeString(manifest, (outputs ++ classpath).mkString("", "\n", "\n"))
       manifest.toFile

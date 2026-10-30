@@ -1,0 +1,104 @@
+package net.kurobako.bonsai.plugin
+
+import dotty.tools.dotc.core.Contexts.Context
+import dotty.tools.dotc.core.Contexts.ctx
+import dotty.tools.dotc.plugins.PluginPhase
+import dotty.tools.dotc.plugins.StandardPlugin
+import dotty.tools.dotc.report
+import java.nio.file.FileSystems
+import scala.util.matching.Regex
+
+class BonsaiPlugin extends StandardPlugin {
+  val name        = "bonsai"
+  val description = "Check source cycles and lint typed expressions"
+
+  private val analysis         = Analysis()
+  private val DefaultWildcards = 2
+  // Mutation testing compiles rewritten copies of the sources from a temporary directory, which no check judges.
+  private val Instrumented = List("**/stryker4s-*/**", "stryker4s-*/**")
+  private val Modes        = List("dev", "ci")
+  private val Keys         =
+    Set("mode", "disable", "error", "warn", "wildcards", "partial", "throws", "hot", "checked")
+
+  override def initialize(options: List[String])(using Context): List[PluginPhase] = {
+    options.filterNot {
+      case s"$key=$_" => Keys(key)
+      case _          => false
+    }.foreach(option => report.error(s"unknown bonsai option: $option"))
+    def values(key: String) = options.collect { case s"$option=$value" if option == key => value }
+    def checks(key: String) = values(key).flatMap(named(_)).toSet
+    val wildcards           = values("wildcards").lastOption.fold(DefaultWildcards)(count =>
+      count.toIntOption.filter(_ >= 0).getOrElse {
+        report.error(s"bonsai option wildcards must be a non-negative count, not $count")
+        DefaultWildcards
+      }
+    )
+    val mode = values("mode").lastOption.getOrElse("dev")
+    if (!Modes.contains(mode)) report.error(s"bonsai option mode must be one of ${Modes.mkString(", ")}, not $mode")
+    val disabled = checks("disable")
+    val errors   = checks("error")
+    val warnings = checks("warn")
+    val strict   = if (mode == "ci") Check.values.filter(_.strict).toSet else Set.empty
+    // `partial=<method>:<alternative>` and `throws=<method pattern>:<exception>|...` extend the defaults, and an empty
+    // right-hand side removes one.
+    val partials = values("partial").foldLeft(Exceptions.Partials) {
+      case (table, s"$method:")             => table - method
+      case (table, s"$method:$alternative") =>
+        table + (method -> Exceptions.Partial(alternative, alternative.matches(".*(Option|Opt)")))
+      case (table, option) =>
+        report.error(s"bonsai option partial must be <method>:<alternative>, not $option")
+        table
+    }
+    // Scala.js compiles with -scalajs, and Scala Native puts its nativelib on the classpath.
+    val platform =
+      if (ctx.settings.scalajs.value) Exceptions.Platform.JS
+      else if (ctx.settings.classpath.value.contains("nativelib_native")) Exceptions.Platform.Native
+      else Exceptions.Platform.JVM
+    val throwing = values("throws").foldLeft(Exceptions.throws(platform)) {
+      case (table, s"$pattern:")           => table - pattern
+      case (table, s"$pattern:$exception") => table + (pattern -> exception.split('|').toList)
+      case (table, option)                 =>
+        report.error(s"bonsai option throws must be <method pattern>:<exception>, not $option")
+        table
+    }
+    // `checked=<type>` names, by its qualified name, a refinement type whose checked operations the others bypass.
+    // `hot=<glob>` marks the classes whose code runs hot, by the qualified name of the class or object, and
+    // `hot=!<glob>` leaves out classes the others mark, such as the suites of a hot package.
+    val (excluded, included)          = values("hot").partition(_.startsWith("!"))
+    val hot                           = included.map(qualifiedNames(_))
+    val cold                          = excluded.map(glob => qualifiedNames(glob.drop(1)))
+    val escalated                     = strict ++ errors -- warnings
+    def matchers(globs: List[String]) = globs.map(glob => FileSystems.getDefault.getPathMatcher(s"glob:$glob"))
+    List(
+      // A cycle through a mutation-testing copy still ties together the sources on it.
+      AcyclicPhase(analysis, Checks(disabled, escalated, warnings, matchers(Instrumented), analysis.suppressions)),
+      LintPhase(
+        wildcards,
+        Checks(disabled, escalated, warnings, matchers(Instrumented), analysis.suppressions),
+        partials,
+        throwing.toList.map((pattern, exceptions) => pattern.r -> exceptions),
+        name => hot.exists(_.matches(s"$name.")) && !cold.exists(_.matches(s"$name.")),
+        hot.nonEmpty,
+        name => cold.exists(_.matches(s"$name.")),
+        values("checked").toSet
+      )
+    )
+  }
+
+  /** A glob over qualified names, matched against a name with a dot appended: `*` stands for one name segment or part
+    * of one, and `**` for any number of segments.
+    */
+  private def qualifiedNames(glob: String): Regex = glob.split('.').map {
+    case "**"    => "(?:[^.]+\\.)*"
+    case segment => segment.split("\\*", -1).map(Regex.quote).mkString("[^.]*") + "\\."
+  }.mkString.r
+
+  /** The checks an option names: one by its id, or every check with `*`. */
+  private def named(id: String)(using Context): List[Check] =
+    if (id == "*") Check.values.toList
+    else {
+      val found = Check.values.find(_.id == id)
+      if (found.isEmpty) report.error(s"unknown bonsai check: $id")
+      found.toList
+    }
+}

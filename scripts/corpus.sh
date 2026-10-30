@@ -8,7 +8,7 @@ set -euo pipefail
 manifest=$(realpath "${1:?usage: corpus.sh <manifest> [<copy of the build directory>]}")
 copy=${2:+$(realpath "$2")}
 cd "$(dirname "$0")/.."
-history="$HOME/.cache/baumkuchen-corpus/$(sha1sum <<<"$manifest" | cut -c1-12)"
+history="$HOME/.cache/bonsai-corpus/$(sha1sum <<<"$manifest" | cut -c1-12)"
 mkdir -p "$history"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
@@ -16,16 +16,16 @@ sbt --client shutdown >/dev/null 2>&1 || true
 # One heavy JVM at a time: the host is shared with other builds.
 sbt --batch -Dsbt.ivy.home="$stage" -Divy.home="$stage" 'analysis/analysisClasspath' | grep -v '^\[' |
   tail -1 >"$stage/classpath"
-java -Xss1g -Xmx4g -cp "$(cat "$stage/classpath")" net.kurobako.baumkuchen.analysis.CLI --manifest "$manifest" \
+java -Xss1g -Xmx4g -cp "$(cat "$stage/classpath")" net.kurobako.bonsai.analysis.CLI --manifest "$manifest" \
   --mode dev --info >"$stage/analysis.txt" 2>"$stage/analysis.err" || true
 cut -f2 "$stage/analysis.txt" | sort | uniq -c | awk '{ print $2 "\t" $1 }' >"$stage/counts.tsv"
 if [[ -n "$copy" ]]; then
   sbt --batch -Dsbt.ivy.home="$stage" -Divy.home="$stage" \
     'publishLocal; ++3.10.0; plugin/publishLocal; analysis/publishLocal' >/dev/null
   (cd "$copy" && sbt --batch -Dsbt.ivy.home="$stage" -Divy.home="$stage" \
-    'set Global / localCacheDirectory := file(sys.props("java.io.tmpdir") + "/baumkuchen-corpus-cache")' \
+    'set Global / localCacheDirectory := file(sys.props("java.io.tmpdir") + "/bonsai-corpus-cache")' \
     'Test/compile' >"$stage/compile.txt" 2>&1 || true)
-  grep -o '\[baumkuchen:[a-z-]*\]' "$stage/compile.txt" | tr -d '[]' | sed 's/^baumkuchen://' | sort | uniq -c |
+  grep -o '\[bonsai:[a-z-]*\]' "$stage/compile.txt" | tr -d '[]' | sed 's/^bonsai://' | sort | uniq -c |
     awk '{ print $2 "\t" $1 }' >>"$stage/counts.tsv"
 fi
 grep '^problem:' "$stage/analysis.err" || true

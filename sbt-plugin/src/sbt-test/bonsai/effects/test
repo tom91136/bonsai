@@ -1,0 +1,12 @@
+# a package the effects policy keeps pure fails on a method with effects, until the policy allows them
+-> bonsaiAnalyse
+$ copy-file changes/allowed.conf .bonsai.conf
+> reload
+> bonsaiAnalyse
+# methods recorded as pure fail once they are not, until recorded again
+> bonsaiPurityWrite
+$ exists bonsai-purity.tsv
+$ copy-file changes/Core.scala src/main/scala/demo/core/Core.scala
+-> bonsaiAnalyse
+> bonsaiPurityWrite
+> bonsaiAnalyse

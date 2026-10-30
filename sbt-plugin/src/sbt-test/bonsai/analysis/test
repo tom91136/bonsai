@@ -1,0 +1,30 @@
+# unused members are reported while developing and fail in CI
+> bonsaiAnalyse
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
+-> bonsaiAnalyse
+# a baseline holds existing findings without failing
+> bonsaiBaselineWrite
+$ exists bonsai-baseline.tsv
+> bonsaiAnalyse
+$ delete bonsai-baseline.tsv
+-> bonsaiAnalyse
+> set bonsaiDisabled += "unused-member"
+> bonsaiAnalyse
+# a rule the mode makes fail can be kept a warning
+> set bonsaiDisabled -= "unused-member"
+-> bonsaiAnalyse
+> set bonsaiWarnings += "unused-member"
+> bonsaiAnalyse
+> set bonsaiWarnings -= "unused-member"
+-> bonsaiAnalyse
+# a type the build names only in strings, and its members, are used once declared reflective
+> set ThisBuild / bonsaiReflective += "demo.Tools"
+> bonsaiAnalyse
+> set ThisBuild / bonsaiReflective -= "demo.Tools"
+-> bonsaiAnalyse
+# a library's public API is used by other builds; a project with a main class is not a library unless set
+> set bonsaiLibrary := true
+> bonsaiAnalyse
+# the forked analysis takes no more heap than the build allows it
+> set ThisBuild / bonsaiAnalysisHeap := "1m"
+-> bonsaiAnalyse

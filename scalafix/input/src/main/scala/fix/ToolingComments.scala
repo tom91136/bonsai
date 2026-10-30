@@ -40,7 +40,7 @@ object ToolingComments {
   // the rule of three says to name a method after its second use
   def rules: Int = 6
 
-  // baumkuchen:ignore forbidden-term
+  // bonsai:ignore forbidden-term
   def marked: Int = 7
 
   // scalafmt: { align.preset = none }
@@ -54,18 +54,18 @@ object ToolingComments {
   }
 
   /* the default is the only one that makes sense, which a written default would only repeat */ // assert: ToolingComments.tooling-comment
-  @SuppressWarnings(Array("baumkuchen:redundant-default"))
+  @SuppressWarnings(Array("bonsai:redundant-default"))
   def defaulted(value: Int = 1): Int = value
 
   /* a reader of the field would only repeat what the codec reads */ // assert: ToolingComments.tooling-comment
-  @SuppressWarnings(Array("baumkuchen:unread-field"))
+  @SuppressWarnings(Array("bonsai:unread-field"))
   def field: Int = 14
 
   // the default is the singleton constant, which widening to Int would lose
-  @SuppressWarnings(Array("baumkuchen:redundant-default"))
+  @SuppressWarnings(Array("bonsai:redundant-default"))
   def narrow(value: Int = 1): Int = value
 
   // the second branch would only repeat the first
-  @SuppressWarnings(Array("baumkuchen:redundant-default"))
+  @SuppressWarnings(Array("bonsai:redundant-default"))
   def branches: Int = 16
 }

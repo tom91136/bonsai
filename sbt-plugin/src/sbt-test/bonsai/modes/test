@@ -1,0 +1,18 @@
+# a cycle only warns while developing
+> compile
+> bonsaiCheck
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
+-> compile
+-> bonsaiCheck
+# a project can keep a check a warning, or escalate one the mode leaves a warning
+> set bonsaiWarnings += "acyclic"
+> compile
+> set bonsaiWarnings -= "acyclic"
+-> compile
+> set bonsaiDisabled += "acyclic"
+> compile
+> set ThisBuild / bonsaiMode := BonsaiMode.Dev
+> set bonsaiDisabled -= "acyclic"
+> compile
+> set bonsaiErrors += "acyclic"
+-> compile

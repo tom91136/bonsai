@@ -1,0 +1,11 @@
+# scalafix's DisableSyntax runs by default, without a .scalafix.conf
+-> scalafixAll --check
+# each of its bans can be turned off by id
+> set ThisBuild / bonsaiDisabled += "DisableSyntax.noVars"
+> scalafixAll --check
+> set ThisBuild / bonsaiDisabled := Set("DisableSyntax")
+> scalafixAll --check
+# the build's own configuration can turn a ban off, and may list the rule itself
+> set ThisBuild / bonsaiDisabled := Set.empty
+$ copy-file changes/.scalafix.conf .scalafix.conf
+> scalafixAll --check
