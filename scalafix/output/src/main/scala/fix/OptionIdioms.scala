@@ -53,9 +53,11 @@ object OptionIdioms {
     first + values.head
   }
   val lifted = map.get(1)
-  val filtered = option.filter(positive)
+  val filtered = option.filter(positive(_))
   val value = 3
-  val emulated = Some(value).filter(positive)
+  val emulated = Some(value).filter(positive(_))
+  val big: Int => Boolean = _ > 5
+  val filteredFunction = option.filter(big)
 
   class ApplicationMethods {
     def get(key: Int): ApplicationMethods              = this

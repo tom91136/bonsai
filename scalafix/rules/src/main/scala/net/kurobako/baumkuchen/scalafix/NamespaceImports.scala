@@ -23,7 +23,7 @@ class NamespaceImports(packages: List[List[String]]) extends SemanticRule("Names
     case importer: Importer
         if importer.parent.exists { case _: Import => true; case _ => false } &&
           namespaced(importer.ref) && importer.importees.exists {
-            case Importee.Name(name) => !name.symbol.info.exists(_.isGiven)
+            case Importee.Name(name) => !definitions.info(name.symbol).exists(_.isGiven)
             case _                   => false
           } =>
       lint(

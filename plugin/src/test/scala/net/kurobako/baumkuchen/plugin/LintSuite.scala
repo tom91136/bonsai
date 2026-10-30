@@ -195,6 +195,21 @@ class LintSuite extends FunSuite {
     assertEquals(lines(found, "throwing-helper"), Nil, found.mkString("\n"))
   }
 
+  test("a helper whose exception another call in the same try throws through its own helper is not reported") {
+    val found = warnings(
+      """object Lexing {
+        |  case class Failure(at: Int) extends RuntimeException
+        |  class Cursor(tokens: Array[Char]) {
+        |    private def fail(): Nothing = throw Failure(1)
+        |    def program(): Int = if (tokens.isEmpty) fail() else 1
+        |  }
+        |  def parse(s: String): Either[Int, Int] = try Right(Cursor(lex(s)).program()) catch { case Failure(at) => Left(at) }
+        |  private def lex(s: String): Array[Char] = if (s.contains('\u0000')) throw Failure(0) else s.toCharArray
+        |}""".stripMargin
+    )
+    assertEquals(lines(found, "throwing-helper"), Nil, found.mkString("\n"))
+  }
+
   test("partial calls inside a handler are reported, and a Try around one with a total alternative is redundant") {
     val source =
       """import scala.util.control.NonFatal
@@ -301,6 +316,51 @@ class LintSuite extends FunSuite {
     assert(!found.exists(message => ids.exists(id => message.endsWith(s"[baumkuchen:$id]"))), found.mkString("\n"))
   }
 
+  test("JDK types of the unsupported module are reported where the code names them") {
+    val found = warnings(
+      """import sun.misc.Signal
+        |object Lints {
+        |  def handler(signal: Signal): Unit = ()
+        |}""".stripMargin
+    )
+    assertEquals(lines(found, "jdk-internal").size, 2, found.mkString("\n"))
+    assert(
+      lines(found, "jdk-internal").forall(_.contains("in the unsupported module jdk.unsupported")),
+      found.mkString("\n")
+    )
+  }
+
+  test("classes named by a constant string are reported when the JDK does not export their package") {
+    val found = warnings(
+      """object Lints {
+        |  def load(): Class[?] = Class.forName("jdk.internal.misc.VM")
+        |  def list(): Class[?] = Class.forName("java.util.ArrayList")
+        |}""".stripMargin
+    )
+    assertEquals(lines(found, "jdk-internal").size, 1, found.mkString("\n"))
+    assert(lines(found, "jdk-internal").forall(_.contains("not exported by java.base")), found.mkString("\n"))
+  }
+
+  test("lookups of members of a class named directly are reported") {
+    val found = warnings(
+      """object Lints {
+        |  def field(): java.lang.reflect.Field = classOf[sun.misc.Unsafe].getDeclaredField("theUnsafe")
+        |}""".stripMargin
+    )
+    assertEquals(lines(found, "jdk-internal").size, 2, found.mkString("\n"))
+  }
+
+  test("a JDK internal use is suppressed by its check name") {
+    val found = warnings(
+      """object Lints {
+        |  @SuppressWarnings(Array("baumkuchen:jdk-internal"))
+        |  def load(): Class[?] = Class.forName("sun.misc.Unsafe")
+        |  def list(): Class[?] = Class.forName("java.util.ArrayList")
+        |}""".stripMargin
+    )
+    assertEquals(lines(found, "jdk-internal").size, 0, found.mkString("\n"))
+  }
+
   test("arrays compare by reference") {
     assertWarns(
       "object Lints { def check(left: Array[Int], right: Array[Int]) = left == right }",
@@ -373,6 +433,344 @@ class LintSuite extends FunSuite {
     assert(found.exists(_.contains("toString on a value that is already String")), found.mkString("\n"))
     assert(found.exists(_.contains("toList on a value that is already")), found.mkString("\n"))
     assert(!found.exists(_.contains("toLong")), found.mkString("\n"))
+  }
+
+  test("a Java big number wrapped in its Scala counterpart only to be converted is converted directly") {
+    val source = """object Lints {
+                   |  def wrapped(value: java.math.BigDecimal): Double  = BigDecimal(value).toDouble
+                   |  def integer(value: java.math.BigInteger): Long    = BigInt(value).toLong
+                   |  def implicitly(value: java.math.BigDecimal): Int  = (value: BigDecimal).toInt
+                   |  def sum(left: java.math.BigDecimal, right: java.math.BigDecimal): Float =
+                   |    BigDecimal(left.add(right)).toFloat
+                   |  def direct(value: java.math.BigDecimal): Double   = value.doubleValue
+                   |  def scala(value: BigDecimal): Double              = value.toDouble
+                   |  def parsed(text: String): Double                  = BigDecimal(text).toDouble
+                   |  def arithmetic(value: java.math.BigDecimal): BigDecimal = BigDecimal(value) + 1
+                   |}""".stripMargin
+    assertEquals(
+      tagged(warnings(source), "wrapped-conversion"),
+      List(
+        "left.add(right).floatValue converts the java.math.BigDecimal directly",
+        "value.doubleValue converts the java.math.BigDecimal directly",
+        "value.intValue converts the java.math.BigDecimal directly",
+        "value.longValue converts the java.math.BigInteger directly"
+      )
+    )
+    assertEquals(
+      rewritten(source).linesIterator.filter(_.contains("Value")).map(_.trim).toList,
+      List(
+        "def wrapped(value: java.math.BigDecimal): Double  = value.doubleValue",
+        "def integer(value: java.math.BigInteger): Long    = value.longValue",
+        "def implicitly(value: java.math.BigDecimal): Int  = value.intValue",
+        "def direct(value: java.math.BigDecimal): Double   = value.doubleValue"
+      )
+    )
+  }
+
+  test("a function applied once to its method's own arguments, and a trait only lambdas implement, are indirection") {
+    val source =
+      """object Lints {
+                   |  private trait Extremum { def apply(left: Long, right: Long, width: Int): Long }
+                   |  private trait Sink { def accept(value: Long): Unit }
+                   |  private trait Pair { def first(value: Long): Long; def second(value: Long): Long }
+                   |  private trait Shared { def get(value: Long): Long }
+                   |  private class Fixed extends Shared { def get(value: Long): Long = value }
+                   |  private trait Often { def get(value: Long): Long }
+                   |  def median(a: Long, b: Long, width: Int): Long = {
+                   |    def pick(x: Long, y: Long, extremum: Extremum): Long =
+                   |      extremum(x, y, width) + (if (x != y) y else x)
+                   |    pick(a, b, (left, right, bits) => math.min(left, right)) +
+                   |      pick(b, a, (left, right, bits) => math.max(left, right))
+                   |  }
+                   |  def functions(a: Long, b: Long): Long = {
+                   |    def pick(x: Long, y: Long, choose: (Long, Long) => Long): Long = choose(x, y) + x
+                   |    pick(a, b, math.min) + pick(b, a, math.max)
+                   |  }
+                   |  private def lookup(key: Long, fallback: => Long): Long = if (key > 0) key else fallback
+                   |  def guarded(a: Long, b: Long): Long = {
+                   |    def pick(x: Long, y: Long, branch: (Long, Long) => Long): Long = if (x != y) branch(x, y) else x
+                   |    pick(a, b, math.min) + pick(b, a, math.max)
+                   |  }
+                   |  def matched(a: Long, b: Long): Long = {
+                   |    def pick(x: Long, y: Long, arm: (Long, Long) => Long): Long = x match {
+                   |      case 0L => arm(x, y)
+                   |      case _  => x
+                   |    }
+                   |    pick(a, b, math.min) + pick(b, a, math.max)
+                   |  }
+                   |  def short(a: Long, b: Long): Boolean = {
+                   |    def pick(x: Long, y: Long, rhs: (Long, Long) => Long): Boolean = x != y && rhs(x, y) == y
+                   |    pick(a, b, math.min) || pick(b, a, math.max)
+                   |  }
+                   |  def attempted(a: Long, b: Long): Long = {
+                   |    def pick(x: Long, y: Long, risky: (Long, Long) => Long): Long =
+                   |      try risky(x, y) catch { case _: ArithmeticException => x }
+                   |    pick(a, b, math.min) + pick(b, a, math.max)
+                   |  }
+                   |  def lazily(a: Long, b: Long): Long = {
+                   |    def pick(x: Long, y: Long, fail: (Long, Long) => Long): Long = lookup(x, fail(x, y))
+                   |    pick(a, b, math.min) + pick(b, a, math.max)
+                   |  }
+                   |  private val bump: Long => Long = _ + 1
+                   |  def compared(a: Long): Boolean = {
+                   |    def pick(x: Long, other: Long => Long): Boolean = other.equals(bump)
+                   |    pick(a, v => math.abs(v)) && pick(a, v => math.negateExact(v))
+                   |  }
+                   |  def twice(a: Long, b: Long): Long = {
+                   |    def pick(x: Long, y: Long, choose: (Long, Long) => Long): Long = choose(x, y) + choose(y, x)
+                   |    pick(a, b, math.min) + pick(b, a, math.max)
+                   |  }
+                   |  def looped(a: Long, b: Long): Long = {
+                   |    def pick(x: Long, y: Long, choose: (Long, Long) => Long): Long = (0 until 3).map(_ => choose(x, y)).sum
+                   |    pick(a, b, math.min) + pick(b, a, math.max)
+                   |  }
+                   |  def computed(a: Long, b: Long): Long = {
+                   |    def pick(x: Long, y: Long, choose: (Long, Long) => Long): Long = {
+                   |      val sum = x + y
+                   |      choose(sum, y)
+                   |    }
+                   |    pick(a, b, math.min) + pick(b, a, math.max)
+                   |  }
+                   |  def shaped(a: Long, b: Long): Long = {
+                   |    def pick(x: Long, y: Long, choose: (Long, Long) => Long): Long = choose(x, y)
+                   |    pick(a, b, (left, right) => if (left > right) left else right) + pick(b, a, (left, right) => left + right + 1)
+                   |  }
+                   |  def passed(a: Long, b: Long, choose: (Long, Long) => Long): Long = {
+                   |    def pick(x: Long, y: Long, with_ : (Long, Long) => Long): Long = with_(x, y)
+                   |    pick(a, b, choose) + pick(b, a, math.max)
+                   |  }
+                   |  def sink(value: Long): Unit = {
+                   |    def run(into: Sink): Unit = into.accept(value)
+                   |    run(received => println(received))
+                   |  }
+                   |  def pair(value: Long): Long = {
+                   |    def run(of: Pair): Long = of.first(value) + of.second(value)
+                   |    run(new Pair { def first(v: Long): Long = v; def second(v: Long): Long = v })
+                   |  }
+                   |  def shared(value: Long): Long = {
+                   |    def run(of: Shared): Long = of.get(value)
+                   |    run(Fixed()) + run(received => received)
+                   |  }
+                   |  def often(value: Long): Long = {
+                   |    def run(of: Often): Long = of.get(value)
+                   |    run(a => a) + run(a => a + 1) + run(a => a + 2)
+                   |  }
+                   |  def exposed(a: Long, b: Long, choose: (Long, Long) => Long): Long = choose(a, b)
+                   |  def adapted(value: Float, bits: Long): Double = {
+                   |    def widened(unit: Long => Long, x: Float): Float =
+                   |      java.lang.Float.intBitsToFloat(unit(java.lang.Float.floatToRawIntBits(x).toLong).toInt)
+                   |    def wide(unit: Long => Long): Double = java.lang.Double.longBitsToDouble(unit(bits))
+                   |    widened(java.lang.Long.reverse, value) + widened(java.lang.Long.rotateLeft(_, 1), value) +
+                   |      wide(java.lang.Long.reverse) + wide(java.lang.Long.rotateLeft(_, 1))
+                   |  }
+                   |}""".stripMargin
+    assertEquals(
+      tagged(warnings(source), "function-applied-once"),
+      List(
+        "choose is applied once, to arguments the callers of pick have, and only ever given lambdas that forward to a method",
+        "extremum is applied once, to arguments the callers of pick have, and only ever given lambdas that forward to a method",
+        "into is applied once, to arguments the callers of run have, and only ever given lambdas that forward to a method"
+      )
+    )
+    // Extremum's function type would box its Longs, which unspecialised-function reports outside cold classes
+    assertEquals(
+      tagged(warnings(source), "lambda-trait"),
+      List("Often is implemented only by lambdas", "Sink is implemented only by lambdas")
+    )
+    assertEquals(
+      tagged(warnings(source, "hot=!Lints"), "lambda-trait"),
+      List(
+        "Extremum is implemented only by lambdas",
+        "Often is implemented only by lambdas",
+        "Sink is implemented only by lambdas"
+      )
+    )
+    assertEquals(tagged(warnings(source, "hot=Lints"), "lambda-trait"), Nil)
+  }
+
+  test("a private or local method that only passes its parameters on to another is an alias, a public facade is not") {
+    val found = warnings(
+      """object Lints {
+        |  private def target(a: Int, b: Int): Int = a + b
+        |  private def alias(a: Int, b: Int): Int = target(a, b)
+        |  private def swapped(a: Int, b: Int): Int = target(b, a)
+        |  private def partial(a: Int): Int = target(a, 1)
+        |  private def worked(a: Int, b: Int): Int = target(a, b) + 1
+        |  private def twice(a: Int, b: Int): Int = target(a, b)
+        |  private def twice(a: Int): Int = a
+        |  def api(a: Int, b: Int): Int = target(a, b)
+        |  def open(a: Int, b: Int): Int = a * b
+        |  inline def fast(a: Int, b: Int): Int = open(a, b)
+        |  inline def shim(a: Int, b: Int): Int = target(a, b)
+        |  private def wrap[T](value: T): Option[T] = Option(value)
+        |  private def wrapped[T](value: T): Option[T] = wrap[T](value)
+        |  private def widened(a: Int, b: Int): Long = target(a, b)
+        |  private def lazily(a: => Int): Int = target(a, 1)
+        |  private def curried(a: Int)(b: Int): Int = target(a, b)
+        |  def local(): Int = {
+        |    def inner(a: Int): Int = a + 1
+        |    def forward(a: Int): Int = inner(a)
+        |    forward(1) + inner(2)
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "forwarding-alias"),
+      List(
+        "alias only passes its parameters to target",
+        "forward only passes its parameters to inner",
+        "wrapped only passes its parameters to wrap"
+      ).sorted
+    )
+  }
+
+  test("an object whose members all pass their parameters on to other objects is a facade to call directly") {
+    val found = warnings(
+      """object Lints {
+        |  object Engine {
+        |    def start(speed: Int): Int = speed * 2
+        |    def stop(): Unit = ()
+        |    def measure(bytes: Vector[Byte]): Int = bytes.size
+        |  }
+        |  object Facade {
+        |    def start(speed: Int): Int = Engine.start(speed)
+        |    def stop(): Unit = Engine.stop()
+        |  }
+        |  object Platform {
+        |    def epochMillis: Long = Engine.start(0).toLong
+        |    def monotonic(): Unit = Engine.stop()
+        |  }
+        |  object Keywords {
+        |    private val values = Set("class", "def")
+        |    def contains(name: String): Boolean = values(name)
+        |  }
+        |  object Conversions {
+        |    implicit def widen(speed: Int): Long = Engine.start(speed).toLong
+        |  }
+        |  object Wrapper {
+        |    def start(speed: Int): Int = Engine.start(speed + 1)
+        |    def stop(): Unit = Engine.stop()
+        |  }
+        |  trait Decoder { def decode(bytes: Vector[Byte]): Int }
+        |  object Disassembler extends Decoder {
+        |    override def decode(bytes: Vector[Byte]): Int = Engine.measure(bytes)
+        |  }
+        |  object Bridged {
+        |    import Engine.*
+        |    def start(speed: Int): Int = Engine.start(speed)
+        |    def stop(): Unit = Engine.stop()
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "forwarding-alias"),
+      List(
+        "Bridged only passes its parameters to other objects",
+        "Facade only passes its parameters to other objects"
+      )
+    )
+  }
+
+  test("a parameter marked unused that nothing needs is leftover, unless the method must keep its shape") {
+    val found = warnings(
+      """import scala.annotation.unused
+        |object Lints {
+        |  private def run(a: Int, @unused b: Int): Int = a
+        |  def user: Int = run(1, 2)
+        |  private def kept(a: Int, @unused b: Int): Int = a
+        |  val table: Seq[(Int, Int) => Int] = Seq(kept)
+        |  private def pick(a: Int, @unused b: Int): Int = a
+        |  val eta: (Int, Int) => Int = pick
+        |  private def evidence(a: Int)(using @unused numeric: Numeric[Int]): Int = a
+        |  def evident: Int = evidence(1)(using summon[Numeric[Int]])
+        |  def open(a: Int, @unused b: Int): Int = a
+        |  private def used(a: Int, b: Int): Int = a + b
+        |  def outer(): Int = {
+        |    def local(@unused ignored: String, a: Int): Int = a
+        |    local("x", 1)
+        |  }
+        |  def mapped(values: List[Int]): List[Int] = {
+        |    def keep(@unused tag: Int, value: Int): Int = value
+        |    values.map(keep(0, _))
+        |  }
+        |}
+        |class Base { protected def hook(a: Int, @unused b: Int): Int = a }
+        |class Sub extends Base { override protected def hook(a: Int, @unused b: Int): Int = a + 1 }""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "unused-private-param"),
+      List(
+        "b of run is marked @unused and nothing uses it",
+        "ignored of local is marked @unused and nothing uses it",
+        "tag of keep is marked @unused and nothing uses it"
+      ).sorted
+    )
+  }
+
+  test("a private case class built once, passed to a method that unpacks it at once, only bundles parameters") {
+    val found = warnings(
+      """object Lints {
+        |  private case class Settings(width: Int, height: Int, depth: Int, colour: Int)
+        |  def draw(width: Int): Int = render(Settings(width, 2, 3, 4))
+        |  private def render(settings: Settings): Int = {
+        |    val Settings(width, height, depth, colour) = settings
+        |    width + height + depth + colour
+        |  }
+        |  private case class Bound(a: Int, b: Int, c: Int, d: Int)
+        |  def bound(): Int = take(Bound(1, 2, 3, 4))
+        |  private def take(bound: Bound): Int = {
+        |    val a = bound.a
+        |    val b = bound.b
+        |    val c = bound.c
+        |    val d = bound.d
+        |    a + b + c + d
+        |  }
+        |  private case class Reused(a: Int, b: Int, c: Int, d: Int)
+        |  def reused(): Int = both(Reused(1, 2, 3, 4))
+        |  private def both(reused: Reused): Int = {
+        |    val Reused(a, b, c, d) = reused
+        |    a + b + c + d + reused.a
+        |  }
+        |  private case class Twice(a: Int, b: Int, c: Int, d: Int)
+        |  def twice(): Int = open(Twice(1, 2, 3, 4)) + open(Twice(5, 6, 7, 8))
+        |  private def open(twice: Twice): Int = {
+        |    val Twice(a, b, c, d) = twice
+        |    a + b + c + d
+        |  }
+        |  private case class Small(a: Int, b: Int)
+        |  def small(): Int = pair(Small(1, 2))
+        |  private def pair(small: Small): Int = {
+        |    val Small(a, b) = small
+        |    a + b
+        |  }
+        |  private case class Plain(a: Int, b: Int, c: Int, d: Int)
+        |  def plain(): Int = read(Plain(1, 2, 3, 4))
+        |  private def read(plain: Plain): Int = plain.a + plain.b + plain.c + plain.d
+        |  private case class Stored(a: Int, b: Int, c: Int, d: Int)
+        |  private val stored = Stored(1, 2, 3, 4)
+        |  def keep(): Int = unpack(stored)
+        |  private def unpack(stored: Stored): Int = {
+        |    val Stored(a, b, c, d) = stored
+        |    a + b + c + d
+        |  }
+        |  def second(): Int = unpack(Stored(5, 6, 7, 8))
+        |}
+        |case class Exposed(a: Int, b: Int, c: Int, d: Int)
+        |object Public {
+        |  def exposed(): Int = unpack(Exposed(1, 2, 3, 4))
+        |  private def unpack(exposed: Exposed): Int = {
+        |    val Exposed(a, b, c, d) = exposed
+        |    a + b + c + d
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "parameter-object-unpacked"),
+      List(
+        "Bound is built at one call and unpacked by take at once",
+        "Settings is built at one call and unpacked by render at once"
+      )
+    )
   }
 
   test("map with a function returning Unit should be foreach") {
@@ -544,6 +942,24 @@ class LintSuite extends FunSuite {
     )
   }
 
+  test("type tests on a parameter that an override of a library method fixes are not reported") {
+    val found = diagnostics(
+      """import scala.concurrent.ExecutionContext
+        |trait Rejectable extends Runnable { def reject(e: Throwable): Unit }
+        |trait Job
+        |trait Retrying extends Job
+        |final class Pool extends ExecutionContext {
+        |  override def execute(r: Runnable): Unit = r match { case t: Rejectable => t.reject(null); case _ => () }
+        |  override def reportFailure(t: Throwable): Unit = ()
+        |}
+        |object Lints {
+        |  def run(job: Job): Int = job match { case r: Retrying => 1; case _ => 0 }
+        |}""".stripMargin
+    )
+    assertEquals(found.count(_.contains("type test on Rejectable")), 0, found.mkString("\n"))
+    assertEquals(found.count(_.contains("type test on Retrying")), 1, found.mkString("\n"))
+  }
+
   test("type tests on types with an extractor are written as the extractor") {
     val found = warnings(
       """import scala.annotation.nowarn
@@ -597,6 +1013,7 @@ class LintSuite extends FunSuite {
         "write Custom(_, _) instead of the type test _: Custom",
         "write Shape.Circle(_) instead of the type test _: Shape.Circle",
         "write Box(_) instead of the type test _: Box[?]",
+        "write Three(_, _, _) instead of the type test _: Three",
         "write (_, _) instead of the type test _: (Int, String)",
         "write Aliases.Named(_, _) instead of the type test _: Aliases.Named",
         "write Point(_, _) instead of the type test _: Point"
@@ -604,14 +1021,23 @@ class LintSuite extends FunSuite {
     )
   }
 
-  test("type tests on types with more fields than the wildcard limit are left alone") {
+  test("type tests on case classes name their extractor at any arity, others only within the wildcard limit") {
     val source =
       """case class Three(a: Int, b: String, c: Double)
-                   |object Lints { def three(value: Any): Boolean = value match { case _: Three => true; case _ => false } }""".stripMargin
-    assertEquals(warnings(source).filter(_.contains("instead of the type test")), Nil)
+                   |class Triple(val a: Int, val b: Int, val c: Int)
+                   |object Triple { def unapply(triple: Triple): Some[(Int, Int, Int)] = Some((triple.a, triple.b, triple.c)) }
+                   |object Lints {
+                   |  def three(value: Any): Int = value match { case _: Three => 1; case _: Triple => 2; case _ => 0 }
+                   |}""".stripMargin
+    def found(options: String*) =
+      warnings(source, options*).filter(_.contains("instead of the type test")).map(_.takeWhile(_ != ';')).sorted
+    assertEquals(found(), List("write Three(_, _, _) instead of the type test _: Three"))
     assertEquals(
-      warnings(source, "wildcards=3").filter(_.contains("instead of the type test")).map(_.takeWhile(_ != ';')),
-      List("write Three(_, _, _) instead of the type test _: Three")
+      found("wildcards=3"),
+      List(
+        "write Three(_, _, _) instead of the type test _: Three",
+        "write Triple(_, _, _) instead of the type test _: Triple"
+      )
     )
   }
 
@@ -685,6 +1111,7 @@ class LintSuite extends FunSuite {
         "extractor-type-test",
         "named-pattern",
         "redundant-conversion",
+        "wrapped-conversion",
         "unit-map",
         "linear-in-loop",
         "local-throw",
@@ -703,7 +1130,7 @@ class LintSuite extends FunSuite {
     )
   }
 
-  test("sources are linted wherever they are, unless the build marks them generated") {
+  test("sources are linted wherever they are, generated or not, but mutation-testing copies are not") {
     val source = """import scala.concurrent.Future
                    |object Lints {
                    |  def check(left: Array[Int], right: Array[Int]) = left == right
@@ -712,9 +1139,7 @@ class LintSuite extends FunSuite {
                    |}""".stripMargin
     assertEquals(warningsAt("src/main/scala/Lints.scala", source).size, 3)
     assertEquals(warningsAt("src/generated/scala/Lints.scala", source).size, 3)
-    assertEquals(warningsAt("src/generated/scala/Lints.scala", source, "generated=**/src/generated/**"), Nil)
-    assertEquals(warningsAt("gen/Lints.scala", source, "generated=**/gen/**"), Nil)
-    assertEquals(warningsAt("src/generated/scala/Lints.scala", source, "generated=**/gen/**").size, 3)
+    assertEquals(warningsAt("target/stryker4s-1234/src/main/scala/Lints.scala", source), Nil)
   }
 
   test("checks carry their id, and can be disabled, escalated or suppressed by it") {
@@ -730,7 +1155,8 @@ class LintSuite extends FunSuite {
           |object Lints {
           |  @nowarn("msg=baumkuchen:array-equality")
           |  def check(left: Array[Int], right: Array[Int]) = left == right
-          |}""".stripMargin
+          |}""".stripMargin,
+        "disable=nowarn-suppression"
       ),
       Nil
     )
@@ -768,7 +1194,7 @@ class LintSuite extends FunSuite {
         |  def paired(values: Vector[(Int, Int)]): List[Int] =
         |    values.foldLeft(List.empty[Int]) { case (list, (value, _)) => list :+ value }
         |  def hoisted(values: Vector[Int], older: Vector[Int], newer: Vector[Int]): Int =
-        |    values.count(value => (older ++ newer).exists(_ == value))
+        |    values.count(value => (older ++ newer).exists(_ > value))
         |  def extended(values: Vector[Int], older: Vector[Int]): Vector[Vector[Int]] = values.map(value => older ++ Vector(value))
         |  def ranged(count: Int): Vector[Int] = Vector.range(0, count)
         |  def computed(values: Vector[Int]): Vector[Vector[Int]] = values.map(value => ranged(1) ++ ranged(2))
@@ -790,6 +1216,50 @@ class LintSuite extends FunSuite {
         ":+ on a List copies it on every iteration",
         "++ on a List copies it on every iteration",
         "++ on a Vector rebuilds the same collection on every iteration"
+      ).sorted
+    )
+  }
+
+  test("existence tests for equality inside loops are reported as contains is") {
+    val found = warnings(
+      """object Lints {
+        |  def exists(values: Vector[Int], keys: List[Int]): Int = values.count(value => keys.exists(_ == value))
+        |  def named(values: Vector[Int], keys: Seq[Int]): Int = values.count(value => keys.exists(key => key == value))
+        |  def forall(values: Vector[Int], keys: List[Int]): Int = values.count(value => keys.forall(_ != value))
+        |  def array(values: Vector[Int], keys: Array[Int]): Int = values.count(value => keys.exists(_ == value))
+        |  def ordered(values: Vector[Int], keys: List[Int]): Int = values.count(value => keys.exists(_ > value))
+        |  def negated(values: Vector[Int], keys: List[Int]): Int = values.count(value => keys.exists(_ != value))
+        |  def dependent(values: Vector[Int], keys: List[Int]): Int = values.count(value => keys.exists(key => key == key + value))
+        |  def keyed(values: Vector[Int], keys: Set[Int]): Int = values.count(value => keys.exists(_ == value))
+        |  def ranged(values: Vector[Int]): Int = values.count(value => (0 until 8).exists(_ == value))
+        |  def iterated(rows: Vector[List[Int]]): Int = rows.count(row => row.exists(_ == 1))
+        |  def outside(keys: List[Int], value: Int): Boolean = keys.exists(_ == value)
+        |  def optional(values: Vector[Int], key: Option[Int]): Int = values.count(value => key.exists(_ == value))
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "linear-in-loop"),
+      List(
+        "exists on a List scans it on every iteration",
+        "exists on a Seq scans it on every iteration",
+        "forall on a List scans it on every iteration",
+        "exists on an ArrayOps scans it on every iteration"
+      ).sorted
+    )
+  }
+
+  test("the advice for boxing folds names a tail recursive method, which needs no var") {
+    val source =
+      """package demo.kernel
+        |object Lanes {
+        |  def sum(values: Array[Long]): Long = values.foldLeft(0L)(_ + _)
+        |  def indexed(values: Array[Long]): Array[(Long, Int)] = values.zipWithIndex
+        |}""".stripMargin
+    assertEquals(
+      warnings(source, "hot=demo.kernel.**").filter(_.contains("boxing-fold")).map(_.takeWhile(_ != '[').trim).sorted,
+      List(
+        "foldLeft with a Long accumulator boxes it on every step; use a @tailrec method over primitives",
+        "zipWithIndex builds a boxed (Long, Int) for every element; use a @tailrec method over primitive arrays"
       ).sorted
     )
   }
@@ -840,6 +1310,24 @@ class LintSuite extends FunSuite {
         "value is boxed for the generic parameter elem of contains on every iteration"
       ).sorted
     )
+  }
+
+  test("boxing in loops is reported in hot classes only when the build marks a hot list") {
+    val oracle =
+      """class OracleSuite {
+        |  def check(): Unit = for (r <- 0 until 4) assert((0 until 16).foldLeft(0f)(_ + _ * r) == 0f)
+        |}""".stripMargin
+    val loop =
+      """import scala.collection.mutable
+        |class VMLoop {
+        |  val m = mutable.Map.empty[String, Long]
+        |  def run(xs: Array[Long]): Unit = xs.foreach(x => m("k") = x)
+        |}""".stripMargin
+    assertEquals(tagged(warnings(oracle), "loop-boxing").size, 1)
+    assertEquals(tagged(warnings(oracle, "hot=**.VM*", "hot=!**.*Suite"), "loop-boxing"), Nil)
+    assertEquals(tagged(warnings(loop, "hot=**.VM*", "hot=!**.*Suite"), "loop-boxing").size, 1)
+    assertEquals(tagged(warnings(loop), "loop-boxing").size, 1)
+    assertEquals(tagged(warnings(loop, "hot=**.Other*"), "loop-boxing"), Nil)
   }
 
   test("chains of strict collection transformations inside loops are reported once") {
@@ -961,6 +1449,13 @@ class LintSuite extends FunSuite {
         "Function2[String, Long, Boolean] is not specialised and boxes its primitive arguments on every call"
       ).sorted
     )
+    val source = """class Suite(visit: (Long, Long, Int) => Unit)
+                   |object Lints {
+                   |  def take(f: (Long, Long, Int) => Unit): Unit = f(1L, 2L, 3)
+                   |}""".stripMargin
+    assertEquals(tagged(warnings(source), "unspecialised-function").size, 2)
+    assertEquals(tagged(warnings(source, "hot=!Suite"), "unspecialised-function").size, 1)
+    assertEquals(tagged(warnings(source, "hot=!Lints", "hot=!Suite"), "unspecialised-function"), Nil)
   }
 
   test("appending to an accumulator that copies on every append is reported") {
@@ -1093,15 +1588,35 @@ class LintSuite extends FunSuite {
         |    let(1) { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
         |  def passed(flag: Boolean, sink: Array[Int]): Unit =
         |    single { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
-        |  inline def abstracted(inline sinks: Sinks, flag: Boolean, sink: Array[Int]): Unit =
-        |    sinks.block { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
         |  def eager(flag: Boolean, sink: Array[Int]): Unit =
         |    once(_ => (), { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high })
         |  def plain(flag: Boolean, sink: Array[Int]): Unit =
         |    call { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
         |}""".stripMargin
     )
-    assertEquals(tagged(found, "tuple-destructure-in-loop").size, 4, found.mkString("\n"))
+    assertEquals(tagged(found, "tuple-destructure-in-loop").size, 3, found.mkString("\n"))
+  }
+
+  test("a function passed to an abstract inline method is not a loop body, and one passed to a concrete loop is") {
+    val found = warnings(
+      """case class Point(x: Int, y: Int)
+        |trait Sinks { inline def block(inline body: Int => Unit): Unit }
+        |object Lanes {
+        |  inline def foreachActive(mask: Long)(inline body: Int => Unit): Unit = {
+        |    var lane = 0
+        |    while (lane < 64) { if ((mask >>> lane & 1L) != 0L) body(lane); lane += 1 }
+        |  }
+        |  inline def abstracted(inline sinks: Sinks, flag: Boolean, sink: Array[Int]): Unit =
+        |    sinks.block { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
+        |  inline def hoistable(inline sinks: Sinks, base: Int, sink: Array[Int]): Unit =
+        |    sinks.block { lane => val offset = Point(base, 1); sink(lane) = offset.x }
+        |  def concrete(mask: Long, base: Int, sink: Array[Int]): Unit =
+        |    foreachActive(mask) { lane => val offset = Point(base, 1); sink(lane) = offset.x }
+        |}""".stripMargin,
+      "hot=Lanes"
+    )
+    assertEquals(tagged(found, "invariant-in-loop").size, 1, found.mkString("\n"))
+    assertEquals(tagged(found, "tuple-destructure-in-loop"), Nil, found.mkString("\n"))
   }
 
   test("a warning on an expression spanning several lines is shown at its first line, so its rendering stays small") {
@@ -1209,7 +1724,7 @@ class LintSuite extends FunSuite {
         |      }): @nowarn("msg=baumkuchen:invariant-in-loop")
         |    ).sum
         |}""".stripMargin
-    assertEquals(warnings(source, "-Wunused:nowarn"), Nil)
+    assertEquals(warnings(source, "-Wunused:nowarn", "disable=nowarn-suppression"), Nil)
     val nested =
       """import scala.annotation.nowarn
         |object Lints {
@@ -1224,8 +1739,122 @@ class LintSuite extends FunSuite {
         |      } yield b): @nowarn("msg=baumkuchen:invariant-in-loop")
         |    }
         |}""".stripMargin
-    assertEquals(warnings(nested, "-Wunused:nowarn", "hot=Lints"), Nil)
+    assertEquals(warnings(nested, "-Wunused:nowarn", "hot=Lints", "disable=nowarn-suppression"), Nil)
     assertEquals(warnings(nested.replace(": @nowarn(\"msg=baumkuchen:invariant-in-loop\")", ""), "hot=Lints").size, 1)
+  }
+
+  test("a check on an expression is suppressed by @SuppressWarnings ascribed to it") {
+    def loop(annotation: String) =
+      s"""enum Format { case F32, F16 }
+         |object Lints {
+         |  def widths(values: Vector[Int], format: Format): Int =
+         |    values.map(value =>
+         |      (format match {
+         |        case Format.F32 => 4
+         |        case Format.F16 => 2
+         |      })$annotation
+         |    ).sum
+         |}""".stripMargin
+    assertEquals(warnings(loop(""), "hot=Lints").size, 1)
+    assertEquals(warnings(loop(": @SuppressWarnings(Array(\"baumkuchen:invariant-in-loop\"))"), "hot=Lints"), Nil)
+    assertEquals(warnings(loop(": @SuppressWarnings(Array(\"baumkuchen\"))"), "hot=Lints"), Nil)
+    assertEquals(warnings(loop(": @SuppressWarnings(Array(\"baumkuchen:unbounded-wait\"))"), "hot=Lints").size, 1)
+    assertEquals(
+      compile("Lints.scala", loop(": @SuppressWarnings(Array(\"baumkuchen\"))"), "hot=Lints", "error=*")._1,
+      Nil
+    )
+    val close =
+      """object Lints {
+        |  def leak(): Int = {
+        |    val stream = java.io.ByteArrayInputStream(Array[Byte](1))
+        |    val read  = stream.read()
+        |    stream.close()%s
+        |    read
+        |  }
+        |}""".stripMargin
+    assert(warnings(close.format("")).exists(_.contains("baumkuchen:unguarded-close")))
+    assertEquals(
+      warnings(
+        close.format(": @SuppressWarnings(Array(\"baumkuchen:unguarded-close\"))")
+      ).filter(_.contains("baumkuchen:")),
+      Nil
+    )
+  }
+
+  test("@nowarn naming only baumkuchen messages is reported, and rewritten to @SuppressWarnings") {
+    val definition =
+      """import scala.annotation.nowarn
+        |object Lints {
+        |  @nowarn("msg=baumkuchen:array-equality")
+        |  def check(left: Array[Int], right: Array[Int]) = left == right
+        |}""".stripMargin
+    val found = warnings(definition)
+    assertEquals(tagged(found, "nowarn-suppression").size, 1, found.mkString("\n"))
+    assert(
+      found.exists(_.contains("""use @SuppressWarnings(Array("baumkuchen:<id>")) instead of @nowarn""")),
+      found.mkString("\n")
+    )
+    assertEquals(tagged(found, "array-equality"), Nil)
+    assertEquals(
+      rewritten(definition).linesIterator.toList.drop(2).head,
+      """  @SuppressWarnings(Array("baumkuchen:array-equality"))"""
+    )
+    val expression =
+      """object Lints {
+        |  def leak(): Int = {
+        |    val stream = java.io.ByteArrayInputStream(Array[Byte](1))
+        |    val read  = stream.read()
+        |    stream.close(): @scala.annotation.nowarn("msg=baumkuchen:unguarded-close")
+        |    read
+        |  }
+        |}""".stripMargin
+    val inline = warnings(expression)
+    assertEquals(tagged(inline, "nowarn-suppression").size, 1, inline.mkString("\n"))
+    assertEquals(tagged(inline, "unguarded-close"), Nil)
+    assert(
+      rewritten(expression).contains("""stream.close(): @SuppressWarnings(Array("baumkuchen:unguarded-close"))"""),
+      rewritten(expression)
+    )
+  }
+
+  test("@nowarn filters that match the report itself cannot suppress it, so it is an error") {
+    List("baumkuchen", "baumkuchen:nowarn-suppression").foreach { filter =>
+      val source =
+        s"""import scala.annotation.nowarn
+           |object Lints {
+           |  @nowarn("msg=$filter")
+           |  def check(left: Array[Int], right: Array[Int]) = left == right
+           |}""".stripMargin
+      val found = diagnostics(source)
+      assertEquals(found.count(_.startsWith("error: ")), 1, found.mkString("\n"))
+      assert(found.exists(_.endsWith("[baumkuchen:nowarn-suppression]")), found.mkString("\n"))
+      assert(!diagnostics(source, "disable=nowarn-suppression").exists(_.startsWith("error: ")), filter)
+    }
+  }
+
+  test("@nowarn without a baumkuchen filter is not reported") {
+    def definition(annotation: String) =
+      s"""import scala.annotation.nowarn
+         |object Lints {
+         |  $annotation
+         |  def check(left: Array[Int], right: Array[Int]) = left == right
+         |}""".stripMargin
+    List(
+      "@nowarn",
+      "@nowarn()",
+      "@nowarn(\"msg=something else\")",
+      "@nowarn(\"cat=deprecation\")",
+      "@nowarn(\"msg=baumkuchen:array-equality&cat=deprecation\")"
+    ).foreach { annotation =>
+      assertEquals(tagged(warnings(definition(annotation)), "nowarn-suppression"), Nil, annotation)
+    }
+    val expression =
+      """import scala.annotation.nowarn
+        |object Lints {
+        |  def number(s: String): Int = s.toInt: @nowarn("msg=something else")
+        |}""".stripMargin
+    assertEquals(tagged(warnings(expression), "nowarn-suppression"), Nil)
+    assertEquals(warnings(definition("@nowarn(\"msg=baumkuchen:array-equality\")"), "disable=nowarn-suppression"), Nil)
   }
 
   private val refinement =
@@ -1464,7 +2093,7 @@ class LintSuite extends FunSuite {
         |  def once(x: Int): Point = Point(x, 1)
         |  def matched(values: Vector[Int]): Int = values.map(value => value match { case 0 => 1; case _ => 2 }).sum
         |  def hoisted(values: Vector[Int], older: Vector[Int], newer: Vector[Int]): Int =
-        |    values.count(value => (older ++ newer).exists(_ == value))
+        |    values.count(value => (older ++ newer).exists(_ > value))
         |  def literal(lines: Vector[String]): Int = lines.count(line => "a+".r.matches(line))
         |  def interpolated(values: Vector[Int], name: String): Vector[String] = values.map(value => s"$name!")
         |  def wrapped(values: Vector[Option[Int]], key: Int): Int = values.count(value => value == Some(key))
@@ -1846,6 +2475,51 @@ class LintSuite extends FunSuite {
     assertEquals(tagged(found, "orphan-thread"), Nil)
   }
 
+  test("a losing once-guard waits for work its winner counts down, and a close stops its join only after closing") {
+    val found = warnings(
+      """import java.nio.channels.ServerSocketChannel
+        |import java.util.concurrent.CountDownLatch
+        |import java.util.concurrent.atomic.AtomicBoolean
+        |object Latches {
+        |  private val done  = AtomicBoolean(false)
+        |  private val latch = CountDownLatch(1)
+        |  def release(work: () => Unit): Unit =
+        |    if (done.compareAndSet(false, true)) try work() finally latch.countDown()
+        |    else latch.await()
+        |  def start(gate: CountDownLatch): Unit = gate.await()
+        |}
+        |object Gates {
+        |  private val done  = AtomicBoolean(false)
+        |  private val latch = CountDownLatch(1)
+        |  def release(work: () => Unit): Unit =
+        |    if (done.compareAndSet(false, true)) work()
+        |    else latch.await()
+        |}
+        |class Listener(listener: ServerSocketChannel, acceptThread: Thread) extends AutoCloseable {
+        |  def close(): Unit = { listener.close(); acceptThread.join() }
+        |}
+        |class Late(listener: ServerSocketChannel, acceptThread: Thread) extends AutoCloseable {
+        |  def close(): Unit = { acceptThread.join(); listener.close() }
+        |}
+        |class Logged(log: AutoCloseable, worker: Thread) extends AutoCloseable {
+        |  def close(): Unit = { log.close(); worker.join() }
+        |}
+        |class Unclosed(worker: Thread) extends AutoCloseable {
+        |  def close(): Unit = worker.join()
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "unbounded-wait"),
+      List(
+        "await waits with no limit, so a stuck task hangs its caller",
+        "await waits with no limit, so a stuck task hangs its caller",
+        "join waits with no limit, so a stuck task hangs its caller",
+        "join waits with no limit, so a stuck task hangs its caller",
+        "join waits with no limit, so a stuck task hangs its caller"
+      )
+    )
+  }
+
   test("closeable locals closed after statements that can fail first") {
     val found = warnings(
       """class Resource extends AutoCloseable { def use(): Int = 1; def close(): Unit = () }
@@ -1979,9 +2653,25 @@ class LintSuite extends FunSuite {
       "reimplemented-join" ->
         """def await(future: java.util.concurrent.CompletableFuture[Int]): Int =
           |    try future.get() catch { case _: InterruptedException => Thread.currentThread.interrupt(); 0 }""".stripMargin,
-      "eager-effect"              -> "def effect[F[_]](unit: Int => F[Int]): F[Int] = { println(1); unit(1) }",
-      "regex-in-def"              -> "def parse(s: String): Boolean = \"a+\".r.matches(s)",
-      "unspecialised-function"    -> "def visit(f: (Long, Long, Int) => Unit): Unit = f(1L, 2L, 3)",
+      "eager-effect"           -> "def effect[F[_]](unit: Int => F[Int]): F[Int] = { println(1); unit(1) }",
+      "regex-in-def"           -> "def parse(s: String): Boolean = \"a+\".r.matches(s)",
+      "unspecialised-function" -> "def visit(f: (Long, Long, Int) => Unit): Unit = f(1L, 2L, 3)",
+      "wrapped-conversion"     -> "def wrapped(value: java.math.BigDecimal): Double = BigDecimal(value).toDouble",
+      "lambda-trait"           ->
+        "private trait Sink { def accept(value: Long): Unit }\n  def sink(value: Long): Unit = { val to: Sink = received => println(received); to.accept(value) }",
+      "function-applied-once" ->
+        "def total(a: Long, b: Long): Long = { def pick(x: Long, y: Long, choose: (Long, Long) => Long): Long = choose(x, y); pick(a, b, math.min) + pick(b, a, math.max) }",
+      "forwarding-alias" ->
+        "private def alias(a: Int, b: Int): Int = target(a, b)\n  private def target(a: Int, b: Int): Int = a + b\n  def total: Int = alias(1, 2)",
+      "unused-private-param" ->
+        "private def run(a: Int, @scala.annotation.unused b: Int): Int = a\n  def user: Int = run(1, 2)",
+      "parameter-object-unpacked" ->
+        """private case class Settings(a: Int, b: Int, c: Int, d: Int)
+          |  def draw(): Int = render(Settings(1, 2, 3, 4))
+          |  private def render(settings: Settings): Int = {
+          |    val Settings(a, b, c, d) = settings
+          |    a + b + c + d
+          |  }""".stripMargin,
       "accumulating-concat"       -> "def text(words: Vector[String]): String = words.foldLeft(\"\")(_ + _)",
       "tuple-destructure-in-loop" ->
         "def pairs(values: Vector[Int], flag: Boolean): Vector[Int] = values.map { v => val (a, b) = if (flag) (v, 1) else (1, v); a + b }",

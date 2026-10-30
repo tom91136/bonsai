@@ -25,6 +25,7 @@ import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.ConstantType
 import dotty.tools.dotc.core.Types.NamedType
 import dotty.tools.dotc.core.Types.Type
+import dotty.tools.dotc.core.Types.TypeParamRef
 import dotty.tools.dotc.core.Types.TypeRef
 import dotty.tools.dotc.core.Types.TypeTraverser
 import dotty.tools.dotc.core.tasty.TastyUnpickler
@@ -38,6 +39,7 @@ import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.PathMatcher
+import net.kurobako.baumkuchen.java.{Model => JavaModel}
 import scala.collection.mutable
 import scala.concurrent.Promise
 import scala.jdk.CollectionConverters.*
@@ -62,11 +64,14 @@ object Extraction {
       clones: Vector[Clones.Group],
       bytecode: Vector[Bytecode.Method],
       complexities: Vector[Complexity.Summary],
+      unusedBounds: Vector[Complexity.Bounded],
       pipelines: Vector[Pipelines.Chain],
       megamorphic: Vector[Megamorphic.Site],
       hot: Option[Set[String]],
       purity: Purity.Model,
-      problems: Vector[String]
+      lints: Vector[JavaLints.Found],
+      problems: Vector[String],
+      nesting: Nesting.Model = Nesting.Model.empty
   )
 
   // The TASTy unpickler recurses over long import selector lists and deep trees.
@@ -78,6 +83,9 @@ object Extraction {
   // A string naming a member, alone or at the head of a call: `Owner.member`, `pkg.Owner.member` or `Owner.member(...`.
   private val Reference = """((?:[a-z][A-Za-z0-9_]*\.)*)([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(\(.*)?""".r
 
+  // A string naming a type by its package and name, `pkg.Type`.
+  private val QualifiedType = """((?:[a-z][A-Za-z0-9_]*\.)+)([A-Z][A-Za-z0-9_]*)""".r
+
   private val Width = "[0-9]+".r
 
   // File names read like references to members.
@@ -86,19 +94,21 @@ object Extraction {
 
   /** Extracts the build `manifest` describes; `concurrent` names methods that run the functions passed to them on other
     * threads, beside the standard ones, `reflective` globs the types the build names only in strings, and `hot` the
-    * classes whose code runs hot, with `!` before a glob leaving out what it matches.
+    * classes whose code runs hot, with `!` before a glob leaving out what it matches, and `bounded` the members and
+    * parameters whose collections hold a declared number of elements.
     */
   def read(
       manifest: Manifest,
       generated: Vector[String] = Vector.empty,
       concurrent: Set[String] = Set.empty,
       reflective: Vector[String] = Vector.empty,
-      hot: Vector[String] = Vector.empty
+      hot: Vector[String] = Vector.empty,
+      bounded: Vector[Complexity.Bounded] = Vector.empty
   ): Either[Vector[String], Result] = {
     val result = Promise[Either[Vector[String], Result]]()
     val thread = Thread(
       Thread.currentThread.getThreadGroup,
-      () => result.complete(Try(extract(manifest, generated, concurrent, reflective, hot))): Unit,
+      () => result.complete(Try(extract(manifest, generated, concurrent, reflective, hot, bounded))): Unit,
       "baumkuchen-extraction",
       StackSize
     )
@@ -114,7 +124,8 @@ object Extraction {
       generated: Vector[String],
       concurrent: Set[String],
       reflective: Vector[String],
-      hot: Vector[String]
+      hot: Vector[String],
+      bounded: Vector[Complexity.Bounded]
   ): Either[Vector[String], Result] = {
     // The compiler aborts the whole run on a file whose names or sections it cannot index, so those are set aside.
     // A platform twin compiles the shared sources again, so only the classes the JVM modules lack are its own. The
@@ -130,16 +141,21 @@ object Extraction {
     ).partition(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess)
     val skipped =
       unreadable.map(file => s"class file ${file.getFileName.toString.stripSuffix(".tasty")} could not be read")
-    val roots = manifest.outputs.flatMap(output => entryPoints(output.path)).toSet
-    if (tasty.isEmpty && skipped.nonEmpty) Left(skipped)
+    val roots                = manifest.outputs.flatMap(output => entryPoints(output.path)).toSet
+    val matchers             = generated.map(FileSystems.getDefault.getPathMatcher(_))
+    val (java, javaProblems) = collected(manifest, matchers)
+    val moduleUses           = Modules.uses(manifest, java.nodes, java.reflections)
+    if (tasty.isEmpty && (skipped ++ javaProblems).nonEmpty) Left(skipped ++ javaProblems)
     else if (tasty.isEmpty)
+      // A build of Java code alone has no TASTy to read, so the model the javac plugin collected is all of it.
       Right(Result(
-        Graph(Map.empty, Map.empty, roots),
-        Algebra.Model(Vector.empty, Vector.empty, Map.empty, Vector.empty, Vector.empty),
-        Smells.Model(Vector.empty, Map.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty),
+        Graph(java.nodes, java.edges, roots ++ java.roots),
+        Algebra.Model(java.products, java.sums, Map.empty, Vector.empty, Vector.empty),
+        Smells.Model(java.methods, java.sites, java.usages, Vector.empty, Vector.empty, Vector.empty, moduleUses),
         Designs.Model.empty,
         Structures.Model.empty,
         Members.Model.empty,
+        java.clones,
         Vector.empty,
         Vector.empty,
         Vector.empty,
@@ -147,6 +163,7 @@ object Extraction {
         Vector.empty,
         None,
         Purity.Model.empty,
+        java.lints,
         Vector.empty
       ))
     else {
@@ -154,9 +171,10 @@ object Extraction {
         Collector(
           manifest.outputs,
           manifest.libraries,
-          generated.map(FileSystems.getDefault.getPathMatcher(_)),
+          matchers,
           concurrent,
-          reflective.map(qualifiedNames(_))
+          reflective.map(qualifiedNames(_)),
+          bounded
         )
       val arguments = Array(
         "-from-tasty",
@@ -169,8 +187,8 @@ object Extraction {
         evicted(manifest.classpath).mkString(File.pathSeparator)
       ) ++ tasty.map(_.toString)
       val reporter = Reader(phase).process(arguments, StoreReporter())
-      val problems = skipped ++ phase.problems ++ reporter.allErrors.map(_.message).distinct
-      val graph    = phase.graph(roots)
+      val problems = skipped ++ javaProblems ++ phase.problems ++ reporter.allErrors.map(_.message).distinct
+      val graph    = merge(phase.graph(roots), java)
       // A platform twin replaces some sources with its own of the same name, so the types in them cannot move.
       val twinned = manifest.sources.filter(source => manifest.platforms(source.module)).groupMap(_.module)(_.path)
         .values.map(paths => (paths.toSet, paths.map(_.getFileName).toSet)).toVector
@@ -185,17 +203,31 @@ object Extraction {
           graph.nodes.get(key).forall(node => !replaced.exists(_.endsWith(node.source)))
         )
       )
+      // The model of the Java code joins the model of the Scala code, so that the rules read both alike.
+      val algebra = phase.algebra.copy(
+        products = phase.algebra.products ++ java.products,
+        sums = phase.algebra.sums ++ java.sums
+      )
+      val smells = phase.smells.copy(
+        methods = phase.smells.methods ++ java.methods,
+        sites = phase.smells.sites ++ java.sites.map { case (name, sites) =>
+          name -> (phase.smells.sites.getOrElse(name, Vector.empty) ++ sites)
+        },
+        usages = phase.smells.usages ++ java.usages,
+        moduleUses = moduleUses
+      )
       if (graph.nodes.isEmpty && problems.nonEmpty) Left(problems)
       else Right(Result(
         graph,
-        phase.algebra,
-        phase.smells,
+        algebra,
+        smells,
         phase.designs,
         structures,
         phase.memberships,
-        phase.duplicates,
+        phase.duplicates ++ java.clones,
         Bytecode.read(primary.map(_.path)),
         phase.complexities,
+        phase.unusedBounds,
         phase.pipelines,
         // Megamorphic calls cost only where the JVM compiles hot code, which a platform twin never runs on.
         phase.megamorphic.filter(site =>
@@ -203,12 +235,260 @@ object Extraction {
         ),
         Option.when(hot.nonEmpty)(graph.nodes.keySet.filter(heated(hot, _))),
         phase.purity,
-        problems
+        java.lints,
+        problems,
+        phase.nesting(graph.roots)
       ))
     }
   }
 
   private given Ordering[Vector[BigInt]] = Ordering.Implicits.seqOrdering[Vector, BigInt]
+
+  /** The graph the javac plugin collected for the Java code of a build, with the methods, the fields and the calls it
+    * found.
+    */
+  private case class Collected(
+      nodes: Map[String, Node],
+      edges: Map[String, Set[String]],
+      roots: Set[String],
+      methods: Vector[Smells.Method],
+      sites: Map[String, Vector[Algebra.Site]],
+      usages: Vector[Smells.Usage],
+      products: Vector[Algebra.Product],
+      sums: Vector[Algebra.Sum],
+      clones: Vector[Clones.Group],
+      lints: Vector[JavaLints.Found],
+      reflections: Vector[JavaModel.Reflection]
+  )
+
+  /** The graph of the Java code the javac plugin collected, which holds the nodes it found and the references between
+    * them, and the methods, the fields and the calls it found.
+    */
+  private def collected(manifest: Manifest, generated: Vector[PathMatcher]): (Collected, Vector[String]) = {
+    val nodes       = mutable.LinkedHashMap.empty[String, Node]
+    val edges       = mutable.LinkedHashMap.empty[String, mutable.LinkedHashSet[String]]
+    val roots       = mutable.LinkedHashSet.empty[String]
+    val methods     = mutable.ArrayBuffer.empty[Smells.Method]
+    val results     = mutable.LinkedHashMap.empty[String, String]
+    val sites       = mutable.LinkedHashMap.empty[String, mutable.ArrayBuffer[Algebra.Site]]
+    val calls       = mutable.LinkedHashMap.empty[String, (Int, Int, Int, Int)]
+    val products    = mutable.ArrayBuffer.empty[Algebra.Product]
+    val sums        = mutable.ArrayBuffer.empty[Algebra.Sum]
+    val fragments   = mutable.ArrayBuffer.empty[(JavaModel.Fragment, Boolean)]
+    val lints       = mutable.ArrayBuffer.empty[JavaLints.Found]
+    val reflections = mutable.ArrayBuffer.empty[JavaModel.Reflection]
+    val problems    = Vector.newBuilder[String]
+    manifest.models.foreach { model =>
+      JavaModel.read(model.path) match {
+        case Left(problem)    => problems += problem
+        case Right(collected) =>
+          // The code of the test sources is marked as such, which lowers the findings that concern it.
+          val test = model.scope == Output.Scope.Test
+          collected.nodes.foreach { node =>
+            // The public API of a library is used by the builds that depend on it, as the public API of Scala code is.
+            val exported = node.exported && manifest.libraries(model.module) && model.scope == Output.Scope.Main
+            nodes.getOrElseUpdate(
+              node.name,
+              Node(
+                node.name,
+                model.module,
+                model.scope,
+                node.source,
+                node.line,
+                node.generated || generated.exists(_.matches(Path.of(node.source))),
+                exported,
+                node.outer,
+                node.suppressed
+              )
+            ): Unit
+            // The build enters the code from outside it at a type that holds a native or a main method, and the
+            // public API of a library is used by the builds that depend on it.
+            if (exported || node.entry) roots += node.name
+          }
+          collected.methods.foreach { method =>
+            val owner = method.owner
+            methods += Smells.Method(
+              method.name,
+              owner,
+              owner,
+              method.parameters.map(parameter => field(parameter)),
+              // A method that overrides a method of a supertype is one it inherits rather than declares.
+              overriding = method.overriding,
+              // The public API of a library is used by the builds that depend on it, so the callers in this build do
+              // not settle it.
+              method.exported && manifest.libraries(model.module) && model.scope == Output.Scope.Main &&
+                nodes.get(owner).forall(_.exported),
+              test = test,
+              method.stored,
+              Set.empty,
+              inline = false,
+              suppressed = method.suppressed
+            )
+            // The type the method returns, which the rules that need every call site read by.
+            returns(method).foreach(returned => results(method.name) = returned)
+          }
+          collected.fields.groupBy(_.owner).foreach { (owner, fields) =>
+            products += Algebra.Product(
+              owner,
+              owner,
+              fields.map(found => field(found.parameter)),
+              Set.empty,
+              Algebra.Predicate.Unknown,
+              Algebra.Access.Open,
+              exported = false
+            )
+          }
+          // A record is a product, which the analysis reads alike with a case class.
+          collected.products.foreach { product =>
+            products += Algebra.Product(
+              product.name,
+              product.node,
+              product.fields.map(field),
+              product.parents,
+              Algebra.Predicate.Unknown,
+              Algebra.Access.Open,
+              product.exported
+            )
+          }
+          // A sealed type is a sum, which the analysis reads alike with a sealed trait. The fields of a variant are
+          // those of the product of it, which a record that extends the sealed type is.
+          collected.sums.foreach { sum =>
+            sums += Algebra.Sum(
+              sum.name,
+              sum.node,
+              sum.variants.map { variant =>
+                Algebra.Variant(
+                  variant.name,
+                  products.find(_.name == variant.name).map(_.fields).getOrElse(Vector.empty)
+                )
+              }
+            )
+          }
+          collected.sites.foreach { site =>
+            val callee = site.callee
+            sites.getOrElseUpdate(callee, mutable.ArrayBuffer.empty) += Algebra.Site(
+              site.arguments.map(argument),
+              test = test,
+              // A call the callee makes of itself, whose arguments the method itself fixes.
+              own = site.caller == callee,
+              site.location
+            )
+            // The calls of a method, those of them that drop the result, those in tests and those that invert it, which
+            // the rules that need every call site read alike with the calls of the Scala code.
+            val (total, dropped, tests, inverted) = calls.getOrElse(callee, (0, 0, 0, 0))
+            calls(callee) = (
+              total + 1,
+              dropped + (if (site.discarded) 1 else 0),
+              tests + (if (test) 1 else 0),
+              inverted + (if (site.negated) 1 else 0)
+            )
+          }
+          collected.edges.foreach { edge =>
+            edges.getOrElseUpdate(edge.from, mutable.LinkedHashSet.empty) += edge.to: Unit
+          }
+          collected.fragments.foreach(fragment => fragments += fragment -> test): Unit
+          // The lints of the Java code are reported as findings of their own, with the module and the scope of the
+          // model they were found in.
+          collected.lints.foreach(lint =>
+            lints += JavaLints.Found(lint, model.module, model.scope, generated.exists(_.matches(Path.of(lint.path))))
+          ): Unit
+          collected.reflections.foreach(reflection => reflections += reflection): Unit
+      }
+    }
+    // The usages of the methods of the Java code, which the rules that need every call site read alike with the usages
+    // of the methods of the Scala code.
+    val usages = methods.toVector.flatMap { method =>
+      for {
+        returns                           <- results.get(method.name)
+        (total, dropped, tests, inverted) <- calls.get(method.name)
+      } yield Smells.Usage(method, returns, total, dropped, tests, inverted)
+    }
+    (
+      Collected(
+        nodes.toMap,
+        edges.view.mapValues(_.toSet).toMap,
+        roots.toSet,
+        methods.toVector,
+        sites.view.mapValues(_.toVector).toMap,
+        usages,
+        products.toVector,
+        sums.toVector,
+        // The copies of the code of the Java code are of the whole build, as the same block of code written in two
+        // modules of it is as much a copy as one written twice in one.
+        JavaFragments.groups(fragments),
+        lints.toVector,
+        reflections.toVector
+      ),
+      problems.result()
+    )
+  }
+
+  /** The file a method of the Java code is in, which is the file of the type that holds it. */
+  private def file(method: JavaModel.Method, nodes: collection.Map[String, Node]): String =
+    nodes.get(method.owner).map(_.source).getOrElse {
+      // The place the method is in names the file it is in, which the model of the type does not tell when the type is
+      // not in the model.
+      val location = method.location
+      val index    = location.lastIndexOf(':')
+      if (index < 0) location else location.take(index)
+    }
+
+  /** The type a method of the Java code returns, unless it returns nothing or returns the type that holds it, whose
+    * result the code that calls it is meant to drop.
+    */
+  private def returns(method: JavaModel.Method): Option[String] = {
+    val returned = method.returns
+    if (returned.isEmpty || returned == "void") None
+    else if (returned == method.owner.split('.').last) None
+    else Some(returned)
+  }
+
+  /** The argument a call passes, which the analysis reads the values the callers pass by. */
+  private def argument(argument: String): Algebra.Argument =
+    argument match {
+      case "true"                               => Algebra.Argument.True
+      case "false"                              => Algebra.Argument.False
+      case "absent"                             => Algebra.Argument.Absent
+      case "unknown"                            => Algebra.Argument.Unknown
+      case value if value.startsWith("number:") => Algebra.Argument.Number(BigDecimal(value.drop("number:".length)))
+      case value if value.startsWith("text:")   => Algebra.Argument.Text(value.drop("text:".length))
+      case value if value.startsWith("symbol:") => Algebra.Argument.Tag(value.drop("symbol:".length))
+      case _                                    => Algebra.Argument.Present
+    }
+
+  /** The parameter of a method, or the field of a type, which the analysis compares the methods of a build by. */
+  private def field(parameter: JavaModel.Parameter): Algebra.Field =
+    Algebra.Field(
+      parameter.name,
+      shape(parameter.kind, parameter.shape),
+      if (parameter.kind == "other" && parameter.shape == "java.lang.String") Algebra.Kind.Text
+      else kind(parameter.kind, parameter.cases),
+      parameter.primitive
+    )
+
+  /** The shape of a type, which the analysis compares the parameters of the methods by. */
+  private def shape(kind: String, name: String): Polynomial = kind match {
+    case "flag"     => Polynomial.constant(2)
+    case "optional" => Polynomial.One + Polynomial.atom(name)
+    case _          => Polynomial.atom(name)
+  }
+
+  /** The kind of a type, which the analysis reads the parameters of the methods by. */
+  private def kind(kind: String, cases: Vector[String]): Algebra.Kind = kind match {
+    case "flag"     => Algebra.Kind.Flag
+    case "number"   => Algebra.Kind.Number
+    case "optional" => Algebra.Kind.Optional
+    case "tag"      => Algebra.Kind.Tag(cases)
+    case _          => Algebra.Kind.Other
+  }
+
+  /** The graph of the build, which holds the nodes of the Scala code and of the Java code alike. */
+  private def merge(graph: Graph, collected: Collected): Graph = {
+    val edges = collected.edges.foldLeft(graph.edges) { case (edges, (from, tos)) =>
+      edges.updated(from, edges.getOrElse(from, Set.empty) ++ tos)
+    }
+    Graph(graph.nodes ++ collected.nodes, edges, graph.roots ++ collected.roots)
+  }
 
   /** Keeps the newest version of each repository artifact, as dependency resolution would for a single classpath. */
   def evicted(classpath: Vector[Path]): Vector[Path] = {
@@ -226,15 +506,7 @@ object Extraction {
   } yield artifactDirectory ->
     (version.split("[.-]").toVector.map(_.takeWhile(_.isDigit)).takeWhile(_.nonEmpty).map(BigInt(_)), version)
 
-  // The compiler plugin, which depends on nothing of the analysis, reads its hot globs the same way.
-  /** A glob over qualified names, matched against a name with a dot appended: `*` stands for one name segment or part
-    * of one, and `**` for any number of segments.
-    */
-  @SuppressWarnings(Array("baumkuchen:duplicate-code"))
-  private def qualifiedNames(glob: String): Regex = glob.split('.').map {
-    case "**"    => "(?:[^.]+\\.)*"
-    case segment => segment.split("\\*", -1).map(Regex.quote).mkString("[^.]*") + "\\."
-  }.mkString.r
+  private def qualifiedNames(glob: String): Regex = Intended.qualifiedNames(glob)
 
   private def heated(globs: Vector[String], name: String): Boolean = {
     val (excluded, included) = globs.partition(_.startsWith("!"))
@@ -264,7 +536,6 @@ object Extraction {
       method: Symbol,
       arguments: List[tpd.Tree],
       test: Boolean,
-      generated: Boolean,
       own: Boolean,
       location: String
   )
@@ -277,7 +548,8 @@ object Extraction {
       public: Boolean,
       variable: Boolean,
       info: Node,
-      suppressed: Set[String]
+      suppressed: Set[String],
+      field: Boolean = false
   )
 
   private class Reader(phase: Collector) extends Driver {
@@ -312,8 +584,9 @@ object Extraction {
       libraries: Set[String],
       generated: Vector[PathMatcher],
       concurrent: Set[String],
-      reflective: Vector[Regex]
-  ) extends Phase {
+      reflective: Vector[Regex],
+      bounded: Vector[Complexity.Bounded]
+  ) extends Phase, Placements.Resolver {
     private val roots      = outputs.map(output => output -> output.path.toAbsolutePath.normalize)
     private val nodes      = mutable.Map.empty[String, Node]
     private val reflected  = mutable.Set.empty[String]
@@ -332,23 +605,31 @@ object Extraction {
     private val defaults   = mutable.Map.empty[Symbol, tpd.Tree]
     private val failures   = mutable.ArrayBuffer.empty[String]
     private val methods    = mutable.Map.empty[Symbol, Smells.Method]
+    private val overridden = mutable.Map.empty[Symbol, Int]
     private val results    = mutable.Map.empty[Symbol, Option[String]]
     private val calls      = mutable.Map.empty[Symbol, (Int, Int)]
     private val discards   = mutable.Map.empty[Symbol, Int]
-    private val abstracts  = mutable.Map.empty[Symbol, (String, String, String)]
-    private val implements = mutable.Map.empty[Symbol, mutable.Set[(String, String)]]
-    private val designed   = mutable.ArrayBuffer.empty[Designs.Method]
-    private val aliases    = mutable.ArrayBuffer.empty[Designs.Alias]
-    private val stuttering = mutable.Map.empty[Symbol, (String, String)]
-    private val echoes     = mutable.Map.empty[Symbol, Int]
-    private val literals   = mutable.ArrayBuffer.empty[(String, String, String, String, Node)]
-    private val applied    = mutable.ArrayBuffer.empty[Structures.Applied]
-    private val built      = mutable.Map.empty[Symbol, Int]
-    private val grouped    = mutable.ArrayBuffer.empty[Structures.Member]
-    private val detachable = mutable.Set.empty[Symbol]
-    private val dispatched = mutable.ArrayBuffer.empty[Structures.Dispatch]
-    private val extents    = mutable.Map.empty[String, (Int, Int)]
-    private val structured = mutable.ArrayBuffer.empty[Structures.Model]
+    // The applications the code inverts with `!`, and how many calls of each method it inverts.
+    private val negations    = mutable.Set.empty[tpd.Tree]
+    private val negatedCalls = mutable.Map.empty[Symbol, Int]
+    private val abstracts    = mutable.Map.empty[Symbol, (String, String, String)]
+    private val implements   = mutable.Map.empty[Symbol, mutable.Set[(String, String)]]
+    private val designed     = mutable.ArrayBuffer.empty[Designs.Method]
+    private val aliases      = mutable.ArrayBuffer.empty[Designs.Alias]
+    private val stuttering   = mutable.Map.empty[Symbol, (String, String)]
+    private val echoes       = mutable.Map.empty[Symbol, Int]
+    private val literals     = mutable.ArrayBuffer.empty[(String, String, String, String, Node)]
+    private val typeNames    = mutable.ArrayBuffer.empty[(String, Node)]
+    private val mixins       = mutable.Set.empty[Symbol]
+    private val asTypes      = mutable.Set.empty[Symbol]
+    private val spliced      = mutable.Set.empty[Span]
+    private val applied      = mutable.ArrayBuffer.empty[Structures.Applied]
+    private val built        = mutable.Map.empty[Symbol, Int]
+    private val grouped      = mutable.ArrayBuffer.empty[Structures.Member]
+    private val detachable   = mutable.Set.empty[Symbol]
+    private val dispatched   = mutable.ArrayBuffer.empty[Structures.Dispatch]
+    private val extents      = mutable.Map.empty[String, (Int, Int)]
+    private val structured   = mutable.ArrayBuffer.empty[Structures.Model]
     // Abstractions some class implements, beside those only lambdas implement.
     private val subclassed      = mutable.Set.empty[Symbol]
     private val specialised     = mutable.Set.empty[Symbol]
@@ -369,18 +650,22 @@ object Extraction {
     private val exposed         = mutable.Set.empty[String]
     private val nestedList      = mutable.ArrayBuffer.empty[Members.Nested]
     private val bodies          = mutable.Map.empty[Symbol, tpd.DefDef]
+    private val initialisers    = mutable.Map.empty[Symbol, tpd.Tree]
     private val costed          = mutable.ArrayBuffer.empty[Symbol]
     private val complexityList  = mutable.ArrayBuffer.empty[Complexity.Summary]
+    private val unusedList      = mutable.ArrayBuffer.empty[Complexity.Bounded]
     private val pipelineList    = mutable.ArrayBuffer.empty[Pipelines.Chain]
-    private val classes         = mutable.ArrayBuffer.empty[Symbol]
+    private val classes         = mutable.LinkedHashSet.empty[Symbol]
     private val templates       = mutable.Map.empty[Symbol, tpd.Template]
     private val reachable       = mutable.Map.empty[Symbol, Option[Vector[Symbol]]]
+    private val subclasses      = mutable.Map.empty[Symbol, mutable.ArrayBuffer[Symbol]]
     private val purities        = mutable.ArrayBuffer.empty[Purity.Model]
     private val hierarchies     = mutable.ArrayBuffer.empty[(Symbol, String, String)]
     private val bodied          = mutable.Set.empty[Symbol]
     private val enumerations    = mutable.ArrayBuffer.empty[Algebra.Enumeration]
     private val dispatches      = mutable.Map.empty[(Symbol, Symbol), (String, Type)]
     private val megamorphicList = mutable.ArrayBuffer.empty[Megamorphic.Site]
+    private val placements     = mutable.ArrayBuffer.empty[Placements]
 
     def phaseName: String = "baumkuchen-collect"
 
@@ -388,10 +673,15 @@ object Extraction {
 
     override def runOn(units: List[CompilationUnit])(using Context): List[CompilationUnit] = {
       val fragments = Fragments()
+      val placing   = Placements(this)
+      placements += placing
       units.foreach { unit =>
-        try References(this, fragments).traverse(unit.tpdTree)
-        catch { case NonFatal(error) => problem(s"${unit.source.path} could not be analysed: $error") }
+        try {
+          References(this, fragments).traverse(unit.tpdTree)
+          placing.traverse(unit.tpdTree)
+        } catch { case NonFatal(error) => problem(s"${unit.source.path} could not be analysed: $error") }
       }
+      qualifiedUses()
       enumerations ++= hierarchies.flatMap((parent, name, key) => enumeration(parent, name, key))
       val subjects = products.view.mapValues(product => product.name -> product.fields.size).toMap ++
         methods.view.mapValues(method => method.name -> method.fields.size) ++
@@ -404,7 +694,7 @@ object Extraction {
         Algebra.Site(call.arguments.map(classify(_)).toVector, call.test, call.own, call.location)
       ).toVector
       for {
-        call              <- pending if !call.generated && call.method.name != nme.copy && defaulted(call.method)
+        call              <- pending if call.method.name != nme.copy && defaulted(call.method)
         (argument, index) <- call.arguments.zipWithIndex if !omitted(argument)
         default           <- defaults.get(defaultGetter(call.method, index))
         value             <- same(argument, default)
@@ -426,14 +716,14 @@ object Extraction {
           definition.variable && !assigned(symbol),
           detachable(symbol),
           definition.info.test,
-          definition.info.generated,
-          definition.suppressed
+          definition.suppressed,
+          definition.field
         )
       }
       val overridden = givens.keySet.flatMap(_.allOverriddenSymbols)
       givenList ++= givens.collect {
         case (symbol, (name, info)) if symbol.allOverriddenSymbols.isEmpty && !overridden(symbol) && !clashes(symbol) =>
-          Members.Given(name, info.name, named(symbol), info.test, info.generated, suppressions(symbol))
+          Members.Given(name, info.name, named(symbol), suppressions(symbol))
       }
       val incoming = edges.toVector.flatMap((source, targets) => targets.map(_ -> source)).groupMap(_._1)(_._2)
       nestedList ++= nested.flatMap(inner =>
@@ -442,34 +732,35 @@ object Extraction {
         )
       )
       clones ++= fragments.groups()
-      val candidates = classes.toVector
+      indexSubclasses()
       megamorphicList ++= dispatches.toVector.flatMap { case ((caller, callee), (node, receiver)) =>
         // Test doubles never reach a call in main code at run time.
         val test            = nodes.get(node).exists(_.test)
-        val implementations = candidates.flatMap { cls =>
+        val implementations = concreteSubclasses(callee.owner).flatMap { cls =>
           Option.when(
-            !cls.isOneOf(Flags.Trait | Flags.Abstract) && cls.derivesFrom(callee.owner) &&
-              (test || !key(cls).flatMap(nodes.get).exists(_.test)) && reaches(cls, callee.owner, receiver)
+            (test || !key(cls).flatMap(nodes.get).exists(_.test)) && reaches(cls, callee.owner, receiver)
           )(
             callee.denot.matchingMember(cls.thisType)
           ).filter(implementation => implementation.exists && !implementation.is(Flags.Deferred))
-        }.distinct
+        }.distinct.toVector
         Option.when(implementations.size > MaximumInlinedReceivers)(Megamorphic.Site(
           qualifiedName(caller),
           node,
           s"${callee.owner.name.toString.stripSuffix("$")}.${callee.name}",
-          shown(implementations.map(_.owner))
+          shown(implementations.map(_.owner)),
+          suppressions(caller)
         ))
       }
-      val costs = Costs(bodies)
+      val costs = Costs(bodies, initialisers, bounded)
       complexityList ++= costed.flatMap(method =>
-        Option(costs.superLinear(method)).filter(_.nonEmpty).flatMap(terms =>
-          key(method).map(Complexity.Summary(qualifiedName(method), _, terms))
+        costs.summary(method).flatMap(bounds =>
+          key(method).map(Complexity.Summary(qualifiedName(method), _, bounds, suppressions(method)))
         )
       )
+      unusedList ++= costs.unmatched
       val chains = Pipelines.Chains()
-      pipelineList ++= bodies.toVector.filter((method, _) => handwritten(method)).flatMap((method, definition) =>
-        key(method).toVector.flatMap(chains.of(qualifiedName(method), _, definition.rhs))
+      pipelineList ++= bodies.toVector.filter((method, _) => ownMethod(method)).flatMap((method, definition) =>
+        key(method).toVector.flatMap(chains.of(qualifiedName(method), _, suppressions(method), definition.rhs))
       )
       purities += purity()
       structured += structure()
@@ -497,23 +788,33 @@ object Extraction {
       )
 
     def smells: Smells.Model = Smells.Model(
-      methods.values.toVector,
+      methods.toVector.map((symbol, method) =>
+        if (overridden.getOrElse(symbol, 0) > 1) method.copy(shared = true) else method
+      ),
       sites.toMap,
       calls.toVector.flatMap { case (symbol, (total, tests)) =>
         for {
           method <- methods.get(symbol)
           result <- results.getOrElse(symbol, None)
-        } yield Smells.Usage(method, result, total, discards.getOrElse(symbol, 0), tests)
-      },
-      abstracts.toVector.map { case (symbol, (name, node, module)) =>
-        Smells.Abstraction(
-          name,
-          node,
-          module,
-          implements.get(symbol).fold(Vector.empty)(_.toVector.sorted),
-          functional = implements.contains(symbol) && !subclassed(symbol),
-          specialised = specialised(symbol)
+        } yield Smells.Usage(
+          method,
+          result,
+          total,
+          discards.getOrElse(symbol, 0),
+          tests,
+          negatedCalls.getOrElse(symbol, 0)
         )
+      },
+      abstracts.toVector.collect {
+        case (symbol, (name, node, module)) if !mixins(symbol) || asTypes(symbol) =>
+          Smells.Abstraction(
+            name,
+            node,
+            module,
+            implements.get(symbol).fold(Vector.empty)(_.toVector.sorted),
+            functional = implements.contains(symbol) && !subclassed(symbol),
+            specialised = specialised(symbol)
+          )
       },
       arguments.toVector.flatMap { case ((symbol, index), types) =>
         generics.get(symbol).map((owner, node, parameters) =>
@@ -538,6 +839,8 @@ object Extraction {
 
     def complexities: Vector[Complexity.Summary] = complexityList.toVector
 
+    def unusedBounds: Vector[Complexity.Bounded] = unusedList.toVector
+
     def pipelines: Vector[Pipelines.Chain] = pipelineList.toVector
 
     def megamorphic: Vector[Megamorphic.Site] = megamorphicList.toVector
@@ -548,30 +851,52 @@ object Extraction {
       val effects = Purity.Inference(bodies, templates, implementations(_), concurrent)
       effects.run()
       def site(method: Symbol, tree: tpd.Tree) =
-        key(method).filterNot(node => nodes.get(node).exists(_.generated)).map {
+        key(method).map {
           node =>
             val position = tree.sourcePos
             node -> (if (position.exists) s"${position.source.path}:${position.line + 1}" else "unknown")
         }
       Purity.Model(
         effects.pointless.flatMap((method, callee, tree) =>
-          site(method, tree).map((node, location) => Purity.Discard(callee, node, location))
+          site(method, tree).map((node, location) => Purity.Discard(callee, node, location, suppressions(method)))
         ),
         effects.effectful.flatMap((method, operation, effect, tree, view) =>
-          site(method, tree).map((node, location) => Purity.Transform(operation, effect, node, location, view))
+          site(method, tree).map((node, location) =>
+            Purity.Transform(operation, effect, node, location, view, suppressions(method))
+          )
         ),
         effects.shared.flatMap((method, variable, entry, tree) =>
-          site(method, tree).map((node, location) => Purity.SharedWrite(variable, entry, node, location))
+          site(method, tree).map((node, location) =>
+            Purity.SharedWrite(variable, entry, node, location, suppressions(method))
+          )
         ),
-        bodies.keys.filter(handwritten(_)).flatMap(method =>
+        bodies.keys.filter(ownMethod(_)).flatMap(method =>
           key(method).map(node =>
             qualifiedName(method) ->
-              Purity.Method(node, effects.verdict(method), effects.observed(method), effects.role(method))
+              Purity.Method(
+                node,
+                effects.verdict(method),
+                effects.observed(method),
+                effects.role(method),
+                suppressions(method)
+              )
           )
         ).toMap,
         effects.library
       )
     }
+
+    // The concrete classes deriving from each class, in definition order; every class is defined by the time calls are
+    // resolved.
+    private def indexSubclasses()(using Context): Unit = {
+      subclasses.clear()
+      classes.foreach(cls =>
+        if (!cls.isOneOf(Flags.Trait | Flags.Abstract))
+          cls.asClass.baseClasses.foreach(base => subclasses.getOrElseUpdate(base, mutable.ArrayBuffer.empty) += cls)
+      )
+    }
+
+    private def concreteSubclasses(owner: Symbol): collection.Seq[Symbol] = subclasses.getOrElse(owner, Vector.empty)
 
     /** The bodies a call of `method` can run: its own, or every override in the build's main classes, which test
       * doubles never reach at run time; nothing when one of them lies outside the build.
@@ -582,12 +907,11 @@ object Extraction {
         if (bodies.contains(method) && (method.isEffectivelyFinal || !method.owner.isClass)) Some(Vector(method))
         else if (!classes.contains(method.owner)) None
         else {
-          val overrides = classes.toVector.filter(cls =>
-            !cls.isOneOf(Flags.Trait | Flags.Abstract) && cls.derivesFrom(method.owner) &&
-              !key(cls).flatMap(nodes.get).exists(_.test)
+          val overrides = concreteSubclasses(method.owner).filter(cls =>
+            !key(cls).flatMap(nodes.get).exists(_.test)
           ).map(cls => method.denot.matchingMember(cls.thisType)).filter(found =>
             found.exists && !found.is(Flags.Deferred)
-          )
+          ).toVector
           val all = (Option.when(bodies.contains(method))(method).toVector ++ overrides).distinct
           // An immutable val implements a method by a read, which has no effect.
           Option.when(all.nonEmpty && all.forall(target =>
@@ -633,9 +957,13 @@ object Extraction {
       } dispatches((method, callee)) = (key, receiver)
     }
 
-    // The build's own methods: members of its classes, neither synthetic nor generated.
-    private def handwritten(method: Symbol)(using Context): Boolean =
-      method.owner.isClass && !method.is(Flags.Synthetic) && key(method).flatMap(nodes.get).exists(!_.generated)
+    // The build's own methods: members of its classes, not synthetic.
+    private def ownMethod(method: Symbol)(using Context): Boolean =
+      method.owner.isClass && !method.is(Flags.Synthetic) && key(method).exists(nodes.contains)
+
+    /** Records the initialiser of an immutable member, whose size the cost bounds follow. */
+    def initialiser(symbol: Symbol, definition: tpd.ValDef)(using Context): Unit =
+      if (!symbol.is(Flags.Mutable)) initialisers(symbol) = definition.rhs
 
     /** Records a method body for cost bounds, reported for the methods of build classes. */
     def body(symbol: Symbol, definition: tpd.DefDef)(using Context): Unit =
@@ -645,6 +973,9 @@ object Extraction {
       }
 
     def memberships: Members.Model = Members.Model(memberList.toVector, givenList.toVector, nestedList.toVector)
+
+    /** The declarations the nesting rule places, with `entries` the nodes code outside the build enters at. */
+    def nesting(entries: Set[String]): Nesting.Model = placements.lastOption.fold(Nesting.Model.empty)(_.model(entries))
 
     def duplicates: Vector[Clones.Group] = clones.toVector
 
@@ -677,14 +1008,19 @@ object Extraction {
             val fields = if (child.isClass && child.is(Flags.CaseClass)) fieldsOf(child) else Vector.empty
             Algebra.Variant(qualifiedName(child), fields)
           }
-          sums(name) = Algebra.Sum(name, key, variants.toVector)
-          if (!cls.is(Flags.Enum) && !nodes.get(key).exists(_.generated)) hierarchies += ((cls, name, key))
+          val accessors = cls.info.decls.toList.filter(member =>
+            member.is(Flags.Method) && member.is(Flags.Deferred)
+          ).map(_.name.toString).toSet
+          sums(name) = Algebra.Sum(name, key, variants.toVector, accessors)
+          if (!cls.is(Flags.Enum)) hierarchies += ((cls, name, key))
         }
         nodes.get(key).foreach { info =>
           if (cls.is(Flags.Trait) || cls.is(Flags.Abstract)) {
             // Other builds can implement what a library exports, unless it is sealed.
-            if (!cls.is(Flags.Enum) && !info.generated && !info.test && (cls.is(Flags.Sealed) || !exported(cls)))
+            if (!cls.is(Flags.Enum) && !info.test && (cls.is(Flags.Sealed) || !exported(cls))) {
               abstracts(cls) = (name, key, info.module)
+              if (cls.is(Flags.Trait) && !cls.info.decls.exists(_.is(Flags.Deferred))) mixins += cls
+            }
           } else
             cls.asClass.baseClasses.drop(1).foreach { parent =>
               subclassed += parent
@@ -731,6 +1067,9 @@ object Extraction {
     def signature(method: Symbol, body: tpd.Tree)(using Context): Unit =
       key(method).flatMap(nodes.get).foreach { info =>
         val fields = fieldsOf(method)
+        method.allOverriddenSymbols.filter(_.is(Flags.Deferred)).foreach(abstracted =>
+          overridden(abstracted) = overridden.getOrElse(abstracted, 0) + 1
+        )
         methods(method) = Smells.Method(
           methodName(method, fields),
           info.name,
@@ -738,13 +1077,14 @@ object Extraction {
           fields,
           method.allOverriddenSymbols.hasNext,
           exported(method),
-          info.generated,
           info.test,
           stored(method, body),
-          method.paramSymss.find(_.headOption.exists(_.isTerm)).getOrElse(Nil).zipWithIndex.collect {
+          method.paramSymss.filter(_.headOption.exists(_.isTerm)).flatten.zipWithIndex.collect {
             case (parameter, index) if parameter.is(Flags.Inline) => index
           }.toSet,
-          method.is(Flags.Inline)
+          method.is(Flags.Inline) || method.owner.isTerm && method.owner.is(Flags.Inline),
+          suppressed = suppressions(method),
+          rest = Shapes.clauses(method).drop(1).flatten
         )
       }
 
@@ -789,12 +1129,22 @@ object Extraction {
             parameters.map(_.info.widenDealias.show).toVector,
             method.info.finalResultType.widenDealias.show,
             // An extension method is what the rule would make of it already.
-            !method.is(Flags.ExtensionMethod) && first.exists(receiving(method, _, body)),
-            info.generated,
+            !method.is(Flags.ExtensionMethod) && first.exists(parameter =>
+              receiving(method, parameter, body) && !fixedReceiver(method, parameter)
+            ),
             info.test
           )
-          if (!info.generated && !method.is(Flags.ExtensionMethod)) dispatch(method, parameters, body, info)
+          if (!method.is(Flags.ExtensionMethod)) dispatch(method, parameters, body, info)
         }
+    }
+
+    /** Whether `parameter` is a receiver the method cannot move onto: a type that has a member of the method's name
+      * already, or an inline instance of a type-parameterised trait, as an algebra or tagless-final interpreter is.
+      */
+    private def fixedReceiver(method: Symbol, parameter: Symbol)(using Context): Boolean = {
+      val tpe = parameter.info.widenDealias
+      tpe.member(method.name).exists ||
+      parameter.is(Flags.Inline) && tpe.typeSymbol.is(Flags.Trait) && tpe.typeSymbol.typeParams.nonEmpty
     }
 
     /** Records a method whose result is a match on an enum of the build that it takes as a parameter. */
@@ -879,11 +1229,17 @@ object Extraction {
         case reference: TypeRef => reference.prefix.termSymbol == companion
         case _                  => false
       }
-      if (companion.is(Flags.Module) && !held)
+      val forwarded = target match {
+        case applied: AppliedType =>
+          applied.tycon.typeSymbol.isClass && applied.argInfos.map(_.typeSymbol) == symbol.typeParams
+        case _ => false
+      }
+      if (companion.is(Flags.Module) && !held && !forwarded)
         key(symbol).foreach { node =>
           val element    = target.widenDealias.baseType(requiredClass("scala.collection.Iterable")).argInfos.lastOption
           val operations = companion.moduleClass.info.decls.toList.count(member =>
-            member.is(Flags.Method) && !member.isOneOf(Flags.Synthetic | Flags.Private) && !member.isConstructor
+            member.is(Flags.Method) && !member.isOneOf(Flags.Synthetic | Flags.Private) && !member.isConstructor &&
+              member.paramSymss.flatten.exists(_.info.typeSymbol == symbol)
           )
           aliases += Designs.Alias(
             qualifiedName(symbol),
@@ -914,7 +1270,7 @@ object Extraction {
 
     /** Records the extent of a class of the build, the constructions its parents make, and its fields named like it. */
     def structure(cls: Symbol, definition: tpd.TypeDef, template: tpd.Template)(using Context): Unit =
-      key(cls).flatMap(nodes.get).filterNot(_.generated).foreach { info =>
+      key(cls).flatMap(nodes.get).foreach { info =>
         // An anonymous class is a construction of what it extends.
         if (!cls.isAnonymousClass) {
           template.parents.foreach(_.foreachSubTree {
@@ -948,7 +1304,7 @@ object Extraction {
         !member.isOneOf(Flags.Synthetic | Flags.Module) && !member.isConstructor &&
         !member.name.is(DefaultGetterName) && !member.allOverriddenSymbols.hasNext
       )
-        key(member).flatMap(nodes.get).filterNot(_.generated).foreach { info =>
+        key(member).flatMap(nodes.get).foreach { info =>
           val siblings = mutable.Set.empty[String]
           val types    = mutable.Set.empty[String]
           definition.foreachSubTree { tree =>
@@ -974,12 +1330,25 @@ object Extraction {
           if tree.symbol.is(Flags.ParamAccessor) && qualifier.symbol.exists && qualifier.symbol.name == name =>
         echoes(tree.symbol) = echoes.getOrElse(tree.symbol, 0) + 1
       case tpd.New(tpt) => built(tpt.tpe.typeSymbol) = built.getOrElse(tpt.tpe.typeSymbol, 0) + 1
-      case tpd.Literal(constant) if constant.tag == Constants.StringTag =>
+      case tpd.Apply(tpd.Select(context @ tpd.Apply(_, List(parts)), _), _)
+          if context.tpe.widen.isRef(defn.StringContextClass) =>
+        val pieces = parts match {
+          case tpd.Typed(tpd.SeqLiteral(elements, _), _) => elements
+          case _                                         => Nil
+        }
+        spliced ++= pieces.drop(1).collect {
+          case literal @ tpd.Literal(constant)
+              if constant.tag == Constants.StringTag && constant.stringValue.headOption.exists(_.isLetterOrDigit) =>
+            literal.span
+        }
+      case tpd.Literal(constant) if constant.tag == Constants.StringTag && !spliced(tree.span) =>
         constant.stringValue match {
           case Reference(path, owner, member, _) if !Extensions(member) =>
-            from.flatMap(nodes.get).filterNot(_.generated).foreach(info =>
+            from.flatMap(nodes.get).foreach(info =>
               literals += ((constant.stringValue, path, owner, member, info))
             )
+          case QualifiedType(_, _) =>
+            from.flatMap(nodes.get).foreach(info => typeNames += ((constant.stringValue, info)))
           case _ => ()
         }
       case _ => ()
@@ -996,7 +1365,7 @@ object Extraction {
         ))(Structures.Mention(text, owner, member, info.name, info.test))
       }
       val concretes = types.filterNot(_.is(Flags.Trait)).flatMap(cls =>
-        key(cls).flatMap(nodes.get).filterNot(_.generated).map(info =>
+        key(cls).flatMap(nodes.get).map(info =>
           Structures.Concrete(
             qualifiedName(cls),
             info.name,
@@ -1020,9 +1389,13 @@ object Extraction {
       )
     }
 
+    /** Keeps an application the code inverts with `!`, which is how a boolean method every caller negates is found. */
+    def negate(application: tpd.Tree): Unit = negations += application
+
     /** Counts a statement whose value is dropped, for methods whose results are tracked. */
-    def discard(statement: tpd.Tree)(using Context): Unit = {
-      // `val _ = value` is typed as `value match { case _ => () }`.
+    def discard(
+        statement: tpd.Tree
+    )(using Context): Unit = { // `val _ = value` is typed as `value match { case _ => () }`.
       val dropped = statement match {
         case tpd.Match(selector, List(tpd.CaseDef(tpd.Ident(name), tpd.EmptyTree, _))) if name.toString == "_" =>
           selector
@@ -1079,8 +1452,12 @@ object Extraction {
 
     /** Whether construction is private, open beside companion factories returning the class in an effect, or open. */
     private def access(cls: Symbol, fields: Vector[Algebra.Field])(using Context): Algebra.Access = {
+      @annotation.tailrec
+      def isRestricted(symbol: Symbol): Boolean =
+        symbol.exists && !symbol.isPackageObject && !symbol.is(Flags.Package) &&
+          (symbol.is(Flags.Private) || symbol.privateWithin.exists || isRestricted(symbol.owner))
       val constructor = cls.primaryConstructor
-      if (constructor.is(Flags.Private) || constructor.privateWithin.exists) Algebra.Access.Private
+      if (isRestricted(constructor) || isRestricted(cls)) Algebra.Access.Private
       else {
         val wrappers = Set[Symbol](defn.OptionClass, Shapes.either(), requiredClass("scala.util.Try"))
         val shapes   = fields.map(_.shape.key).sorted
@@ -1140,6 +1517,8 @@ object Extraction {
           if (!constructed.exists && result(method).isDefined) {
             val (total, tests) = calls.getOrElse(method, (0, 0))
             calls(method) = (total + 1, tests + (if (test) 1 else 0))
+            if (negations.contains(application))
+              negatedCalls(method) = negatedCalls.getOrElse(method, 0) + 1
           }
           val callee =
             if (constructed.exists && constructed.is(Flags.CaseClass)) constructed
@@ -1151,14 +1530,13 @@ object Extraction {
               callee,
               output(callee).isDefined &&
                 (fieldsOf(callee).exists(_.kind != Algebra.Kind.Other) ||
-                  defaulted(method))
+                  defaulted(method) || (callee.is(Flags.Method) && fieldsOf(callee).nonEmpty))
             )
           ) {
-            val position  = application.sourcePos
-            val location  = if (position.exists) s"${position.source.path}:${position.line + 1}" else "unknown"
-            val own       = if (constructed.exists) owner.isDefined && owner == key(callee) else enclosing(callee)
-            val generated = owner.flatMap(nodes.get).exists(_.generated)
-            pending += Pending(callee, method, application.args, test, generated, own, location)
+            val position = application.sourcePos
+            val location = if (position.exists) s"${position.source.path}:${position.line + 1}" else "unknown"
+            val own      = if (constructed.exists) owner.isDefined && owner == key(callee) else enclosing(callee)
+            pending += Pending(callee, method, application.args, test, own, location)
           }
       }
 
@@ -1168,19 +1546,23 @@ object Extraction {
     def member(symbol: Symbol)(using Context): Unit = {
       val owner = symbol.owner
       // Inline expansion and export forwarding hide or invent references, and setters are written through their fields.
-      val excluded = Flags.Synthetic | Flags.ParamAccessor | Flags.Given | Flags.Implicit | Flags.Private |
-        Flags.Module | Flags.Param | Flags.Inline | Flags.Exported
+      val excluded = Flags.Synthetic | Flags.Given | Flags.Implicit | Flags.Private | Flags.Module | Flags.Param |
+        Flags.Inline | Flags.Exported
       // Term-only flags make a flag set term-only, so the flags type aliases can carry are tested on their own.
       val aliases = Flags.Synthetic | Flags.Private | Flags.Exported
+      // Parameters of a case class are its fields, which patterns read without naming them, unless the class is
+      // derived from by generic code that reads them all.
+      val field = symbol.is(Flags.ParamAccessor) && owner.is(Flags.CaseClass) && !derived(owner)
       if (
         owner.isClass && !owner.isAnonymousClass && !owner.owner.isTerm && !symbol.isOneOf(excluded) &&
+        (field || !symbol.is(Flags.ParamAccessor)) &&
         !symbol.isOneOf(aliases) &&
         !symbol.isConstructor && !symbol.isSetter && !symbol.name.is(DefaultGetterName) &&
         !symbol.isAllOf(Flags.EnumValue) &&
         !ctx.platform.isMainMethod(symbol) && !exported(symbol)
       )
         key(symbol).flatMap(nodes.get).foreach { info =>
-          val public = !symbol.is(Flags.Protected) && !symbol.privateWithin.exists
+          val public = !field && !symbol.is(Flags.Protected) && !symbol.privateWithin.exists
           val decls  = owner.info.decls
           // Overloads, and a method named like a type beside it, are told apart by their parameter types.
           val shared = symbol.is(Flags.Method) &&
@@ -1195,9 +1577,158 @@ object Extraction {
               public,
               symbol.is(Flags.Mutable),
               info,
-              suppressions(symbol)
+              suppressions(symbol),
+              field
             )
         }
+    }
+
+    // Generic derivation of an instance reads every field of a class, which no use shows; `CanEqual` reads none.
+    private def derived(cls: Symbol)(using Context): Boolean =
+      cls.companionModule.exists && cls.companionModule.moduleClass.info.decls.toList.exists { member =>
+        val name = member.name.toString
+        name.startsWith("derived$") && name != "derived$CanEqual"
+      }
+
+    private def wildcard(pattern: tpd.Tree): Boolean = pattern match {
+      case tpd.Ident(nme.WILDCARD) => true
+      case _                       => false
+    }
+
+    /** Records the fields of a case class that a pattern on it binds or tests, which read them. */
+    def matched(unapply: tpd.UnApply, from: Option[String])(using Context): Unit = {
+      val extractor = unapply.fun.symbol
+      val cls       = extractor.owner.companionClass
+      if (cls.is(Flags.CaseClass) && extractor.is(Flags.Synthetic)) {
+        val fields = cls.primaryConstructor.paramSymss.find(_.headOption.exists(_.isTerm)).getOrElse(Nil)
+        // A field named like a method of the class, as `copy` is, stands beside it.
+        val accessors = cls.info.decls.toList.filter(_.is(Flags.ParamAccessor))
+        fields.zip(unapply.patterns).foreach((field, pattern) =>
+          if (!wildcard(pattern)) accessors.filter(_.name == field.name).foreach(use(_, from, inside = false))
+        )
+      }
+    }
+
+    // Printing, interpolating, appending or putting a value in a message calls its toString, which a case class writes
+    // from every field.
+    private val Shows = Set(
+      "scala.Predef.println",
+      "scala.Predef.print",
+      "scala.Predef.assert",
+      "scala.Predef.assume",
+      "scala.Predef.require",
+      "scala.Console.println",
+      "scala.Console.print",
+      "java.io.PrintStream.println",
+      "java.io.PrintStream.print",
+      "java.lang.String.valueOf",
+      "java.lang.String.+",
+      "java.lang.StringBuilder.append",
+      "java.lang.StringBuffer.append",
+      "scala.collection.mutable.StringBuilder.append",
+      "scala.collection.mutable.StringBuilder.++=",
+      "scala.StringContext.s",
+      "scala.StringContext.f",
+      "scala.StringContext.raw"
+    )
+
+    // These show the value they are called on, or the elements of the collection,.
+    private val Renders = Set(
+      "scala.collection.IterableOnceOps.mkString",
+      "scala.Predef.StringFormat.formatted",
+      "scala.Product.productIterator"
+    )
+
+    // Equality and hashing read every field of a case class.
+    private val Compares = Set(
+      "scala.Any.==",
+      "scala.Any.!=",
+      "scala.Any.equals",
+      "scala.Any.hashCode",
+      "java.lang.Object.==",
+      "java.lang.Object.!=",
+      "java.lang.Object.equals",
+      "java.lang.Object.hashCode"
+    )
+
+    /** Records the fields a call reads by showing, comparing or hashing a value: its toString, or a printing or
+      * interpolating method, or `==`.
+      */
+    def shown(application: tpd.Apply, from: Option[String])(using Context): Unit = {
+      val callee = application.fun.symbol
+      val named  = if (callee.exists) qualifiedName(callee) else ""
+      val values = application.fun match {
+        case tpd.Select(receiver, name) if name.toString == "toString" && application.args.isEmpty => List(receiver)
+        case tpd.Select(receiver, _) if Compares(named)                                            =>
+          receiver :: application.args
+        case _ if Shows(named) =>
+          application.args.flatMap(argument =>
+            Predicates.unwrap(argument) match {
+              case tpd.SeqLiteral(elements, _) => elements
+              case other                       => List(other)
+            }
+          )
+        case _ => Nil
+      }
+      read(values.map(_.tpe), from)
+    }
+
+    /** Records the fields a method called on a value reads by showing it or its elements, or by hashing the elements.
+      */
+    def rendered(select: tpd.Select, from: Option[String])(using Context): Unit = {
+      val callee = select.symbol
+      val name   = select.name.toString
+      if (
+        callee.exists &&
+        (name match {
+          case "mkString" | "formatted" | "productIterator" => Renders(qualifiedName(callee))
+          case "distinct" => select.qualifier.tpe.widen.derivesFrom(requiredClass("scala.collection.Iterable"))
+          case _          => false
+        })
+      ) read(List(select.qualifier.tpe), from)
+    }
+
+    /** Records the fields of the keys and elements of the hashed maps and sets a type names, which hashing reads. */
+    def keyed(tpe: Type, from: Option[String])(using Context): Unit =
+      KeyTypes(key => read(List(key), from)).traverse(tpe)
+
+    private class KeyTypes(found: Type => Unit)(using Context) extends TypeTraverser {
+      def traverse(tpe: Type): Unit = {
+        tpe match {
+          case AppliedType(constructor, key :: _) if hashed(constructor.classSymbol) => found(key)
+          case _                                                                     => ()
+        }
+        traverseChildren(tpe)
+      }
+    }
+
+    private def hashed(cls: Symbol)(using Context): Boolean = cls.isClass && !sorted(cls) &&
+      (cls.derivesFrom(requiredClass("scala.collection.Map")) ||
+        cls.derivesFrom(requiredClass("scala.collection.Set")) ||
+        cls.derivesFrom(requiredClass("java.util.Map")) || cls.derivesFrom(requiredClass("java.util.Set")))
+
+    private def sorted(cls: Symbol)(using Context): Boolean =
+      cls.derivesFrom(requiredClass("scala.collection.SortedMap")) ||
+        cls.derivesFrom(requiredClass("scala.collection.SortedSet")) ||
+        cls.derivesFrom(requiredClass("java.util.SortedMap")) || cls.derivesFrom(requiredClass("java.util.SortedSet"))
+
+    // A shown container shows its elements, whose types its type arguments name.
+    private def read(types: List[Type], from: Option[String])(using Context): Unit = {
+      val seen                      = mutable.Set.empty[Symbol]
+      def showType(tpe: Type): Unit = {
+        val widened = tpe.widen
+        show(widened.classSymbol)
+        widened.argInfos.foreach(showType(_))
+      }
+      def show(cls: Symbol): Unit = if (cls.isClass && seen.add(cls)) {
+        if (cls.is(Flags.Sealed)) cls.sealedDescendants.foreach(show(_))
+        if (cls.is(Flags.CaseClass) && !derived(cls))
+          cls.info.decls.toList.filter(_.is(Flags.ParamAccessor)).foreach { field =>
+            use(field, from, inside = false)
+            showType(field.info.finalResultType)
+          }
+      }
+      types.foreach(showType(_))
     }
 
     def assign(symbol: Symbol): Unit = assigned += symbol: Unit
@@ -1252,6 +1783,44 @@ object Extraction {
       )
 
     /** Records a reference to a member from `from`, unless it comes from inside the member itself. */
+    def asType(symbol: Symbol): Unit = asTypes += symbol: Unit
+
+    /** Counts the members and types that strings name by their full qualified names as used from the node holding the
+      * string. A type so named is a reflective root, and the members it declares are exempt. Rendered code calls such a
+      * member by name, so it is neither unused nor movable.
+      */
+    private def qualifiedUses()(using Context): Unit = {
+      val byName = classes.toVector.groupBy(qualifiedName(_))
+      literals.foreach { (_, path, owner, member, info) =>
+        if (path.nonEmpty)
+          byName.getOrElse(path + owner, Vector.empty).foreach { cls =>
+            val names = Vector(termName(member), typeName(member))
+            names.flatMap(name =>
+              cls.info.member(name).alternatives.collect {
+                case alternative if alternative.symbol.exists => alternative.symbol
+              }
+            ).foreach { symbol =>
+              use(symbol, Some(info.name), inside = false)
+              refer(Some(info.name), symbol)
+              members.remove(symbol): Unit
+            }
+          }
+      }
+      typeNames.foreach { (text, info) =>
+        byName.getOrElse(text, Vector.empty).foreach(cls =>
+          key(cls).foreach { name =>
+            refer(Some(info.name), cls)
+            nodes.keys.filter(candidate => candidate == name || candidate.startsWith(name + ".")).toVector.foreach {
+              named =>
+                reflected += named: Unit
+                nodes.updateWith(named)(_.map(_.copy(exported = true))): Unit
+            }
+          }
+        )
+      }
+      members.filterInPlace((symbol, _) => !exported(symbol)): Unit
+    }
+
     def use(symbol: Symbol, from: Option[String], inside: Boolean)(using Context): Unit =
       if (!inside && symbol.exists && !symbol.isClass && symbol.owner.isClass && key(symbol).isDefined)
         from.foreach(node => users.getOrElseUpdate(symbol, mutable.Set.empty) += node: Unit)
@@ -1296,7 +1865,14 @@ object Extraction {
             val tpe     = method.info.finalResultType.widen
             val trivial = tpe.isRef(defn.UnitClass) || tpe.isRef(defn.NothingClass) || tpe.isRef(defn.NullClass)
             val fluent  = method.owner.isClass && tpe.classSymbol.exists && tpe.classSymbol.derivesFrom(method.owner)
-            Option.when(output(method).isDefined && !trivial && !fluent)(tpe.show)
+            // an effect of Unit, as in a tagless-final F[Unit], has no value for a caller to use
+            val effect = tpe match {
+              case applied: AppliedType =>
+                applied.args.sizeIs == 1 && applied.args.head.isRef(defn.UnitClass) &&
+                (applied.tycon.isInstanceOf[TypeParamRef] || applied.tycon.typeSymbol.is(Flags.TypeParam))
+              case _ => false
+            }
+            Option.when(output(method).isDefined && !trivial && !fluent && !effect)(tpe.show)
           }
         )
 
@@ -1361,8 +1937,11 @@ object Extraction {
       * names only analysis rules as unused, as it suppresses none of its warnings.
       */
     def suppressions(symbol: Symbol)(using Context): Set[String] = {
+      // A field's annotation is written on its constructor parameter, which keeps it there.
       val annotated =
-        if (!symbol.isClass) Set(symbol)
+        if (symbol.is(Flags.ParamAccessor))
+          Set(symbol) ++ symbol.owner.primaryConstructor.paramSymss.flatten.find(_.name == symbol.name)
+        else if (!symbol.isClass) Set(symbol)
         else
           Set(symbol, symbol.companionClass, symbol.companionModule, symbol.companionModule.moduleClass) ++
             Option.when(symbol.is(Flags.ModuleClass))(symbol.sourceModule)
@@ -1375,13 +1954,13 @@ object Extraction {
       }.collect { case tpd.Literal(constant) => constant.stringValue }
       annotated.filter(_.exists).flatMap(_.annotations).flatMap { annotation =>
         annotation.symbol match {
-          case Suppress => strings(annotation).flatMap(rule(_))
+          case Suppress => strings(annotation).flatMap(rules(_))
           case Nowarn   =>
             val filters = strings(annotation)
             if (filters.forall(_.isEmpty)) List("*")
             else
               filters.flatMap(_.split('&').flatMap {
-                case s"msg=$pattern" => rule(pattern)
+                case s"msg=$pattern" => rules(pattern)
                 case _               => None
               })
           case Unused => Liveness.Rules
@@ -1390,11 +1969,7 @@ object Extraction {
       }
     }
 
-    private def rule(id: String): Option[String] = id match {
-      case "baumkuchen"         => Some("*")
-      case s"baumkuchen:$check" => Some(check)
-      case _                    => None
-    }
+    private def rules(id: String): Set[String] = net.kurobako.baumkuchen.java.JavaLint.resolve(id)
 
     /** The key of an analysed node, recording the node on first sight. */
     private def register(symbol: Symbol)(using Context): Option[String] =
@@ -1480,10 +2055,17 @@ object Extraction {
     private val synthetic = mutable.Stack(false)
     // Inline expansion happens after pickling, so the givens it summons are only visible through their imports.
     private val imports = mutable.Stack(mutable.Set.empty[String])
+    private val parents = mutable.Set.empty[tpd.Tree]
+    private var parent  = false
     private val types   = TypeReferences { symbol =>
       collector.refer(owner, symbol)
-      collector.use(symbol, owner, methods.contains(symbol))
+      read(symbol)
+      if (!parent) collector.asType(symbol)
     }
+
+    // The methods the compiler writes for a case class read every field.
+    private def read(symbol: Symbol): Unit =
+      if (!(synthetic.top && symbol.is(Flags.ParamAccessor))) collector.use(symbol, owner, methods.contains(symbol))
 
     private def owner: Option[String] = owners.headOption.flatten
 
@@ -1524,6 +2106,7 @@ object Extraction {
           case value: tpd.ValDef if symbol.owner.isClass && !symbol.is(Flags.Synthetic) =>
             body(symbol, value.rhs, node)
             collector.group(symbol, value)
+            collector.initialiser(symbol, value)
             collector.member(symbol)
           // A pattern definition keeps its authored right-hand side in a synthetic val.
           case value: tpd.ValDef if symbol.owner.isClass && value.rhs.span.exists && !value.rhs.span.isSynthetic =>
@@ -1542,12 +2125,27 @@ object Extraction {
         // Local definitions are statements too, but discard nothing.
         if (!synthetic.top) block.stats.filterNot(_.isDef).foreach(collector.discard(_))
         pushing(imports, mutable.Set.empty[String])(traverseChildren(tree))
-      case tpd.PackageDef(_, _) | _: tpd.Template =>
+      case template: tpd.Template =>
+        parents ++= template.parents
+        pushing(imports, mutable.Set.empty[String])(traverseChildren(tree))
+      case tpd.PackageDef(_, _) =>
         pushing(imports, mutable.Set.empty[String])(traverseChildren(tree))
       case _ =>
         tree match {
-          case application: tpd.Apply if !synthetic.top => collector.record(application, owner, methods.contains(_))
+          // A call the code inverts with `!` is read as the opposite of what it gives, which every caller inverting says
+          // the method itself is named as. A nullary `unary_!` is a select, not an application.
+          case select: tpd.Select if select.name == nme.UNARY_! =>
+            select.qualifier match {
+              case argument: tpd.Apply => collector.negate(argument)
+              case _                   => ()
+            }
+          case tpd.Apply(tpd.Select(argument: tpd.Apply, name), Nil) if name == nme.UNARY_! =>
+            collector.negate(argument)
+          case application: tpd.Apply if !synthetic.top =>
+            collector.record(application, owner, methods.contains(_))
+            collector.shown(application, owner)
           case assignment: tpd.Assign                   => collector.assign(assignment.lhs.symbol)
+          case unapply: tpd.UnApply                     => collector.matched(unapply, owner)
           case generic: tpd.TypeApply if !synthetic.top =>
             collector.instantiate(generic.fun.symbol, generic.args.map(_.tpe), clause(generic.fun), owner)
           case closure: tpd.Closure if !closure.tpt.isEmpty =>
@@ -1567,10 +2165,17 @@ object Extraction {
           case _ => ()
         }
         collector.refer(owner, tree.symbol)
-        collector.use(tree.symbol, owner, methods.contains(tree.symbol))
+        read(tree.symbol)
         collector.mention(tree)
         collector.observe(tree, owner)
+        collector.keyed(tree.tpe, owner)
+        tree match {
+          case select: tpd.Select => collector.rendered(select, owner)
+          case _                  => ()
+        }
+        parent = parents.contains(tree)
         types.traverse(tree.tpe)
+        parent = false
         children(tree)
     }
 
@@ -1615,10 +2220,8 @@ object Extraction {
       case _ => false
     }
 
-    // Generated code is expected to repeat itself, so only authored bodies are hashed for duplicates, unless the
-    // definition suppresses them, as a copy kept between artefacts that cannot share code is.
     private def body(symbol: Symbol, tree: tpd.Tree, node: Option[String])(using Context): Unit =
-      node.flatMap(collector.described(_)).filterNot(_.generated).foreach(info =>
+      node.flatMap(collector.described(_)).foreach(info =>
         if (!tree.isEmpty && !collector.suppressions(symbol).exists(Set("*", Finding.Rule.DuplicateCode.id)))
           fragments.add(tree, info.name, info.test, symbol.is(Flags.Method), family(symbol), specialising(symbol, tree))
       )

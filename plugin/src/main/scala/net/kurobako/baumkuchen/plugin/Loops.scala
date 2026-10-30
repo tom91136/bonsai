@@ -7,6 +7,7 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Contexts.ctx
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.NameKinds.DefaultGetterName
+import dotty.tools.dotc.core.Names.Name
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
@@ -25,10 +26,12 @@ import scala.collection.mutable
   * traversal. Linear operations there multiply the loop's cost, strict transformation chains allocate their
   * intermediate collections each time, primitives passed to the generic parameters of collections box each time, work
   * that does not depend on the loop is redone, accumulators that copy on every append grow quadratically, and searches
-  * by key rescan what a map already indexes. Regexes compiled from literals on every call, and boxing folds in the
-  * classes the build marks hot, are reported wherever they are.
+  * by key rescan what a map already indexes. Regexes compiled from literals on every call are reported wherever they
+  * are, and boxing folds in the classes the build marks hot. Boxed primitives in loops are reported only in those
+  * classes when the build marks any.
   */
-private class Loops(checks: Checks, hot: String => Boolean)(using Context) extends tpd.TreeTraverser {
+private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean)(using Context)
+    extends tpd.TreeTraverser {
   // Whether each enclosing tree runs once per iteration of some loop, and the symbols the innermost loop binds afresh on
   // each iteration; a collection reached through them differs between iterations, so walking it is not repeated work.
   private val looping = mutable.Stack(false)
@@ -178,6 +181,7 @@ private class Loops(checks: Checks, hot: String => Boolean)(using Context) exten
     boxing(application)
     strictChain(application)
     rebuilt(application)
+    equated(application)
     if (compiled(application)) recompiled(application)
     reparsed(application)
     concatenated(application)
@@ -248,14 +252,14 @@ private class Loops(checks: Checks, hot: String => Boolean)(using Context) exten
 
   /** Whether an inline method may run what its inline `parameter` receives more than once: where its body loops, or
     * where it passes it on to a traversal or to an inline method that does. A method without a body to read, as an
-    * abstract one, is assumed to.
+    * abstract one, is not known to, and its instances may run the function once.
     */
   private def repeats(method: Symbol, parameter: Symbol)(using Context): Boolean =
     repeating.getOrElse(
       (method, parameter), {
         repeating((method, parameter)) = false
         val repeated =
-          method.getAnnotation(defn.BodyAnnot).map(_.tree).filterNot(Trees.unwrap(_).isEmpty).forall { body =>
+          method.getAnnotation(defn.BodyAnnot).map(_.tree).filterNot(Trees.unwrap(_).isEmpty).exists { body =>
             val regions = body.filterSubTrees {
               case _: tpd.WhileDo | _: tpd.Apply => true
               case _                             => false
@@ -335,6 +339,37 @@ private class Loops(checks: Checks, hot: String => Boolean)(using Context) exten
     }
   }
 
+  // An existence test for equality with a value scans the sequence as contains does.
+  private def equated(application: tpd.Apply)(using Context): Unit = if (looping.top) {
+    Trees.selected(application.fun).foreach { select =>
+      val name     = select.name.toString
+      val receiver = select.qualifier.tpe.widen
+      if (
+        (name == "exists" || name == "forall") && application.args.sizeIs == 1 && scanned(receiver) &&
+        !iterated(select.qualifier) && !fixed(select.qualifier) &&
+        comparing(application.args.head, if (name == "exists") nme.EQ else nme.NE)
+      )
+        checks(
+          Check.LinearInLoop,
+          s"$name on ${article(receiver.classSymbol.name.toString)} scans it on every iteration; use a Set",
+          select.srcPos
+        )
+    }
+  }
+
+  /** Whether `function` compares its parameter with `operator` to a value that does not mention the parameter. */
+  private def comparing(function: tpd.Tree, operator: Name)(using Context): Boolean =
+    Trees.lambda(function).exists { definition =>
+      definition.termParamss.flatten match {
+        case List(parameter) => Trees.unwrap(definition.rhs) match {
+            case tpd.Apply(tpd.Select(left: tpd.Ident, `operator`), List(value)) =>
+              left.symbol == parameter.symbol && !value.existsSubTree(_.symbol == parameter.symbol)
+            case _ => false
+          }
+        case _ => false
+      }
+    }
+
   // A value that names an existing collection rather than computing one, and that no iteration changes.
   private def settled(tree: tpd.Tree)(using Context): Boolean = tree match {
     case reference: tpd.Ident     => !carried(reference.symbol) && !written(reference.symbol)
@@ -401,7 +436,7 @@ private class Loops(checks: Checks, hot: String => Boolean)(using Context) exten
     case _                        => false
   }
 
-  private def boxing(application: tpd.Apply)(using Context): Unit = if (looping.top) {
+  private def boxing(application: tpd.Apply)(using Context): Unit = if (looping.top && (!hotDeclared || heated)) {
     val method = application.fun.symbol
     if (method.exists && collection(method.owner)) {
       Trees.parameters(application).zip(application.args).foreach { (parameter, argument) =>
@@ -920,8 +955,8 @@ private class Loops(checks: Checks, hot: String => Boolean)(using Context) exten
         accumulator =>
           checks(
             Check.BoxingFold,
-            s"$name with ${article(accumulator.show)} accumulator boxes it on every step; use a while loop or a " +
-              "local var",
+            s"$name with ${article(accumulator.show)} accumulator boxes it on every step; use a @tailrec method " +
+              "over primitives",
             tree.srcPos
           )
       )
@@ -929,7 +964,7 @@ private class Loops(checks: Checks, hot: String => Boolean)(using Context) exten
       element(tree.tpe.widen).filter(boxed(_)).foreach(value =>
         checks(
           Check.BoxingFold,
-          s"$name builds a boxed ${unannotated(value).show} for every element; use a while loop over " +
+          s"$name builds a boxed ${unannotated(value).show} for every element; use a @tailrec method over " +
             "primitive arrays",
           tree.srcPos
         )

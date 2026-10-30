@@ -1,6 +1,7 @@
 package net.kurobako.baumkuchen.scalafix
 
 import scala.meta.*
+import scala.util.control.NonFatal
 import scalafix.v1.*
 
 private object definitions {
@@ -94,6 +95,27 @@ private object definitions {
     case _                                          => false
   }
 
+  /** The information of a symbol, or none when the symbol table cannot read its class file, as for JDK classes on a JDK
+    * newer than the ASM the symbol table reads them with.
+    */
+  def info(symbol: Symbol)(using SemanticDocument): Option[SymbolInformation] =
+    try symbol.info
+    catch {
+      case NonFatal(_) => None
+    }
+
+  /** Whether the term names a method that takes arguments, which the compiler eta expands where a function is wanted.
+    */
+  def methodReference(term: Term)(using SemanticDocument): Boolean = term match {
+    case reference: (Term.Name | Term.Select) =>
+      info(reference.symbol).map(_.signature).exists {
+        case MethodSignature(_, parameterLists, _) =>
+          parameterLists.filterNot(_.exists(parameter => parameter.isImplicit || parameter.isGiven)).exists(_.nonEmpty)
+        case _ => false
+      }
+    case _ => false
+  }
+
   /** The type constructor of a value or parameterless method, through aliases. */
   def valueType(symbol: Symbol)(using SemanticDocument): Option[Symbol] = {
     @annotation.tailrec
@@ -102,13 +124,13 @@ private object definitions {
       case AnnotatedType(_, inner)                         => resolve(inner, visited)
       case ByNameType(inner)                               => resolve(inner, visited)
       case TypeRef(_, reference, _) if !visited(reference) =>
-        reference.info.map(_.signature) match {
+        info(reference).map(_.signature) match {
           case Some(TypeSignature(_, lower, upper)) if lower == upper => resolve(upper, visited + reference)
           case _                                                      => Some(reference)
         }
       case _ => None
     }
-    symbol.info.map(_.signature).flatMap {
+    info(symbol).map(_.signature).flatMap {
       case ValueSignature(tpe)          => resolve(tpe, Set.empty)
       case MethodSignature(_, Nil, tpe) => resolve(tpe, Set.empty)
       case _                            => None

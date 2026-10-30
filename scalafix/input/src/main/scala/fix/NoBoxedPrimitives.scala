@@ -35,11 +35,8 @@ object NoBoxedPrimitives {
   val f                                                = float.floatValue()     // assert: NoBoxedPrimitives.unboxing
   val g                                                = double.doubleValue()   // assert: NoBoxedPrimitives.unboxing
   val h                                                = character.charValue()  // assert: NoBoxedPrimitives.unboxing
-  def number(value: Number): Long                      = value.longValue()      // assert: NoBoxedPrimitives.unboxing
   val scalaBigInt                                      = BigInt(1).longValue    // assert: NoBoxedPrimitives.unboxing
   val scalaBigDecimal                                  = BigDecimal(1).intValue // assert: NoBoxedPrimitives.unboxing
-  def javaBigInt(value: java.math.BigInteger): Double  = value.doubleValue()    // assert: NoBoxedPrimitives.unboxing
-  def javaBigDecimal(value: java.math.BigDecimal): Int = value.intValue()       // assert: NoBoxedPrimitives.unboxing
   val eta: () => Int                                   = integer.intValue       // assert: NoBoxedPrimitives.unboxing
 
   val primitive: Int = 1
@@ -50,6 +47,13 @@ object NoBoxedPrimitives {
   val primitiveClass = JInt.TYPE
   val converted      = BigInt(1).toLong
   val atomic         = java.util.concurrent.atomic.AtomicInteger(0)
+
+  def number(value: Number): Long                      = value.longValue() // assert: NoBoxedPrimitives.unboxing
+  def boxedNumber(value: Number): Int                  = value.intValue()  // assert: NoBoxedPrimitives.unboxing
+  def javaBigInt(value: java.math.BigInteger): Double  = value.doubleValue()
+  def javaBigIntByte(value: java.math.BigInteger): Byte = value.byteValue()
+  def javaBigDecimal(value: java.math.BigDecimal): Int = value.intValue()
+  def javaBigDecimalShort(value: java.math.BigDecimal): Short = value.shortValue()
 
   object Shadowed {
     class Integer {

@@ -17,6 +17,135 @@ class MembersSuite extends AnalysisSuite {
     )
   }
 
+  test("a case class field that nothing reads is reported, however it is built and matched") {
+    val found = findings(
+      Seq(
+        entry(
+          """val command: Command = Command.Packed(1, 2, 3, 4)
+            |  val shown = command match {
+            |    case Command.Packed(a, _, c, _) => a + c
+            |    case Command.Plain(value)       => value
+            |  }
+            |  println(Wrapper(1, 2, 3).first + shown + Tagged(1, 2).productPrefix.length + Counter(1, 2).copy(count = 3).count)
+            |  println(Derived(1, 2).read + Mirrored(1, 2).productPrefix)
+            |  println(Use.run())
+            |  Moved(1, 2) match { case Moved(copy, _) => println(copy) }""".stripMargin
+        ),
+        "Command.scala" ->
+          """sealed trait Command
+            |object Command {
+            |  case class Packed(first: Int, control: Int, third: Int, fourth: Int) extends Command
+            |  case class Plain(value: Int) extends Command
+            |}
+            |case class Wrapper(first: Int, unused: Int, private val hidden: Int) { def total: Int = first + hidden }
+            |case class Tagged(@deprecated("x", "1") tag: Int, other: Int)
+            |case class Counter(count: Int, spare: Int)
+            |case class Moved(copy: Int, other: Int)
+            |case class Derived(read: Int, spare: Int) derives CanEqual
+            |trait Codec[A]
+            |object Codec { def derived[A](using scala.deriving.Mirror.Of[A]): Codec[A] = new Codec[A] {} }
+            |case class Mirrored(first: Int, second: Int) derives Codec
+            |trait Named { def name: String }
+            |case class Person(name: String, age: Int) extends Named
+            |object Names { def of(named: Named): String = named.name }""".stripMargin,
+        "Use.scala" -> "object Use { def run(): String = Names.of(Person(\"x\", 3)) }"
+      )
+    )
+    assertEquals(
+      found.filter(_.rule == Finding.Rule.UnreadField).map(_.detail).sorted,
+      Vector(
+        "Packed.control is a field nothing reads; remove it, or read it",
+        "Packed.fourth is a field nothing reads; remove it, or read it",
+        "Counter.spare is a field nothing reads; remove it, or read it",
+        "Derived.spare is a field nothing reads; remove it, or read it",
+        "Moved.other is a field nothing reads; remove it, or read it",
+        "Person.age is a field nothing reads; remove it, or read it",
+        "Tagged.other is a field nothing reads; remove it, or read it",
+        "Tagged.tag is a field nothing reads; remove it, or read it",
+        "Wrapper.unused is a field nothing reads; remove it, or read it"
+      ).sorted
+    )
+  }
+
+  test("a case class field is read where a value of it is shown, since its toString writes every field") {
+    val found = findings(
+      Seq(
+        entry(
+          """println(Report(1, 2))
+            |  val error: Failure = Failure.Parse(Detail(3))
+            |  Console.err.println(error)
+            |  val text = s"${Some(Wrapped(4))}"
+            |  println(text + Silent(5, 6).kept + Quiet(7, 8).kept)""".stripMargin
+        ),
+        "Model.scala" ->
+          """case class Report(lines: Int, bytes: Int)
+            |enum Failure {
+            |  case Parse(detail: Detail)
+            |  case Empty
+            |}
+            |case class Detail(offset: Int)
+            |case class Wrapped(value: Int)
+            |case class Silent(kept: Int, dropped: Int)
+            |case class Quiet(kept: Int, @SuppressWarnings(Array("baumkuchen:unread-field")) spare: Int)""".stripMargin
+      )
+    )
+    assertEquals(
+      found.filter(_.rule == Finding.Rule.UnreadField).map(_.detail),
+      Vector("Silent.dropped is a field nothing reads; remove it, or read it")
+    )
+  }
+
+  test("a case class field is read where a value of it is compared, hashed or used as a key, or rendered as text") {
+    val found = findings(
+      Seq(
+        entry(
+          """println(Plain(1, 2).productPrefix)
+            |  println(Compared(1, 2) == Compared(1, 2))
+            |  println(Differing(1, 2) != Differing(3, 4))
+            |  println(Hashed(1, 2).hashCode)
+            |  println(List(Distinct(1, 2)).distinct.size)
+            |  println(Map(Keyed(1, 2) -> 1).size)
+            |  println(Set(Elem(1, 2)).size)
+            |  println(Map(1 -> Valued(1, 2)).size)
+            |  println(scala.collection.immutable.TreeSet(Sorted(1, 2))(using Ordering.by[Sorted, Int](_.first)).size)
+            |  println(Some(Nested(Inner(1, 2))) == None)
+            |  println(List(Joined(1, 2)).mkString(","))
+            |  println(StringBuilder().append(Appended(1, 2)).length)
+            |  println(Formatted(1, 2).formatted("%s"))
+            |  assert(true, Asserted(1, 2))
+            |  println(Tupled(1, 2).productIterator.size)""".stripMargin
+        ),
+        "Model.scala" ->
+          """case class Plain(a: Int, b: Int)
+            |case class Compared(a: Int, b: Int)
+            |case class Differing(a: Int, b: Int)
+            |case class Hashed(a: Int, b: Int)
+            |case class Distinct(a: Int, b: Int)
+            |case class Keyed(a: Int, b: Int)
+            |case class Elem(a: Int, b: Int)
+            |case class Valued(first: Int, spare: Int)
+            |case class Sorted(first: Int, spare: Int)
+            |case class Inner(a: Int, b: Int)
+            |case class Nested(inner: Inner)
+            |case class Joined(a: Int, b: Int)
+            |case class Appended(a: Int, b: Int)
+            |case class Formatted(a: Int, b: Int)
+            |case class Asserted(a: Int, b: Int)
+            |case class Tupled(a: Int, b: Int)""".stripMargin
+      )
+    )
+    assertEquals(
+      found.filter(_.rule == Finding.Rule.UnreadField).map(_.detail).sorted,
+      Vector(
+        "Plain.a is a field nothing reads; remove it, or read it",
+        "Plain.b is a field nothing reads; remove it, or read it",
+        "Sorted.spare is a field nothing reads; remove it, or read it",
+        "Valued.first is a field nothing reads; remove it, or read it",
+        "Valued.spare is a field nothing reads; remove it, or read it"
+      ).sorted
+    )
+  }
+
   test("a public member only one other type uses belongs in that type") {
     val found = findings(Seq(
       entry("println(Worker().run + Pair().run)"),
@@ -96,7 +225,7 @@ class MembersSuite extends AnalysisSuite {
     }
     def unused(reflective: Vector[String]) =
       found(reflective).map(finding => finding.rule.id -> finding.node.name).sorted
-    assertEquals(unused(Vector.empty), Vector("unused" -> "app.Launch", "unused" -> "app.Warp"))
+    assertEquals(unused(Vector.empty), Vector("unused" -> "app.Launch"))
     assertEquals(unused(Vector("app.Warp")), Vector("unused" -> "app.Launch"))
     assertEquals(found(Vector("app.*")), Vector.empty)
   }
@@ -309,7 +438,6 @@ class MembersSuite extends AnalysisSuite {
     constant = false,
     detachable = false,
     test = false,
-    generated = false,
     suppressed = Set.empty
   )
 
@@ -367,7 +495,7 @@ class MembersSuite extends AnalysisSuite {
     assertEquals(found.map(_.detail.takeWhile(_ != ' ')), Vector("Tools.own"))
   }
 
-  test("nested types used outside their owner, generated or published are not told to be private") {
+  test("nested types used outside their owner, or published, are not told to be private, generated ones are") {
     def nested(name: String, users: String*) = Members.Nested(s"lib.Outer.$name", "lib.Outer", users.toSet, false)
     val found                                = judged(Members.Model(
       Vector.empty,
@@ -379,6 +507,53 @@ class MembersSuite extends AnalysisSuite {
         nested("Published", "lib.Outer")
       )
     )).filter(_.rule == Finding.Rule.WeakerAccess)
-    assertEquals(found.map(_.detail.takeWhile(_ != ' ')), Vector("Outer.Plain"))
+    assertEquals(found.map(_.detail.takeWhile(_ != ' ')), Vector("Outer.Plain", "Outer.Written"))
+  }
+
+  test("a member named by its full qualified name in a string is used, a short name is not") {
+    val layout = "Layout.scala" -> """package probe
+                                    |final case class Primitive[A](name: String, function: A)
+                                    |object Layout {
+                                    |  private def rowOf(value: Long): Long = value * 2
+                                    |  val Row: Primitive[Long => Long] = Primitive("probe.Layout.row", rowOf(_))
+                                    |  def row(value: Long): Long = rowOf(value)
+                                    |  def spare(value: Long): Long = value
+                                    |  val label = "Layout.spare"
+                                    |}""".stripMargin
+    val found = findings(Seq(
+      "Main.scala" ->
+        "object Main { def main(args: Array[String]): Unit = println(probe.Layout.Row.function(2L) + probe.Layout.label) }",
+      layout
+    ))
+    assertEquals(
+      found.filter(_.rule == Finding.Rule.UnusedMember).map(_.detail),
+      Vector("Layout.spare is never referenced")
+    )
+    assertEquals(found.filter(_.detail.startsWith("Layout.row")), Vector.empty)
+  }
+
+  test("a type named by its full qualified name in a string is used, and its members are exempt") {
+    val names = "Names.scala" -> """package probe
+                                   |trait Frames { def lane: Int = 1 }
+                                   |object Names {
+                                   |  val frames = "probe.Frames"
+                                   |}""".stripMargin
+    val result = extract(Seq(entry("println(probe.Names.frames)"), names))
+    assertEquals(Liveness.findings(result.graph), Vector.empty)
+    assertEquals(
+      Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
+        .filterNot(_.rule == Finding.Rule.MisplacedMember),
+      Vector.empty
+    )
+  }
+
+  test("a type named by its short name in a string is not used") {
+    val names = "Names.scala" -> """package probe
+                                   |trait Frames { def lane: Int = 1 }
+                                   |object Names {
+                                   |  val note = "Frames"
+                                   |}""".stripMargin
+    val result = extract(Seq(entry("println(probe.Names.note)"), names))
+    assertEquals(Liveness.findings(result.graph).map(_.node.name), Vector("probe.Frames"))
   }
 }

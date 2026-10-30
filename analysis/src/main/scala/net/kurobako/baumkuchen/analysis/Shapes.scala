@@ -60,9 +60,19 @@ object Shapes {
 
   /** The first term parameter list of a method. */
   def parameters(method: Symbol)(using Context): Vector[Algebra.Field] =
-    method.paramSymss.find(_.headOption.exists(_.isTerm)).toVector.flatten.map { parameter =>
-      Algebra.Field(parameter.name.toString, of(parameter.info), kind(parameter.info), primitive(parameter.info))
-    }
+    clauses(method).headOption.getOrElse(Vector.empty)
+
+  /** The term parameter lists of a method, in order. */
+  def clauses(method: Symbol)(using Context): Vector[Vector[Algebra.Field]] =
+    method.paramSymss.filter(_.headOption.exists(_.isTerm)).toVector.map(_.toVector.map { parameter =>
+      Algebra.Field(
+        parameter.name.toString,
+        of(parameter.info),
+        kind(parameter.info),
+        primitive(parameter.info),
+        parameter.isOneOf(Flags.Given | Flags.Implicit)
+      )
+    })
 
   private def primitive(tpe: Type)(using Context): Boolean = underlying(tpe, 8).typeSymbol.isPrimitiveValueClass
 

@@ -58,6 +58,22 @@ class StructuresSuite extends AnalysisSuite {
     assertFinding(found, "stale-name-string", "Tools.original")
   }
 
+  test("a literal completing a name that the splice before it begins is not a stale name") {
+    val found = findings(Seq(
+      "Images.scala" ->
+        """object Images {
+          |  class ImageFormat
+          |  class IntegerImageFormat { object Layout }
+          |  def render(family: String, args: String): String = s"Some(${family}ImageFormat.Layout($args))"
+          |  def bare(args: String): String = "ImageFormat.Layout(" + args
+          |}""".stripMargin
+    ))
+    assertEquals(
+      of(found, Finding.Rule.StaleNameString),
+      Vector("\"ImageFormat.Layout(\" names ImageFormat.Layout, which no ImageFormat of the build has")
+    )
+  }
+
   test("aliases filling one constructor with literals give each type a second spelling") {
     val found = findings(Seq(
       "Widths.scala" ->

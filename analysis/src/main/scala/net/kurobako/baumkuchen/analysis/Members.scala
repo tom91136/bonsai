@@ -8,7 +8,7 @@ object Members {
     * `inherited` holds when a member it overrides is referenced or declared outside the build, so calls can reach it
     * through dynamic dispatch; `rooted` when it overrides a member of the build, which is reported instead; `constant`
     * when it is a `var` nothing assigns after initialisation; `detachable` when it is a member of an object that names
-    * nothing else of the object.
+    * nothing else of the object; `field` when it is a parameter of a case class.
     */
   case class Member(
       name: String,
@@ -22,8 +22,8 @@ object Members {
       constant: Boolean,
       detachable: Boolean,
       test: Boolean,
-      generated: Boolean,
-      suppressed: Set[String]
+      suppressed: Set[String],
+      field: Boolean = false
   ) {
     def short: String = Finding.short(name)
   }
@@ -33,8 +33,6 @@ object Members {
       name: String,
       node: String,
       named: Boolean,
-      test: Boolean,
-      generated: Boolean,
       suppressed: Set[String]
   )
 
@@ -74,13 +72,22 @@ object Members {
   }
 
   private def visibility(members: Vector[Member], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
-    members.filter(member => !member.test && !member.generated && live(member.node)).flatMap {
+    members.filter(member => !member.test && live(member.node)).flatMap {
       member =>
         val used   = member.users.nonEmpty || member.inherited
         val access =
           if (!used)
-            Option.unless(member.rooted)(s"${member.short} is never referenced")
-              .flatMap(Finding.at(nodes, member.node, Finding.Rule.UnusedMember, _))
+            Option.unless(member.rooted)(
+              if (member.field) s"${member.short} is a field nothing reads; remove it, or read it"
+              else s"${member.short} is never referenced"
+            ).flatMap(
+              Finding.at(
+                nodes,
+                member.node,
+                if (member.field) Finding.Rule.UnreadField else Finding.Rule.UnusedMember,
+                _
+              )
+            )
           else if (!member.inherited && member.users.forall(user => nodes.get(user).exists(_.test)))
             Finding.at(
               nodes,
@@ -104,13 +111,13 @@ object Members {
     */
   private def misplaced(members: Vector[Member], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
     members.filter(member =>
-      member.detachable && member.public && !member.test && !member.generated && !member.overriding &&
+      member.detachable && member.public && !member.test && !member.overriding &&
         !member.inherited && live(member.node)
     ).flatMap { member =>
       member.users.toVector match {
         case Vector(user)
             if !Node.within(nodes, user, member.node) && !Node.within(nodes, member.node, user) &&
-              nodes.get(user).exists(node => !node.test && !node.generated) =>
+              nodes.get(user).exists(node => !node.test) =>
           Finding.at(
             nodes,
             member.node,
@@ -124,7 +131,7 @@ object Members {
 
   // A name is part of the API: renaming the type renames an anonymous given, so this is information, not a warning.
   private def anonymous(givens: Vector[Given], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
-    givens.filter(instance => !instance.named && !instance.generated && live(instance.node)).flatMap(instance =>
+    givens.filter(instance => !instance.named && live(instance.node)).flatMap(instance =>
       Finding.at(
         nodes,
         instance.node,
@@ -141,7 +148,7 @@ object Members {
         inner.users.forall(Node.within(nodes, _, inner.outer))
     ).flatMap { inner =>
       def short(key: String) = key.split('.').last
-      nodes.get(inner.node).filterNot(node => node.test || node.generated || node.exported).flatMap(_ =>
+      nodes.get(inner.node).filterNot(node => node.test || node.exported).flatMap(_ =>
         Finding.at(
           nodes,
           inner.node,

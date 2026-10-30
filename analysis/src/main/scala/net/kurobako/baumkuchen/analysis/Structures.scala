@@ -113,7 +113,7 @@ object Structures {
   /** Packages whose files fall into two groups of which only one depends on the other, at the split crossed least. */
   private def packages(graph: Graph): Vector[Finding] = {
     val nodes = graph.nodes
-    val files = nodes.values.filter(node => !node.test && !node.generated).groupBy(node => pkg(node.name, nodes))
+    val files = nodes.values.filterNot(_.test).groupBy(node => pkg(node.name, nodes))
     val edges = graph.edges.toVector
     files.toVector.sortBy(_._1).flatMap { (pkg, members) =>
       val file     = members.map(node => node.name -> node.source).toMap
@@ -208,7 +208,7 @@ object Structures {
         case Vector((_, left), (_, right)) => (left & right).isEmpty
         case _                             => true
       }
-      Option.when(separate && !nodes.get(declared.head.node).exists(_.generated))(()).flatMap(_ =>
+      Option.when(separate)(()).flatMap(_ =>
         Finding.at(
           nodes,
           declared.head.node,
@@ -226,7 +226,7 @@ object Structures {
     val nodes                    = graph.nodes
     def top(key: String): String = nodes.get(key).flatMap(_.outer).fold(key)(top(_))
     val alone = nodes.values.filter(_.outer.isEmpty).groupBy(_.source).values.map(_.toVector).collect {
-      case Vector(node) if !node.test && !node.generated && !node.exported => node
+      case Vector(node) if !node.test && !node.exported => node
     }
     val users = graph.edges.toVector.flatMap((from, targets) => targets.map(_ -> top(from))).groupMap(_._1)(_._2)
     alone.toVector.sortBy(_.name).flatMap { node =>

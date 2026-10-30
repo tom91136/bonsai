@@ -36,6 +36,8 @@ private class LintPhase(
     partials: Map[String, Exceptions.Partial],
     throwing: List[(scala.util.matching.Regex, List[String])],
     hot: String => Boolean,
+    hotDeclared: Boolean,
+    cold: String => Boolean,
     checked: Set[String]
 ) extends PluginPhase {
   val phaseName: String                = "baumkuchen-lint"
@@ -70,11 +72,16 @@ private class LintPhase(
     )
 
   override def transformUnit(tree: tpd.Tree)(using Context): tpd.Tree = {
-    Loops(checks, hot).run(tree)
+    Loops(checks, hot, hotDeclared).run(tree)
     Exceptions(checks, partials, throwing).run(tree)
     Effects(checks).run(tree)
     Concurrency(checks).traverse(tree)
     Fields(checks).run(tree)
+    Nowarns(checks).run(tree)
+    Lambdas(checks, hot, cold).run(tree)
+    Aliases(checks).run(tree)
+    Bundles(checks).run(tree)
+    JdkInternals(checks).traverse(tree)
     tree
   }
 
@@ -107,15 +114,17 @@ private class LintPhase(
   }
 
   override def transformSelect(tree: tpd.Select)(using Context): tpd.Tree = {
-    if (authored && Conversions(tree.name.toString) && tree.tpe.widen.paramInfoss.isEmpty)
+    if (authored && Conversions(tree.name.toString) && tree.tpe.widen.paramInfoss.isEmpty) {
       conversion(tree, tree.qualifier)
+      wrapped(tree)
+    }
     tree
   }
 
   override def transformTypeApply(tree: tpd.TypeApply)(using Context): tpd.Tree = {
     if (authored && tree.fun.symbol == defn.Any_isInstanceOf)
       tree.args.foreach(argument =>
-        typeTest(tree, argument.tpe, Trees.selected(tree.fun).fold(defn.AnyType)(_.qualifier.tpe))
+        typeTest(tree, argument.tpe, Trees.selected(tree.fun).fold(defn.AnyType)(_.qualifier.tpe), fixed = false)
       )
     tree
   }
@@ -143,7 +152,9 @@ private class LintPhase(
 
   override def transformMatch(tree: tpd.Match)(using Context): tpd.Tree = {
     if (authored) {
-      tree.cases.foreach(clause => patterns(clause.pat, tree.selector.tpe.widen, bound = false))
+      tree.cases.foreach(clause =>
+        patterns(clause.pat, tree.selector.tpe.widen, bound = false, fixed = fixedByLibrary(tree.selector))
+      )
       refinements.matched(tree)
     }
     tree
@@ -157,11 +168,13 @@ private class LintPhase(
   /** Checks a pattern knowing the static type of the value it matches, so a type test the value always passes, as in
     * the tuples older for comprehensions match their values in, is left alone.
     */
-  private def patterns(pattern: tpd.Tree, scrutinee: Type, bound: Boolean)(using Context): Unit = pattern match {
-    case tpd.Bind(_, body)                  => patterns(body, scrutinee, bound = true)
+  private def patterns(pattern: tpd.Tree, scrutinee: Type, bound: Boolean, fixed: Boolean = false)(using
+      Context
+  ): Unit = pattern match {
+    case tpd.Bind(_, body)                  => patterns(body, scrutinee, bound = true, fixed)
     case typed @ tpd.Typed(expression, tpt) =>
       if (!(scrutinee <:< tpt.tpe)) {
-        typeTest(typed, tpt.tpe, scrutinee)
+        typeTest(typed, tpt.tpe, scrutinee, fixed)
         unrelated(typed, tpt.tpe, scrutinee)
         if (!bound && wildcard(expression)) extractable(typed)
       }
@@ -172,7 +185,7 @@ private class LintPhase(
       unapply.patterns.zipWithIndex.foreach((argument, index) =>
         patterns(argument, components.lift(index).getOrElse(defn.AnyType), bound = false)
       )
-    case tpd.Alternative(alternatives) => alternatives.foreach(patterns(_, scrutinee, bound))
+    case tpd.Alternative(alternatives) => alternatives.foreach(patterns(_, scrutinee, bound, fixed))
     case _                             => ()
   }
 
@@ -340,15 +353,21 @@ private class LintPhase(
   private def standard(symbol: Symbol)(using Context): Boolean =
     Vector("scala.", "java.", "javax.").exists(symbol.fullName.toString.startsWith(_))
 
+  // A parameter of an override of a library method takes the type the library fixes, which the build cannot change.
+  private def fixedByLibrary(selector: tpd.Tree)(using Context): Boolean =
+    selector.symbol.is(Flags.Param) && selector.symbol.owner.allOverriddenSymbols.exists(overridden =>
+      standard(overridden.owner)
+    )
+
   /** Only hierarchies the build can seal are reported: those sharing the two leading package segments of the test, and
     * matched on a value whose static type is not an open trait of another module, which no sealing here makes checked.
     */
-  private def typeTest(tree: tpd.Tree, tpe: Type, scrutinee: Type)(using Context): Unit = {
+  private def typeTest(tree: tpd.Tree, tpe: Type, scrutinee: Type, fixed: Boolean)(using Context): Unit = {
     val symbol                      = tpe.widen.dealias.classSymbol
     val matched                     = scrutinee.widen.dealias.classSymbol
     def organisation(owner: Symbol) = owner.enclosingPackageClass.fullName.toString.split('.').take(2).toList
-    val foreign                     = matched.is(Flags.Trait) && !matched.is(Flags.Sealed) && !standard(matched) &&
-      !matched.isDefinedInCurrentRun
+    val foreign                     = matched.is(Flags.Trait) && !matched.is(Flags.Sealed) &&
+      (fixed || !standard(matched) && !matched.isDefinedInCurrentRun)
     if (
       symbol.isOneOf(Flags.Trait | Flags.Abstract) && !symbol.isOneOf(Flags.Sealed | Flags.Final) &&
       !symbol.is(Flags.JavaDefined) && organisation(symbol) == organisation(ctx.owner) && !foreign
@@ -417,11 +436,12 @@ private class LintPhase(
       case tpd.AppliedTypeTree(applied, _) => Trees.text(applied)
       case other                           => Trees.text(other)
     }
-    patterns.filter(_.size <= wildcards).foreach(fields =>
+    // A case class always has its extractor, which states its arity, however many wildcards that takes.
+    patterns.filter(fields => cls.is(Flags.Case) || fields.size <= wildcards).foreach(fields =>
       checks(
         Check.ExtractorTypeTest,
         s"write $name(${fields.mkString(", ")}) instead of the type test _: ${Trees.text(typed.tpt)}; " +
-          "an intended type test needs @nowarn",
+          "an intended type test needs @SuppressWarnings",
         typed.srcPos,
         List(ActionPatch(typed.sourcePos, s"$name(${fields.mkString(", ")})"))
       )
@@ -507,6 +527,44 @@ private class LintPhase(
       )
   }
 
+  private val Unwrapped = Map(
+    "toByte"   -> "byteValue",
+    "toShort"  -> "shortValue",
+    "toInt"    -> "intValue",
+    "toLong"   -> "longValue",
+    "toFloat"  -> "floatValue",
+    "toDouble" -> "doubleValue"
+  )
+  private val Wrappers = Map(
+    "scala.math.BigDecimal" -> ("java.math.BigDecimal", "javaBigDecimal2bigDecimal"),
+    "scala.math.BigInt"     -> ("java.math.BigInteger", "javaBigInteger2bigInt")
+  )
+
+  /** A Java big number wrapped in its Scala counterpart only to be converted, which its own conversion method does
+    * without the wrapper.
+    */
+  private def wrapped(tree: tpd.Select)(using Context): Unit = Unwrapped.get(tree.name.toString).foreach { method =>
+    Trees.unwrap(tree.qualifier) match {
+      case tpd.Apply(function, List(argument)) =>
+        val symbol = function.symbol
+        val owner  = symbol.owner.companionClass
+        Wrappers.get(Trees.qualified(owner)).filter((java, converter) =>
+          (symbol.name == nme.apply || symbol.name.toString == converter) &&
+            argument.tpe.widen.derivesFrom(requiredClass(java))
+        ).foreach { _ =>
+          val simple = Trees.text(argument).matches("[A-Za-z_][A-Za-z0-9_.]*")
+          checks(
+            Check.WrappedConversion,
+            s"${Trees.text(argument)}.$method converts the ${argument.tpe.widen.show} directly; wrapping it in " +
+              s"${owner.name} only to call ${tree.name} allocates",
+            tree.srcPos,
+            if (simple) List(ActionPatch(tree.sourcePos, s"${Trees.text(argument)}.$method")) else Nil
+          )
+        }
+      case _ => ()
+    }
+  }
+
   private def nested(tree: tpd.Tree, tpe: Type)(using Context): Unit = {
     val future: Symbol = requiredClass("scala.concurrent.Future")
     tpe.widen.dealias match {
@@ -517,17 +575,21 @@ private class LintPhase(
     }
   }
 
+  private def coldCode(using Context): Boolean = ctx.owner.ownersIterator.exists(owner =>
+    owner.isClass && !owner.is(Flags.Package) && cold(Trees.qualified(owner).stripSuffix("$"))
+  )
+
   /** Parameters, fields and values of a function type that Scala does not specialise for its primitive type arguments.
     * Boxing a Boolean returns a shared instance, so predicates are left alone. A constructor reports its parameters
-    * rather than the fields they become, an overriding method leaves them to the method it overrides, and a lambda's
-    * parameters are not declarations.
+    * rather than the fields they become, an overriding method leaves them to the method it overrides, a lambda's
+    * parameters are not declarations, and classes the build leaves out of its hot ones, such as test suites, may box.
     */
   private def unspecialised(tree: tpd.ValDef)(using Context): Unit = {
     val symbol    = tree.symbol
     val function  = tree.tpt.tpe.dealias
     val arguments = function.argInfos
     if (
-      symbol.exists && !symbol.isOneOf(Flags.Synthetic | Flags.Inline | Flags.ParamAccessor) &&
+      symbol.exists && !symbol.isOneOf(Flags.Synthetic | Flags.Inline | Flags.ParamAccessor) && !coldCode &&
       !(symbol.is(Flags.Param) && (symbol.owner.isAnonymousFunction || symbol.owner.allOverriddenSymbols.hasNext)) &&
       !symbol.allOverriddenSymbols.hasNext && defn.isPlainFunctionClass(function.typeSymbol) &&
       arguments.exists(argument => Trees.primitive(argument) && !argument.isRef(defn.BooleanClass)) &&

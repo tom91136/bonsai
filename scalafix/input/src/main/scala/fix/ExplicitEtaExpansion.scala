@@ -30,9 +30,13 @@ object ExplicitEtaExpansion {
   val rejected: List[Int]          = List(1).map(increment)// assert: ExplicitEtaExpansion.method-value
   val constructor: List[Box]       = List(1).map(Box.apply)// assert: ExplicitEtaExpansion.method-value
   val extensionMethod: List[Int]   = List(1).map(1.plus)// assert: ExplicitEtaExpansion.method-value
+  val infix: List[Int]             = List(1) map increment// assert: ExplicitEtaExpansion.method-value
+  val infixParenthesised: List[Int] = List(1) map (increment)// assert: ExplicitEtaExpansion.method-value
   // format: on
   val accepted: List[Int]          = List(1).map(increment(_))
   val functionValue: List[Int]     = List(1).map(incrementFunction)
+  val identityValue: List[Int]     = List(1).map(identity)
+  val identityQualified: List[Int] = List(1).map(Predef.identity)
   val extensionAccessor: List[Int] = List(1).filter(value => value.parity == 1)
 
   private given factor: Int                          = 3

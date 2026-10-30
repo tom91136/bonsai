@@ -32,7 +32,7 @@ object Liveness {
     reachable(graph.edges, roots)
   }
 
-  private def reachable(edges: Map[String, Set[String]], roots: Set[String]): Set[String] = {
+  private[analysis] def reachable(edges: Map[String, Set[String]], roots: Set[String]): Set[String] = {
     val visited = mutable.Set.from(roots)
     val pending = mutable.Queue.from(roots)
     while (pending.nonEmpty)

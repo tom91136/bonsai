@@ -18,12 +18,12 @@ $ delete src/main/scala/demo/Counter.scala
 # a project setting overrides the build-wide one
 > set baumkuchenDisabled += "ForbiddenAPIs"
 > scalafixAll --check
-# sources the build generates are checked like any other, until the build marks them generated
+# sources the build generates are checked like any other, and marking them generated only labels them
 > set Compile / unmanagedSourceDirectories += baseDirectory.value / "src" / "generated" / "scala"
 $ copy-file changes/Counter.scala src/generated/scala/demo/Counter.scala
 -> scalafixAll --check
 > set ThisBuild / baumkuchenGenerated += "**/src/generated/**"
-> scalafixAll --check
+-> scalafixAll --check
 $ delete src/generated/scala/demo/Counter.scala
 # the generated configuration survives clean
 > clean

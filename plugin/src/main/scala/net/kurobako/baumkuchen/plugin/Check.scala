@@ -55,4 +55,12 @@ private enum Check(val id: String, val strict: Boolean = false, val severity: Se
   case BoxedOpaqueEquality     extends Check("boxed-opaque-equality")
   case InferredRefinedType     extends Check("inferred-refined-type", severity = Severity.Info)
   case UnrelatedTypeTest       extends Check("unrelated-type-test", severity = Severity.Error)
+  case NowarnSuppression       extends Check("nowarn-suppression")
+  case WrappedConversion       extends Check("wrapped-conversion", strict = true)
+  case LambdaTrait             extends Check("lambda-trait")
+  case FunctionAppliedOnce     extends Check("function-applied-once")
+  case ForwardingAlias         extends Check("forwarding-alias")
+  case UnusedPrivateParam      extends Check("unused-private-param")
+  case ParameterObjectUnpacked extends Check("parameter-object-unpacked")
+  case JdkInternal             extends Check("jdk-internal")
 }

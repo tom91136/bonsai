@@ -3,12 +3,14 @@ package net.kurobako.baumkuchen.analysis
 /** Checks over the algebraic shapes of products and sums, and over the values passed where products are built. */
 object Algebra {
 
-  /** A field or parameter; `primitive` when its type is a primitive, or an opaque type standing for one. */
-  case class Field(name: String, shape: Polynomial, kind: Kind, primitive: Boolean = false)
+  /** A field or parameter; `primitive` when its type is a primitive, or an opaque type standing for one, and
+    * `contextual` for a `using` or `implicit` parameter.
+    */
+  case class Field(name: String, shape: Polynomial, kind: Kind, primitive: Boolean = false, contextual: Boolean = false)
 
   /** Field kinds whose values can be read off construction sites and invariants. */
   enum Kind {
-    case Optional, Flag, Number, Other
+    case Optional, Flag, Number, Text, Other
     case Tag(cases: Vector[String])
   }
 
@@ -57,7 +59,7 @@ object Algebra {
     */
   case class Enumeration(name: String, node: String, cases: Int, nested: Boolean, exported: Boolean)
 
-  case class Sum(name: String, node: String, variants: Vector[Variant]) {
+  case class Sum(name: String, node: String, variants: Vector[Variant], accessors: Set[String] = Set.empty) {
     lazy val cases: Vector[Variant] = variants.filter(_.fields.nonEmpty)
   }
 
@@ -100,26 +102,14 @@ object Algebra {
   private val MaxFactorFields               = 12
   private val MaxReportedFactors            = 3
   private val ShownNames                    = 8
-  private val ShownGroups                   = 3
 
-  def findings(model: Model, nodes: Map[String, Node]): Vector[Finding] = {
+  def findings(model: Model, nodes: Map[String, Node], intended: Intended = Intended()): Vector[Finding] = {
     val sums = model.sums.flatMap { sum =>
-      val groups    = identical(sum)
-      val generated = nodes.get(sum.node).exists(_.generated)
-      // Generated sums repeat their generator's structure; one summary points at the generator.
-      val repeated =
-        if (!generated)
-          groups.map(group =>
-            s"${sum.name}: ${group.size} cases of shape ${group.head.shape}: ${names(group.map(_.name))}"
-          )
-        else
-          Option.when(groups.nonEmpty) {
-            val shapes = sum.cases.map(_.shape.key).distinct.size
-            val listed = groups.take(ShownGroups).map(group => s"${group.size} of ${group.head.shape}").mkString("; ")
-            s"${sum.name}: ${groups.map(_.size).sum} of ${sum.cases.size} cases repeat another case's shape " +
-              s"($shapes distinct shapes); largest: $listed"
-          }.toVector
-      val factors = commonFactors(sum, groups).take(if (generated) 1 else MaxReportedFactors)
+      val groups   = identical(sum)
+      val repeated = groups.map(group =>
+        s"${sum.name}: ${group.size} cases of shape ${group.head.shape}: ${names(group.map(_.name))}"
+      )
+      val factors = commonFactors(sum, groups).take(MaxReportedFactors)
       repeated.flatMap(Finding.at(nodes, sum.node, Finding.Rule.IdenticalCases, _, Finding.Level.Info)) ++
         factors.flatMap { factor =>
           // Fields every alternative carries hoist out cleanly; a partial factor needs a new type and judgement.
@@ -132,20 +122,47 @@ object Algebra {
     }
     // Cases of sums are told apart by their names, as separate instructions or errors are, and identical-cases reports
     // those within one sum.
+    def topPackage(name: String): Option[String] = {
+      val first = name.takeWhile(_ != '.')
+      if (first.length > 1 && first.forall(c => c.isLower || c == '_')) Some(first) else None
+    }
+
+    def moduleOf(product: Product): (Option[String], Option[String]) =
+      (nodes.get(product.node).map(_.module), topPackage(product.name))
+
+    def compatibleGroups(group: Vector[Product]): Vector[Vector[Product]] = {
+      val isAllPublic = group.forall(_.access != Access.Private)
+      val isOneModule = {
+        val modules = group.map(p => nodes.get(p.node).map(_.module)).distinct
+        val pkgs    = group.flatMap(p => topPackage(p.name)).distinct
+        modules.size <= 1 && pkgs.size <= 1
+      }
+      if (isAllPublic || isOneModule) Vector(group)
+      else {
+        val publics = Option.when(group.count(_.access != Access.Private) > 1)(group.filter(_.access != Access.Private))
+        val byModule = group.groupBy(moduleOf).values.filter(_.size > 1).toVector
+        (publics.toVector ++ byModule).distinct
+      }
+    }
+
     val duplicates =
       model.products.sortBy(_.name).filter(product =>
         product.parents.isEmpty && product.shape.weight >= MinimumDuplicateWeight
       )
         .groupBy(_.shape.key).values
         .flatMap { group =>
-          val named = group.groupBy(_.fields.map(_.name).sorted).values.collect {
+          val named = group.groupBy(_.fields.map(_.name).sorted).values.view.flatMap(compatibleGroups).collect {
             case named if named.size > 1 => true -> named
-          }
+          }.toVector
           // A wide shape is worth reporting whatever its fields are called, unless one set of names covers it already.
-          val whole = group.head.shape.weight >= MinimumUnnamedDuplicateWeight && !named.exists(_._2.size == group.size)
-          named ++ Option.when(whole)(false -> group)
+          val unnamed = compatibleGroups(group).view.filter(g =>
+            g.head.shape.weight >= MinimumUnnamedDuplicateWeight && !named.exists(_._2.size == g.size)
+          ).map(false -> _).toVector
+          named ++ unnamed
         }
-        .filter((_, group) => group.map(_.node).distinct.size > 1 && !sameParent(group))
+        .filter((_, group) =>
+          group.map(_.node).distinct.size > 1 && !sameParent(group) && !intended.settles(group.map(_.name))
+        )
         .toVector.sortBy((named, group) => (!named, -group.head.shape.weight)).flatMap { (named, group) =>
           val kind      = if (named) "with the same field names" else "with different field names"
           val validated = group.filter(_.validated)
@@ -205,7 +222,9 @@ object Algebra {
   /** Named fields shared by several alternatives, which distributivity would hoist out: `X*A + X*B = X*(A + B)`. */
   private def commonFactors(sum: Sum, identical: Vector[Vector[Variant]]): Vector[Factor] = {
     val items = sum.cases.map(variant =>
-      variant.name -> variant.fields.map(field => s"${field.name}: ${field.shape}").distinct.sorted
+      variant.name -> variant.fields.collect {
+        case field if !sum.accessors(field.name) => s"${field.name}: ${field.shape}"
+      }.distinct.sorted
     )
     val support = items.flatMap { (name, fields) =>
       val sizes = if (fields.size > MaxFactorFields) Vector(2) else 2 to 4

@@ -17,9 +17,9 @@ net.kurobako.baumkuchen.scalafix.SimplifyMatch
 net.kurobako.baumkuchen.scalafix.CaseClassEquality
 net.kurobako.baumkuchen.scalafix.MutableExposure
 net.kurobako.baumkuchen.scalafix.PublicSignatures
-net.kurobako.baumkuchen.scalafix.TemporalCoupling
+net.kurobako.baumkuchen.scalafix.PublicTypes
+net.kurobako.baumkuchen.scalafix.InterpolationIdioms
 net.kurobako.baumkuchen.scalafix.GivenPlacement
-net.kurobako.baumkuchen.scalafix.MiddleMan
 net.kurobako.baumkuchen.scalafix.TransparentOpaque
 net.kurobako.baumkuchen.scalafix.PackageNaming
 net.kurobako.baumkuchen.scalafix.AnonymousGiven
@@ -31,3 +31,10 @@ net.kurobako.baumkuchen.scalafix.CodecNaming
 net.kurobako.baumkuchen.scalafix.ContextBoundSyntax
 net.kurobako.baumkuchen.scalafix.ConfiguredIdioms
 net.kurobako.baumkuchen.scalafix.QualifiedCollectionNamespaces
+net.kurobako.baumkuchen.scalafix.DerivedConstants
+net.kurobako.baumkuchen.scalafix.ReversedIndexing
+net.kurobako.baumkuchen.scalafix.ToolingComments
+net.kurobako.baumkuchen.scalafix.TimeRelativeComments
+net.kurobako.baumkuchen.scalafix.FullyQualifiedReference
+net.kurobako.baumkuchen.scalafix.ShortBlockOnOneLine
+net.kurobako.baumkuchen.scalafix.RestatedLookup

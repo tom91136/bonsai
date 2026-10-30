@@ -160,10 +160,10 @@ class ExtractionSuite extends AnalysisSuite {
     )
   }
 
-  test("enum candidates ignore imports in case bodies, exclude enums and generated code, and nest all-companion cases") {
+  test("enum candidates ignore imports in case bodies, exclude enums, and nest all-companion cases") {
     assertEquals(
       hierarchies.algebra.enumerations.map(enumeration => enumeration.name -> enumeration.nested).toSet,
-      Set("Signal" -> true, "Mixed" -> false, "Spread" -> true)
+      Set("Signal" -> true, "Mixed" -> false, "Spread" -> true, "Generated" -> false)
     )
   }
 
@@ -227,6 +227,24 @@ class ExtractionSuite extends AnalysisSuite {
       ),
       Vector(("Tools.compute()", "Int", 3, 0, 1))
     )
+  }
+
+  test("an effect of Unit is no result to use, while an effect of a value is") {
+    val result = extract(
+      Seq(
+        "Effects.scala" ->
+          """trait Unit0[F[_]] {
+            |  def write(value: Int): F[Unit]
+            |  def read(): F[Int]
+            |}
+            |object Main {
+            |  def run[F[_]](unit: Unit0[F]): F[Unit] = { unit.write(1); unit.write(2); unit.read(); unit.read(); unit.write(3) }
+            |  def twice[F[_]](unit: Unit0[F]): F[Unit] = run(unit)
+            |}""".stripMargin
+      ),
+      Seq.empty
+    )
+    assertEquals(result.smells.usages.map(_.result).toSet, Set("F[Int]"))
   }
 
   test("explicit default arguments are matched to the getters of the called overload, constructor or method") {

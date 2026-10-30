@@ -237,6 +237,53 @@ class PuritySuite extends AnalysisSuite {
     assert(clue(verdict("Open.apply")).isInstanceOf[Purity.Verdict.Unknown])
   }
 
+  private def cycles(bodies: Seq[(String, String)]): Map[String, Purity.Verdict] = extract(
+    Seq(
+      "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Cycles) }",
+      "Cycles.scala" ->
+        s"""object Cycles {
+           |  def run(f: () => Unit): Unit = f()
+           |  def bind(f: Int => Option[Int])(n: Int): Option[Int] = f(n)
+           |${bodies.map((name, body) => s"  def $name(): Unit = { $body }").mkString("\n")}
+           |}""".stripMargin
+    )
+  ).purity.verdicts
+
+  test("functions that run themselves, directly or through other functions, are unknown, never pure") {
+    val shapes = Seq(
+      "direct" -> "lazy val loop: () => Unit = () => loop(); loop()",
+      "passed" -> "lazy val self: () => Unit = () => run(self); run(self)",
+      "mutual" -> "lazy val ping: () => Unit = () => pong(); lazy val pong: () => Unit = () => ping(); ping()",
+      "nested" -> "lazy val outer: () => Unit = () => run(() => run(outer)); run(outer)"
+    )
+    val verdicts = cycles(shapes)
+    shapes.foreach((name, _) =>
+      assert(
+        clue(verdicts.getOrElse(s"Cycles.$name", fail(s"no verdict for $name"))).isInstanceOf[Purity.Verdict.Unknown],
+        name
+      )
+    )
+  }
+
+  test("methods that pass themselves on to functions they call are analysed") {
+    val shapes = Seq(
+      "local"     -> "def loop(): Unit = run(() => loop()); loop()",
+      "counted"   -> "def loop(n: Int): Unit = run(() => loop(n - 1)); loop(3)",
+      "bound"     -> "def loop(n: Int): Option[Int] = bind(m => loop(m + 1))(n); val _ = loop(0)",
+      "anonymous" ->
+        "class Steps { def loop(n: Int): Option[Int] = bind(m => loop(m + 1))(n) }; val _ = Steps().loop(0)"
+    )
+    val verdicts = cycles(shapes)
+    shapes.foreach((name, _) => assert(verdicts.contains(s"Cycles.$name"), name))
+  }
+
+  test("functions that run each other without a cycle stay pure") {
+    val verdicts = cycles(Seq(
+      "acyclic" -> "val double: Int => Int = _ * 2; val twice: Int => Int = x => double(double(x)); val _ = twice(1)"
+    ))
+    assertEquals(verdicts("Cycles.acyclic"), Purity.Verdict.Pure)
+  }
+
   test("a method that was pure fails the lock once it is not, and the lock records the pure methods of main code") {
     val found = Purity.regressions(result.purity, result.graph.nodes, Set("Pure.double", "Pure.logged", "Gone.method"))
     assertEquals(found.map(_.rule), Vector(Finding.Rule.PurityRegression))
@@ -404,6 +451,93 @@ class PuritySuite extends AnalysisSuite {
         line.startsWith("purity: unknown ") && line.contains("Executors.newFixedThreadPool")
       ),
       summary.mkString("\n")
+    )
+  }
+
+  private lazy val callbacks = extract(
+    Seq(
+      "Main.scala"      -> "object Main { def main(args: Array[String]): Unit = println(Callbacks) }",
+      "Callbacks.scala" ->
+        """object Callbacks {
+          |  def deferred(values: java.util.Optional[Int]): Unit = {
+          |    val done = scala.concurrent.Promise[Int]()
+          |    values.ifPresent(_ => { val _ = done.failure(new RuntimeException("failed")) })
+          |  }
+          |}""".stripMargin
+    )
+  )
+
+  private lazy val callbackFindings = Purity.findings(callbacks.purity, callbacks.graph.nodes)
+
+  test("dropping the result of an effectful call in a function nothing runs is not reported") {
+    assertEquals(callbackFindings.filter(_.rule == Finding.Rule.PureDiscard).map(_.detail), Vector.empty[String])
+  }
+
+  private lazy val java = extract(
+    Seq(
+      "Main.scala"    -> "object Main { def main(args: Array[String]): Unit = println(Dropped) }",
+      "Dropped.scala" ->
+        """object Dropped {
+          |  def double(x: Int): Int = x * 2
+          |  def matched(matcher: java.util.regex.Matcher): Unit = { val _ = matcher.find() }
+          |  def called(task: java.util.concurrent.Callable[Int]): Unit = { val _ = task.call() }
+          |  def encoded(text: String): Unit = { val _ = text.getBytes("UTF-8") }
+          |  def named(file: java.io.File): Unit = { val _ = file.getName }
+          |  def scala(x: Int): Unit = { val _ = double(x) }
+          |  def bytes(text: String): Array[Byte] = text.getBytes("UTF-8")
+          |  def found(matcher: java.util.regex.Matcher): Boolean = matcher.find()
+          |  def pending(task: java.util.concurrent.Callable[Int]): Int = task.call()
+          |}""".stripMargin
+    )
+  )
+
+  private lazy val javaFindings = Purity.findings(java.purity, java.graph.nodes)
+
+  test("dropping the result of a Java method nothing is known of, or that declares what it throws, is not reported") {
+    assertEquals(
+      javaFindings.filter(_.rule == Finding.Rule.PureDiscard).map(_.detail.takeWhile(_ != ' ')).sorted,
+      Vector("Dropped.double", "File.getName")
+    )
+  }
+
+  test("assuming a Java method only reads, or noting what it throws, leaves its callers impure or pure as before") {
+    assertEquals(java.purity.verdicts("Dropped.bytes"), Purity.Verdict.Pure)
+    assert(java.purity.verdicts("Dropped.found").isInstanceOf[Purity.Verdict.Impure])
+    assert(java.purity.verdicts("Dropped.pending").isInstanceOf[Purity.Verdict.Impure])
+  }
+
+  private lazy val nets = extract(
+    Seq(
+      "Main.scala" -> "object Main { def main(args: Array[String]): Unit = println(Nets) }",
+      "Nets.scala" ->
+        """object Nets {
+          |  def decoded(text: String): String = java.net.URLDecoder.decode(text, "UTF-8")
+          |  def encoded(text: String): String = java.net.URLEncoder.encode(text, java.nio.charset.StandardCharsets.UTF_8)
+          |  def created(text: String): java.net.URI = java.net.URI.create(text)
+          |  def resolved(uri: java.net.URI): java.net.URI = uri.resolve("child")
+          |  def pathOf(uri: java.net.URI): String = uri.getPath
+          |  def opened(text: String): java.io.InputStream = new java.net.URL(text).openStream()
+          |  def mapped(texts: List[String]): Unit = {
+          |    val _ = texts.map(java.net.URLDecoder.decode(_, "UTF-8"))
+          |    val _ = texts.map(text => java.net.URI.create(text).getPath)
+          |    val _ = texts.map(text => new java.net.URL(text).openStream())
+          |  }
+          |}""".stripMargin
+    )
+  )
+
+  test("URL encoding and URIs are values, where the rest of java.net acts on the network") {
+    Vector("Nets.decoded", "Nets.encoded", "Nets.created", "Nets.resolved", "Nets.pathOf").foreach(name =>
+      assertEquals(nets.purity.verdicts(name), Purity.Verdict.Pure, name)
+    )
+    assertEquals(nets.purity.verdicts("Nets.opened"), Purity.Verdict.Impure("calls java.net.URL.openStream"))
+    assertEquals(
+      Purity.findings(nets.purity, nets.graph.nodes).filter(_.rule == Finding.Rule.EffectfulTransform)
+        .map(finding => Located.replaceAllIn(finding.detail, "")),
+      Vector(
+        "the function passed to map calls java.net.URL.openStream; keep transformations pure and perform effects in " +
+          "foreach or a loop"
+      )
     )
   }
 }

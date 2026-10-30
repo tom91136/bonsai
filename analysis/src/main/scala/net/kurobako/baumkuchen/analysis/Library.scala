@@ -1,0 +1,59 @@
+package net.kurobako.baumkuchen.analysis
+
+import dotty.tools.dotc.core.Contexts.Context
+import dotty.tools.dotc.core.Symbols.Symbol
+import dotty.tools.dotc.core.Symbols.defn
+import dotty.tools.dotc.core.Symbols.requiredClass
+import dotty.tools.dotc.core.Types.Type
+
+/** What the cost model knows of library types. */
+private class Library(using Context) {
+  private val IterableOnce = requiredClass("scala.collection.IterableOnce")
+  private val ArrayOps     = requiredClass("scala.collection.ArrayOps")
+  private val StringOps    = requiredClass("scala.collection.StringOps")
+  private val LinearSeq    = requiredClass("scala.collection.LinearSeq")
+  private val Seq          = requiredClass("scala.collection.Seq")
+  private val Range        = requiredClass("scala.collection.immutable.Range")
+  private val ListBuffer   = requiredClass("scala.collection.mutable.ListBuffer")
+  private val ArrayBuffer  = requiredClass("scala.collection.mutable.ArrayBuffer")
+  private val List         = requiredClass("scala.collection.immutable.List")
+  private val Vector       = requiredClass("scala.collection.immutable.Vector")
+  private val ImmSeq       = requiredClass("scala.collection.immutable.Seq")
+  private val ImmIndexed   = requiredClass("scala.collection.immutable.IndexedSeq")
+  private val ImmSet       = requiredClass("scala.collection.immutable.Set")
+  private val ImmMap       = requiredClass("scala.collection.immutable.Map")
+  private val MutableIter  = requiredClass("scala.collection.mutable.Iterable")
+
+  private def derives(tpe: Type, cls: Symbol): Boolean = tpe.widen.derivesFrom(cls)
+
+  /** Collections and arrays, but not options. */
+  def sized(tpe: Type): Boolean =
+    !derives(tpe, defn.OptionClass) && (derives(tpe, IterableOnce) || derives(tpe, defn.ArrayClass))
+
+  def text(tpe: Type): Boolean = derives(tpe, defn.StringClass) || derives(tpe, StringOps)
+
+  def traversal(tpe: Type): Boolean = sized(tpe) || derives(tpe, ArrayOps) || derives(tpe, StringOps)
+
+  def linked(tpe: Type): Boolean = derives(tpe, LinearSeq)
+
+  def array(tpe: Type): Boolean = derives(tpe, defn.ArrayClass) || derives(tpe, ArrayOps)
+
+  def growable(tpe: Type): Boolean = derives(tpe, MutableIter)
+
+  def listBuffer(tpe: Type): Boolean = derives(tpe, ListBuffer)
+
+  def arrayBuffer(tpe: Type): Boolean = derives(tpe, ArrayBuffer)
+
+  def searchable(tpe: Type): Boolean = (derives(tpe, Seq) || derives(tpe, ArrayOps)) && !derives(tpe, Range)
+
+  /** Whether converting with `name` hands the receiver back as it is. */
+  def unchanged(name: String, tpe: Type): Boolean = name match {
+    case "toList"       => derives(tpe, List)
+    case "toVector"     => derives(tpe, Vector)
+    case "toSeq"        => derives(tpe, ImmSeq)
+    case "toIndexedSeq" => derives(tpe, ImmIndexed)
+    case "toSet"        => derives(tpe, ImmSet)
+    case "toMap"        => derives(tpe, ImmMap)
+    case _              => false
+  }
+}

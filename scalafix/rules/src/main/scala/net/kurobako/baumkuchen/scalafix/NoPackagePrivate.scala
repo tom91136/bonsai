@@ -29,7 +29,7 @@ class NoPackagePrivate(tiers: Set[String]) extends SemanticRule("NoPackagePrivat
   }.asPatch
 
   private def qualifier(symbol: Symbol)(using SemanticDocument): Boolean =
-    symbol.info.exists(_.isPackage) && !tiers(symbol.value)
+    definitions.info(symbol).exists(_.isPackage) && !tiers(symbol.value)
 
   // Scala's SemanticDB may omit the qualifier occurrence on a primary constructor.
   private def constructorPackage(modifier: Mod.Private)(using SemanticDocument): Boolean =
@@ -39,7 +39,7 @@ class NoPackagePrivate(tiers: Set[String]) extends SemanticRule("NoPackagePrivat
           case owner: Defn.Enum  => owner.name.symbol
         }
       case _ => None
-    }.flatMap(_.info).map(_.signature).exists {
+    }.flatMap(definitions.info(_)).map(_.signature).exists {
       case ClassSignature(_, _, _, declarations) =>
         declarations.exists(member => member.isPrimary && member.within.exists(qualifier(_)))
       case _ => false

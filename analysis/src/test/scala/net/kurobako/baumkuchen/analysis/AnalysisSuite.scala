@@ -29,7 +29,8 @@ trait AnalysisSuite extends FunSuite {
       generated: Vector[String] = Vector.empty,
       reflective: Vector[String] = Vector.empty,
       twins: Seq[Seq[(String, String)]] = Nil,
-      hot: Vector[String] = Vector.empty
+      hot: Vector[String] = Vector.empty,
+      bounded: Vector[Complexity.Bounded] = Vector.empty
   ): Extraction.Result = {
     val directory = Files.createTempDirectory("baumkuchen-")
     try {
@@ -68,7 +69,7 @@ trait AnalysisSuite extends FunSuite {
         platforms = platforms.map(_._1.module).toSet
       )
       val result =
-        Extraction.read(manifest, generated, concurrent, reflective, hot).fold(
+        Extraction.read(manifest, generated, concurrent, reflective, hot, bounded).fold(
           errors => fail(errors.mkString("\n")),
           identity
         )

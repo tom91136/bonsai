@@ -1,6 +1,7 @@
 package net.kurobako.baumkuchen.scalafix
 
 import scala.meta.*
+import scala.meta.internal.semanticdb.Scala.*
 import scala.meta.tokens.Token
 import scalafix.v1.*
 
@@ -25,7 +26,9 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
   private val identityConversions = Map(
     "toSeq"    -> "scala/collection/immutable/Seq#",
     "toList"   -> "scala/collection/immutable/List#",
-    "toVector" -> "scala/collection/immutable/Vector#"
+    "toVector" -> "scala/collection/immutable/Vector#",
+    "toMap"    -> "scala/collection/immutable/Map#",
+    "toSet"    -> "scala/collection/immutable/Set#"
   )
 
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
@@ -52,6 +55,13 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
             if (method == "exists") "exists-to-contains" else "forall-to-not-contains",
             "use contains for equality with a constant"
           )
+        }.getOrElse(Patch.empty)
+
+      case (filter @ Term.Select(receiver, Term.Name("filter")), List(argument))
+          if standardMethod(filter) && setLike(receiver) =>
+        containsTarget(argument).map { target =>
+          Patch.replaceTree(call, s"${receiver.syntax}.intersect(${target.syntax})") +
+            lint("filter-contains-to-intersect", "use intersect instead of filter and contains", call.pos)
         }.getOrElse(Patch.empty)
 
       case (outer @ Term.Select(inner: Term.Apply, Term.Name("getOrElse")), List(default))
@@ -108,13 +118,14 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
       case _ => Patch.empty
     }
 
-  private def constantTarget(predicate: Term, operator: String): Option[Lit] = {
-    def comparison(body: Term, parameter: Term => Boolean): Option[Lit] = body match {
+  private def constantTarget(predicate: Term, operator: String)(using SemanticDocument): Option[Term] = {
+    def comparison(body: Term, parameter: Term => Boolean): Option[Term] = body match {
       case infix: Term.ApplyInfix if infix.op.value == operator && parameter(infix.lhs) =>
         infix.argClause.values match {
-          // Null and custom equality are deliberately excluded. Literals cannot capture
-          // the predicate parameter, throw, or introduce extra evaluations on an empty input.
+          // Null and custom equality are deliberately excluded. Literals and stable references cannot capture the
+          // predicate parameter, throw, or introduce extra evaluations on an empty input.
           case List(value @ (_: Lit.Int | _: Lit.Long | _: Lit.String | _: Lit.Char | _: Lit.Boolean)) => Some(value)
+          case List(value) if stableReference(value)                                                   => Some(value)
           case _                                                                                       => None
         }
       case _ => None
@@ -122,27 +133,103 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
     predicate match {
       case Term.AnonymousFunction(body) => comparison(body, { case _: Term.Placeholder => true; case _ => false })
       case function: Term.Function      => function.paramClause.values match {
-          case List(parameter) => comparison(
+          case List(parameter) =>
+            comparison(
               function.body,
               {
                 case name: Term.Name => name.value == parameter.name.value
                 case _               => false
               }
-            )
+            ).filterNot(value => mentions(value, parameter.name.value))
           case _ => None
         }
       case _ => None
     }
   }
 
+  /** Whether the term names the given name, which a value moved out of the predicate cannot. */
+  private def mentions(term: Term, name: String): Boolean =
+    term.collect { case Term.Name(`name`) => () }.nonEmpty
+
+  /** The set whose membership the predicate tests, when the predicate is a bare `contains` call or a lambda around one.
+    */
+  private def containsTarget(predicate: Term)(using SemanticDocument): Option[Term] =
+    predicate match {
+      case Term.Select(collection, Term.Name("contains")) if setLike(collection) =>
+        Some(collection)
+      case function: Term.Function =>
+        function.paramClause.values match {
+          case List(parameter: Term.Param) =>
+            (parameter.name, function.body) match {
+              case (
+                    name: Term.Name,
+                    Term.Apply(
+                      Term.Select(collection, Term.Name("contains")),
+                      List(Term.Name(argument))
+                    )
+                  ) if argument == name.value && setLike(collection) =>
+                Some(collection)
+              case _ => None
+            }
+          case _ => None
+        }
+      case _ => None
+    }
+
+  /** Whether the term is a set, including a set built by `Set(...)`, whose static type is the method's result. */
+  private def setLike(term: Term)(using SemanticDocument): Boolean =
+    definitions.typeSymbol(term).contains("scala/collection/immutable/Set#") ||
+      (term match {
+        case Term.Apply(fun, _) => fun.syntax == "Set" || fun.syntax == "scala.collection.immutable.Set"
+        case _                  => false
+      })
+
+  /** Whether the term is a reference the predicate evaluates the same way on every element, without side effects. */
+  private def stableReference(term: Term)(using SemanticDocument): Boolean = term match {
+    case name: Term.Name              => !resolvedMethod(name.symbol)
+    case _: Term.This                 => true
+    case Term.Select(qualifier, name) =>
+      !resolvedMethod(name.symbol) &&
+      (qualifier match {
+        case _: Term.Name | _: Term.This => true
+        case select: Term.Select         => stableReference(select)
+        case _                           => false
+      })
+    case _ => false
+  }
+
+  private def resolvedMethod(symbol: Symbol): Boolean = symbol.isGlobal && symbol.value.desc.isMethod
+
   private def nonEmpty(comparison: Term.ApplyInfix)(using SemanticDocument): Patch =
     (comparison.op.value, comparison.lhs, comparison.argClause.values) match {
       case (operator, size @ Term.Select(_, Term.Name("size" | "length")), List(Lit.Int(0)))
           if definitions.zeroComparisons(operator) && sizeMethod(size) =>
-        val (method, id) = if (operator == "==") ("isEmpty", "size-to-is-empty") else ("nonEmpty", "size-to-non-empty")
-        emptiness(comparison, size, method, id, s"use $method instead of a size comparison with zero")
+        val empty        = operator == "=="
+        val (method, id) = if (empty) ("isEmpty", "size-to-is-empty") else ("nonEmpty", "size-to-non-empty")
+        filtered(size.qual).fold(
+          emptiness(comparison, size, method, id, s"use $method instead of a size comparison with zero")
+        ) { (receiver, predicate, negated) =>
+          val quantifier = if (negated) "forall" else "exists"
+          lint.replace(
+            comparison,
+            s"${if (empty != negated) "!" else ""}${receiver.syntax}.$quantifier(${predicate.syntax})",
+            id,
+            s"use $quantifier instead of ${if (negated) "filterNot" else "filter"} and a size comparison with zero"
+          )
+        }
       case _ => Patch.empty
     }
+
+  private def filtered(term: Term)(using SemanticDocument): Option[(Term, Term, Boolean)] = term match {
+    case call: Term.Apply =>
+      (call.fun, call.argClause.values) match {
+        case (filter @ Term.Select(receiver, Term.Name(method @ ("filter" | "filterNot"))), List(predicate))
+            if standardMethod(filter) =>
+          Some((receiver, predicate, method == "filterNot"))
+        case _ => None
+      }
+    case _ => None
+  }
 
   private def sizeMethod(selection: Term.Select)(using SemanticDocument): Boolean = {
     val symbol = selection.symbol.value
@@ -320,7 +407,7 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
   private def redundantConversion(selection: Term.Select)(using SemanticDocument): Patch = selection match {
     case Term.Select(receiver, Term.Name(conversion))
         if standardMethod(selection) &&
-          (identityConversions.get(conversion).exists(definitions.typeSymbol(receiver).contains) ||
+          (identityConversion(conversion, receiver) ||
             (conversion == "toSeq" && strictSequence(receiver) && assertionArgument(selection))) =>
       lint.replace(
         selection,
@@ -329,6 +416,23 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
         "remove the identity collection conversion"
       )
     case _ => Patch.empty
+  }
+
+  private def identityConversion(conversion: String, receiver: Term)(using SemanticDocument): Boolean =
+    identityConversions.get(conversion).exists(definitions.typeSymbol(receiver).contains) ||
+      (conversion == "toMap" && mapAppend(receiver)) ||
+      (conversion == "toSet" && setAppend(receiver))
+
+  /** Whether appending another collection to a map or a set leaves the same kind of collection. */
+  private def mapAppend(term: Term)(using SemanticDocument): Boolean = term match {
+    case infix: Term.ApplyInfix if infix.op.value == "++" => definitions.typeSymbol(infix.lhs).exists(strictMaps)
+    case _                                                => false
+  }
+
+  private def setAppend(term: Term)(using SemanticDocument): Boolean = term match {
+    case infix: Term.ApplyInfix if infix.op.value == "++" =>
+      definitions.typeSymbol(infix.lhs).exists(_ == "scala/collection/immutable/Set#")
+    case _ => false
   }
 
   private def assertionArgument(selection: Term.Select)(using SemanticDocument): Boolean =
@@ -378,20 +482,16 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
   private def emptyCollection(call: Term.Apply)(using SemanticDocument): Patch =
     if (call.argClause.values.nonEmpty) Patch.empty
     else {
-      val (companion, types) = call.fun match {
-        case application: Term.ApplyType => (application.fun, application.argClause.syntax)
-        case other                       => (other, "")
+      val companion = call.fun match {
+        case application: Term.ApplyType => application.fun
+        case other                       => other
       }
       companion match {
         case reference: (Term.Name | Term.Select)
             if reference.symbol.value.startsWith("scala/") && reference.symbol.isGlobal &&
               reference.symbol.value.endsWith(".") && companions(reference.symbol.displayName) =>
-          lint.replace(
-            call,
-            s"${companion.syntax}.empty$types",
-            "empty-collection",
-            "use empty for an empty collection"
-          )
+          lint("empty-collection", "use empty for an empty collection", call.pos) +
+            Patch.addLeft(call.tokens(companion.tokens.length), ".empty") + Patch.removeTokens(call.argClause.tokens)
         case _ => Patch.empty
       }
     }

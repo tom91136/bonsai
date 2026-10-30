@@ -224,7 +224,7 @@ class OptionIdioms extends SemanticRule("OptionIdioms") {
             case (predicate, List(Term.Select(inner, Term.Name("get")))) if inner.syntax == option.syntax =>
               lint.replace(
                 tree,
-                s"${option.syntax}.filter(${predicate.syntax})",
+                s"${option.syntax}.filter(${functionArgument(predicate)})",
                 "simulated-filter",
                 "use filter for an isDefined check and get"
               )
@@ -235,6 +235,9 @@ class OptionIdioms extends SemanticRule("OptionIdioms") {
     case _ => Patch.empty
   }
 
+  private def functionArgument(predicate: Term)(using SemanticDocument): String =
+    if (definitions.methodReference(predicate)) s"${predicate.syntax}(_)" else predicate.syntax
+
   /** `if (p(v)) Some(v) else None` is `Some(v).filter(p)` for a stable `v`. */
   private def filteredOption(tree: Term.If)(using SemanticDocument): Patch = tree.cond match {
     case condition: Term.Apply if condition.argClause.values.size == 1 && definitions.isNone(tree.elsep) =>
@@ -242,7 +245,7 @@ class OptionIdioms extends SemanticRule("OptionIdioms") {
         case (name: Term.Name, SomeOf(value: Term.Name)) if value.value == name.value =>
           lint.replace(
             tree,
-            s"Some(${value.syntax}).filter(${condition.fun.syntax})",
+            s"Some(${value.syntax}).filter(${functionArgument(condition.fun)})",
             "if-else-to-filtered-option",
             "use filter for an if that wraps one value"
           )
@@ -257,13 +260,25 @@ class OptionIdioms extends SemanticRule("OptionIdioms") {
       case (operator @ ("==" | "!="), List(right)) =>
         val negated = operator == "!="
         List(comparison.lhs -> right, right -> comparison.lhs).collectFirst {
-          case (option, none) if definitions.isNone(none) && optionType(option) =>
+          case (option, none)
+              if definitions.isNone(none) && optionType(option) &&
+                !(negated && (option eq comparison.lhs) && findCall(option)) =>
             noneCheck(comparison, option, negated)
           case (option, SomeOf(value)) if optionType(option) =>
             contains(comparison, option, value, negated)
         }.getOrElse(Patch.empty)
       case _ => Patch.empty
     }
+
+  /** `find(p) != None`, which CollectionChains rewrites to exists. */
+  private def findCall(tree: Term)(using SemanticDocument): Boolean = tree match {
+    case application: Term.Apply =>
+      (application.fun, application.argClause.values) match {
+        case (find @ Term.Select(_, Term.Name("find")), List(_)) => libraryMethod(find)
+        case _                                                   => false
+      }
+    case _ => false
+  }
 
   private def contains(outer: Term, option: Term, value: Term, negated: Boolean): Patch =
     lint.replace(

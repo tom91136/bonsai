@@ -16,5 +16,9 @@ object QualifiedCollectionNamespaces {
   val counter = AtomicInteger(0)
   val buffer  = mutable.ArrayBuffer.empty[Int]
   val listed: java.util.ArrayList[String] = java.util.ArrayList[String]()
-  val rooted: _root_.scala.collection.mutable.HashMap[Int, Int] = scala.collection.mutable.HashMap.empty
+  val rooted: _root_.scala.collection.mutable.HashMap[Int, Int] = mutable.HashMap.empty// assert: QualifiedCollectionNamespaces.unqualified
+  val spelled = scala.collection.mutable.HashMap.empty[Int, Int]// assert: QualifiedCollectionNamespaces.unqualified
+  val inferred: scala.collection.mutable.Set[Int] = mutable.Set.empty[Int]// assert: QualifiedCollectionNamespaces.unqualified
+  def returned: scala.collection.mutable.Set[Int] = mutable.Set.empty[Int]// assert: QualifiedCollectionNamespaces.unqualified
+  val nested: List[scala.collection.mutable.Set[Int]] = Nil// assert: QualifiedCollectionNamespaces.unqualified
 }

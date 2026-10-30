@@ -6,13 +6,13 @@ package fix
 import scala.collection.mutable
 
 object MutableExposure {
-  var counter             = 0                              // assert: MutableExposure.global-state
+  var counter             = 0
   val registry            = mutable.Map.empty[String, Int] // assert: MutableExposure.global-state
   val names: List[String] = Nil
   private val factorials  = Array[Double](1, 1, 2, 6, 24)
 
   class Account {
-    var balance: Long                      = 0                         // assert: MutableExposure.public-var
+    var balance: Long                      = 0
     val history: mutable.ArrayBuffer[Long] = mutable.ArrayBuffer.empty // assert: MutableExposure.exposed-mutable
     def pending: mutable.Queue[Long]       = mutable.Queue.empty       // assert: MutableExposure.exposed-mutable
     val inferred                           = mutable.Map.empty[String, String] // assert: MutableExposure.exposed-mutable
@@ -23,7 +23,7 @@ object MutableExposure {
   }
 
   trait Cache {
-    var hits: Int                       = 0                 // assert: MutableExposure.public-var
+    var hits: Int                       = 0
     val store: mutable.Map[String, Int] = mutable.Map.empty // assert: MutableExposure.exposed-mutable
   }
 

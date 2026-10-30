@@ -215,6 +215,61 @@ class AcyclicSuite extends FunSuite {
     assert(!errors.head.contains("Implementation.scala"))
   }
 
+  test("a suppressed case class closing a cycle through its parameter type is not reported") {
+    assertEquals(
+      compile(
+        "A.scala" -> "@SuppressWarnings(Array(\"baumkuchen:acyclic\")) case class A(val b: B)",
+        "B.scala" -> "class B(val a: A)"
+      ),
+      Nil
+    )
+  }
+
+  test("a suppressed trait closing a cycle through its parent is not reported") {
+    assertEquals(
+      compile(
+        "A.scala" -> "@SuppressWarnings(Array(\"baumkuchen:acyclic\")) trait A extends B",
+        "B.scala" -> "trait B { def a: A }"
+      ),
+      Nil
+    )
+  }
+
+  test("unsuppressed case classes and traits closing a cycle are reported") {
+    assertCycle("A.scala" -> "case class A(val b: B)", "B.scala" -> "class B(val a: A)")
+    assertCycle("A.scala" -> "trait A extends B", "B.scala"      -> "trait B { def a: A }")
+  }
+
+  test("a suppression holding the reported edge applies when the report is in a later file") {
+    val sources = Seq(
+      "X.scala" -> "class X(val y: Y)",
+      "Y.scala" -> "class Y(val z: Z)",
+      "Z.scala" -> "class Z(val y: Y, val x: X)"
+    )
+    assertCycle(sources*)
+    assertEquals(
+      compile(sources.updated(1, "Y.scala" -> "@SuppressWarnings(Array(\"baumkuchen:acyclic\")) class Y(val z: Z)")*),
+      Nil
+    )
+  }
+
+  test("a suppression applies to an edge recorded before a macro suspends another file") {
+    val sources = Seq(
+      "A.scala"              -> "class A(val z: Z)",
+      "Z.scala"              -> "class Z(val a: A) { val n = API.value }",
+      "API.scala"            -> "object API { transparent inline def value: Any = ${ Implementation.value } }",
+      "Implementation.scala" ->
+        "import scala.quoted.*; object Implementation { def value(using Quotes): Expr[Int] = '{ 1 } }"
+    )
+    val errors = compile(sources*)
+    assertEquals(errors.size, 1, errors.mkString("\n"))
+    assert(errors.head.contains("A.scala:1 ->"), errors.head)
+    assertEquals(
+      compile(sources.updated(0, "A.scala" -> "@SuppressWarnings(Array(\"baumkuchen:acyclic\")) class A(val z: Z)")*),
+      Nil
+    )
+  }
+
   test("repeated compilations keep detecting cycles") {
     for (_ <- 1 to 2) assertCycle("A.scala" -> "class A(val b: B)", "B.scala" -> "class B(val a: A)")
   }

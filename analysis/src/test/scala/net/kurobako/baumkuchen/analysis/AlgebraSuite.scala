@@ -50,6 +50,27 @@ class AlgebraSuite extends AnalysisSuite {
     assertNoFinding(found)(_.detail.contains("T"))
   }
 
+  test("types of one shape that are an intended pair are not duplicates, while the rest of a group still are") {
+    val result = extract(Seq(
+      "Layouts.scala" ->
+        """package bits
+          |case class Image(x: Int, y: String, f: (Long, Char) => Byte)
+          |case class Buffer(y: String, f: Long => Char => Byte, x: Int)
+          |case class Sampler(x: Int, f: (Long, Char) => Byte, y: String)
+          |case class Left(a: Int, b: String, c: Long)
+          |case class Right(a: Int, b: String, c: Long)""".stripMargin
+    ))
+    def shapes(intended: Intended) =
+      Algebra.findings(result.algebra, result.graph.nodes, intended).filter(_.rule == Finding.Rule.DuplicateShape)
+        .map(_.detail.takeWhile(_ != ':'))
+    assertEquals(shapes(Intended()).size, 2)
+    assertEquals(shapes(Intended(Vector("bits.Left" -> "bits.Right"))).size, 1)
+    assertEquals(shapes(Intended(Vector("bits.Right" -> "bits.Left"))).size, 1)
+    assertEquals(shapes(Intended(Vector("bits.Image" -> "bits.Buffer"))).size, 2)
+    assertEquals(shapes(Intended(Vector("bits.Image" -> "bits.*", "bits.Buffer" -> "bits.Sampler"))).size, 1)
+    assertEquals(shapes(Intended(Vector("bits.*" -> "bits.*"))).size, 0)
+  }
+
   test("function types with named parameters are plain functions") {
     val found = findings(
       "P.scala" -> "case class P(x: Int, y: String, f: (Long, Char) => Byte)",
@@ -67,6 +88,49 @@ class AlgebraSuite extends AnalysisSuite {
           |case class Plain(value: (PlainFunction, Int))""".stripMargin
     )
     assertNoFinding(found)(_.rule == Finding.Rule.DuplicateShape)
+  }
+
+  test("duplicate-shape is silent for private types in independent modules") {
+    val result = extract(
+      main = Seq(
+        "Amd.scala" ->
+          """package amdgpu
+            |private[amdgpu] case class BitField(offset: Int, width: Int)
+            |""".stripMargin,
+        "Nvidia.scala" ->
+          """package nvidia
+            |private[nvidia] case class Field(offset: Int, width: Int)
+            |""".stripMargin
+      )
+    )
+    val found = Algebra.findings(result.algebra, result.graph.nodes).filter(_.rule == Finding.Rule.DuplicateShape)
+    assertEquals(found, Vector.empty)
+  }
+
+  test("duplicate-shape keeps firing for public types across packages or private types in one package") {
+    val publicResult = extract(
+      main = Seq(
+        "A.scala" -> "package foo\ncase class PublicA(offset: Int, width: Int)",
+        "B.scala" -> "package bar\ncase class PublicB(offset: Int, width: Int)"
+      ),
+      library = true
+    )
+    val publicFound =
+      Algebra.findings(publicResult.algebra, publicResult.graph.nodes).filter(_.rule == Finding.Rule.DuplicateShape)
+    assert(publicFound.nonEmpty, "public types across packages must keep firing")
+
+    val localResult = extract(
+      main = Seq(
+        "Local.scala" ->
+          """package samemod
+            |private[samemod] case class LocalA(offset: Int, width: Int)
+            |private[samemod] case class LocalB(offset: Int, width: Int)
+            |""".stripMargin
+      )
+    )
+    val localFound =
+      Algebra.findings(localResult.algebra, localResult.graph.nodes).filter(_.rule == Finding.Rule.DuplicateShape)
+    assert(localFound.nonEmpty, "private types in the same module must keep firing")
   }
 
   test("alternatives of the same shape are reported together as information") {
@@ -175,20 +239,21 @@ class AlgebraSuite extends AnalysisSuite {
     )
   }
 
-  test("generated sums are summarised once") {
-    val found = findings(
-      "src/generated/main/scala/Opcode.scala" ->
-        """enum Opcode {
-          |  case AddI(dest: Int, a: Int, b: Int); case SubI(dest: Int, a: Int, b: Int); case MulI(dest: Int, a: Int, b: Int)
-          |  case AddF(dest: Int, a: Double, b: Double); case SubF(dest: Int, a: Double, b: Double)
-          |  case Move(dest: Int, source: Int)
-          |}""".stripMargin
+  test("generated sums are reported like handwritten ones, and labelled as generated") {
+    val source =
+      """enum Opcode {
+        |  case AddI(dest: Int, a: Int, b: Int); case SubI(dest: Int, a: Int, b: Int); case MulI(dest: Int, a: Int, b: Int)
+        |  case AddF(dest: Int, a: Double, b: Double); case SubF(dest: Int, a: Double, b: Double)
+        |  case Move(dest: Int, source: Int)
+        |}""".stripMargin
+    val found       = findings("src/generated/main/scala/Opcode.scala" -> source)
+    val handwritten = findings("src/main/scala/Opcode.scala" -> source)
+    assertEquals(
+      found.map(finding => (finding.rule, finding.detail)),
+      handwritten.map(finding => (finding.rule, finding.detail))
     )
-    assertEquals(found.count(_.rule == Finding.Rule.IdenticalCases), 1, found.mkString("\n"))
-    assertFinding(found, "identical-cases", "5 of 6 cases repeat another case's shape (3 distinct shapes)")(using
-      Finding.Level.Info
-    )
-    assertEquals(found.count(_.rule == Finding.Rule.CommonFactor), 1, found.mkString("\n"))
+    assert(found.nonEmpty)
+    assert(found.forall(_.node.generated), found.mkString("\n"))
   }
 
   test("findings that only tests support are information") {
@@ -239,6 +304,19 @@ class AlgebraSuite extends AnalysisSuite {
     assertFinding(found, "enum-candidate", "Shape: 2 cases without bodies; as an enum they move into Shape")(using
       Finding.Level.Info
     )
+  }
+
+  test("a sealed hierarchy whose companion is written before the trait is an enum candidate") {
+    val found = findings(
+      "CCallArg.scala" ->
+        """object CCallArg {
+          |  case class Explicit(fieldName: String) extends CCallArg
+          |  case class BytesSize(bytesField: String) extends CCallArg
+          |}
+          |sealed trait CCallArg""".stripMargin
+    )
+
+    assertFinding(found, "enum-candidate", "CCallArg: 2 cases without bodies")
   }
 
   test("cases with bodies, further extension or other parents are not enum cases") {
@@ -393,21 +471,18 @@ class AlgebraSuite extends AnalysisSuite {
     )
   }
 
-  test("a generated sum lists its three largest groups of identical cases") {
+  test("a generated sum lists its groups of identical cases like a handwritten one") {
     val variants = Vector("A" -> 3, "B" -> 2, "C" -> 2, "D" -> 2, "E" -> 1).flatMap((shape, count) =>
       (1 to count).map(index => Algebra.Variant(s"$shape$index", Vector(field("value", atom(shape)))))
     )
-    val found = analyse(model(sums = Vector(Algebra.Sum("Op", "Op", variants))), node("Op", generated = true))
+    val sum = Algebra.Sum("Op", "Op", variants)
     assertEquals(
-      shown(found),
-      Vector(
-        "Op: 9 of 10 cases repeat another case's shape (5 distinct shapes); largest: 3 of A; 2 of B; 2 of C" ->
-          Finding.Level.Info
-      )
+      shown(analyse(model(sums = Vector(sum)), node("Op", generated = true))),
+      shown(analyse(model(sums = Vector(sum)), node("Op", generated = false)))
     )
   }
 
-  test("at most three common factors are reported, and one for a generated sum") {
+  test("at most three common factors are reported, generated or not") {
     val variants = for {
       group <- Vector("p", "q", "r", "s")
       index <- 1 to 3
@@ -418,12 +493,12 @@ class AlgebraSuite extends AnalysisSuite {
     def factors(generated: Boolean) =
       analyse(model(sums = Vector(Algebra.Sum("S", "S", variants))), node("S", generated = generated)).map(_.detail)
     assertEquals(
-      factors(generated = false),
+      factors(generated = true),
       Vector("p", "q", "r").map(group =>
         s"S: 3 of 12 cases share (${group}x: Int, ${group}y: Int): ${group}1, ${group}2, ${group}3"
       )
     )
-    assertEquals(factors(generated = true), Vector("S: 3 of 12 cases share (px: Int, py: Int): p1, p2, p3"))
+    assertEquals(factors(generated = true), factors(generated = false))
   }
 
   test("common factors over mostly the same alternatives are reported once") {
@@ -443,14 +518,15 @@ class AlgebraSuite extends AnalysisSuite {
     assertEquals(shown(found), Vector("S: 3 of 4 cases share (w: W, z: Z): B, C, D" -> Finding.Level.Info))
   }
 
-  test("a factor every case of a generated sum shares is reported, whatever partial factor outranks it") {
+  test("a factor every case of a generated sum shares is reported, as for a handwritten sum") {
     val cases =
       Vector("V1", "V2", "V3").map(name => Algebra.Variant(name, ints("mpabc") :+ field("own", atom(name)))) :+
         Algebra.Variant("V4", ints("mp"))
-    val sum   = Algebra.Sum("S", "S", cases)
-    val found = analyse(model(sums = Vector(sum)), node("S", generated = true))
+    val sum                         = Algebra.Sum("S", "S", cases)
+    def factors(generated: Boolean) = analyse(model(sums = Vector(sum)), node("S", generated = generated))
       .filter(_.rule == Finding.Rule.CommonFactor).map(_.detail)
-    assertEquals(found, Vector("S: 4 of 4 cases share (m: Int, p: Int): V1, V2, V3, V4"))
+    assertEquals(factors(generated = true), factors(generated = false))
+    assert(factors(generated = true).contains("S: 4 of 4 cases share (m: Int, p: Int): V1, V2, V3, V4"))
   }
 
   test("the types of different newtypes, and cases of sums told apart by name, are no duplicate shape") {
@@ -536,5 +612,30 @@ class AlgebraSuite extends AnalysisSuite {
       constructed(done, value)(Vector(True, Present), Vector(True, Absent)),
       Vector("Load.done is always True across 2 constructions")
     )
+  }
+
+  test("a field a sum declares as an accessor is no common factor, which the cases implement") {
+    val declared = findings(
+      "Typed.scala" ->
+        """enum Typed {
+          |  case Undefined(id: Int)
+          |  case Opaque(id: Int, typeId: Int)
+          |  case Data(id: Int, typeId: Int)
+          |  def id: Int
+          |}""".stripMargin
+    )
+    assertEquals(
+      declared.filter(_.rule.id == "common-factor").map(_.detail).filter(_.contains("id: Int")),
+      Vector.empty
+    )
+    val undeclared = findings(
+      "Typed.scala" ->
+        """enum Typed {
+          |  case Undefined(id: Int)
+          |  case Opaque(id: Int, typeId: Int)
+          |  case Data(id: Int, typeId: Int)
+          |}""".stripMargin
+    )
+    assert(undeclared.exists(_.rule.id == "common-factor"), undeclared.mkString("\n"))
   }
 }

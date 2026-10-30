@@ -47,6 +47,69 @@ class TextsSuite extends FunSuite {
     )
   }
 
+  test("licence notices are not searched for terms, and are reported where a rule asks for it") {
+    val terms   = rule("kind" -> "terms", "words" -> "contract")
+    val notices = rule("kind" -> "licences")
+    val source  =
+      """/** A contract is a plan.
+        |  *
+        |  * Permission is hereby granted, free of charge, to any person obtaining a copy of this software.
+        |  *
+        |  * IN NO EVENT SHALL THE AUTHORS BE LIABLE, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE.
+        |  */
+        |object Mufu {
+        |  // a contract
+        |}
+        |// Redistribution and use in source and binary forms, with or without modification, are permitted
+        |// provided that the contract holds
+        |
+        |// the contract again""".stripMargin
+    assertEquals(
+      check(source, terms),
+      Vector(
+        ("forbidden-term", 1, "contract is a forbidden term"),
+        ("forbidden-term", 8, "contract is a forbidden term"),
+        ("forbidden-term", 13, "contract is a forbidden term")
+      )
+    )
+    assertEquals(
+      check(source, notices),
+      Vector((
+        "licence-notice",
+        3,
+        "holds a licence notice; keep the licence text in a LICENSE resource and refer to it"
+      ))
+    )
+    assertEquals(
+      check("// Licensed under the Apache License, Version 2.0. See LICENSE.txt.\nobject A\n", notices),
+      Vector.empty
+    )
+    assertEquals(
+      check(
+        "// Licensed under the Apache License, Version 2.0\n// you may not use this file except in compliance with the License.\nobject A\n",
+        notices
+      ).size,
+      1
+    )
+    assertEquals(check("// no licence here\nobject A\n", notices), Vector.empty)
+  }
+
+  test("a source file excluded by name is reported, while globs and files that are not source are not") {
+    val root = Files.createTempDirectory("baumkuchen-excluded-")
+    try {
+      List("isa/Mufu.scala", "build.sbt", "native/a.cc").foreach { path =>
+        Files.createDirectories(root.resolve(path).getParent)
+        Files.writeString(root.resolve(path), "x"): Unit
+      }
+      val globs =
+        Vector("/isa/Mufu.scala", "/build.sbt", "/native/a.cc", "/missing/B.scala", "**/generated/**", "/isa/*.scala")
+      assertEquals(
+        Texts.excludedSources(root, globs).map(finding => (finding.node.source, finding.rule.id)),
+        Vector("isa/Mufu.scala" -> "excluded-source", "native/a.cc" -> "excluded-source")
+      )
+    } finally Using.resource(Files.walk(root))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+  }
+
   test("a binary file is reported once, and line rules skip it") {
     val binary = rule("kind" -> "binary")
     val terms  = rule("kind" -> "terms", "words" -> "plan")

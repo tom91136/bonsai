@@ -18,7 +18,7 @@ class BaumkuchenPlugin extends StandardPlugin {
   private val Instrumented = List("**/stryker4s-*/**", "stryker4s-*/**")
   private val Modes        = List("dev", "ci")
   private val Keys         =
-    Set("mode", "disable", "error", "warn", "wildcards", "generated", "partial", "throws", "hot", "checked")
+    Set("mode", "disable", "error", "warn", "wildcards", "partial", "throws", "hot", "checked")
 
   override def initialize(options: List[String])(using Context): List[PluginPhase] = {
     options.filterNot {
@@ -33,8 +33,7 @@ class BaumkuchenPlugin extends StandardPlugin {
         DefaultWildcards
       }
     )
-    val generated = values("generated")
-    val mode      = values("mode").lastOption.getOrElse("dev")
+    val mode = values("mode").lastOption.getOrElse("dev")
     if (!Modes.contains(mode)) report.error(s"baumkuchen option mode must be one of ${Modes.mkString(", ")}, not $mode")
     val disabled = checks("disable")
     val errors   = checks("error")
@@ -71,14 +70,16 @@ class BaumkuchenPlugin extends StandardPlugin {
     val escalated                     = strict ++ errors -- warnings
     def matchers(globs: List[String]) = globs.map(glob => FileSystems.getDefault.getPathMatcher(s"glob:$glob"))
     List(
-      // A cycle through a generated source still ties together the handwritten sources on it.
-      AcyclicPhase(analysis, Checks(disabled, escalated, warnings, matchers(Instrumented))),
+      // A cycle through a mutation-testing copy still ties together the sources on it.
+      AcyclicPhase(analysis, Checks(disabled, escalated, warnings, matchers(Instrumented), analysis.suppressions)),
       LintPhase(
         wildcards,
-        Checks(disabled, escalated, warnings, matchers(generated ++ Instrumented)),
+        Checks(disabled, escalated, warnings, matchers(Instrumented), analysis.suppressions),
         partials,
         throwing.toList.map((pattern, exceptions) => pattern.r -> exceptions),
         name => hot.exists(_.matches(s"$name.")) && !cold.exists(_.matches(s"$name.")),
+        hot.nonEmpty,
+        name => cold.exists(_.matches(s"$name.")),
         values("checked").toSet
       )
     )

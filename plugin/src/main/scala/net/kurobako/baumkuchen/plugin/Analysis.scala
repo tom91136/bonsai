@@ -1,6 +1,8 @@
 package net.kurobako.baumkuchen.plugin
 
+import dotty.tools.dotc.util.SourceFile
 import dotty.tools.dotc.util.SourcePosition
+import dotty.tools.dotc.util.Spans.Span
 import scala.collection.mutable
 
 /** The files of a compilation and their first references to each other, kept across the runs macro expansion resumes.
@@ -9,6 +11,8 @@ private class Analysis {
   private val files = mutable.Set.empty[String]
   // (from file, to file, through macro expansion) -> first reference
   private val references = mutable.Map.empty[(String, String, Boolean), SourcePosition]
+  // The definitions of each source annotated with the checks they suppress, read from the source's own unit.
+  val suppressions = mutable.Map.empty[SourceFile, List[(Span, Set[String])]]
 
   def paths: collection.Set[String] = files
 
@@ -17,6 +21,7 @@ private class Analysis {
   def clear(): Unit = {
     files.clear()
     references.clear()
+    suppressions.clear()
   }
 
   def include(paths: Iterable[String]): Unit = files ++= paths: Unit

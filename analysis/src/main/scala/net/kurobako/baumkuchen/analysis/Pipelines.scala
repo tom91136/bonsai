@@ -13,7 +13,7 @@ import scala.collection.mutable
 object Pipelines {
 
   /** The transformations of one chain, in the order they run. */
-  case class Chain(name: String, node: String, methods: Vector[String])
+  case class Chain(name: String, node: String, methods: Vector[String], suppressed: Set[String])
 
   def findings(chains: Vector[Chain], nodes: Map[String, Node]): Vector[Finding] = chains.flatMap { chain =>
     Finding.at(
@@ -22,7 +22,8 @@ object Pipelines {
       Finding.Rule.IntermediateCollections,
       s"${Finding.short(chain.name)} chains ${chain.methods.mkString(" then ")}; each step builds an intermediate " +
         "collection, so use .view or a single pass",
-      Finding.Level.Info
+      Finding.Level.Info,
+      suppressed = chain.suppressed
     )
   }
 
@@ -35,7 +36,7 @@ object Pipelines {
     private val View                       = requiredClass("scala.collection.View")
     private val LazyList                   = requiredClass("scala.collection.immutable.LazyList")
 
-    def of(name: String, node: String, body: tpd.Tree): Vector[Pipelines.Chain] = {
+    def of(name: String, node: String, suppressed: Set[String], body: tpd.Tree): Vector[Pipelines.Chain] = {
       val found                      = mutable.ArrayBuffer.empty[Vector[String]]
       val spine                      = mutable.Set.empty[tpd.Tree]
       def walk(tree: tpd.Tree): Unit = tree match {
@@ -50,7 +51,7 @@ object Pipelines {
           subtrees.of(tree).foreach(walk(_))
       }
       walk(body)
-      found.toVector.map(methods => Pipelines.Chain(name, node, methods))
+      found.toVector.map(methods => Pipelines.Chain(name, node, methods, suppressed))
     }
 
     /** The transformations ending at `tree`, in the order they run, with the applications they run through. */

@@ -19,6 +19,18 @@ object QualifiedCollectionNamespaces {
     Namespace("scala.collection.mutable", "mutable", subpackages = true),
     Namespace("java.util", "java.util", subpackages = false)
   )
+
+  def fromConfiguration(config: Configuration): List[Namespace] = {
+    val configured = settings.objects(settings.section(config.conf, "QualifiedCollectionNamespaces"), "namespaces")
+      .flatMap(fields =>
+        (settings.string(fields, "package"), settings.string(fields, "prefix")) match {
+          case (Some(pkg), Some(prefix)) =>
+            Some(Namespace(pkg, prefix, settings.bool(fields, "subpackages").getOrElse(true)))
+          case _ => None
+        }
+      )
+    if (configured.isEmpty) Defaults else configured
+  }
 }
 
 /** Types whose names collide with the ones code reaches for first, written so that they read as what they are: a
@@ -33,22 +45,8 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
     extends SemanticRule("QualifiedCollectionNamespaces") {
   def this() = this(QualifiedCollectionNamespaces.Defaults)
 
-  override def withConfiguration(config: Configuration): Configured[Rule] = {
-    val configured = settings.objects(settings.section(config.conf, "QualifiedCollectionNamespaces"), "namespaces")
-      .flatMap(fields =>
-        (settings.string(fields, "package"), settings.string(fields, "prefix")) match {
-          case (Some(pkg), Some(prefix)) =>
-            Some(QualifiedCollectionNamespaces.Namespace(
-              pkg,
-              prefix,
-              settings.string(fields, "subpackages") != Some("false")
-            ))
-          case _ => None
-        }
-      )
-    Configured.Ok(QualifiedCollectionNamespaces(if (configured.isEmpty) QualifiedCollectionNamespaces.Defaults
-    else configured))
-  }
+  override def withConfiguration(config: Configuration): Configured[Rule] =
+    Configured.Ok(QualifiedCollectionNamespaces(QualifiedCollectionNamespaces.fromConfiguration(config)))
 
   override def fix(using document: SemanticDocument): Patch = {
     val imported = document.tree.collect {
@@ -123,7 +121,7 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
 
   private def accepted(qualifier: String, space: QualifiedCollectionNamespaces.Namespace): Boolean = {
     val path = qualifier.stripPrefix("_root_.")
-    path == space.prefix || path == space.pkg || space.subpackages && path.startsWith(s"${space.prefix}.")
+    path == space.prefix || space.subpackages && path.startsWith(s"${space.prefix}.")
   }
 
   private def importsPackage(space: QualifiedCollectionNamespaces.Namespace)(using

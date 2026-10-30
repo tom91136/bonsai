@@ -32,13 +32,20 @@ class NoBoxedPrimitives extends SemanticRule("NoBoxedPrimitives") {
 
   private val numericOwners = boxedTypes.keySet ++ Set(
     "java/lang/Number#",
-    "java/math/BigInteger#",
-    "java/math/BigDecimal#",
     "scala/math/ScalaNumber#",
     "scala/math/ScalaNumericConversions#",
     "scala/math/BigInt#",
     "scala/math/BigDecimal#"
   )
+
+  // Arbitrary-precision numbers have no primitive to keep, so converting them is not unboxing, even through the members
+  // `Number` declares for them.
+  private val arbitraryPrecision = Set("java/math/BigDecimal#", "java/math/BigInteger#")
+
+  private def arbitrary(reference: Term.Ref)(using SemanticDocument): Boolean = reference match {
+    case Term.Select(qualifier, _) => definitions.typeSymbol(qualifier).exists(arbitraryPrecision)
+    case _                         => false
+  }
 
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
     case reference: Type.Ref if !references.isSelectionName(reference) =>
@@ -49,7 +56,7 @@ class NoBoxedPrimitives extends SemanticRule("NoBoxedPrimitives") {
       val symbol = reference.symbol.value
       val owner  = symbol.take(symbol.lastIndexOf('#') + 1)
       val member = symbol.drop(owner.length).takeWhile(character => character != '(' && character != '.')
-      conversions.get(member).filter(_ => numericOwners(owner)).map { replacement =>
+      conversions.get(member).filter(_ => numericOwners(owner) && !arbitrary(reference)).map { replacement =>
         val message = if (member == "booleanValue" || member == "charValue")
           "keep a Scala primitive instead of explicit Java unboxing; isolate required Java interop"
         else s"use $replacement on a Scala numeric value; isolate required Java unboxing at the interop boundary"

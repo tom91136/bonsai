@@ -5,6 +5,10 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 class BytecodeSuite extends AnalysisSuite {
+  // The fixture is a method of thousands of statements and a class of thousands of enum cases; on a loaded machine the
+  // compiler needs more than the suite's default half minute to read it.
+  override def munitTimeout: scala.concurrent.duration.Duration = scala.concurrent.duration.Duration(2, "min")
+
   private def statements(count: Int): String = (1 to count).map(index =>
     s"    total += values($index % values.length) * $index"
   ).mkString("\n")

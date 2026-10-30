@@ -1,0 +1,3 @@
+# a field read only from a configuration that extends Test is read; Compile and Test are the only other outputs
+> baumkuchenAnalyse
+> checkOutputs

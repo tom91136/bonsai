@@ -4,7 +4,13 @@ package net.kurobako.baumkuchen.analysis
 object Megamorphic {
 
   /** A method calling `callee` inside a loop, with the classes implementing it. */
-  case class Site(caller: String, node: String, callee: String, implementations: Vector[String])
+  case class Site(
+      caller: String,
+      node: String,
+      callee: String,
+      implementations: Vector[String],
+      suppressed: Set[String]
+  )
 
   private val Shown = 4
 
@@ -15,7 +21,8 @@ object Megamorphic {
       Finding.Rule.MegamorphicCall,
       s"${Finding.short(site.caller)} calls ${site.callee} in a loop, which has " +
         s"${site.implementations.size} implementations (${Finding.listed(site.implementations.sorted, Shown)}); " +
-        "HotSpot inlines at most two receiver types at a call site"
+        "HotSpot inlines at most two receiver types at a call site",
+      suppressed = site.suppressed
     )
   }
 }

@@ -10,5 +10,9 @@ object QualifiedCollectionNamespaces {
   val counter = AtomicInteger(0)
   val buffer  = mutable.ArrayBuffer.empty[Int]
   val listed: java.util.ArrayList[String] = java.util.ArrayList[String]()
-  val rooted: _root_.scala.collection.mutable.HashMap[Int, Int] = scala.collection.mutable.HashMap.empty
+  val rooted: mutable.HashMap[Int, Int] = mutable.HashMap.empty
+  val spelled = mutable.HashMap.empty[Int, Int]
+  val inferred: mutable.Set[Int] = mutable.Set.empty[Int]
+  def returned: mutable.Set[Int] = mutable.Set.empty[Int]
+  val nested: List[mutable.Set[Int]] = Nil
 }

@@ -3,22 +3,28 @@ package net.kurobako.baumkuchen.scalafix
 import scala.meta.*
 import scalafix.v1.*
 
-/** Enforces @annotation.tailrec on self-recursive methods whose recursive calls are all in tail positions. */
+/** Enforces @tailrec on self-recursive methods whose recursive calls are all in tail positions. */
 class RequireTailRec extends SemanticRule("RequireTailRec") {
-  override def fix(using document: SemanticDocument): Patch = document.tree.collect {
-    case defn: Defn.Def
-        if isEligible(defn) &&
-          !defn.mods.exists(_.isInstanceOf[Mod.Inline]) &&
-          !hasTailrec(defn) &&
-          isTailRecursive(defn) =>
-      val indent = " " * defn.pos.startColumn
-      Patch.addLeft(defn, s"@annotation.tailrec\n$indent") +
-        lint(
-          "missing-tailrec",
-          s"method `${defn.name.value}` is tail-recursive but missing @annotation.tailrec",
-          defn.name.pos
-        )
-  }.asPatch
+  override def fix(using document: SemanticDocument): Patch = {
+    val missing = document.tree.collect {
+      case defn: Defn.Def
+          if isEligible(defn) &&
+            !defn.mods.exists(_.isInstanceOf[Mod.Inline]) &&
+            !hasTailrec(defn) &&
+            isTailRecursive(defn) =>
+        val indent = " " * defn.pos.startColumn
+        Patch.addLeft(defn, s"@tailrec\n$indent") +
+          lint(
+            "missing-tailrec",
+            s"method `${defn.name.value}` is tail-recursive but missing @tailrec",
+            defn.name.pos
+          )
+    }
+    val needed =
+      if (missing.isEmpty || references.imported("scala.annotation", "tailrec")) Nil
+      else List(("scala.annotation", "tailrec"))
+    (missing ++ references.placements(needed)).asPatch
+  }
 
   private def hasTailrec(defn: Defn.Def): Boolean = definitions.annotated(defn.mods, "tailrec")
 

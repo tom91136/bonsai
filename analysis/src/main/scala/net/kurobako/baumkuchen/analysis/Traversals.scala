@@ -35,10 +35,10 @@ private object Traversals {
   /** The definition of an anonymous function argument. */
   @annotation.tailrec
   def lambda(tree: tpd.Tree): Option[tpd.DefDef] = tree match {
-    case tpd.Block(List(definition: tpd.DefDef), _: tpd.Closure) => Some(definition)
-    case tpd.Block(Nil, expression)                              => lambda(expression)
-    case tpd.Typed(expression, _)                                => lambda(expression)
-    case tpd.Inlined(_, _, expansion)                            => lambda(expansion)
-    case _                                                       => None
+    case tpd.Block(List(definition: tpd.DefDef), tpd.Closure(_, _, _)) => Some(definition)
+    case tpd.Block(Nil, expression)                                    => lambda(expression)
+    case tpd.Typed(expression, _)                                      => lambda(expression)
+    case tpd.Inlined(_, _, expansion)                                  => lambda(expansion)
+    case _                                                             => None
   }
 }

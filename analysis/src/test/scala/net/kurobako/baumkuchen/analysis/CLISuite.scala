@@ -4,6 +4,18 @@ import java.nio.file.Path
 import munit.FunSuite
 
 class CLISuite extends FunSuite {
+  private def thrown(work: () => Int): Throwable =
+    try
+      fail(s"returned ${work()}")
+    catch { case error: Throwable => error }
+
+  test("background work returns its result, and rethrows whatever it threw, fatal errors included") {
+    assertEquals(CLI.background(() => 7)(), 7)
+    assertEquals(thrown(CLI.background(() => throw IllegalArgumentException("bad"))).getMessage, "bad")
+    assert(thrown(CLI.background(() => throw StackOverflowError())).isInstanceOf[StackOverflowError])
+    assert(thrown(CLI.background(() => throw OutOfMemoryError("heap"))).isInstanceOf[OutOfMemoryError])
+  }
+
   test("options select, escalate and baseline rules by id") {
     val parsed = CLI.parse(List(
       "--manifest",
@@ -45,6 +57,7 @@ class CLISuite extends FunSuite {
       "unused",
       "test-only",
       "unused-member",
+      "unread-field",
       "test-only-member",
       "duplicate-code",
       "invariant-violation",
@@ -108,6 +121,40 @@ class CLISuite extends FunSuite {
       ),
       Right((Vector("glob:**/src/generated/**"), true))
     )
+  }
+
+  test("intended pairs are carried through, and a malformed pair is rejected") {
+    assertEquals(
+      CLI.parse(List("--intended", "a.Execute*=a.Render*", "--intended", "b.**=b.Other")).map(_.intended),
+      Right(Vector("a.Execute*" -> "a.Render*", "b.**" -> "b.Other"))
+    )
+    assert(CLI.parse(List("--intended", "a.Execute")).left.exists(_.startsWith("an intended pair is written")))
+    assert(CLI.parse(List("--intended", "=a.Render")).left.exists(_.startsWith("an intended pair is written")))
+    assert(CLI.parse(List("--intended", "a=b=c")).left.exists(_.startsWith("an intended pair is written")))
+  }
+
+  test("bounded members are carried through with a positive max and a reason, and malformed entries are rejected") {
+    assertEquals(
+      CLI.parse(List("--bounded", "a.Encoding.operands", "4", "at most four")).map(_.bounded),
+      Right(Vector(Complexity.Bounded("a.Encoding.operands", 4, "at most four")))
+    )
+    assert(CLI.parse(List("--bounded", "a.Encoding.operands", "4", " ")).left.exists(_.startsWith("a bounded entry")))
+    assert(
+      CLI.parse(List("--bounded", "a.Encoding.operands", "0", "at most none")).left.exists(
+        _.startsWith("a bounded max is a positive integer")
+      )
+    )
+  }
+
+  test("nesting limits are carried through, and a limit below its least is rejected") {
+    assertEquals(CLI.parse(Nil).map(_.nesting), Right(Nesting.Config()))
+    assertEquals(
+      CLI.parse(List("--nesting", "--nesting-depth", "3", "--nesting-damping", "0", "--nesting-size", "120")).map(_.nesting),
+      Right(Nesting.Config(depth = 3, damping = 0, size = 120, enabled = true))
+    )
+    assert(CLI.parse(List("--nesting-depth", "0")).left.exists(_.startsWith("a nesting depth is an integer")))
+    assert(CLI.parse(List("--nesting-damping", "-1")).left.exists(_.startsWith("a nesting damping is an integer")))
+    assert(CLI.parse(List("--nesting-size", "many")).left.exists(_.startsWith("a nesting size is an integer")))
   }
 
   test("unknown rule ids are rejected") {

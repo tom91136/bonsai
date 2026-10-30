@@ -7,8 +7,8 @@ import scala.jdk.CollectionConverters.*
 object Manifest {
 
   /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <entry>`, `library <module>`,
-    * `platform <module>`, `option <module> <compiler option>`, `source <module> <scope> <file>`, `root <directory>`,
-    * `text-exclude <glob>` and `text <rule index> <field> <value>` lines.
+    * `platform <module>`, `option <module> <compiler option>`, `source <module> <scope> <file>`, `model <module>
+    * <scope> <file>`, `root <directory>`, `text-exclude <glob>` and `text <rule index> <field> <value>` lines.
     */
   def read(path: Path): Either[String, Manifest] =
     Files.readAllLines(path).asScala.toVector.zipWithIndex.filter(_._1.nonEmpty)
@@ -32,6 +32,10 @@ object Manifest {
                 Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope").map {
                   parsed => current.copy(sources = current.sources :+ Output(module, parsed, Path.of(location)))
                 }
+              case List("model", module, scope, location) =>
+                Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope").map {
+                  parsed => current.copy(models = current.models :+ Output(module, parsed, Path.of(location)))
+                }
               case List("root", location)     => Right(current.copy(root = Some(Path.of(location))))
               case List("text-exclude", glob) => Right(current.copy(textExclusions = current.textExclusions :+ glob))
               case List("text", rule, field, value) if rule.toIntOption.isDefined =>
@@ -53,6 +57,7 @@ object Manifest {
   * source files written by hand, and `root` the directory of the build, which reported paths are relative to.
   * `platforms` are the Scala.js and Scala Native twins of JVM modules, which compile the shared sources again. `texts`
   * holds the fields of each repository text rule by its index, and `textExclusions` the files no text rule reads.
+  * `models` holds the files the javac plugin collected the model of the Java code of each module in.
   */
 case class Manifest(
     outputs: Vector[Output],
@@ -63,5 +68,6 @@ case class Manifest(
     root: Option[Path] = None,
     platforms: Set[String] = Set.empty,
     texts: Map[Int, Map[String, Vector[String]]] = Map.empty,
-    textExclusions: Vector[String] = Vector.empty
+    textExclusions: Vector[String] = Vector.empty,
+    models: Vector[Output] = Vector.empty
 )

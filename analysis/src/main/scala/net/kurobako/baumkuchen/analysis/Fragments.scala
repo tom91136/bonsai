@@ -18,10 +18,10 @@ import scala.util.hashing.MurmurHash3
 class Fragments(using Context) {
 
   /** Where a fragment comes from, as `Clones.Fragment` describes it. */
-  private case class Origin(node: String, test: Boolean, family: String, specialised: Boolean)
+  private case class Origin(node: String, test: Boolean, family: String, specialised: Boolean, method: Boolean)
 
   private case class Candidate(trees: List[tpd.Tree], cost: Int, origin: Origin, shape: Long)
-  private case class Copy(fragment: Clones.Fragment, span: (Int, Int), trees: List[tpd.Tree])
+  private case class Copy(fragment: Clones.Fragment, span: (Int, Int), trees: List[tpd.Tree], method: Boolean)
 
   // Runs of statements must be long to matter, while a single dense expression is worth reporting from two lines.
   private val WindowCost      = 50
@@ -50,7 +50,7 @@ class Fragments(using Context) {
     * value's initialiser, such as an array of some size, is no method a family would share.
     */
   def add(body: tpd.Tree, node: String, test: Boolean, method: Boolean, family: String, specialised: Boolean): Unit =
-    shape(body, Origin(node, test, family, specialised), whole = method): Unit
+    if (!row(body)) shape(body, Origin(node, test, family, specialised, method), whole = method): Unit
 
   /** Confirmed groups of non-overlapping copies, without groups whose copies all lie inside a larger reported copy,
     * then near duplicates that no larger near duplicate overlaps.
@@ -95,17 +95,30 @@ class Fragments(using Context) {
               copies.foldLeft(reported)((seen, copy) =>
                 seen.updated(copy.fragment.path, seen.getOrElse(copy.fragment.path, Vector.empty) :+ copy.span)
               ),
-              groups :+ Clones.Group(cost, copies.map(_.fragment), holes)
+              groups :+ Clones.Group(cost, copies.map(_.fragment), holes, mapping = isMap(copies))
             )
       }._2
 
-  private def shape(tree: tpd.Tree, origin: Origin, whole: Boolean): (Long, Long, Int) = {
+  private def isMap(copies: Vector[Copy]): Boolean =
+    copies.exists(_.trees.exists(hasMap))
+
+  private def hasMap(tree: tpd.Tree): Boolean = {
+    val tpe = tree.tpe
+    (tpe != null &&
+      tpe.widen.baseClasses.exists(cls => cls.name.toString == "Map" || cls.name.toString.endsWith("Map"))) ||
+    subtrees.of(tree).exists(hasMap)
+  }
+
+  private def shape(tree: tpd.Tree, origin: Origin, whole: Boolean, pattern: Boolean = false): (Long, Long, Int) = {
     val children = subtrees.of(tree)
-    val shapes   = children.map(shape(_, origin, whole = false))
-    val cost     = weight(tree) + shapes.map(_._3).sum
-    val hash     = combine(own(tree, None, values = true), shapes.map(_._1))
-    val loose    = combine(own(tree, None, values = false), shapes.map(_._2))
-    if ((cost >= ExpressionCost || whole && cost >= FamilyCost) && tree.isTerm)
+    val shapes   = tree match {
+      case tpd.CaseDef(pat, _, _) => children.map(child => shape(child, origin, whole = false, pattern = child eq pat))
+      case _                      => children.map(shape(_, origin, whole = false, pattern))
+    }
+    val cost  = weight(tree) + shapes.map(_._3).sum
+    val hash  = combine(own(tree, None, values = true), shapes.map(_._1))
+    val loose = combine(own(tree, None, values = false), shapes.map(_._2))
+    if (!pattern && (cost >= ExpressionCost || whole && cost >= FamilyCost) && tree.isTerm)
       keep(loose, Candidate(List(tree), cost, origin, hash))
     tree match {
       case tpd.Block(statements, expression) =>
@@ -147,6 +160,19 @@ class Fragments(using Context) {
   // Calls of one function that differ only in the literals they pass to it, or in the strings they pass anywhere,
   // already share that function.
   private def called(copies: Vector[Copy]): Boolean =
+    copies.forall(copy => !copy.method && applications(copy.trees)) || sharedCallee(copies)
+
+  private def applications(trees: List[tpd.Tree]): Boolean = trees match {
+    case List(tree) =>
+      Predicates.unwrap(tree) match {
+        case tpd.Apply(_, _)             => true
+        case tpd.SeqLiteral(elements, _) => elements.forall(Predicates.unwrap(_).isInstanceOf[tpd.Apply])
+        case _                           => false
+      }
+    case _ => false
+  }
+
+  private def sharedCallee(copies: Vector[Copy]): Boolean =
     copies.map(_.trees match {
       case List(tree) =>
         Predicates.unwrap(tree) match {
@@ -166,7 +192,9 @@ class Fragments(using Context) {
   /** The literals that may differ between near duplicates, in the order `exact` visits them. */
   private def literals(trees: List[tpd.Tree]): Vector[Constant] = trees.toVector.flatMap {
     case tpd.Literal(constant) if hole(constant) => Vector(constant)
-    case tree                                    => literals(subtrees.of(tree))
+    // an enum case passes its ordinal and name to `$new`, which the compiler writes
+    case tpd.Apply(fun, _) if fun.symbol.name.toString == "$new" => Vector.empty
+    case tree                                                    => literals(subtrees.of(tree))
   }
 
   // A class literal names a type, which is as much part of the fragment as a reference is.
@@ -200,16 +228,23 @@ class Fragments(using Context) {
   }
 
   private def weight(tree: tpd.Tree): Int = tree match {
-    case tpd.TypeTree() | tpd.Typed(_, _) | _: tpd.Inlined => 0
-    case _                                                 => 1
+    case tpd.TypeTree() | tpd.Typed(_, _) | tpd.Inlined(_, _, _) => 0
+    case _                                                       => 1
+  }
+
+  // An enum case without written members is a row of constructor arguments, which its compiler-written members repeat.
+  private def row(tree: tpd.Tree): Boolean = tree match {
+    case tpd.Block(List(definition @ tpd.TypeDef(_, template: tpd.Template)), _) =>
+      definition.symbol.asClass.parentSyms.exists(_.is(Flags.Enum)) && template.body.forall(_.span.isSynthetic)
+    case _ => false
   }
 
   // A for comprehension places a function's parameter at its generator, before the collection it ranges over, so a
   // function is found where its body is.
   private def located(tree: tpd.Tree): tpd.Tree = tree match {
-    case tpd.Block(List(definition: tpd.DefDef), _: tpd.Closure) => definition.rhs
-    case definition: tpd.DefDef                                  => definition.rhs
-    case other                                                   => other
+    case tpd.Block(List(definition: tpd.DefDef), tpd.Closure(_, _, _)) => definition.rhs
+    case definition: tpd.DefDef                                        => definition.rhs
+    case other                                                         => other
   }
 
   private def locate(candidate: Candidate): Option[Copy] = {
@@ -224,7 +259,7 @@ class Fragments(using Context) {
         candidate.origin.family,
         candidate.origin.specialised
       )
-      Copy(fragment, (first.span.start, last.span.end), candidate.trees)
+      Copy(fragment, (first.span.start, last.span.end), candidate.trees, candidate.origin.method)
     }
   }
 

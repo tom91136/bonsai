@@ -28,9 +28,27 @@ import scalafix.sbt.ScalafixPlugin.autoImport.*
   * concurrent = [demo.WorkerPool.parallelFor]
   * hot        = [demo.kernel.**, "!**.*Suite"]
   * reflective = [demo.rendered.*]
+  * intended   = ["demo.*.Execute*=demo.*.Render*"]
   * checked    = [demo.constraint.where]
+  * bounded    = [{ member = "demo.Encoding.operands", max = 4, reason = "an instruction has at most four operands" }]
+  * nesting    { depth = 2, damping = 1, size = 200 }
   * projects.api { library = true }
   * }}}
+  *
+  * `bounded` lists members, by qualified name glob as for `hot`, whose collections hold at most `max` elements, so the
+  * complexity rules count their loops as constant; a `reason` is required, and an entry that matches no collection is
+  * reported as `unused-bound`.
+  *
+  * `nesting` tunes the `nesting` rule, which suggests the type or helper only one other type uses be nested in it, and
+  * a nested type that uses nothing of its parent be moved out: `depth` is the deepest nesting a move may create, one
+  * level less when it crosses files, `damping` the number of declarations of the new owner that must use what moves,
+  * and `size` the most lines a moved type, or a group of helpers moving together, may have. The rule runs only when the file has this block, and a key left out takes the
+  * analysis' default.
+  *
+  * `intended` lists pairs of qualified name globs, written `<glob>=<glob>` and matched as for `hot`, whose copies are
+  * meant, such as the execute and render instances of one operation or unrelated bit layouts that look alike.
+  * `duplicate-code` and `near-duplicate-code` drop a group of copies, and `duplicate-shape` a group of types, when
+  * every two of its members, by the type holding the copy, are an intended pair in either order.
   *
   * `text` configures rules over every file git sees, whatever its language, which `baumkuchenAnalyse` checks. Globs
   * match the path from the build root with a leading slash, and `**` crosses directories; every rule takes `files`,
@@ -42,17 +60,22 @@ import scalafix.sbt.ScalafixPlugin.autoImport.*
   *   terms    = [{ words = [plan], files = ["**.{scala,md}"] }]
   *   patterns = [{ pattern = "\\bUINT64_C\\b", message = "write uint64_t{n}", files = ["**.cpp"] }]
   *   binary   = { level = warning }
+  *   licences = { files = ["**.scala"] }
   *   preceded = [{ pattern = "^TEST_CASE\\(", message = "put a blank line before a test case" }]
   *   followed = [{ pattern = "^#include\\b", neutral = "^#", message = "put a blank line after the includes" }]
   * }
   * }}}
-  * Their rule ids are `forbidden-term`, `forbidden-pattern`, `binary-file`, `blank-line-before` and `blank-line-after`;
-  * `followed` blocks go on through lines its `pattern`, `continues` or `neutral` matches.
+  * Their rule ids are `forbidden-term`, `forbidden-pattern`, `binary-file`, `licence-notice`, `blank-line-before` and
+  * `blank-line-after`; `followed` blocks go on through lines its `pattern`, `continues` or `neutral` matches.
+  * `licences` reports a licence notice written out in a source file, by default of any usual language, where the
+  * licence belongs in a resource beside the sources; the terms rule leaves licence notices out of its search. A source
+  * file that a text `exclude` names whole is reported as `excluded-source`.
   *
   * `@SuppressWarnings(Array("baumkuchen:<id>"))` on an enclosing definition suppresses a check or analysis rule, and
-  * `"baumkuchen"` all of them. `@nowarn("msg=baumkuchen:<id>")` suppresses the compiler plugin's checks too, but the
-  * compiler sees no warning of an analysis rule for it to suppress and reports it under `-Wunused:nowarn`, so the
-  * analysis rules take `@SuppressWarnings`.
+  * `"baumkuchen"` all of them. An expression takes it ascribed, as `expr: @SuppressWarnings(Array("baumkuchen:<id>"))`.
+  * `@nowarn("msg=baumkuchen:<id>")` suppresses the compiler plugin's checks too, but the compiler sees no warning of an
+  * analysis rule for it to suppress, and a build without baumkuchen sees none at all, so it reports the `@nowarn` under
+  * `-Wunused:nowarn`. The `nowarn-suppression` check flags it.
   */
 object BaumkuchenPlugin extends AutoPlugin {
   override def requires: Plugins      = ScalafixPlugin
@@ -84,23 +107,35 @@ object BaumkuchenPlugin extends AutoPlugin {
         "its qualified name, with * for any one name; the most specific entry decides"
     )
     val baumkuchenGenerated = settingKey[Set[String]](
-      "Globs of sources the build generates, such as **/src/generated/**, which no check reports; every source is " +
-        "checked by default"
+      "Globs of sources the build generates, such as **/src/generated/**, which the analysis labels as generated; " +
+        "every source is checked by default"
     )
     val baumkuchenConcurrent =
       settingKey[Set[String]]("Methods, by qualified name, that run the functions passed to them on other threads")
     val baumkuchenHot = settingKey[Set[String]](
       "Globs of the classes and objects whose code runs hot, by qualified name, with * for one name segment and ** " +
         "for any number, and ! before a glob leaving out what it matches; boxing-fold, megamorphic-call, and " +
-        "invariant-in-loop on matches whose arms vary, report only in them"
+        "invariant-in-loop on matches whose arms vary, report only in them, while unspecialised-function and " +
+        "lambda-trait leave out classes a ! glob matches and hot ones respectively"
     )
     val baumkuchenReflective = settingKey[Set[String]](
       "Globs of the classes and objects, by qualified name as for baumkuchenHot, that code outside the sources names, " +
         "as text compiled later or reflection does; they and their public members are used"
     )
+    val baumkuchenIntended = settingKey[Set[String]](
+      "Pairs of globs written <glob>=<glob>, matched as for baumkuchenHot, of types whose copies or likeness are meant; " +
+        "duplicate-code, near-duplicate-code and duplicate-shape leave out groups whose members are all such pairs"
+    )
     val baumkuchenChecked = settingKey[Set[String]](
       "Refinement types, by qualified name, whose checked extensions and overloads a conversion can bypass, and whose " +
         "inferred refinements the compiler plugin reports"
+    )
+    val baumkuchenNesting = settingKey[Map[String, Int]](
+      "Limits of the nesting rule by name: depth, damping and size; a limit left out takes the analysis' default"
+    )
+    val baumkuchenBounded = settingKey[Vector[(String, Int, String)]](
+      "Members, as (qualified name glob matched as for baumkuchenHot, largest number of elements, reason), whose " +
+        "collections hold at most that many elements, which the complexity rules count as constants"
     )
     val baumkuchenAnalysisHeap =
       settingKey[String]("The largest heap the forked analysis may take, as -Xmx takes it, such as 4g")
@@ -156,7 +191,10 @@ object BaumkuchenPlugin extends AutoPlugin {
       generated: Option[Set[String]],
       hot: Option[Set[String]],
       reflective: Option[Set[String]],
+      intended: Option[Set[String]],
       checked: Option[Set[String]],
+      bounded: Vector[(String, Int, String)],
+      nesting: Map[String, Int],
       text: Vector[String],
       projects: Map[String, Settings]
   )
@@ -194,7 +232,10 @@ object BaumkuchenPlugin extends AutoPlugin {
     baumkuchenGenerated  := baumkuchenConfiguration.value.generated.getOrElse(Set.empty),
     baumkuchenHot        := baumkuchenConfiguration.value.hot.getOrElse(Set.empty),
     baumkuchenReflective := baumkuchenConfiguration.value.reflective.getOrElse(Set.empty),
+    baumkuchenIntended   := baumkuchenConfiguration.value.intended.getOrElse(Set.empty),
     baumkuchenChecked    := baumkuchenConfiguration.value.checked.getOrElse(Set.empty),
+    baumkuchenBounded    := baumkuchenConfiguration.value.bounded,
+    baumkuchenNesting    := baumkuchenConfiguration.value.nesting,
     // The JVM would otherwise take a quarter of the host's memory, which a shared machine runs out of.
     baumkuchenAnalysisHeap := "4g"
   )
@@ -253,7 +294,6 @@ object BaumkuchenPlugin extends AutoPlugin {
         (s"-P:baumkuchen:mode=${baumkuchenModeId.value}" +:
           (option("disable", baumkuchenDisabled.value) ++ option("error", baumkuchenErrors.value) ++
             option("warn", baumkuchenWarnings.value) :+ s"-P:baumkuchen:wildcards=${baumkuchenWildcards.value}")) ++
-          baumkuchenGenerated.value.toSeq.sorted.map(glob => s"-P:baumkuchen:generated=$glob") ++
           baumkuchenHot.value.toSeq.sorted.map(glob => s"-P:baumkuchen:hot=$glob") ++
           baumkuchenChecked.value.toSeq.sorted.map(tpe => s"-P:baumkuchen:checked=$tpe")
     },
@@ -269,12 +309,6 @@ object BaumkuchenPlugin extends AutoPlugin {
       Rules.filter(baumkuchenWarnings.value),
       Bans.filter(_ => !baumkuchenDisabled.value("DisableSyntax")).partition(!baumkuchenDisabled.value(_))
     )),
-    Compile / scalafix / unmanagedSources := (Compile / unmanagedSources).value.filterNot(
-      generated(baumkuchenGenerated.value, _)
-    ),
-    Test / scalafix / unmanagedSources := (Test / unmanagedSources).value.filterNot(
-      generated(baumkuchenGenerated.value, _)
-    ),
     Compile / scalafix := (Compile / scalafix).dependsOn(baumkuchenScalafixConfig).evaluated,
     Test / scalafix    := (Test / scalafix).dependsOn(baumkuchenScalafixConfig).evaluated,
     scalafixAll        := scalafixAll.dependsOn(baumkuchenScalafixConfig).evaluated,
@@ -310,6 +344,9 @@ object BaumkuchenPlugin extends AutoPlugin {
         None,
         None,
         None,
+        None,
+        Vector.empty,
+        Map.empty,
         Vector.empty,
         Map.empty
       )
@@ -335,7 +372,10 @@ object BaumkuchenPlugin extends AutoPlugin {
               "generated",
               "hot",
               "reflective",
+              "intended",
               "checked",
+              "bounded",
+              "nesting",
               "text",
               "projects"
             )
@@ -351,7 +391,12 @@ object BaumkuchenPlugin extends AutoPlugin {
           Option.when(config.hasPath("generated"))(config.getStringList("generated").asScala.toSet),
           Option.when(config.hasPath("hot"))(config.getStringList("hot").asScala.toSet),
           Option.when(config.hasPath("reflective"))(config.getStringList("reflective").asScala.toSet),
+          Option.when(config.hasPath("intended"))(config.getStringList("intended").asScala.toSet),
           Option.when(config.hasPath("checked"))(config.getStringList("checked").asScala.toSet),
+          Option.when(config.hasPath("bounded"))(config.getConfigList("bounded").asScala.toVector.map(entry =>
+            (entry.getString("member"), entry.getInt("max"), entry.getString("reason"))
+          )).getOrElse(Vector.empty),
+          nesting(config),
           Option.when(config.hasPath("text"))(config.getConfig("text")).fold(Vector.empty)(texts(_)),
           projects
         )
@@ -359,11 +404,28 @@ object BaumkuchenPlugin extends AutoPlugin {
         case error: ConfigException => throw MessageOnlyException(s"baumkuchen: $file: ${error.getMessage}")
       }
 
-  private val TextKinds  = Seq("terms", "patterns", "binary", "preceded", "followed")
+  private val NestingLimits = Seq("depth", "damping", "size")
+
+  /** The limits of the nesting rule the configuration names. */
+  private def nesting(config: Config): Map[String, Int] =
+    if (!config.hasPath("nesting")) Map.empty
+    else {
+      val block   = config.getConfig("nesting")
+      val unknown = block.root.keySet.asScala.toSet -- NestingLimits
+      if (unknown.nonEmpty)
+        throw MessageOnlyException(
+          s"baumkuchen: .baumkuchen.conf has unknown keys ${unknown.toSeq.sorted.map("nesting." + _).mkString(", ")}; " +
+            s"the keys are ${NestingLimits.map("nesting." + _).mkString(", ")}"
+        )
+      NestingLimits.filter(block.hasPath).map(limit => limit -> block.getInt(limit)).toMap
+    }
+
+  private val TextKinds  = Seq("terms", "patterns", "binary", "licences", "preceded", "followed")
   private val TextFields = Map(
     "terms"    -> Set("words", "message"),
     "patterns" -> Set("pattern", "message"),
     "binary"   -> Set("message"),
+    "licences" -> Set("message"),
     "preceded" -> Set("pattern", "message"),
     "followed" -> Set("pattern", "continues", "neutral", "message")
   ).view.mapValues(_ ++ Set("files", "exclude", "level")).toMap
@@ -389,7 +451,7 @@ object BaumkuchenPlugin extends AutoPlugin {
       .getOrElse(Vector.empty).map(glob => s"text-exclude\t${plain(glob)}")
     val rules = TextKinds.flatMap(kind =>
       if (!config.hasPath(kind)) Nil
-      else if (kind == "binary") List(kind -> config.getConfig(kind))
+      else if (kind == "binary" || kind == "licences") List(kind -> config.getConfig(kind))
       else config.getConfigList(kind).asScala.toList.map(kind -> _)
     )
     exclusions ++ rules.zipWithIndex.flatMap { case ((kind, rule), index) =>
@@ -419,8 +481,32 @@ object BaumkuchenPlugin extends AutoPlugin {
     )
   }
 
-  private def generated(globs: Set[String], source: File): Boolean =
-    globs.exists(glob => java.nio.file.FileSystems.getDefault.getPathMatcher(s"glob:$glob").matches(source.toPath))
+  private def extendsTest(configuration: sbt.librarymanagement.Configuration): Boolean =
+    configuration.extendsConfigs.exists(parent => parent.name == Test.name || extendsTest(parent))
+
+  private final case class Analysed(
+      project: String,
+      configuration: String,
+      scope: String,
+      classes: String,
+      library: Boolean,
+      sources: Seq[String]
+  )
+
+  // A configuration with nothing to compile, or whose classes or sources another one of its project already holds,
+  // as one that shares its parent's settings does, adds nothing to analyse.
+  private def redundant(entries: Seq[Analysed]): Seq[Analysed] =
+    entries.groupBy(_.project).values.toSeq.flatMap { own =>
+      def base(entry: Analysed) = entry.configuration == Compile.name || entry.configuration == Test.name
+      val (primary, extra)      = own.partition(base)
+      extra.sortBy(_.configuration).foldLeft((primary, Vector.empty[Analysed])) { case ((kept, dropped), entry) =>
+        if (
+          entry.sources.isEmpty ||
+          kept.exists(other => other.classes == entry.classes || other.sources.toSet == entry.sources.toSet)
+        ) (kept, dropped :+ entry)
+        else (kept :+ entry, dropped)
+      }._2
+    }
 
   private def supported(scalaVersion: String): Boolean = BaumkuchenArtifacts.scalaVersions.contains(scalaVersion)
 
@@ -458,10 +544,15 @@ object BaumkuchenPlugin extends AutoPlugin {
     ))
     val (twins, jvm) = enabled.partition(twin(_))
     val platforms    = if (jvm.nonEmpty) twins.map(_.project).toSet else Set.empty[String]
-    val analysed     = ScopeFilter(inProjects(enabled*), inConfigurations(Compile, Test))
+    // Configurations that extend Test, as integration tests do, hold test code too.
+    val tests = enabled.flatMap(ref => (ref / thisProject).get(data).toList.flatMap(_.configurations))
+      .filter(extendsTest).distinctBy(_.name)
+    val testNames      = tests.map(_.name).toSet + Test.name
+    val configurations = Compile +: Test +: tests
+    val analysed       = ScopeFilter(inProjects(enabled*), inConfigurations(configurations*))
     // The JVM projects' libraries come first, so they decide where a platform's library has the same classes.
-    val jvmLibraries      = ScopeFilter(inProjects(jvm*), inConfigurations(Compile, Test))
-    val platformLibraries = ScopeFilter(inProjects(twins*), inConfigurations(Compile, Test))
+    val jvmLibraries      = ScopeFilter(inProjects(jvm*), inConfigurations(configurations*))
+    val platformLibraries = ScopeFilter(inProjects(twins*), inConfigurations(configurations*))
     // A project that other projects depend on only from their tests, as fixtures are, is test code itself.
     val dependents = buildStructure.value.allProjectRefs.flatMap(ref =>
       (ref / thisProject).get(data).toList.flatMap(_.dependencies)
@@ -480,13 +571,25 @@ object BaumkuchenPlugin extends AutoPlugin {
       )
     }
     Def.task {
-      val outputs = Def.task {
-        val _       = (compile.value, copyResources.value)
-        val id      = thisProject.value.id
-        val scope   = if (configuration.value.name == Test.name || fixtures(id)) "test" else "main"
-        val library = Option.when(scope == "main" && baumkuchenLibrary.value)(s"library\t$id")
-        s"output\t$id\t$scope\t${classDirectory.value}" +: library.toSeq
-      }.all(analysed).value.flatten
+      val entries = Def.task {
+        val _     = (compile.value, copyResources.value)
+        val id    = thisProject.value.id
+        val name  = configuration.value.name
+        val scope = if (testNames(name) || fixtures(id)) "test" else "main"
+        Analysed(
+          id,
+          name,
+          scope,
+          classDirectory.value.toString,
+          scope == "main" && baumkuchenLibrary.value,
+          unmanagedSources.value.map(_.toString)
+        )
+      }.all(analysed).value
+      val kept    = entries.filterNot(redundant(entries).toSet)
+      val outputs = kept.flatMap(entry =>
+        s"output\t${entry.project}\t${entry.scope}\t${entry.classes}" +:
+          Option.when(entry.library)(s"library\t${entry.project}").toSeq
+      )
       val analysedOutputs = outputs.collect { case s"output\t$_\t$_\t$directory" => directory }.toSet
       val classpath       = (external.all(jvmLibraries).value ++ external.all(platformLibraries).value).flatten.distinct
         .filterNot(analysedOutputs).map(entry => s"classpath\t$entry")
@@ -496,12 +599,8 @@ object BaumkuchenPlugin extends AutoPlugin {
         if (fixtures(id)) Nil else scalacOptions.value.map(option => s"option\t$id\t$option")
       }.all(ScopeFilter(inProjects((if (jvm.nonEmpty) jvm else enabled)*), inConfigurations(Compile))).value.flatten
       // Every platform's sources, so copies between the directories of a cross-built project show.
-      val sources = Def.task {
-        val id    = thisProject.value.id
-        val scope = if (configuration.value.name == Test.name || fixtures(id)) "test" else "main"
-        unmanagedSources.value.map(file => s"source\t$id\t$scope\t$file")
-      }.all(ScopeFilter(inProjects(enabled*), inConfigurations(Compile, Test))).value.flatten
-      val log      = streams.value.log
+      val sources = kept.flatMap(entry => entry.sources.map(file => s"source\t${entry.project}\t${entry.scope}\t$file"))
+      val log     = streams.value.log
       val baseline = baumkuchenBaseline.value
       val purity   = baumkuchenPurity.value
       val manifest = target.value / "baumkuchen" / "manifest.tsv"
@@ -522,6 +621,9 @@ object BaumkuchenPlugin extends AutoPlugin {
         baumkuchenGenerated.value.toSeq.sorted.flatMap(glob => Seq("--generated", glob)) ++
         baumkuchenReflective.value.toSeq.sorted.flatMap(glob => Seq("--reflective", glob)) ++
         baumkuchenHot.value.toSeq.sorted.flatMap(glob => Seq("--hot", glob)) ++
+        baumkuchenIntended.value.toSeq.sorted.flatMap(pair => Seq("--intended", pair)) ++
+        baumkuchenBounded.value.flatMap((member, max, reason) => Seq("--bounded", member, max.toString, reason)) ++
+        (if (baumkuchenNesting.value.isEmpty) Nil else "--nesting" +: baumkuchenNesting.value.toSeq.sortBy(_._1).flatMap((limit, value) => Seq(s"--nesting-$limit", value.toString))) ++
         extra(baseline, purity)
       Fork.java(
         ForkOptions().withRunJVMOptions(Vector(s"-Xmx${baumkuchenAnalysisHeap.value}")),

@@ -25,6 +25,7 @@ private class AcyclicPhase(analysis: Analysis, checks: Checks) extends PluginPha
     def valid(symbol: Symbol): Boolean =
       symbol != NoSymbol && Option(symbol.source).exists(source => source != NoSource && paths(source.path))
 
+    sources.foreach(checks.remember)
     sources.foreach(unit => Edges(unit.source.path, valid(_), analysis).traverse(unit.tpdTree))
 
     val byPair  = edges.toVector.groupBy { case ((from, to, _), _) => (from, to) }

@@ -13,6 +13,7 @@ package fix
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.lang.System.lineSeparator// assert: ForbiddenAPIs.forbidden-api
 import java.util.Locale
 
 object ForbiddenAPIs {
@@ -23,6 +24,9 @@ object ForbiddenAPIs {
   val systemTime: Long                 = java.lang.System.nanoTime()              // assert: ForbiddenAPIs.forbidden-api
   val runtimeCores: Int                = Runtime.getRuntime.availableProcessors() // assert: ForbiddenAPIs.forbidden-api
   val deque: java.util.ArrayDeque[Int] = ???                                      // assert: ForbiddenAPIs.forbidden-api
+  val runtime: Runtime                 = Runtime.getRuntime()                     // assert: ForbiddenAPIs.forbidden-api
+  def halt(): Unit                     = java.lang.System.exit(0)                 // assert: ForbiddenAPIs.forbidden-api
+  val separator: String                = lineSeparator()                          // assert: ForbiddenAPIs.forbidden-api
 
   def permissions(path: Path): Unit =
     Files.setPosixFilePermissions(path, java.util.Set.of()) // assert: ForbiddenAPIs.forbidden-api

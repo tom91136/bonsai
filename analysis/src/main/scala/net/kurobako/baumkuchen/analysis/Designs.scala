@@ -21,7 +21,6 @@ object Designs {
       parameters: Vector[String],
       result: String,
       receiving: Boolean,
-      generated: Boolean,
       test: Boolean
   ) {
     def short: String = name.split('.').last
@@ -44,10 +43,9 @@ object Designs {
   private val Width         = "[0-9]+".r
   private val Widths        = "#+".r
 
-  def findings(model: Model, nodes: Map[String, Node]): Vector[Finding] = {
-    val methods = model.methods.filterNot(_.generated)
-    detached(methods, nodes) ++ aliased(model.aliases, nodes) ++ receivers(methods, nodes) ++ numbered(methods, nodes)
-  }
+  def findings(model: Model, nodes: Map[String, Node]): Vector[Finding] =
+    detached(model.methods, nodes) ++ aliased(model.aliases, nodes) ++ receivers(model.methods, nodes) ++
+      numbered(model.methods, nodes)
 
   /** Objects named for a type, as its plural, whose public methods all take that type first. */
   private def detached(methods: Vector[Method], nodes: Map[String, Node]): Vector[Finding] =
@@ -103,7 +101,7 @@ object Designs {
 
   /** Sibling methods named and typed alike but for a width, one per width where one generic method would do. */
   private def numbered(methods: Vector[Method], nodes: Map[String, Node]): Vector[Finding] =
-    methods.filter(method => Width.findFirstIn(method.short).isDefined)
+    methods.filter(method => Width.findAllIn(method.short).size == 1)
       .groupBy(method => (method.owner, Width.replaceAllIn(method.short, "#"))).toVector.sortBy(_._1).flatMap {
         (_, members) =>
           val shapes = members.map(method => (method.parameters :+ method.result).map(unsized(_)))

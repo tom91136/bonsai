@@ -16,3 +16,9 @@ $ copy-file changes/stranger.conf .baumkuchen.conf
 -> reload
 $ copy-file changes/unknown.conf .baumkuchen.conf
 -> reload
+# the limits of the nesting rule it names reach the analysis, and a limit it does not have fails the load
+$ copy-file changes/nesting.conf .baumkuchen.conf
+> reload
+> checkNesting
+$ copy-file changes/nesting-unknown.conf .baumkuchen.conf
+-> reload

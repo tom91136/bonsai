@@ -59,6 +59,8 @@ object OptionIdioms {
   val filtered = if (option.isDefined && positive(option.get)) option else None// assert: OptionIdioms.simulated-filter
   val value = 3
   val emulated = if (positive(value)) Some(value) else None// assert: OptionIdioms.if-else-to-filtered-option
+  val big: Int => Boolean = _ > 5
+  val filteredFunction = if (option.isDefined && big(option.get)) option else None// assert: OptionIdioms.simulated-filter
 
   class ApplicationMethods {
     def get(key: Int): ApplicationMethods              = this

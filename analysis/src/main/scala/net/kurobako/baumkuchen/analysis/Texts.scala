@@ -9,7 +9,8 @@ import scala.util.Try
 import scala.util.matching.Regex
 
 /** Rules over the text of every file git sees in the build, whatever its language: terms and patterns a file may not
-  * contain, binary files, and lines that need a blank line before them or after their block. Globs match the path from
+  * contain, binary files, licence notices in source, and lines that need a blank line before them or after their block.
+  * The notices of licences, which name the terms of contracts, are not searched for terms. Globs match the path from
   * the build root with a leading slash, so a glob that starts with `**` and a slash matches files at the root too. A
   * line containing `baumkuchen:ignore <rule>` exempts itself and the line after it from that rule.
   */
@@ -19,6 +20,7 @@ object Texts {
     case Terms    extends Kind("terms", Finding.Rule.ForbiddenTerm)
     case Pattern  extends Kind("patterns", Finding.Rule.ForbiddenPattern)
     case Binary   extends Kind("binary", Finding.Rule.BinaryFile)
+    case Licence  extends Kind("licences", Finding.Rule.LicenceNotice)
     case Preceded extends Kind("preceded", Finding.Rule.BlankLineBefore)
     case Followed extends Kind("followed", Finding.Rule.BlankLineAfter)
   }
@@ -41,6 +43,49 @@ object Texts {
   // Git's own test for a binary file.
   private val Probe  = 8000
   private val Ignore = """baumkuchen:ignore ([a-z*-]+)""".r
+
+  private val Extensions =
+    Vector(
+      "scala",
+      "java",
+      "kt",
+      "c",
+      "cc",
+      "cpp",
+      "cxx",
+      "h",
+      "hh",
+      "hpp",
+      "hxx",
+      "cu",
+      "cuh",
+      "hip",
+      "inc",
+      "inl",
+      "py",
+      "sh",
+      "rs",
+      "go",
+      "js",
+      "ts"
+    )
+  private val SourceFiles = Vector(s"**.{${Extensions.mkString(",")}}")
+
+  private val Comments = Vector("//", "#", "*")
+
+  // Phrases only the text of a licence contains, whichever licence it is.
+  private val Bodies = Vector(
+    "Permission is hereby granted, free of charge",
+    "Redistribution and use in source and binary forms",
+    "you may not use this file except in compliance with the License",
+    "THE SOFTWARE IS PROVIDED \"AS IS\"",
+    "This program is free software; you can redistribute it",
+    "This Source Code Form is subject to the terms of the Mozilla Public"
+  )
+
+  // A notice may also only name its licence, which is how a source refers to the text it keeps elsewhere.
+  private val Notices = Bodies ++
+    Vector("Licensed under the Apache License", "Licensed to the Apache Software Foundation")
 
   /** The rules `fields` describe, by the index the manifest gives each, or what is wrong with them. */
   def rules(fields: Map[Int, Map[String, Vector[String]]]): Either[String, Vector[Rule]] =
@@ -68,16 +113,16 @@ object Texts {
       neutral   <- regex("neutral")
       words = fields.getOrElse("words", Vector.empty)
       _ <- kind match {
-        case Kind.Terms if words.isEmpty => Left(s"text rule $index: terms take words")
-        case Kind.Terms | Kind.Binary    => Right(())
-        case _ if pattern.isEmpty        => Left(s"text rule $index: ${kind.id} take a pattern")
-        case _ if one("message").isEmpty => Left(s"text rule $index: ${kind.id} take a message")
-        case _                           => Right(())
+        case Kind.Terms if words.isEmpty             => Left(s"text rule $index: terms take words")
+        case Kind.Terms | Kind.Binary | Kind.Licence => Right(())
+        case _ if pattern.isEmpty                    => Left(s"text rule $index: ${kind.id} take a pattern")
+        case _ if one("message").isEmpty             => Left(s"text rule $index: ${kind.id} take a message")
+        case _                                       => Right(())
       }
     } yield Rule(
       kind,
       level,
-      matchers(fields.getOrElse("files", Vector("**"))),
+      matchers(fields.getOrElse("files", if (kind == Kind.Licence) SourceFiles else Vector("**"))),
       matchers(fields.getOrElse("exclude", Vector.empty)),
       words,
       pattern,
@@ -102,6 +147,20 @@ object Texts {
         )
         if (applied.isEmpty) Vector.empty else check(path, Files.readAllBytes(root.resolve(path)), applied)
       })
+
+  /** Source files the text rules exclude by name, which a rule's findings in them are better fixed than hidden by. */
+  def excludedSources(root: Path, globs: Vector[String]): Vector[Finding] =
+    globs.distinct.sorted.collect {
+      case glob
+          if glob.startsWith("/") && !glob.exists("*?[]{}\\".contains(_)) &&
+            Extensions.exists(extension => glob.endsWith(s".$extension")) &&
+            Files.isRegularFile(root.resolve(glob.drop(1))) =>
+        Finding(
+          Finding.Rule.ExcludedSource,
+          node(glob.drop(1), 1),
+          s"$glob is excluded from the text rules by name; fix its findings or exempt their lines with baumkuchen:ignore"
+        )
+    }
 
   private def rooted(path: String): Path = Path.of(s"/$path")
 
@@ -138,12 +197,19 @@ object Texts {
           Option.when(binary)(
             0 -> rule.message.getOrElse("is binary; embed it as text with the commands that produce it")
           ).toVector
-        case _ if binary => Vector.empty
-        case Kind.Terms  =>
-          val terms = rule.words.map(word => word -> term(word))
+        case _ if binary  => Vector.empty
+        case Kind.Licence =>
+          licensed(lines, Bodies).headOption.map(notice =>
+            notice.start -> rule.message.getOrElse(
+              "holds a licence notice; keep the licence text in a LICENSE resource and refer to it"
+            )
+          ).toVector
+        case Kind.Terms =>
+          val terms  = rule.words.map(word => word -> term(word))
+          val notice = licensed(lines, Notices)
           lines.zipWithIndex.flatMap((line, index) =>
             terms.collect {
-              case (word, regex) if regex.findFirstIn(line).isDefined =>
+              case (word, regex) if regex.findFirstIn(line).isDefined && !notice.exists(_.contains(index)) =>
                 index -> rule.message.fold(s"$word is a forbidden term")(message => s"$word: $message")
             }
           )
@@ -162,6 +228,24 @@ object Texts {
         case (index, message) if !exempt(index, rule) =>
           Finding(rule.kind.rule, node(path, index + 1), message, rule.level)
       }
+    }
+  }
+
+  /** The lines of each licence notice: from the line holding its first phrase to the end of the comment around it. */
+  private def licensed(lines: Vector[String], phrases: Vector[String]): Vector[Range] =
+    lines.indices.filter(index => phrases.exists(lines(index).contains)).foldLeft(Vector.empty[Range]) { (found, start) =>
+      if (found.exists(_.contains(start))) found else found :+ (start to commentEnd(lines, start))
+    }
+
+  // A block comment runs to its closing line, and a run of line comments to its last line.
+  private def commentEnd(lines: Vector[String], start: Int): Int = {
+    val opened = lines.lastIndexWhere(_.contains("/*"), start)
+    if (opened >= 0 && !lines.slice(opened, start).exists(_.contains("*/")))
+      lines.indices.drop(start).find(lines(_).contains("*/")).getOrElse(lines.size - 1)
+    else {
+      def comment(line: String) = Comments.exists(line.trim.startsWith)
+      if (!comment(lines(start))) start
+      else lines.indices.drop(start).takeWhile(index => comment(lines(index))).lastOption.getOrElse(start)
     }
   }
 

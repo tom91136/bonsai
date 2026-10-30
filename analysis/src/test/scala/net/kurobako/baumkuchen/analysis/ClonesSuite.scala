@@ -49,6 +49,56 @@ class ClonesSuite extends AnalysisSuite {
     assertEquals(found.size, 1, found.mkString("\n"))
   }
 
+  test("every copy of a group is listed with its file and lines, however many there are") {
+    val names = Vector("First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh")
+    val found = findings(names.map(name => s"$name.scala" -> average(name, "items", "kept", "scaled")))
+    assertEquals(found.size, 1, found.mkString("\n"))
+    assertFinding(found, "duplicate-code", "7 copies of")
+    names.foreach(name => assert(found.head.detail.contains(s"$name.scala:"), found.head.detail))
+    assert(!found.head.detail.contains("more"), found.head.detail)
+    assertEquals(found.head.detail.split(", ").count(_.contains(".scala:")), 7, found.head.detail)
+  }
+
+  test("copies in intended pairs are left out, and a group with another copy is still reported") {
+    def reported(names: Seq[String], pairs: (String, String)*) = {
+      val result = extract(
+        names.map(name => s"$name.scala" -> average(name, "items", "kept", "scaled")),
+        generated = GeneratedSources
+      )
+      Clones.findings(result.clones, result.graph.nodes, Intended(pairs.toVector)).size
+    }
+    val two = Seq("Execute", "Render")
+    assertEquals(reported(two), 1)
+    assertEquals(reported(two, "Execute" -> "Render"), 0)
+    assertEquals(reported(two, "Render" -> "Execute"), 0)
+    assertEquals(reported(two, "Exec*" -> "R*"), 0)
+    assertEquals(reported(two, "Execute" -> "Lower"), 1)
+    assertEquals(reported(two, "Execute" -> "Execute"), 1)
+    val three = two :+ "Lower"
+    assertEquals(reported(three, "Execute" -> "Render"), 1)
+    assertEquals(reported(three, "Execute" -> "Render", "Execute" -> "Lower"), 1)
+    assertEquals(reported(three, "Execute" -> "Render", "Execute" -> "Lower", "Render" -> "Lower"), 0)
+  }
+
+  test("near duplicates that are an intended pair are left out too") {
+    val sources = Seq(
+      "Binary16.scala" -> classMask("Binary16", 10, "0x1f", "0x8000L"),
+      "Binary32.scala" -> classMask("Binary32", 23, "0xff", "0x80000000L"),
+      "Binary64.scala" -> classMask("Binary64", 52, "0x7ff", "0x8000000000000000L")
+    )
+    val result                             = extract(sources, generated = GeneratedSources)
+    def reported(pairs: (String, String)*) =
+      Clones.findings(result.clones, result.graph.nodes, Intended(pairs.toVector)).map(_.rule.id)
+    assertEquals(reported(), Vector("near-duplicate-code"))
+    assertEquals(reported("Binary16" -> "Binary32"), Vector("near-duplicate-code"))
+    assertEquals(reported("Binary16" -> "Binary32", "Binary16" -> "Binary64"), Vector("near-duplicate-code"))
+    assertEquals(
+      reported("Binary16" -> "Binary32", "Binary16" -> "Binary64", "Binary32" -> "Binary64"),
+      Vector.empty
+    )
+    assertEquals(reported("Binary*" -> "Binary*"), Vector.empty)
+  }
+
   test("dense expressions repeated across files are duplicates, even when short") {
     val found = findings(Seq(
       "Factors.scala" ->
@@ -123,14 +173,14 @@ class ClonesSuite extends AnalysisSuite {
     )
   }
 
-  test("generated sources are not hashed") {
-    assertEquals(
-      findings(Seq(
-        "src/generated/First.scala"  -> average("First", "items", "kept", "scaled"),
-        "src/generated/Second.scala" -> average("Second", "values", "chosen", "twice")
-      )),
-      Vector.empty
+  test("generated sources are hashed like handwritten ones") {
+    val sources = Seq(
+      "First.scala"  -> average("First", "items", "kept", "scaled"),
+      "Second.scala" -> average("Second", "values", "chosen", "twice")
     )
+    val generated = findings(sources.map((name, code) => s"src/generated/$name" -> code))
+    assertEquals(generated.map(_.rule), findings(sources).map(_.rule))
+    assert(generated.nonEmpty && generated.forall(_.node.generated), generated.mkString("\n"))
   }
 
   test("duplicates only in tests are information") {
@@ -420,4 +470,200 @@ class ClonesSuite extends AnalysisSuite {
       Vector.empty
     )
   }
+
+  test("near duplicates on Map literals do not suggest parameterising literals into a method") {
+    def make(owner: String, a: Int, b: Int, c: Int, d: Int): String =
+      s"""object $owner {
+         |  def table(): Map[String, Int] = {
+         |    val map = Map(
+         |      "alpha" -> $a,
+         |      "beta"  -> $b,
+         |      "gamma" -> $c,
+         |      "delta" -> $d,
+         |      "extra1" -> ($a + 1),
+         |      "extra2" -> ($b + 2),
+         |      "extra3" -> ($c + 3),
+         |      "extra4" -> ($d + 4)
+         |    )
+         |    map
+         |  }
+         |}""".stripMargin
+    val found = findings(Seq(
+      "First.scala"  -> make("First", 1, 2, 3, 4),
+      "Second.scala" -> make("Second", 10, 20, 30, 40)
+    ))
+    val clones = near(found)
+    assertEquals(clones.size, 1)
+    assert(!clones.head.detail.contains("replace them with one method taking the literals as parameters"))
+    assert(clones.head.detail.contains("share a common lookup table or keep them distinct"))
+  }
+
+  test("a case pattern repeated across matches is not a duplicate, its bodies are") {
+    val pattern = (owner: String, body: String) =>
+      s"""object $owner {
+         |  def run(instruction: Instruction): Long = instruction match {
+         |    case Instruction.Copy(
+         |          resultType = resultType,
+         |          dest = destination,
+         |          src = source,
+         |          count = count,
+         |          stride = stride,
+         |          offset = offset,
+         |          mask = mask,
+         |          scope = scope,
+         |          tile = tile,
+         |          group = group,
+         |          lane = lane,
+         |          slot = slot
+         |        ) => $body
+         |    case _ => 0L
+         |  }
+         |}""".stripMargin
+    val instruction =
+      "sealed trait Instruction\nobject Instruction { case class Copy(resultType: Int, dest: Int, src: Int, count: Int, stride: Int, offset: Int, mask: Int, scope: Int, tile: Int, group: Int, lane: Int, slot: Int) extends Instruction }"
+    val found = findings(Seq(
+      "Instruction.scala" -> instruction,
+      "Semantics.scala"   ->
+        pattern("Semantics", "resultType + destination + source + count + stride + offset + mask + scope"),
+      "Lowering.scala" -> pattern("Lowering", "resultType * destination - source")
+    ))
+    assertEquals(found.filter(_.rule == Finding.Rule.DuplicateCode), Vector.empty, found.mkString("\n"))
+    val repeated = findings(Seq(
+      "Instruction.scala" -> instruction,
+      "Semantics.scala"   ->
+        pattern("Semantics", "resultType + destination + source + count + stride + offset + mask + scope"),
+      "Lowering.scala" ->
+        pattern("Lowering", "resultType + destination + source + count + stride + offset + mask + scope")
+    ))
+    assertFinding(repeated, "duplicate-code", "Semantics.scala", "Lowering.scala")
+  }
+  test("single calls in table rows that differ only in their arguments are not near duplicates") {
+    def rows(clamp: String, limit: Int): String =
+      s"""import Table.value
+         |object Rules$clamp {
+         |  val rules = Vector(
+         |    value(Vector("bmsk"), 2, "range", Vector(0, $limit), "the cited sentence", Vector("$clamp")),
+         |    value(Vector("cvt"), 3, "range", Vector(1, $limit), "the other sentence", Vector("$clamp")),
+         |    value(Vector("pack"), 4, "range", Vector(2, $limit), "a third sentence", Vector("$clamp"))
+         |  )
+         |}""".stripMargin
+    val table =
+      """object Table {
+        |  def value(names: Vector[String], bits: Int, kind: String, range: Vector[Int], cite: String, all: Vector[String]): String = cite
+        |}""".stripMargin
+    assertEquals(
+      near(findings(Seq("Table.scala" -> table, "Clamp.scala" -> rows("clamp", 32), "Wrap.scala" -> rows("wrap", 31)))),
+      Vector.empty
+    )
+  }
+
+  test("per-width members of companions that differ only in the width are near duplicates by design") {
+    def companion(width: Int): String =
+      s"""object Float$width {
+         |  def add(l: Long, r: Long): Long = FloatingPoint(IEEE754.add(l, r, $width) + IEEE754.add(r, l, $width))
+         |}""".stripMargin
+    val ieee     = "object IEEE754 { def add(l: Long, r: Long, width: Int): Long = l + r + width }"
+    val floating = "object FloatingPoint { def apply(bits: Long): Long = bits }"
+    val found    = near(findings(Seq(
+      "IEEE754.scala"       -> ieee,
+      "FloatingPoint.scala" -> floating,
+      "Float16.scala"       -> companion(16),
+      "Float32.scala"       -> companion(32),
+      "Float64.scala"       -> companion(64)
+    )))
+    assertEquals(found, Vector.empty, found.mkString("\n"))
+    val shared = near(findings(Seq(
+      "IEEE754.scala"       -> ieee,
+      "FloatingPoint.scala" -> floating,
+      "Floats.scala"        ->
+        """object Floats {
+          |  def add16(l: Long, r: Long): Long = FloatingPoint(IEEE754.add(l, r, 16) + IEEE754.add(r, l, 16))
+          |  def add32(l: Long, r: Long): Long = FloatingPoint(IEEE754.add(l, r, 32) + IEEE754.add(r, l, 32))
+          |  def add64(l: Long, r: Long): Long = FloatingPoint(IEEE754.add(l, r, 64) + IEEE754.add(r, l, 64))
+          |}""".stripMargin
+    )))
+    assertFinding(shared, "near-duplicate-code", "3 copies of", "{16, 32, 64}")
+  }
+
+  test("enum cases that differ only in their constructor arguments are not near duplicates") {
+    val found = findings(Seq(
+      "Format.scala" ->
+        """enum Format(
+          |    val shader: Shader,
+          |    val texelBytes: Int,
+          |    val depth: Depth,
+          |    val stencilOffset: Int,
+          |    val compression: Compression,
+          |    val srgb: Boolean,
+          |    val blockWidth: Int,
+          |    val blockHeight: Int
+          |) {
+          |  case Etc2R8g8b8UnormBlock extends Format(
+          |    Shader.Decoded,
+          |    8,
+          |    Depth.None,
+          |    -1,
+          |    Compression.Etc,
+          |    false,
+          |    4,
+          |    4
+          |  )
+          |  case Etc2R8g8b8SrgbBlock extends Format(
+          |    Shader.Decoded,
+          |    8,
+          |    Depth.None,
+          |    -1,
+          |    Compression.Etc,
+          |    true,
+          |    4,
+          |    4
+          |  )
+          |  case Etc2R8g8b8a1UnormBlock extends Format(
+          |    Shader.Rgba,
+          |    8,
+          |    Depth.None,
+          |    -1,
+          |    Compression.Etc,
+          |    false,
+          |    4,
+          |    4
+          |  )
+          |  case Etc2R8g8b8a1SrgbBlock extends Format(
+          |    Shader.Rgba,
+          |    8,
+          |    Depth.None,
+          |    -1,
+          |    Compression.Etc,
+          |    true,
+          |    4,
+          |    4
+          |  )
+          |}
+          |enum Shader { case Decoded, Rgba }
+          |enum Depth { case None }
+          |enum Compression { case Etc }""".stripMargin
+    ))
+    assertEquals(near(found), Vector.empty, found.mkString("\n"))
+  }
+
+  test("methods with copied logic in one file are still duplicates") {
+    val found = findings(Seq(
+      "Pair.scala" ->
+        """object Pair {
+          |  def first(items: List[Int]): Int = {
+          |    val kept = items.filter(_ > 0)
+          |    val doubled = kept.map(value => value * 2 + 1)
+          |    doubled.foldLeft(0)(_ + _) + doubled.size
+          |  }
+          |  def second(items: List[Int]): Int = {
+          |    val kept = items.filter(_ > 0)
+          |    val doubled = kept.map(value => value * 2 + 1)
+          |    doubled.foldLeft(0)(_ + _) + doubled.size
+          |  }
+          |}""".stripMargin
+    ))
+    assertFinding(found, "duplicate-code", "2 copies of", "Pair.scala:2-6", "Pair.scala:7-11")
+    assertEquals(found.size, 1, found.mkString("\n"))
+  }
+
 }

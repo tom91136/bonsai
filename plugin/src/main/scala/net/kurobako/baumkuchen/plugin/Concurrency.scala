@@ -25,6 +25,9 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   private val Semaphore     = requiredClass("java.util.concurrent.Semaphore")
   private val BlockingQueue = requiredClass("java.util.concurrent.BlockingQueue")
   private val Executor      = requiredClass("java.util.concurrent.Executor")
+  private val Channel       = requiredClass("java.nio.channels.Channel")
+  private val ServerSocket  = requiredClass("java.net.ServerSocket")
+  private val Socket        = requiredClass("java.net.Socket")
   private val Executing     = requiredClass("scala.concurrent.ExecutionContext")
   private val Service       = requiredClass("java.util.concurrent.ExecutorService")
 
@@ -46,12 +49,14 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   // recorded as finishing everything.
   private val done    = mutable.Stack(Set.empty[Symbol])
   private val waiting = mutable.Stack(false)
-  // A close that interrupts its threads joins them as the barrier of its shutdown, and an executor's execute starts the
-  // threads it runs tasks on, which it owns.
-  private val stopping  = mutable.Stack(false)
+  // A close that interrupts its threads, or closes the channel or socket they block on, joins them as the barrier of its
+  // shutdown, and an executor's execute starts the threads it runs tasks on, which it owns.
+  private val stopping  = mutable.Stack(Int.MaxValue)
   private val executing = mutable.Stack(false)
-  private val Finish    = Set("isDone", "run", "destroyForcibly", "orTimeout", "completeOnTimeout")
-  private val Waits     = Set("await", "join")
+  // The waits of a losing branch of a once-guard, by the start of their call.
+  private val onced  = mutable.Set.empty[Int]
+  private val Finish = Set("isDone", "run", "destroyForcibly", "orTimeout", "completeOnTimeout")
+  private val Waits  = Set("await", "join")
 
   override def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
     case definition: tpd.DefDef if definition.symbol.is(Flags.Synthetic) && !definition.symbol.isAnonymousFunction =>
@@ -65,10 +70,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
       }.collect { case tpd.Select(target, _) => target.symbol }
       done.push(done.top ++ finished ++ invoked(definition.rhs))
       waiting.push(waiting.top || Waits.exists(word => named(definition.name.toString, word)))
-      stopping.push(stopping.top || definition.name.toString == "close" && definition.rhs.existsSubTree {
-        case tpd.Select(thread, name) => name.toString == "interrupt" && thread.tpe.widen.derivesFrom(Thread)
-        case _                        => false
-      })
+      stopping.push(stopping.top.min(stoppedFrom(definition)))
       executing.push(executing.top || executor(definition.symbol))
       try traverseChildren(tree)
       finally {
@@ -77,12 +79,55 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
         stopping.pop()
         executing.pop(): Unit
       }
+    case tpd.If(condition, thenp, elsep) =>
+      if (Trees.selected(condition).exists(_.name.toString == "compareAndSet")) onced ++= guarded(thenp, elsep)
+      traverseChildren(tree)
     case application: tpd.Apply =>
       pooled(application)
       unbounded(application)
       started(application)
       traverseChildren(tree)
     case _ => traverseChildren(tree)
+  }
+
+  // The start of the first call that stops the threads a close joins, from there on, when it closes a channel or
+  // socket they block on or interrupts them.
+  private def stoppedFrom(definition: tpd.DefDef): Int =
+    if (definition.name.toString != "close") Int.MaxValue
+    else if (
+      definition.rhs.existsSubTree {
+        case tpd.Select(thread, name) => name.toString == "interrupt" && thread.tpe.widen.derivesFrom(Thread)
+        case _                        => false
+      }
+    ) 0
+    else
+      definition.rhs.filterSubTrees {
+        case application: tpd.Apply => Trees.selected(application).exists(select =>
+            select.name.toString == "close" && application.args.isEmpty && {
+              val closed = select.qualifier.tpe.widen
+              closed.derivesFrom(Channel) || closed.derivesFrom(ServerSocket) || closed.derivesFrom(Socket)
+            }
+          )
+        case _ => false
+      }.map(_.span.start).minOption.getOrElse(Int.MaxValue)
+
+  // The waits on a latch that the other branch of a once-guard counts down in a finally, which the losing caller
+  // waits for as the winner runs the work.
+  private def guarded(winner: tpd.Tree, loser: tpd.Tree): Set[Int] = {
+    def countsDown(tree: tpd.Tree): Option[Symbol] = tree match {
+      case tpd.Apply(tpd.Select(latch, name), Nil)
+          if name.toString == "countDown" && latch.tpe.widen.derivesFrom(Latch) =>
+        Some(latch.symbol)
+      case _ => None
+    }
+    val counted = winner.filterSubTrees(_.isInstanceOf[tpd.Try]).flatMap {
+      case tpd.Try(_, _, finalizer) => finalizer.filterSubTrees(countsDown(_).isDefined).flatMap(countsDown)
+      case _                        => Nil
+    }.toSet
+    loser.filterSubTrees {
+      case tpd.Apply(tpd.Select(latch, name), _) => name.toString == "await" && counted(latch.symbol)
+      case _                                     => false
+    }.map(_.span.start).toSet
   }
 
   /** The name of a call that blocks its thread on IO, another thread, or time. */
@@ -146,7 +191,8 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   private def unbounded(application: tpd.Apply): Unit = {
     val symbol  = application.fun.symbol
     val name    = symbol.name.toString
-    val untimed = application.args.isEmpty && !synchronous(application) && !(stopping.top && name == "join") &&
+    val untimed = application.args.isEmpty && !synchronous(application) &&
+      !(name == "join" && application.span.start >= stopping.top) && !onced(application.span.start) &&
       !waiting.top && !Trees.selected(application.fun).exists(select => bounded(select.qualifier)) &&
       blocking(application).exists(Set("get", "join", "waitFor", "await", "wait"))
     val unlimited = Set("scala.concurrent.Await.result", "scala.concurrent.Await.ready")(Trees.qualified(symbol)) &&

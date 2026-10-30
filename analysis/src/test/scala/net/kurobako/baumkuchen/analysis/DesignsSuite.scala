@@ -110,6 +110,53 @@ class DesignsSuite extends AnalysisSuite {
     )
   }
 
+  test("receivers that already have a member of the name, and inline algebra instances, are not extension candidates") {
+    val found = findings(
+      "Semantics.scala" ->
+        """trait Machine[V] {
+          |  def fence(value: V): V
+          |  def call(value: V): V
+          |  def fork(value: V): V
+          |  def twice(value: V): V
+          |  def plain(value: V): V
+          |}
+          |trait Plain {
+          |  def fence(value: Long): Long
+          |  def call(value: Long): Long
+          |  def fork(value: Long): Long
+          |  def twice(value: Long): Long
+          |}
+          |object Named {
+          |  def fence(machine: Plain, value: Long): Long = machine.fence(value)
+          |  def call(machine: Plain, value: Long): Long  = machine.call(value)
+          |  def fork(machine: Plain, value: Long): Long  = machine.fork(value)
+          |}
+          |object Inlined {
+          |  inline def one(inline machine: Machine[Long], value: Long): Long   = machine.plain(value)
+          |  inline def two(inline machine: Machine[Long], value: Long): Long   = machine.twice(value)
+          |  inline def three(inline machine: Machine[Long], value: Long): Long = machine.plain(machine.twice(value))
+          |}
+          |object Kept {
+          |  def one(machine: Plain, value: Long): Long   = machine.twice(value)
+          |  def two(machine: Plain, value: Long): Long   = machine.twice(machine.twice(value))
+          |  def three(machine: Plain, value: Long): Long = machine.twice(machine.call(value))
+          |  def fence(machine: Plain, value: Long): Long = machine.fence(value)
+          |}
+          |object Mixed {
+          |  def one(machine: Machine[Long], value: Long): Long   = machine.twice(value)
+          |  def two(machine: Machine[Long], value: Long): Long   = machine.plain(value)
+          |  def three(machine: Machine[Long], value: Long): Long = machine.plain(machine.twice(value))
+          |}""".stripMargin
+    )
+    assertEquals(
+      of(found, Finding.Rule.ReceiverParameter),
+      Vector(
+        "3 methods of Kept take a Plain first and only call it (one, three, two)",
+        "3 methods of Mixed take a Machine first and only call it (one, three, two)"
+      )
+    )
+  }
+
   test("sibling methods typed alike but for a width are one generic method") {
     val found = findings(
       "Floats.scala" ->
@@ -147,6 +194,69 @@ class DesignsSuite extends AnalysisSuite {
     assertEquals(
       of(found, Finding.Rule.NumberedFamily),
       Vector("add16, add32, add64 differ only in a width and share one signature")
+    )
+  }
+
+  test("an alias of a type its object only builds is not reported, and operations on it are counted") {
+    val factories = findings(
+      "Lane.scala" ->
+        """object Lanes {
+          |  type Lane = Int
+          |  object Lane {
+          |    def fromIndex(index: Int): Lane = index
+          |    def inWarp(base: Int, lane: Int): Lane = base + lane
+          |  }
+          |}""".stripMargin
+    )
+    assertEquals(of(factories, Finding.Rule.AliasWithOperations), Vector.empty)
+    val operations = findings(
+      "Celsius.scala" ->
+        """object Temperatures {
+          |  type Celsius = Double
+          |  object Celsius { extension (c: Celsius) def toKelvin: Double = c + 273.15 }
+          |}""".stripMargin
+    )
+    assertEquals(of(operations, Finding.Rule.AliasWithOperations).size, 1)
+  }
+
+  test("a type constructor that passes its parameters to a library class is a rename, not a value type") {
+    val forwarding = findings(
+      "Vec.scala" ->
+        """object Vectors {
+          |  type Vec[A] = List[A]
+          |  object Vec { def of[A](value: A): Vec[A] = List(value); extension [A](v: Vec[A]) def nonEmptyVec: Boolean = v.nonEmpty }
+          |}""".stripMargin
+    )
+    assertEquals(of(forwarding, Finding.Rule.AliasWithOperations), Vector.empty)
+    val fixed = findings(
+      "Registry.scala" ->
+        """object Registries {
+          |  type Registry = Map[String, Int]
+          |  object Registry { def lookup(registry: Registry, key: String): Option[Int] = registry.get(key) }
+          |}""".stripMargin
+    )
+    assertEquals(of(fixed, Finding.Rule.AliasWithOperations).size, 1)
+  }
+
+  test("conversions between two widths are not a family of numbered methods") {
+    val conversions = findings(
+      "Conversions.scala" ->
+        """case class Float16(bits: Short)
+          |case class Float32(bits: Int)
+          |case class Float64(bits: Long)
+          |object Conversions {
+          |  def cvtF16F32(value: Float32): Float16 = Float16(value.bits.toShort)
+          |  def cvtF32F16(value: Float16): Float32 = Float32(value.bits)
+          |  def cvtF32F64(value: Float64): Float32 = Float32(value.bits.toInt)
+          |  def cvtF64F32(value: Float32): Float64 = Float64(value.bits)
+          |  def neg16(value: Float16): Float16 = value
+          |  def neg32(value: Float32): Float32 = value
+          |  def neg64(value: Float64): Float64 = value
+          |}""".stripMargin
+    )
+    assertEquals(
+      of(conversions, Finding.Rule.NumberedFamily),
+      Vector("neg16, neg32, neg64 differ only in a width and share one signature")
     )
   }
 }

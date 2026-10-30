@@ -23,6 +23,17 @@ object Build {
     }
   }
 
+  /** Declared bounds that no collection the complexity analysis sizes reaches, which are stale. */
+  def unused(bounds: Vector[Complexity.Bounded]): Vector[Finding] =
+    bounds.map(bound =>
+      Finding(
+        Finding.Rule.UnusedBound,
+        node(bound.member, "", Output.Scope.Main, ".baumkuchen.conf"),
+        s"bounded ${bound.member} matches no collection the complexity analysis sizes; remove the entry or correct " +
+          "the member"
+      )
+    )
+
   def duplicates(manifest: Manifest): Vector[Finding] =
     manifest.sources.distinctBy(_.path).filter(source => Files.isRegularFile(source.path))
       .groupBy(source => (source.path.getFileName.toString, digest(source))).values.toVector

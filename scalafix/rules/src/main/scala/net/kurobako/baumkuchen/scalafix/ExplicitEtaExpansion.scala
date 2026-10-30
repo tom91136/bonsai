@@ -2,6 +2,7 @@ package net.kurobako.baumkuchen.scalafix
 
 import scala.meta.*
 import scala.meta.internal.semanticdb.Scala.*
+import scala.meta.tokens.Token
 import scala.util.control.NonFatal
 import scalafix.v1.*
 
@@ -17,9 +18,10 @@ class ExplicitEtaExpansion extends SemanticRule("ExplicitEtaExpansion") {
       case reference: Term.Ref
           if isArgument(reference) &&
             !parameterSymbols(reference.symbol) &&
+            !reference.symbol.value.startsWith("scala/Predef.identity") &&
             mayBeMethod(reference.symbol) =>
         explicitApplication(reference).map { application =>
-          Patch.replaceTree(reference, application) + lint(
+          Patch.replaceTree(reference, if (bareInfixOperand(reference)) s"($application)" else application) + lint(
             "method-value",
             "write an explicit lambda or placeholder application so the method value's arity is visible",
             reference.pos
@@ -35,6 +37,14 @@ class ExplicitEtaExpansion extends SemanticRule("ExplicitEtaExpansion") {
         case arguments: Term.ArgClause => arguments.values.exists(_.eq(assignment))
         case _                         => false
       }
+    case _ => false
+  }
+
+  // a placeholder application without parentheses would scope over the whole infix expression
+  private def bareInfixOperand(reference: Term.Ref): Boolean = reference.parent.exists {
+    case arguments: Term.ArgClause =>
+      arguments.parent.exists { case _: Term.ApplyInfix => true; case _ => false } &&
+      !arguments.tokens.headOption.exists { case _: Token.LeftParen => true; case _ => false }
     case _ => false
   }
 

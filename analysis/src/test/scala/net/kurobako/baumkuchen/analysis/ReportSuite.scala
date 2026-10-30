@@ -96,11 +96,56 @@ class ReportSuite extends AnalysisSuite {
     assertEquals(
       Report.Line("error", finding).show,
       "error\tunused-member\thandwritten\tcore\tlib.Tools.spare\tsrc/main/scala/Tools.scala:12\t" +
-        "Tools.spare is never referenced"
+        s"Tools.spare is never referenced\t${finding.id}"
     )
+    assertEquals(Report.Line("error", finding).show.split('\t').last, finding.id)
     assert(Report.Line("error", finding).failing)
     assert(!Report.Line("warning", finding).failing)
     assertEquals(Report.Line("info", finding.copy(node = node.copy(generated = true))).show.split('\t')(2), "generated")
+  }
+
+  test("a finding keeps its id across moved lines and changed counts, and loses it with another rule, symbol or file") {
+    val node = Node(
+      "lib.Tools",
+      "core",
+      Output.Scope.Main,
+      "src/Tools.scala",
+      12,
+      generated = false,
+      exported = false,
+      outer = None
+    )
+    val finding = Finding(Finding.Rule.ConstantArgument, node, "Tools.run(width).width is always 80 across 3 calls")
+    assertEquals(finding.id.length, 10)
+    assert(finding.id.forall(character => "0123456789abcdef".contains(character)), finding.id)
+    assertEquals(finding.copy(node = node.copy(line = 40)).id, finding.id)
+    assertEquals(finding.copy(detail = "Tools.run(width).width is always 90 across 4 calls").id, finding.id)
+    assertNotEquals(finding.copy(rule = Finding.Rule.FlagArgument).id, finding.id)
+    assertNotEquals(finding.copy(node = node.copy(name = "lib.Other")).id, finding.id)
+    assertNotEquals(finding.copy(node = node.copy(source = "src/Other.scala")).id, finding.id)
+    assertNotEquals(finding.copy(detail = "Tools.run(width).height is always 80 across 3 calls").id, finding.id)
+  }
+
+  test("findings that share an id are numbered apart, and hiding some does not renumber the others") {
+    val node = Node(
+      "lib.Tools",
+      "core",
+      Output.Scope.Main,
+      "src/Tools.scala",
+      12,
+      generated = false,
+      exported = false,
+      outer = None
+    )
+    val first = Finding(Finding.Rule.DuplicateCode, node, "2 copies of 5 lines: A.scala:10-14, B.scala:3-7")
+    val other = first.copy(node = node.copy(line = 30), detail = "2 copies of 5 lines: A.scala:30-34, B.scala:23-27")
+    val note  = first.copy(node = node.copy(line = 50), level = Finding.Level.Info)
+    val all   = Vector(first, other, note)
+    def ids(options: Report.Options) = Report(all, Map(node.name -> node), options).map(_.id)
+    assertEquals(ids(defaults.copy(info = true)), Vector(first.id, s"${first.id}-2", s"${first.id}-3"))
+    assertEquals(ids(defaults), Vector(first.id, s"${first.id}-2"))
+    assertEquals(ids(defaults.copy(disabled = Set("duplicate-code"))), Vector.empty)
+    assertEquals(first.id, other.id)
   }
 
   test("baselines round trip through their text form") {
@@ -113,5 +158,73 @@ class ReportSuite extends AnalysisSuite {
     assert(found.exists(_.failing), found.mkString("\n"))
     assert(found.filter(_.finding.level == Finding.Level.Warning).forall(_.failing), found.mkString("\n"))
     assert(found.filter(_.finding.level == Finding.Level.Info).forall(!_.failing), found.mkString("\n"))
+  }
+
+  private lazy val methodical = extract(
+    Seq(
+      "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Costly.quiet(Nil)) }",
+      "Costly.scala" ->
+        """object Costly {
+          |  def cubic(xs: List[Int]): Int = xs.map(x => xs.map(y => xs.count(_ == x + y))).size
+          |  @SuppressWarnings(Array("baumkuchen:complexity")) def quiet(xs: List[Int]): Int =
+          |    xs.map(x => xs.map(y => xs.count(_ == x + y))).size
+          |  def copies(xs: List[Int], ys: List[Int], zs: List[Int]): Int = {
+          |    val sets = xs.map(x => ys.toSet)
+          |    xs.map(x => ys.map(y => zs.count(_ == y))).size + sets.size
+          |  }
+          |  @SuppressWarnings(Array("baumkuchen:space-complexity")) def copiesQuiet(
+          |      xs: List[Int], ys: List[Int], zs: List[Int]): Int = {
+          |    val sets = xs.map(x => ys.toSet)
+          |    xs.map(x => ys.map(y => zs.count(_ == y))).size + sets.size
+          |  }
+          |  def plain(values: List[Int]): Int = values.map(_ + 1).filter(_ > 0).size
+          |  @SuppressWarnings(Array("baumkuchen:intermediate-collections")) def piped(values: List[Int]): Int =
+          |    values.map(_ + 1).filter(_ > 0).size
+          |  def noisy(values: List[Int]): List[Int] = values.map { value => println(value); value }
+          |  @SuppressWarnings(Array("baumkuchen:effectful-transform")) def printed(values: List[Int]): List[Int] =
+          |    values.map { value => println(value); value }
+          |}
+          |trait Shape { def area: Int }
+          |class Circle extends Shape { def area = 1 }
+          |class Square extends Shape { def area = 2 }
+          |class Triangle extends Shape { def area = 3 }
+          |object Looping {
+          |  def looped(shapes: Array[Shape]): Int = {
+          |    var total = 0
+          |    var index = 0
+          |    while (index < shapes.length) {
+          |      total += shapes(index).area
+          |      index += 1
+          |    }
+          |    total
+          |  }
+          |  @SuppressWarnings(Array("baumkuchen:megamorphic-call")) def quiet(shapes: Array[Shape]): Int = {
+          |    var total = 0
+          |    var index = 0
+          |    while (index < shapes.length) {
+          |      total += shapes(index).area
+          |      index += 1
+          |    }
+          |    total
+          |  }
+          |}""".stripMargin
+    ),
+    hot = Vector("Looping")
+  )
+
+  test("a suppression on a method silences the findings its rules locate at the enclosing type") {
+    val found = Report(Report.findings(methodical), methodical.graph.nodes, defaults.copy(info = true))
+      .map(_.finding.detail)
+    def reported(prefix: String) = found.exists(_.startsWith(prefix))
+    assert(reported("Costly.cubic is O"), found.mkString("\n"))
+    assert(reported("Costly.copiesQuiet is O"), found.mkString("\n"))
+    assert(reported("Costly.copies allocates"), found.mkString("\n"))
+    assert(reported("Costly.plain chains"), found.mkString("\n"))
+    assert(reported("Looping.looped calls"), found.mkString("\n"))
+    assert(!reported("Costly.quiet is O"), found.mkString("\n"))
+    assert(!reported("Costly.copiesQuiet allocates"), found.mkString("\n"))
+    assert(!reported("Costly.piped chains"), found.mkString("\n"))
+    assert(!reported("Looping.quiet calls"), found.mkString("\n"))
+    assertEquals(found.count(_.startsWith("the function passed to map")), 1, found.mkString("\n"))
   }
 }

@@ -13,6 +13,13 @@ class RedundantCollectionConversion extends munit.FunSuite {
   }
   val buffer = scala.collection.mutable.ArrayBuffer(1, 2)
   val snapshot = buffer.toSeq
+  val map: Map[String, Int] = Map("a" -> 1)
+  val mapCopy = map
+  val combined = map ++ List("b" -> 2)
+  val pairs = List("a" -> 1).toMap
+  val set: Set[Int] = Set(1)
+  val setCopy = set
+  val fromList = List(1).toSet
   val arraySnapshot = Array(1, 2).toSeq
   val selectedArray = Vector(Array(1, 2))(0).toVector
   val materialised = list.view.toSeq

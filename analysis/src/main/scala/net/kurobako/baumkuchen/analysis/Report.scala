@@ -14,36 +14,54 @@ object Report {
       lenient: Set[String] = Set.empty
   )
 
-  /** A reported finding with its level: `error`, `warning` or `info`. */
-  case class Line(level: String, finding: Finding) {
+  /** A reported finding with its level: `error`, `warning` or `info`; `repeat` counts the findings before it with the
+    * same id, which it numbers apart.
+    */
+  case class Line(level: String, finding: Finding, repeat: Int = 0) {
     def failing: Boolean = level == "error"
+
+    def id: String = if (repeat == 0) finding.id else s"${finding.id}-${repeat + 1}"
 
     def show: String = {
       val node     = finding.node
       val category = if (node.generated) "generated" else "handwritten"
-      s"$level\t${finding.rule.id}\t$category\t${node.module}\t${node.name}\t${node.source}:${node.line}\t${finding.detail}"
+      s"$level\t${finding.rule.id}\t$category\t${node.module}\t${node.name}\t${node.source}:${node.line}\t" +
+        s"${Finding.escaped(finding.detail)}\t$id"
     }
   }
 
   /** Every finding of every rule over an extracted build. */
-  def findings(result: Extraction.Result): Vector[Finding] =
-    Liveness.findings(result.graph) ++ Algebra.findings(result.algebra, result.graph.nodes) ++
+  def findings(
+      result: Extraction.Result,
+      intended: Intended = Intended(),
+      nesting: Nesting.Config = Nesting.Config()
+  ): Vector[Finding] =
+    Liveness.findings(result.graph) ++ Algebra.findings(result.algebra, result.graph.nodes, intended) ++
       Invariants.findings(result.algebra, result.graph.nodes) ++
-      Smells.findings(result.smells, result.algebra.products, result.graph.nodes, result.hot) ++
+      Smells.findings(result.smells, result.algebra.products, result.graph.nodes, result.hot, result.graph.edges) ++
       Designs.findings(result.designs, result.graph.nodes) ++ Structures.findings(result.structures, result.graph) ++
-      Clones.findings(result.clones, result.graph.nodes) ++
+      Clones.findings(result.clones, result.graph.nodes, intended) ++
       Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph)) ++
       Bytecode.findings(result.bytecode, result.graph.nodes, result.hot) ++
-      Complexity.findings(result.complexities, result.graph.nodes) ++
+      Complexity.findings(result.complexities, result.graph.nodes, result.hot) ++
       Pipelines.findings(result.pipelines, result.graph.nodes) ++
       Megamorphic.findings(result.megamorphic, result.graph.nodes) ++
-      Purity.findings(result.purity, result.graph.nodes)
+      Purity.findings(result.purity, result.graph.nodes) ++
+      JavaLints.findings(result.lints, result.graph.nodes) ++ Nesting.findings(result.nesting, nesting)
 
-  def apply(findings: Vector[Finding], nodes: Map[String, Node], options: Options): Vector[Line] =
-    findings.filter(finding =>
-      !options.disabled(finding.rule.id) && !suppressed(finding, nodes, Some(finding.node.name)) &&
+  def apply(findings: Vector[Finding], nodes: Map[String, Node], options: Options): Vector[Line] = {
+    // numbered over every finding, so hiding some does not renumber the others
+    val sorted    = findings.sorted
+    val numbering = sorted.foldLeft((Map.empty[String, Int], Vector.empty[(Finding, Int)])) {
+      case ((seen, numbered), finding) =>
+        val repeat = seen.getOrElse(finding.id, 0)
+        (seen.updated(finding.id, repeat + 1), numbered :+ (finding -> repeat))
+    }._2
+    numbering.filter((finding, _) =>
+      !options.disabled(finding.rule.id) && !finding.suppressedBy(finding.suppressed) &&
+        !suppressed(finding, nodes, Some(finding.node.name)) &&
         (options.info || finding.level != Finding.Level.Info)
-    ).sorted.map { finding =>
+    ).map { (finding, repeat) =>
       val id        = finding.rule.id
       val escalated = !options.baseline(finding.key) &&
         (finding.level match {
@@ -52,8 +70,9 @@ object Report {
           case Finding.Level.Info    => false
         })
       val level = if (finding.level == Finding.Level.Info) "info" else "warning"
-      Line(if (escalated) "error" else level, finding)
+      Line(if (escalated) "error" else level, finding, repeat)
     }
+  }
 
   /** The baseline text recording `lines`, one finding key per line. */
   def write(lines: Vector[Line]): String = lines.map(_.finding.key).mkString("", "\n", "\n")

@@ -91,6 +91,7 @@ private class Exceptions(
   private class Handler(val cases: List[tpd.CaseDef], val tried: Boolean) {
     val partial: mutable.ArrayBuffer[tpd.Select]                         = mutable.ArrayBuffer.empty
     val boundary: mutable.ArrayBuffer[(tpd.Tree, List[String], Boolean)] = mutable.ArrayBuffer.empty
+    val sharers: mutable.Set[Type]                                       = mutable.Set.empty
   }
 
   // The handlers around the current tree, innermost first, and the result type of the enclosing function; a named
@@ -100,8 +101,10 @@ private class Exceptions(
   private val reported = mutable.Set.empty[tpd.Tree]
   private val quiet    = mutable.Set.empty[tpd.Tree]
 
-  private val helpers = mutable.Map.empty[Symbol, (tpd.DefDef, Set[Type])]
-  private val calls   = mutable.Map.empty[Symbol, mutable.ArrayBuffer[Boolean]]
+  private val helpers  = mutable.Map.empty[Symbol, (tpd.DefDef, Set[Type])]
+  private val calls    = mutable.Map.empty[Symbol, mutable.ArrayBuffer[(Set[Type], List[Handler])]]
+  private val bodies   = mutable.Map.empty[Symbol, tpd.DefDef]
+  private val escaping = mutable.Map.empty[Symbol, Set[Type]]
 
   private val NoSuchElement = requiredClass("java.util.NoSuchElementException").typeRef
   private val NumberFormat  = requiredClass("java.lang.NumberFormatException").typeRef
@@ -109,10 +112,17 @@ private class Exceptions(
   private val PartialClass  = requiredClass("scala.PartialFunction")
 
   def run(tree: tpd.Tree): Unit = {
+    tree.foreachSubTree {
+      case definition: tpd.DefDef if !definition.symbol.isAnonymousFunction => bodies(definition.symbol) = definition
+      case _                                                                => ()
+    }
     throwingHelpers(tree)
     traverse(tree)
-    calls.foreach { (helper, covered) =>
-      helpers.get(helper).filter(_ => covered.nonEmpty && covered.forall(identity)).foreach((definition, types) =>
+    calls.foreach { (helper, sites) =>
+      helpers.get(helper).filter(_ =>
+        sites.nonEmpty && sites.forall((types, around) => covered(types, around)) &&
+          !sites.forall((types, around) => shared(types, around))
+      ).foreach((definition, types) =>
         checks(
           Check.ThrowingHelper,
           s"${helper.name} throws ${types.map(_.classSymbol.name).toList.sortBy(_.toString).mkString(", ")} only for " +
@@ -314,10 +324,32 @@ private class Exceptions(
         )))
   }
 
-  private def helperCall(symbol: Symbol)(using Context): Unit = helpers.get(symbol).foreach((_, types) =>
-    calls.getOrElseUpdate(symbol, mutable.ArrayBuffer.empty) +=
-      types.forall(tpe => handlers.top.exists(handles(_, tpe)))
-  )
+  private def helperCall(symbol: Symbol)(using Context): Unit = helpers.get(symbol) match {
+    case Some((_, types)) => calls.getOrElseUpdate(symbol, mutable.ArrayBuffer.empty) += (types -> handlers.top)
+    case None             => handlers.top.foreach(_.sharers ++= escapes(symbol))
+  }
+
+  private def covered(types: Set[Type], around: List[Handler])(using Context): Boolean =
+    types.forall(tpe => around.exists(handles(_, tpe)))
+
+  // A helper's failure is shared when each handler that covers it also covers another call that throws the same type.
+  private def shared(types: Set[Type], around: List[Handler])(using Context): Boolean =
+    around.filter(handler => types.exists(handles(handler, _))).forall(handler =>
+      types.forall(tpe => handler.sharers.exists(tpe <:< _))
+    )
+
+  /** The exceptions a build method throws outside its handlers, directly or through the build methods it calls. */
+  private def escapes(symbol: Symbol)(using Context): Set[Type] =
+    escaping.getOrElse(
+      symbol,
+      bodies.get(symbol).fold(Set.empty[Type]) { definition =>
+        escaping(symbol) = Set.empty
+        val thrown = Thrown()
+        val result = thrown.of(definition.rhs) ++ thrown.invoked.toSet.flatMap(escapes)
+        escaping(symbol) = result
+        result
+      }
+    )
 
   // A Try around one partial call whose failure is then discarded, where the call has an Option alternative.
   private def redundant(tree: tpd.Tree)(using Context): Unit = {
@@ -505,6 +537,7 @@ private class Exceptions(
   /** What a body throws outside its own handlers and the functions it defines. */
   private class Thrown extends tpd.TreeTraverser {
     private val found = mutable.Set.empty[Type]
+    val invoked       = mutable.Set.empty[Symbol]
 
     def of(body: tpd.Tree)(using Context): Set[Type] = {
       traverse(body)
@@ -516,6 +549,9 @@ private class Exceptions(
       case definition: tpd.DefDef if definition.symbol.isAnonymousFunction             => ()
       case tpd.Apply(function, List(exception)) if function.symbol == defn.throwMethod =>
         found += exception.tpe.widen
+      case reference: (tpd.Ident | tpd.Select) =>
+        invoked += reference.symbol
+        traverseChildren(tree)
       case _ => traverseChildren(tree)
     }
   }
