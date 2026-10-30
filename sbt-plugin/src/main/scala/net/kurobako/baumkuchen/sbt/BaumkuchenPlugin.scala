@@ -42,8 +42,8 @@ import scalafix.sbt.ScalafixPlugin.autoImport.*
   * `nesting` tunes the `nesting` rule, which suggests the type or helper only one other type uses be nested in it, and
   * a nested type that uses nothing of its parent be moved out: `depth` is the deepest nesting a move may create, one
   * level less when it crosses files, `damping` the number of declarations of the new owner that must use what moves,
-  * and `size` the most lines a moved type, or a group of helpers moving together, may have. The rule runs only when the file has this block, and a key left out takes the
-  * analysis' default.
+  * and `size` the most lines a moved type, or a group of helpers moving together, may have. The rule runs only when the
+  * file has this block, and a key left out takes the analysis' default.
   *
   * `intended` lists pairs of qualified name globs, written `<glob>=<glob>` and matched as for `hot`, whose copies are
   * meant, such as the execute and render instances of one operation or unrelated bit layouts that look alike.
@@ -591,8 +591,11 @@ object BaumkuchenPlugin extends AutoPlugin {
           Option.when(entry.library)(s"library\t${entry.project}").toSeq
       )
       val analysedOutputs = outputs.collect { case s"output\t$_\t$_\t$directory" => directory }.toSet
-      val classpath       = (external.all(jvmLibraries).value ++ external.all(platformLibraries).value).flatten.distinct
-        .filterNot(analysedOutputs).map(entry => s"classpath\t$entry")
+      val libraries       = (external.all(jvmLibraries).value ++ external.all(platformLibraries).value).flatten.distinct
+        .filterNot(analysedOutputs)
+      val log       = streams.value.log
+      val classpath = (libraries ++ javalibInterface(libraries, dependencyResolution.value, target.value, log))
+        .map(entry => s"classpath\t$entry")
       val platform        = platforms.toSeq.sorted.map(id => s"platform\t$id")
       val compilerOptions = Def.task {
         val id = thisProject.value.id
@@ -600,7 +603,6 @@ object BaumkuchenPlugin extends AutoPlugin {
       }.all(ScopeFilter(inProjects((if (jvm.nonEmpty) jvm else enabled)*), inConfigurations(Compile))).value.flatten
       // Every platform's sources, so copies between the directories of a cross-built project show.
       val sources = kept.flatMap(entry => entry.sources.map(file => s"source\t${entry.project}\t${entry.scope}\t$file"))
-      val log     = streams.value.log
       val baseline = baumkuchenBaseline.value
       val purity   = baumkuchenPurity.value
       val manifest = target.value / "baumkuchen" / "manifest.tsv"
@@ -623,7 +625,10 @@ object BaumkuchenPlugin extends AutoPlugin {
         baumkuchenHot.value.toSeq.sorted.flatMap(glob => Seq("--hot", glob)) ++
         baumkuchenIntended.value.toSeq.sorted.flatMap(pair => Seq("--intended", pair)) ++
         baumkuchenBounded.value.flatMap((member, max, reason) => Seq("--bounded", member, max.toString, reason)) ++
-        (if (baumkuchenNesting.value.isEmpty) Nil else "--nesting" +: baumkuchenNesting.value.toSeq.sortBy(_._1).flatMap((limit, value) => Seq(s"--nesting-$limit", value.toString))) ++
+        (if (baumkuchenNesting.value.isEmpty) Nil
+         else "--nesting" +: baumkuchenNesting.value.toSeq.sortBy(_._1).flatMap((limit, value) =>
+           Seq(s"--nesting-$limit", value.toString)
+         )) ++
         extra(baseline, purity)
       Fork.java(
         ForkOptions().withRunJVMOptions(Vector(s"-Xmx${baumkuchenAnalysisHeap.value}")),
@@ -637,6 +642,26 @@ object BaumkuchenPlugin extends AutoPlugin {
       )
     }
   }
+
+  private val Javalib = ".*/javalib_native[^/]*/([^/]+)/.*".r
+
+  // Scala Native's javalib ships its interface to the runtime as NIR only, which inline expansions in a twin's classes
+  // reference, so the analysis reads the published class files of the same version.
+  private def javalibInterface(
+      libraries: Seq[String],
+      resolution: DependencyResolution,
+      target: File,
+      log: Logger
+  ): Vector[String] =
+    libraries.collectFirst { case Javalib(version) => version }.toVector.flatMap { version =>
+      val module = ("org.scala-native" % "javalib-intf" % version).intransitive()
+      resolution.retrieve(module, None, target / "baumkuchen" / "javalib-intf", log) match {
+        case Right(files)  => files.map(_.toString)
+        case Left(warning) =>
+          log.warn(s"baumkuchen: cannot resolve javalib-intf $version: ${warning.resolveException.getMessage}")
+          Vector.empty
+      }
+    }
 
   private def analysisClasspath(
       resolution: DependencyResolution,

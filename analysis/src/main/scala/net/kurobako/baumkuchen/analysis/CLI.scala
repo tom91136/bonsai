@@ -88,7 +88,8 @@ object CLI {
         },
         identity
       )
-      val findings = Report.findings(result, Intended(options.intended), options.nesting) ++ Build.duplicates(manifest) ++
+      val findings = Report.findings(result, Intended(options.intended), options.nesting) ++
+        Build.duplicates(manifest) ++
         Build.unused(result.unusedBounds) ++ texts ++
         excluded ++
         (if (options.mode == Mode.CI) Build.fatal(manifest) else Vector.empty) ++
@@ -184,7 +185,7 @@ object CLI {
       }
     case "--nesting-size" :: lines :: rest =>
       positive("nesting size", lines, 1) match {
-        case Left(error)  => Left(error)
+        case Left(error) => Left(error)
         case Right(size) => parse(rest, options.copy(nesting = options.nesting.copy(size = size)))
       }
     case "--intended" :: pair :: rest =>

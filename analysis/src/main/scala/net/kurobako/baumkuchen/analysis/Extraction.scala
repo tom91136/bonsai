@@ -28,12 +28,15 @@ import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeParamRef
 import dotty.tools.dotc.core.Types.TypeRef
 import dotty.tools.dotc.core.Types.TypeTraverser
+import dotty.tools.dotc.core.tasty.AttributeUnpickler
+import dotty.tools.dotc.core.tasty.Attributes
 import dotty.tools.dotc.core.tasty.TastyUnpickler
 import dotty.tools.dotc.fromtasty.ReadTasty
 import dotty.tools.dotc.fromtasty.TASTYCompiler
 import dotty.tools.dotc.reporting.StoreReporter
 import dotty.tools.dotc.util.Spans.Span
 import dotty.tools.io.AbstractFile
+import dotty.tools.tasty.TastyReader
 import java.io.File
 import java.nio.file.FileSystems
 import java.nio.file.Files
@@ -131,15 +134,14 @@ object Extraction {
     // A platform twin compiles the shared sources again, so only the classes the JVM modules lack are its own. The
     // compiler finds every class through the directories of the files it reads, in their order, so the JVM modules'
     // come first and the shared classes resolve to their copies.
-    val (twins, primary)    = manifest.outputs.partition(output => manifest.platforms(output.module))
-    val shared              = primary.flatMap(output => files(output.path).map(output.path.relativize(_))).toSet
-    val (tasty, unreadable) = (primary ++ twins).flatMap(output =>
-      files(output.path).filter(file =>
-        file.toString.endsWith(".tasty") &&
-          !(manifest.platforms(output.module) && shared(output.path.relativize(file)))
-      )
-    ).partition(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess)
-    val skipped =
+    val (twins, primary) = manifest.outputs.partition(output => manifest.platforms(output.module))
+    val shared           = primary.flatMap(output => files(output.path).map(output.path.relativize(_))).toSet
+    val (copies, kept)   = (primary ++ twins).flatMap(output =>
+      files(output.path).collect { case file if file.toString.endsWith(".tasty") => output -> file }
+    ).partition((output, file) => manifest.platforms(output.module) && shared(output.path.relativize(file)))
+    val (tasty, unreadable) = kept.map(_._2).partition(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess)
+    val replacements        = replacing(manifest, copies)
+    val skipped             =
       unreadable.map(file => s"class file ${file.getFileName.toString.stripSuffix(".tasty")} could not be read")
     val roots                = manifest.outputs.flatMap(output => entryPoints(output.path)).toSet
     val matchers             = generated.map(FileSystems.getDefault.getPathMatcher(_))
@@ -167,7 +169,7 @@ object Extraction {
         Vector.empty
       ))
     else {
-      val phase =
+      def collector() =
         Collector(
           manifest.outputs,
           manifest.libraries,
@@ -176,18 +178,31 @@ object Extraction {
           reflective.map(qualifiedNames(_)),
           bounded
         )
-      val arguments = Array(
-        "-from-tasty",
-        "-Yretain-trees",
-        "-color:never",
-        // Findings name types in one line each, which the printer would otherwise wrap.
-        "-pagewidth",
-        Int.MaxValue.toString,
-        "-classpath",
-        evicted(manifest.classpath).mkString(File.pathSeparator)
-      ) ++ tasty.map(_.toString)
-      val reporter = Reader(phase).process(arguments, StoreReporter())
-      val problems = skipped ++ javaProblems ++ phase.problems ++ reporter.allErrors.map(_.message).distinct
+      def reading(phase: Collector, files: Vector[Path], classpath: Vector[Path]) = Reader(phase).process(
+        Array(
+          "-from-tasty",
+          "-Yretain-trees",
+          "-color:never",
+          // Findings name types in one line each, which the printer would otherwise wrap.
+          "-pagewidth",
+          Int.MaxValue.toString,
+          "-classpath",
+          evicted(classpath).mkString(File.pathSeparator)
+        ) ++ files.map(_.toString),
+        StoreReporter()
+      ).allErrors.map(_.message).distinct
+      val phase  = collector()
+      val errors = reading(phase, tasty, manifest.classpath)
+      // The replaced copies resolve against their own twin first, and the rest of the build behind it.
+      val behind   = primary.map(_.path) ++ manifest.classpath
+      val absorbed = replacements.map { (module, files) =>
+        val twin  = collector()
+        val own   = manifest.outputs.collect { case output if output.module == module => output.path }
+        val found = reading(twin, files, own ++ behind)
+        phase.absorb(twin)
+        found
+      }.flatten
+      val problems = skipped ++ javaProblems ++ phase.problems ++ errors ++ absorbed
       val graph    = merge(phase.graph(roots), java)
       // A platform twin replaces some sources with its own of the same name, so the types in them cannot move.
       val twinned = manifest.sources.filter(source => manifest.platforms(source.module)).groupMap(_.module)(_.path)
@@ -514,6 +529,26 @@ object Extraction {
     !excluded.exists(glob => qualifiedNames(glob.drop(1)).matches(s"$name."))
   }
 
+  /** The TASTy files of each platform twin that replace a class of the JVM modules, which the twin compiled from a
+    * source of its own: one no source of the JVM modules is. The TASTy records the source it came from.
+    */
+  private def replacing(manifest: Manifest, copies: Vector[(Output, Path)]): Vector[(String, Vector[Path])] = {
+    val primary = manifest.sources.filterNot(source => manifest.platforms(source.module)).map(_.path)
+    val own     = mutable.Map.empty[String, Boolean]
+    def replaced(file: Path): Boolean = sourceFile(file).exists(source =>
+      own.getOrElseUpdate(source, !primary.exists(_.endsWith(Path.of(source))))
+    )
+    copies.filter((_, file) => replaced(file)).groupMap(_._1.module)(_._2).toVector
+  }
+
+  private def sourceFile(tasty: Path): Option[String] =
+    Try(TastyUnpickler(Files.readAllBytes(tasty)).unpickle(Attribution)).toOption.flatten.flatMap(_.sourceFile)
+
+  private object Attribution extends TastyUnpickler.SectionUnpickler[Attributes]("Attributes") {
+    def unpickle(reader: TastyReader, names: TastyUnpickler.NameTable): Attributes =
+      AttributeUnpickler(reader, names).attributes
+  }
+
   private def files(directory: Path): Vector[Path] =
     if (!Files.isDirectory(directory)) Vector.empty
     else Using.resource(Files.walk(directory))(_.toList.asScala.toVector.filter(Files.isRegularFile(_)))
@@ -640,6 +675,7 @@ object Extraction {
     private val clones          = mutable.ArrayBuffer.empty[Clones.Group]
     private val members         = mutable.Map.empty[Symbol, Definition]
     private val users           = mutable.Map.empty[Symbol, mutable.Set[String]]
+    private var usage           = Map.empty[String, Set[String]]
     private val assigned        = mutable.Set.empty[Symbol]
     private val explicit        = mutable.Map.empty[(Symbol, String, String), mutable.ArrayBuffer[Algebra.Site]]
     private val memberList      = mutable.ArrayBuffer.empty[Members.Member]
@@ -665,7 +701,7 @@ object Extraction {
     private val enumerations    = mutable.ArrayBuffer.empty[Algebra.Enumeration]
     private val dispatches      = mutable.Map.empty[(Symbol, Symbol), (String, Type)]
     private val megamorphicList = mutable.ArrayBuffer.empty[Megamorphic.Site]
-    private val placements     = mutable.ArrayBuffer.empty[Placements]
+    private val placements      = mutable.ArrayBuffer.empty[Placements]
 
     def phaseName: String = "baumkuchen-collect"
 
@@ -702,6 +738,7 @@ object Extraction {
       } explicit.getOrElseUpdate((call.callee, parameter.name, value), mutable.ArrayBuffer.empty) +=
         Algebra.Site(Vector.empty, call.test, call.own, call.location)
       pending.clear()
+      usage = users.toVector.groupMapReduce((symbol, _) => memberName(symbol))((_, nodes) => nodes.toSet)(_ ++ _)
       memberList ++= members.map { (symbol, definition) =>
         val bases = symbol.allOverriddenSymbols.toVector
         Members.Member(
@@ -765,6 +802,18 @@ object Extraction {
       purities += purity()
       structured += structure()
       units
+    }
+
+    /** Adds what a twin's copies of replaced classes reference, which the copies of the JVM modules the node records
+      * stand in for: the edges, the users of members and of nested types.
+      */
+    def absorb(other: Collector): Unit = {
+      other.edges.foreach((source, targets) => targets.foreach(edge(source, _)))
+      val incoming = other.edges.toVector.flatMap((source, targets) => targets.map(_ -> source)).groupMap(_._1)(_._2)
+      memberList.mapInPlace(member =>
+        member.copy(users = member.users ++ other.usage.getOrElse(member.name, Set.empty))
+      )
+      nestedList.mapInPlace(inner => inner.copy(users = inner.users ++ incoming.getOrElse(inner.node, Vector.empty)))
     }
 
     def problem(message: String): Unit = failures += message
@@ -1563,15 +1612,9 @@ object Extraction {
       )
         key(symbol).flatMap(nodes.get).foreach { info =>
           val public = !field && !symbol.is(Flags.Protected) && !symbol.privateWithin.exists
-          val decls  = owner.info.decls
-          // Overloads, and a method named like a type beside it, are told apart by their parameter types.
-          val shared = symbol.is(Flags.Method) &&
-            (decls.lookupAll(symbol.name).exists(_ != symbol) || decls.lookup(symbol.name.toTypeName).exists)
-          val parameters =
-            if (shared) symbol.info.paramInfoss.map(_.map(_.show).mkString("(", ", ", ")")).mkString else ""
           members(symbol) =
             Definition(
-              qualifiedName(symbol) + parameters,
+              memberName(symbol),
               info.name,
               symbol.is(Flags.Deferred),
               public,
@@ -1581,6 +1624,16 @@ object Extraction {
               field
             )
         }
+    }
+
+    // Overloads, and a method named like a type beside it, are told apart by their parameter types.
+    private def memberName(symbol: Symbol)(using Context): String = {
+      val decls  = symbol.owner.info.decls
+      val shared = symbol.is(Flags.Method) &&
+        (decls.lookupAll(symbol.name).exists(_ != symbol) || decls.lookup(symbol.name.toTypeName).exists)
+      val parameters =
+        if (shared) symbol.info.paramInfoss.map(_.map(_.show).mkString("(", ", ", ")")).mkString else ""
+      qualifiedName(symbol) + parameters
     }
 
     // Generic derivation of an instance reads every field of a class, which no use shows; `CanEqual` reads none.

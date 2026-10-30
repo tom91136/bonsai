@@ -226,7 +226,7 @@ object Finding {
 case class Finding(
     rule: Finding.Rule,
     node: Node,
-    detail: String = "",
+    detail: String,
     level: Finding.Level = Finding.Level.Warning,
     suppressed: Set[String] = Set.empty
 ) {

@@ -213,6 +213,23 @@ class LivenessSuite extends AnalysisSuite {
     )
   }
 
+  test("generated definitions and members nothing uses are not reported, their handwritten users still count") {
+    val result = extract(
+      Seq(
+        entry,
+        "src/main/scala/Used.scala"            -> "object Used { def run(): Unit = println(Keys.Read) }",
+        "src/generated/main/scala/Keys.scala"  -> "object Keys { val Read = \"READ\"; val Spare = \"SPARE\" }",
+        "src/generated/main/scala/Table.scala" -> "object Table { val Rows = Vector(Helper.row) }",
+        "src/main/scala/Helper.scala"          -> "object Helper { def row = 1 }"
+      ),
+      generated = GeneratedSources
+    )
+    val found = Liveness.findings(result.graph) ++
+      Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
+    assertEquals(found.filter(_.node.generated), Vector.empty)
+    assertFinding(found, "unused", "Helper is unreachable from every entry point")
+  }
+
   test("the newest version of each repository artifact wins on the merged classpath") {
     val old    = Path.of("/cache/org/scala-lang/scala-library/2.13.16/scala-library-2.13.16.jar")
     val newest = Path.of("/cache/org/scala-lang/scala-library/3.9.0/scala-library-3.9.0.jar")

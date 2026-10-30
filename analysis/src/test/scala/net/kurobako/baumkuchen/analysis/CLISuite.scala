@@ -149,7 +149,15 @@ class CLISuite extends FunSuite {
   test("nesting limits are carried through, and a limit below its least is rejected") {
     assertEquals(CLI.parse(Nil).map(_.nesting), Right(Nesting.Config()))
     assertEquals(
-      CLI.parse(List("--nesting", "--nesting-depth", "3", "--nesting-damping", "0", "--nesting-size", "120")).map(_.nesting),
+      CLI.parse(List(
+        "--nesting",
+        "--nesting-depth",
+        "3",
+        "--nesting-damping",
+        "0",
+        "--nesting-size",
+        "120"
+      )).map(_.nesting),
       Right(Nesting.Config(depth = 3, damping = 0, size = 120, enabled = true))
     )
     assert(CLI.parse(List("--nesting-depth", "0")).left.exists(_.startsWith("a nesting depth is an integer")))

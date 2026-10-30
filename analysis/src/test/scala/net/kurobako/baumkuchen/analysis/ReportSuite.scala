@@ -28,7 +28,7 @@ class ReportSuite extends AnalysisSuite {
   test("suppression applies to a member by rule, and to a type with everything declared inside it") {
     val found = lines(defaults).map(line => s"${line.finding.node.name}: ${line.finding.detail}")
     assert(found.contains("Tools: Tools.spare is never referenced"), found.mkString("\n"))
-    assert(found.contains("Dead: "), found.mkString("\n"))
+    assert(found.contains("Dead: Dead is unreachable from every entry point"), found.mkString("\n"))
     assert(!found.exists(detail => detail.contains("kept") || detail.contains("Quiet") || detail.contains("Inner")))
   }
 

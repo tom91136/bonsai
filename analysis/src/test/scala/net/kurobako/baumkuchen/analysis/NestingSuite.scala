@@ -227,7 +227,8 @@ class NestingSuite extends AnalysisSuite {
         |  override def hashCode(): Int = hash
         |}"""
     )
-    val tests = Seq(file("CodeObjectIndexSuite", "object CodeObjectIndexSuite { val first = CodeObjectKey(Vector(1)) }"))
+    val tests =
+      Seq(file("CodeObjectIndexSuite", "object CodeObjectIndexSuite { val first = CodeObjectKey(Vector(1)) }"))
     steady(
       Seq(cache, key),
       Vector("CodeObjectKey -> LoadedProgram"),
@@ -246,7 +247,10 @@ class NestingSuite extends AnalysisSuite {
           |}"""
       )),
       tests,
-      Seq(file("CodeObjectIndexSuite", "import LoadedProgram.CodeObjectKey\nobject CodeObjectIndexSuite { val first = CodeObjectKey(Vector(1)) }"))
+      Seq(file(
+        "CodeObjectIndexSuite",
+        "import LoadedProgram.CodeObjectKey\nobject CodeObjectIndexSuite { val first = CodeObjectKey(Vector(1)) }"
+      ))
     )
   }
 
@@ -264,7 +268,10 @@ class NestingSuite extends AnalysisSuite {
     )
     assertEquals(moves(Seq(big, key), config = Nesting.Config(size = 2)), Vector("CodeObjectKey -> LoadedProgram"))
     assertEquals(
-      moves(Seq(file("CodeObjectKey", "private case class CodeObjectKey(\n  image: Vector[Int]\n)\n"), big), config = Nesting.Config(size = 2)),
+      moves(
+        Seq(file("CodeObjectKey", "private case class CodeObjectKey(\n  image: Vector[Int]\n)\n"), big),
+        config = Nesting.Config(size = 2)
+      ),
       Vector.empty[String]
     )
   }
@@ -305,7 +312,9 @@ class NestingSuite extends AnalysisSuite {
       |}"""
   )
 
-  test("a nested type that uses nothing of its parent and has users that use nothing else of it moves to the top level") {
+  test(
+    "a nested type that uses nothing of its parent and has users that use nothing else of it moves to the top level"
+  ) {
     val scope = file(
       "Scope",
       """class Scope[O](naming: Naming[O]) {
@@ -364,7 +373,10 @@ class NestingSuite extends AnalysisSuite {
             |  def of(owner: String): Layout = Layout(owner, Vector(Argument.Value))
             |}"""
         ),
-        file("Render", "object Render { def primitive(operand: Int): Int = PrimitiveLayout.term(PrimitiveLayout.of(\"a\"), operand) }")
+        file(
+          "Render",
+          "object Render { def primitive(operand: Int): Int = PrimitiveLayout.term(PrimitiveLayout.of(\"a\"), operand) }"
+        )
       ),
       Vector("PrimitiveLayout -> Render"),
       Seq(file(
@@ -386,7 +398,10 @@ class NestingSuite extends AnalysisSuite {
     assertEquals(
       moves(Seq(
         file("Backend", "trait Backend { def show(definition: Int): String }"),
-        file("ScalaBackend", "object ScalaBackend extends Backend { def show(definition: Int): String = definition.toString }")
+        file(
+          "ScalaBackend",
+          "object ScalaBackend extends Backend { def show(definition: Int): String = definition.toString }"
+        )
       )),
       Vector.empty[String]
     )
@@ -456,7 +471,10 @@ class NestingSuite extends AnalysisSuite {
         |}"""
     )
     val users = Seq(
-      file("Lane", "class Lane { def run(): Int = FloatSemantics.convert(1) + FloatSemantics.root(2) + Floats.helper(3) }"),
+      file(
+        "Lane",
+        "class Lane { def run(): Int = FloatSemantics.convert(1) + FloatSemantics.root(2) + Floats.helper(3) }"
+      ),
       file("Stage", "class Stage { def run(): Int = FloatSemantics.convert(4) + FloatSemantics.root(5) }")
     )
     steady(
@@ -499,8 +517,14 @@ class NestingSuite extends AnalysisSuite {
         |}"""
     )
     val users = Seq(
-      file("Lane", "class Lane { def run(): Long = MatrixSemantics.first(1) + MatrixSemantics.second(2) + MatrixArithmetic.round(1) }"),
-      file("Stage", "class Stage { def run(): Long = MatrixSemantics.first(1) + MatrixSemantics.second(2) + MatrixArithmetic.round(2) }")
+      file(
+        "Lane",
+        "class Lane { def run(): Long = MatrixSemantics.first(1) + MatrixSemantics.second(2) + MatrixArithmetic.round(1) }"
+      ),
+      file(
+        "Stage",
+        "class Stage { def run(): Long = MatrixSemantics.first(1) + MatrixSemantics.second(2) + MatrixArithmetic.round(2) }"
+      )
     )
     val tests = Seq(file("MatrixSuite", "object MatrixSuite { val widened = MatrixArithmetic.widen(1) }"))
     assertEquals(

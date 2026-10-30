@@ -47,10 +47,14 @@ object Members {
 
   case class Model(members: Vector[Member], givens: Vector[Given], nested: Vector[Nested])
 
-  /** Members of `live` nodes; members of unreachable types are covered by the type-level liveness findings. */
-  def findings(model: Model, nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
+  /** Members of `live` nodes; members of unreachable types are covered by the type-level liveness findings. Generated
+    * members are where their generator puts them, whatever uses them.
+    */
+  def findings(model: Model, nodes: Map[String, Node], live: String => Boolean): Vector[Finding] = {
+    val written = model.members.filterNot(member => nodes.get(member.node).exists(_.generated))
     anonymous(model.givens, nodes, live) ++ hidden(model.nested, nodes, live) ++
-      grouped(visibility(model.members, nodes, live)) ++ misplaced(model.members, nodes, live)
+      grouped(visibility(written, nodes, live)) ++ misplaced(written, nodes, live)
+  }
 
   private val Shown = 6
 

@@ -6,10 +6,9 @@ import scala.collection.mutable
 /** Where the types and the helpers of a build belong, as one target placement worked out from who uses what.
   *
   * The graph holds declarations only: a type with its companion as one unit, and the members of objects that can move.
-  * An edge is a reference written inside one declaration to another. It never counts as a reference to the
-  * declarations around its target, whatever the code writes before the name, so the graph is the same wherever the
-  * declarations stand. A unit used from another sbt module, or entered from outside the build, is a root; tests are
-  * left out.
+  * An edge is a reference written inside one declaration to another. It never counts as a reference to the declarations
+  * around its target, whatever the code writes before the name, so the graph is the same wherever the declarations
+  * stand. A unit used from another sbt module, or entered from outside the build, is a root; tests are left out.
   *
   * The immediate dominator of a unit in the graph of the units, where a member stands for the unit it is placed in, is
   * the unit that owns it. Guards then veto moves on the target tree, and a vetoed declaration stays where it is, which
@@ -19,9 +18,9 @@ import scala.collection.mutable
   */
 object Nesting {
 
-  /** `depth` is the deepest nesting a move may create, one level less when the move crosses files; `damping` the
-    * number of declarations that must use a moved one from its new owner; `size` the most lines a moved unit, or a
-    * group of helpers that move together, may have; the rule reports only when `enabled`.
+  /** `depth` is the deepest nesting a move may create, one level less when the move crosses files; `damping` the number
+    * of declarations that must use a moved one from its new owner; `size` the most lines a moved unit, or a group of
+    * helpers that move together, may have; the rule reports only when `enabled`.
     */
   case class Config(depth: Int = 2, damping: Int = 1, size: Int = 200, enabled: Boolean = false)
 
@@ -88,10 +87,11 @@ object Nesting {
     (from.owner, to.owner) match {
       case (_, Some(owner)) if from.owner.contains(owner) =>
         s"$name needs no instance of ${last(owner)}; move it to the companion object of ${last(owner)}"
-      case (_, Some(owner)) if declaration.unit => s"$name is reached only through ${last(owner)}; nest it in ${last(owner)}"
-      case (_, Some(owner)) => s"$name is used only by ${last(owner)}; move it into ${last(owner)}"
+      case (_, Some(owner)) if declaration.unit =>
+        s"$name is reached only through ${last(owner)}; nest it in ${last(owner)}"
+      case (_, Some(owner))    => s"$name is used only by ${last(owner)}; move it into ${last(owner)}"
       case (Some(owner), None) => s"$name uses nothing of ${last(owner)}; move it out to the top level"
-      case (None, None) => s"$name stays at the top level"
+      case (None, None)        => s"$name stays at the top level"
     }
   }
 
@@ -188,7 +188,7 @@ object Nesting {
 
     // A member moves to the one unit all its users are in.
     private val owners: Map[String, Option[String]] = {
-      val placed = mutable.Map.empty[String, Option[String]]
+      val placed                             = mutable.Map.empty[String, Option[String]]
       def home(user: String): Option[String] =
         if (declarations(user).unit) Some(user) else placed.getOrElse(user, outer(user))
       order.foreach { member =>
@@ -205,19 +205,21 @@ object Nesting {
     }
 
     private val candidate: Map[String, Candidate] = {
-      def host(name: String): Option[String] = if (declarations(name).unit) Some(name) else owners(name).filter(declarations.contains)
-      val index                              = units.zipWithIndex.toMap
-      val root                               = units.size
+      def host(name: String): Option[String] =
+        if (declarations(name).unit) Some(name) else owners(name).filter(declarations.contains)
+      val index = units.zipWithIndex.toMap
+      val root  = units.size
       val links = edges.toVector.flatMap { (from, targets) =>
         val hosted = targets.flatMap(host(_))
-        host(from).toVector.flatMap(source => hosted.collect { case target if target != source => index(source) -> index(target) })
+        host(from).toVector.flatMap(source =>
+          hosted.collect { case target if target != source => index(source) -> index(target) }
+        )
       }.distinct
       val following = links.groupMap(_._1)(_._2)
       val reached   = links.map(_._2).toSet
       // a top-level unit nothing uses is the API of its build
-      val standing = units.filter(unit => outer(unit).isEmpty && !reached(index(unit))).map(index)
-      val entered  =
-        (crossed.toVector ++ names.filter(declarations(_).entry)).flatMap(host(_)).map(index) ++ standing
+      val standing   = units.filter(unit => outer(unit).isEmpty && !reached(index(unit))).map(index)
+      val entered    = (crossed.toVector ++ names.filter(declarations(_).entry)).flatMap(host(_)).map(index) ++ standing
       val successors = Array.tabulate(units.size + 1) { node =>
         (if (node == root) entered.distinct else following.getOrElse(node, Vector.empty)).sorted.toArray
       }
@@ -283,7 +285,8 @@ object Nesting {
       def height(name: String, moved: Set[String]): Int = {
         @tailrec
         def descend(level: Vector[String], count: Int): Int = {
-          val below = level.flatMap(kids.getOrElse(_, Vector.empty)).filter(kid => declarations(kid).unit && !moved(kid))
+          val below =
+            level.flatMap(kids.getOrElse(_, Vector.empty)).filter(kid => declarations(kid).unit && !moved(kid))
           if (below.isEmpty) count else descend(below, count + 1)
         }
         descend(Vector(name), 0)
@@ -309,10 +312,10 @@ object Nesting {
 
     // Helpers that move together from one owner to another are one move, however large each is.
     private def crowded(placed: Map[String, Place], moved: Vector[String]): Set[String] = {
-      val helpers  = moved.filterNot(declarations(_).unit)
-      val together = helpers.toSet
+      val helpers             = moved.filterNot(declarations(_).unit)
+      val together            = helpers.toSet
       def route(name: String) = (outer(name), placed(name).owner)
-      val joined = helpers.map { helper =>
+      val joined              = helpers.map { helper =>
         helper -> (uses(helper) ++ usersOf(helper)).filter(other => together(other) && route(other) == route(helper))
       }.toMap
       @tailrec
@@ -337,17 +340,18 @@ object Nesting {
       val landing     = to.fold(0)(parent => tree.depth(parent) + 1)
       val oldFile     = from.fold(name)(tree.top)
       val crossing    = to.exists(parent => tree.top(parent) != oldFile)
-      val tooDeep     = landing + tree.height(name, moved) > config.depth || (crossing && landing > (config.depth - 1).max(1))
+      val tooDeep     = landing + tree.height(name, moved) > config.depth ||
+        (crossing && landing > (config.depth - 1).max(1))
       // moving up out of a unit that is already inside the owner would only flatten it
-      val lifting     = (from, to) match {
+      val lifting = (from, to) match {
         case (Some(parent), Some(owner)) => parent != owner && tree.within(parent, owner)
         case _                           => false
       }
-      val leaving     = from.exists(parent => !to.exists(tree.within(_, parent)))
-      val dependent   = leaving && from.exists(parent => reached.exists(tree.within(_, parent)))
-      val scattered   = to.exists(parent => outside.exists(user => tree.top(user) != tree.top(parent)))
-      val welcome     = (to, from) match {
-        case (Some(parent), _) => outside.count(tree.within(_, parent)) >= config.damping
+      val leaving   = from.exists(parent => !to.exists(tree.within(_, parent)))
+      val dependent = leaving && from.exists(parent => reached.exists(tree.within(_, parent)))
+      val scattered = to.exists(parent => outside.exists(user => tree.top(user) != tree.top(parent)))
+      val welcome   = (to, from) match {
+        case (Some(parent), _)    => outside.count(tree.within(_, parent)) >= config.damping
         case (None, Some(parent)) =>
           outside.count { user =>
             !tree.within(user, parent) && uses(user).forall(used => bundle(used) || !tree.within(used, parent))
@@ -394,12 +398,22 @@ object Nesting {
       joinable.headOption match {
         case Some((unit, (owner, kids))) =>
           val gone = kids.map(_.declaration.name).toSet
-          joined(tree, moves.filterNot(move => gone(move.declaration.name)) :+ Move(declarations(unit), Place(Some(owner), inside = false)))
+          joined(
+            tree,
+            moves.filterNot(move => gone(move.declaration.name)) :+
+              Move(declarations(unit), Place(Some(owner), inside = false))
+          )
         case None => moves
       }
     }
 
-    private def fits(tree: Tree, owner: String, kids: Vector[String], going: Set[String], shell: Declaration): Boolean = {
+    private def fits(
+        tree: Tree,
+        owner: String,
+        kids: Vector[String],
+        going: Set[String],
+        shell: Declaration
+    ): Boolean = {
       val landing  = tree.depth(owner) + 1
       val below    = kids.map(kid => 1 + tree.height(kid, going)).max
       val crossing = tree.top(owner) != tree.top(shell.name)

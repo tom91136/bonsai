@@ -9,16 +9,21 @@ object Liveness {
     List(Finding.Rule.Unused, Finding.Rule.TestOnly, Finding.Rule.UnusedMember, Finding.Rule.TestOnlyMember)
       .map(_.id)
 
-  /** Main definitions unreachable from main entry points, reported at their outermost unreachable enclosure. */
+  /** Main definitions unreachable from main entry points, reported at their outermost unreachable enclosure. Generated
+    * definitions mirror the table they come from, whose own consumers decide which entries live.
+    */
   def findings(graph: Graph): Vector[Finding] = {
-    val mainNodes   = graph.nodes.values.filterNot(_.test).toVector
+    val mainNodes   = graph.nodes.values.filter(node => !node.test && !node.generated).toVector
     val mainRoots   = graph.roots.filter(name => graph.nodes.get(name).exists(!_.test))
     val testRoots   = graph.nodes.values.filter(_.test).map(_.name).toSet
     val fromMain    = reachable(graph.edges, mainRoots)
     val fromAnyRoot = reachable(graph.edges, mainRoots ++ testRoots)
     val findings    = mainNodes.collect {
-      case node if !fromAnyRoot(node.name) => node.name -> Finding(Finding.Rule.Unused, node)
-      case node if !fromMain(node.name)    => node.name -> Finding(Finding.Rule.TestOnly, node)
+      case node if !fromAnyRoot(node.name) =>
+        node.name ->
+          Finding(Finding.Rule.Unused, node, s"${node.name.split('.').last} is unreachable from every entry point")
+      case node if !fromMain(node.name) =>
+        node.name -> Finding(Finding.Rule.TestOnly, node, s"${node.name.split('.').last} is reachable only from tests")
     }.toMap
     findings.values.filterNot { finding =>
       finding.node.outer.flatMap(findings.get).exists(_.rule == finding.rule)

@@ -247,6 +247,26 @@ class MembersSuite extends AnalysisSuite {
     )
   }
 
+  test("a platform twin's replacement of a shared source counts as a user of what only the twin defines") {
+    val result = extract(
+      Seq(entry("Workarounds.install()"), "Workarounds.scala" -> "object Workarounds { def install(): Unit = () }"),
+      twins = Seq(Seq(
+        "Workarounds.scala" -> "object Workarounds { def install(): Unit = Relay.install() }",
+        "Relay.scala"       -> "object Relay { def install(): Unit = (); def spare(): Unit = () }",
+        "Orphan.scala"      -> "class Orphan { def run(): Unit = () }"
+      ))
+    )
+    assertEquals(result.graph.nodes.get("Workarounds").map(_.module), Some("m"))
+    val found =
+      (Liveness.findings(result.graph) ++
+        Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph)))
+        .filterNot(_.rule == Finding.Rule.MisplacedMember)
+    assertEquals(
+      found.map(finding => finding.rule.id -> finding.detail.takeWhile(_ != ' ')).toSet,
+      Set("unused" -> "Orphan", "unused-member" -> "Relay.spare")
+    )
+  }
+
   test("dynamic dispatch reaches implementations, and an unused declaration is reported once") {
     val found = findings(Seq(
       entry("val shape: Shape = Square(); println(shape.area)"),

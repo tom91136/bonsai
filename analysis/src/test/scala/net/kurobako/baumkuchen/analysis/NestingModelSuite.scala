@@ -35,7 +35,10 @@ class NestingModelSuite extends FunSuite {
     )
 
   private def plan(declarations: Vector[Nesting.Declaration], edges: (String, String)*): Nesting.Plan =
-    Nesting.plan(Nesting.Model(declarations, edges.groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap), Nesting.Config())
+    Nesting.plan(
+      Nesting.Model(declarations, edges.groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap),
+      Nesting.Config()
+    )
 
   private def moved(plan: Nesting.Plan): Map[String, Option[String]] =
     plan.moves.map(move => move.declaration.name -> move.to.owner).toMap
@@ -52,7 +55,7 @@ class NestingModelSuite extends FunSuite {
       declarations,
       "Client" -> "Api",
       "Client" -> "Outer.Shared",
-      "Api" -> "Helper"
+      "Api"    -> "Helper"
     )
     assertEquals(moved(found), Map("Helper" -> Some("Api"), "Outer.Shared" -> None))
   }
@@ -134,7 +137,7 @@ class NestingModelSuite extends FunSuite {
     val placed = model.declarations.map(d =>
       places.get(d.name).fold(d)(place => d.copy(node = d.node.copy(outer = place.owner), inside = place.inside))
     )
-    val byName = placed.map(d => d.name -> d).toMap
+    val byName                                                               = placed.map(d => d.name -> d).toMap
     def top(d: Nesting.Declaration, steps: Int): Option[Nesting.Declaration] =
       if (steps > byName.size) None
       else d.node.outer.fold(Some(d))(owner => top(byName(owner), steps + 1))
@@ -142,9 +145,11 @@ class NestingModelSuite extends FunSuite {
       places.contains(d.name) || d.node.outer.exists(owner => moving(byName(owner)))
     val homed = placed.map(d => d -> top(d, 0))
     Option.when(homed.forall(_._2.isDefined))(
-      model.copy(declarations = homed.map((d, root) =>
-        if (d.node.outer.isDefined && moving(d)) d.copy(node = d.node.copy(source = root.get.node.source)) else d
-      ))
+      model.copy(declarations =
+        homed.map((d, root) =>
+          if (d.node.outer.isDefined && moving(d)) d.copy(node = d.node.copy(source = root.get.node.source)) else d
+        )
+      )
     )
   }
 

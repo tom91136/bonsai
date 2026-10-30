@@ -51,7 +51,7 @@ private class Placements(resolver: Placements.Resolver)(using Context) extends t
 
   def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
     case tpd.Import(_, _) | tpd.Export(_, _) => ()
-    case tpd.PackageDef(_, statements) => statements.foreach(traverse(_))
+    case tpd.PackageDef(_, statements)       => statements.foreach(traverse(_))
     case definition @ tpd.TypeDef(_, template: tpd.Template) if definition.symbol.isClass =>
       enter(definition, template)
     case definition: tpd.ValDef if definition.symbol.is(Flags.Module) => ()
@@ -157,7 +157,7 @@ private class Placements(resolver: Placements.Resolver)(using Context) extends t
   // A method, value or alias of an object that nothing about it ties down.
   private def key(symbol: Symbol)(using Context): Option[String] = {
     val owner = symbol.owner
-    val tied =
+    val tied  =
       if (symbol.isTerm)
         symbol.isOneOf(
           Flags.Synthetic | Flags.Given | Flags.Implicit | Flags.Inline | Flags.Mutable | Flags.Deferred |
@@ -188,9 +188,11 @@ private class Placements(resolver: Placements.Resolver)(using Context) extends t
     if (definition.span.exists) definition.sourcePos.endLine - definition.sourcePos.startLine + 1 else 0
 
   private def holds(name: String, symbol: Symbol, definition: tpd.MemberDef)(using Context): Unit = {
-    current.foreach(from => units.updateWith(from)(_.map(held => held.copy(lines = held.lines - extent(definition)))): Unit)
+    current.foreach(from =>
+      units.updateWith(from)(_.map(held => held.copy(lines = held.lines - extent(definition)))): Unit
+    )
     val suppressed = resolver.suppressions(symbol)
-    val inherited  = current.flatMap(from => (units.get(from).orElse(members.get(from))).map(_.node.suppressed))
+    val inherited  = current.flatMap(from => units.get(from).orElse(members.get(from)).map(_.node.suppressed))
     val all        = suppressed ++ inherited.getOrElse(Set.empty)
     val quiet      = all.exists(id => id == "*" || id == Finding.Rule.Nesting.id)
     if (symbol.isClass) {
@@ -198,7 +200,7 @@ private class Placements(resolver: Placements.Resolver)(using Context) extends t
         val sealedFamily = symbol.is(Flags.Sealed) && !symbol.is(Flags.Enum) ||
           symbol.asClass.parentSyms.exists(_.is(Flags.Sealed))
         val instance = symbol.is(Flags.Given) || symbol.is(Flags.ModuleClass) && symbol.sourceModule.is(Flags.Given)
-        val tied  = symbol.is(Flags.Trait) || sealedFamily || instance || symbol.isAllOf(Flags.EnumCase) ||
+        val tied     = symbol.is(Flags.Trait) || sealedFamily || instance || symbol.isAllOf(Flags.EnumCase) ||
           node.generated || quiet || opaque(symbol.owner)
         val fresh = Held(
           node.copy(suppressed = node.suppressed ++ all),
@@ -242,9 +244,9 @@ private class Placements(resolver: Placements.Resolver)(using Context) extends t
   private def nothingElse(definition: tpd.MemberDef)(using Context): Boolean = definition match {
     case tpd.TypeDef(_, template: tpd.Template) =>
       template.body.forall {
-        case nested @ tpd.TypeDef(_, _: tpd.Template) => nested.symbol.isClass
+        case nested @ tpd.TypeDef(_, _: tpd.Template)             => nested.symbol.isClass
         case module: tpd.ValDef if module.symbol.is(Flags.Module) => true
-        case other: tpd.MemberDef =>
+        case other: tpd.MemberDef                                 =>
           other.symbol.is(Flags.Synthetic) || other.symbol.isConstructor || key(other.symbol).isDefined
         case _ => false
       }
