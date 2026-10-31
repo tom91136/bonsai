@@ -32,7 +32,7 @@ private class Library(using Context) {
 
   def text(tpe: Type): Boolean = derives(tpe, defn.StringClass) || derives(tpe, StringOps)
 
-  def traversal(tpe: Type): Boolean = sized(tpe) || derives(tpe, ArrayOps) || derives(tpe, StringOps)
+  def traversal(tpe: Type): Boolean = Traversals.collection(tpe)
 
   def linked(tpe: Type): Boolean = derives(tpe, LinearSeq)
 

@@ -1,5 +1,7 @@
 package net.kurobako.bonsai.analysis
 
+import net.kurobako.bonsai.effects.Kind
+
 class PuritySuite extends AnalysisSuite {
   private lazy val result = extract(Seq(
     "Main.scala" -> "object Main { def main(args: Array[String]): Unit = println(Pure) }",
@@ -67,6 +69,18 @@ class PuritySuite extends AnalysisSuite {
   private def verdict(name: String): Purity.Verdict =
     result.purity.verdicts.getOrElse(name, fail(s"no verdict for $name"))
 
+  private def impure(cause: String): Purity.Verdict = Purity.Verdict.Effectful(cause, Purity.Certainty.Known)
+
+  private def isImpure(verdict: Purity.Verdict): Boolean = verdict match {
+    case Purity.Verdict.Effectful(_, Purity.Certainty.Known) => true
+    case _                                                   => false
+  }
+
+  private def isUnknown(verdict: Purity.Verdict): Boolean = verdict match {
+    case Purity.Verdict.Effectful(_, Purity.Certainty.Unknown(_)) => true
+    case _                                                        => false
+  }
+
   test("pure methods stay pure through recursion, functions they are given, and values they allocate") {
     Vector("Pure.double", "Pure.factorial", "Pure.incremented", "Pure.summed", "Pure.counted", "Pure.parsed").foreach(
       name => assertEquals(verdict(name), Purity.Verdict.Pure, name)
@@ -74,18 +88,18 @@ class PuritySuite extends AnalysisSuite {
   }
 
   test("effects of callees, of the functions they run, and on shared values make a method impure") {
-    assertEquals(verdict("Pure.logged"), Purity.Verdict.Impure("calls scala.Predef.println"))
-    assertEquals(verdict("Pure.pushed"), Purity.Verdict.Impure("calls scala.collection.mutable.Growable.+="))
-    assertEquals(verdict("Pure.shared"), Purity.Verdict.Impure("calls Counter.bump, which writes state"))
-    assertEquals(verdict("Pure.clock"), Purity.Verdict.Impure("calls java.lang.System.nanoTime"))
-    assertEquals(verdict("Pure.ping"), Purity.Verdict.Impure("calls Pure.pong, which performs output"))
+    assertEquals(verdict("Pure.logged"), impure("calls scala.Predef.println"))
+    assertEquals(verdict("Pure.pushed"), impure("calls scala.collection.mutable.Growable.+="))
+    assertEquals(verdict("Pure.shared"), impure("calls Counter.bump, which writes state"))
+    assertEquals(verdict("Pure.clock"), impure("calls java.lang.System.nanoTime"))
+    assertEquals(verdict("Pure.ping"), impure("calls Pure.pong, which performs output"))
     assertEquals(verdict("Pure.named"), Purity.Verdict.Pure)
-    assertEquals(verdict("Pure.read"), Purity.Verdict.Impure("calls java.nio.file.Files.readString"))
-    assertEquals(verdict("Counter.bump"), Purity.Verdict.Impure("writes n"))
+    assertEquals(verdict("Pure.read"), impure("calls java.nio.file.Files.readString"))
+    assertEquals(verdict("Counter.bump"), impure("writes n"))
   }
 
   test("calls without known effects are unknown, never pure") {
-    assert(clue(verdict("Pure.pool")).isInstanceOf[Purity.Verdict.Unknown])
+    assert(isUnknown(clue(verdict("Pure.pool"))))
   }
 
   private lazy val found = Purity.findings(result.purity, result.graph.nodes)
@@ -93,7 +107,9 @@ class PuritySuite extends AnalysisSuite {
 
   test("dropping the result of a call with no effects is reported, but not of calls that act, throw or construct") {
     assertEquals(
-      found.filter(_.rule == Finding.Rule.PureDiscard).map(_.detail.takeWhile(_ != ' ')).sorted,
+      found.collect {
+        case finding if finding.rule == Finding.Rule.PureDiscard => finding.detail.takeWhile(_ != ' ')
+      }.sorted,
       Vector("List.map", "List.map", "List.map", "List.map", "Pure.double")
     )
   }
@@ -102,8 +118,9 @@ class PuritySuite extends AnalysisSuite {
     "functions passed to collection transformations that write state, perform output or are nondeterministic are reported"
   ) {
     assertEquals(
-      found.filter(_.rule == Finding.Rule.EffectfulTransform).map(finding => Located.replaceAllIn(finding.detail, ""))
-        .sorted,
+      found.collect {
+        case finding if finding.rule == Finding.Rule.EffectfulTransform => Located.replaceAllIn(finding.detail, "")
+      }.sorted,
       Vector(
         "the function passed to filter calls scala.collection.mutable.Growable.+=",
         "the function passed to map calls java.nio.file.Files.writeString",
@@ -113,11 +130,12 @@ class PuritySuite extends AnalysisSuite {
     )
   }
 
-  private lazy val linked = extract(
-    Seq(
-      "Main.scala"  -> "object Main { def main(args: Array[String]): Unit = println(Calls) }",
-      "Calls.scala" ->
-        """object Calls {
+  private def analysed(name: String, source: String, dependencies: Seq[(String, String)]): Extraction.Result =
+    extract(program(name, source), dependencies = dependencies)
+
+  private lazy val linked = analysed(
+    "Invocations",
+    """object Invocations {
           |  def added: Int = lib.Library.plus(1)
           |  def shouted: Int = lib.Library.shout(1)
           |  def boxed: Int = lib.Box(1).doubled
@@ -127,9 +145,8 @@ class PuritySuite extends AnalysisSuite {
           |  def built: Int = lib.Open(1).value
           |  def sized(sized: lib.Sized): Int = sized.size
           |  def hidden(hidden: lib.Hidden): Int = hidden.size
-          |}""".stripMargin
-    ),
-    dependencies = Seq(
+          |}""".stripMargin,
+    Seq(
       "Library.scala" ->
         """package lib
           |object Library {
@@ -153,22 +170,20 @@ class PuritySuite extends AnalysisSuite {
       "or of sealed classes"
   ) {
     def verdict(name: String) = linked.purity.verdicts.getOrElse(name, fail(s"no verdict for $name"))
-    assertEquals(verdict("Calls.added"), Purity.Verdict.Pure)
-    assertEquals(verdict("Calls.shouted"), Purity.Verdict.Impure("calls Library.shout, which performs output"))
-    assertEquals(verdict("Calls.boxed"), Purity.Verdict.Pure)
-    assertEquals(verdict("Calls.kept"), Purity.Verdict.Pure)
-    assert(clue(verdict("Calls.shaped")).isInstanceOf[Purity.Verdict.Unknown])
-    assert(clue(verdict("Calls.opened")).isInstanceOf[Purity.Verdict.Unknown])
-    assertEquals(verdict("Calls.built"), Purity.Verdict.Pure)
-    assertEquals(verdict("Calls.sized"), Purity.Verdict.Pure)
-    assert(clue(verdict("Calls.hidden")).isInstanceOf[Purity.Verdict.Unknown])
+    assertEquals(verdict("Invocations.added"), Purity.Verdict.Pure)
+    assertEquals(verdict("Invocations.shouted"), impure("calls Library.shout, which performs output"))
+    assertEquals(verdict("Invocations.boxed"), Purity.Verdict.Pure)
+    assertEquals(verdict("Invocations.kept"), Purity.Verdict.Pure)
+    assert(isUnknown(clue(verdict("Invocations.shaped"))))
+    assert(isUnknown(clue(verdict("Invocations.opened"))))
+    assertEquals(verdict("Invocations.built"), Purity.Verdict.Pure)
+    assertEquals(verdict("Invocations.sized"), Purity.Verdict.Pure)
+    assert(isUnknown(clue(verdict("Invocations.hidden"))))
   }
 
-  private lazy val traced = extract(
-    Seq(
-      "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Traced) }",
-      "Traced.scala" ->
-        """object Handlers {
+  private lazy val traced = analysed(
+    "Traced",
+    """object Handlers {
           |  val double: Int => Int = _ * 2
           |  val shout: Int => Int  = x => { println(x); x }
           |  val loud: Map[String, Int => Int]  = Map("d" -> double, "s" -> shout)
@@ -200,9 +215,8 @@ class PuritySuite extends AnalysisSuite {
           |  def doubled: Int = quiet(_ * 2)(1)
           |  def shouted: Int = Loud(x => { println(x); x })(1)
           |}
-          |class Open(run: Int => Int) { def apply(x: Int): Int = run(x) }""".stripMargin
-    ),
-    dependencies = Seq(
+          |class Open(run: Int => Int) { def apply(x: Int): Int = run(x) }""".stripMargin,
+    Seq(
       "Show.scala" ->
         """package lib
           |trait Show[A] { def show(value: A): String }
@@ -226,15 +240,15 @@ class PuritySuite extends AnalysisSuite {
       assertEquals(verdict(s"Traced.$name"), Purity.Verdict.Pure, name)
     )
     Vector("shouted", "loudly", "shownString", "ranLoud", "printed").foreach(name =>
-      assert(clue(verdict(s"Traced.$name")).isInstanceOf[Purity.Verdict.Impure], name)
+      assert(isImpure(clue(verdict(s"Traced.$name"))), name)
     )
   }
 
   test("functions stored in objects only the build constructs run what every construction passes them") {
     def verdict(name: String) = traced.purity.verdicts.getOrElse(name, fail(s"no verdict for $name"))
     assertEquals(verdict("Stored.Quiet.apply"), Purity.Verdict.Pure)
-    assert(clue(verdict("Stored.Loud.apply")).isInstanceOf[Purity.Verdict.Impure])
-    assert(clue(verdict("Open.apply")).isInstanceOf[Purity.Verdict.Unknown])
+    assert(isImpure(clue(verdict("Stored.Loud.apply"))))
+    assert(isUnknown(clue(verdict("Open.apply"))))
   }
 
   private def cycles(bodies: Seq[(String, String)]): Map[String, Purity.Verdict] = extract(
@@ -258,10 +272,7 @@ class PuritySuite extends AnalysisSuite {
     )
     val verdicts = cycles(shapes)
     shapes.foreach((name, _) =>
-      assert(
-        clue(verdicts.getOrElse(s"Cycles.$name", fail(s"no verdict for $name"))).isInstanceOf[Purity.Verdict.Unknown],
-        name
-      )
+      assert(isUnknown(clue(verdicts.getOrElse(s"Cycles.$name", fail(s"no verdict for $name")))), name)
     )
   }
 
@@ -288,7 +299,7 @@ class PuritySuite extends AnalysisSuite {
     val found = Purity.regressions(result.purity, result.graph.nodes, Set("Pure.double", "Pure.logged", "Gone.method"))
     assertEquals(found.map(_.rule), Vector(Finding.Rule.PurityRegression))
     assertFinding(found, "purity-regression", "Pure.logged was pure and now calls scala.Predef.println")
-    val locked = Purity.locked(Purity.lock(result.purity, result.graph.nodes))
+    val locked = Report.keys(Purity.lock(result.purity, result.graph.nodes))
     assert(locked("Pure.double"))
     assert(!locked("Pure.logged"))
   }
@@ -297,7 +308,7 @@ class PuritySuite extends AnalysisSuite {
     val found = Purity.violations(
       result.purity,
       result.graph.nodes,
-      Vector(Purity.Policy("Pure", Set.empty), Purity.Policy("Pure.read", Set(Purity.Kind.Input)))
+      Vector(Purity.Policy("Pure", Set.empty), Purity.Policy("Pure.read", Set(Kind.Input)))
     )
     assertFinding(
       found,
@@ -312,7 +323,7 @@ class PuritySuite extends AnalysisSuite {
       Purity.violations(
         result.purity,
         result.graph.nodes,
-        Vector(Purity.Policy("*", Set(Purity.Kind.Reads, Purity.Kind.Writes)))
+        Vector(Purity.Policy("*", Set(Kind.Reads, Kind.Writes)))
       )
     assertFinding(
       wildcard,
@@ -374,17 +385,21 @@ class PuritySuite extends AnalysisSuite {
   private lazy val contracts = Purity.findings(contracted.purity, contracted.graph.nodes)
 
   test("equals, hashCode, compare and extractors with effects beyond caching on their receiver are reported") {
-    val found = contracts.filter(_.rule == Finding.Rule.ImpureContract).map(_.detail.takeWhile(_ != ' ')).sorted
+    val found = contracts.collect {
+      case finding if finding.rule == Finding.Rule.ImpureContract => finding.detail.takeWhile(_ != ' ')
+    }.sorted
     assertEquals(found, Vector("ByLength.compare", "Even.unapply", "Loud.equals", "Loud.hashCode"))
     assertEquals(
       contracted.purity.verdicts("Remembering.hashCode"),
-      Purity.Verdict.Impure("calls Memo.remember, which writes state")
+      impure("calls Memo.remember, which writes state")
     )
     assertFinding(contracts, "impure-contract", "Loud.equals calls scala.Predef.println", "call equals any number")
   }
 
   test("assignments to variables other threads share, outside synchronized and volatile ones, are reported") {
-    val found = contracts.filter(_.rule == Finding.Rule.SharedWrite).map(_.detail.split(' ').slice(2, 3).mkString)
+    val found = contracts.collect {
+      case finding if finding.rule == Finding.Rule.SharedWrite => finding.detail.split(' ').slice(2, 3).mkString
+    }
     assertEquals(found.sorted, Vector("Future.apply", "Future.apply", "Pool.run"))
     assertFinding(contracts, "shared-write", "assigns count")
     assertFinding(contracts, "shared-write", "Pool.run runs", "assigns total")
@@ -395,17 +410,15 @@ class PuritySuite extends AnalysisSuite {
   }
 
   test("an effectful function passed to a view is reported as running again on every traversal it escapes to") {
-    val viewed = contracts.filter(_.rule == Finding.Rule.EffectfulTransform).map(_.detail)
+    val viewed = contracts.collect { case finding if finding.rule == Finding.Rule.EffectfulTransform => finding.detail }
     assertEquals(viewed.count(_.contains("a view runs it again")), 1, viewed.mkString("\n"))
     assertEquals(viewed.count(_.contains("keep transformations pure")), 1, viewed.mkString("\n"))
     assertEquals(viewed.size, 2, viewed.mkString("\n"))
   }
 
-  private lazy val known = extract(
-    Seq(
-      "Main.scala"    -> "object Main { def main(args: Array[String]): Unit = println(Effects) }",
-      "Effects.scala" ->
-        """object Effects {
+  private lazy val known = analysed(
+    "Behaviours",
+    """object Behaviours {
           |  def uuid(): java.util.UUID = java.util.UUID.randomUUID()
           |  def math(): Double = Math.random()
           |  def random(): Int = scala.util.Random.nextInt(10)
@@ -416,9 +429,13 @@ class PuritySuite extends AnalysisSuite {
           |    System.arraycopy(source, 0, target, 0, source.length)
           |  def printed(): Unit = { val out = new java.io.ByteArrayOutputStream(); out.write(1) }
           |  def logged(text: String): Unit = org.slf4j.LoggerFactory.getLogger("effects").info(text)
-          |}""".stripMargin
-    ),
-    dependencies = Seq(
+          |  def incremented(adder: java.util.concurrent.atomic.LongAdder): Unit = adder.increment()
+          |  def cleared(adder: java.util.concurrent.atomic.LongAdder): Unit = adder.reset()
+          |  def exchanged(cell: java.util.concurrent.atomic.AtomicInteger): Int = cell.compareAndExchange(0, 1)
+          |  def accumulated(cell: java.util.concurrent.atomic.AtomicInteger): Int = cell.accumulateAndGet(1, _ + _)
+          |  def read(cell: java.util.concurrent.atomic.AtomicInteger): Int = cell.get()
+          |}""".stripMargin,
+    Seq(
       "Slf4j.scala" ->
         """package org.slf4j
           |class Logger { def info(message: String): Unit = () }
@@ -427,19 +444,26 @@ class PuritySuite extends AnalysisSuite {
     )
   )
 
-  private def effects(name: String): Set[Purity.Kind] =
+  private def effects(name: String): Set[Kind] =
     known.purity.methods.getOrElse(name, fail(s"no method $name")).effects.map(_.kind).toSet
 
   test("clocks, randomness, threads, environment, copies and output streams are known effects") {
-    assertEquals(effects("Effects.uuid"), Set(Purity.Kind.Random))
-    assertEquals(effects("Effects.math"), Set(Purity.Kind.Random))
-    assertEquals(effects("Effects.random"), Set(Purity.Kind.Random))
-    assertEquals(effects("Effects.slept"), Set(Purity.Kind.Output))
-    assertEquals(effects("Effects.env"), Set(Purity.Kind.Input))
-    assertEquals(effects("Effects.property"), Set(Purity.Kind.Input))
-    assertEquals(effects("Effects.copied"), Set(Purity.Kind.Writes))
-    assertEquals(effects("Effects.printed"), Set(Purity.Kind.Output))
-    assertEquals(effects("Effects.logged"), Set(Purity.Kind.Output))
+    assertEquals(effects("Behaviours.uuid"), Set(Kind.Random))
+    assertEquals(effects("Behaviours.math"), Set(Kind.Random))
+    assertEquals(effects("Behaviours.random"), Set(Kind.Random))
+    assertEquals(effects("Behaviours.slept"), Set(Kind.Output))
+    assertEquals(effects("Behaviours.env"), Set(Kind.Input))
+    assertEquals(effects("Behaviours.property"), Set(Kind.Input))
+    assertEquals(effects("Behaviours.copied"), Set(Kind.Writes))
+    assertEquals(effects("Behaviours.printed"), Set(Kind.Output))
+    assertEquals(effects("Behaviours.logged"), Set(Kind.Output))
+  }
+
+  test("atomic updates write, whichever of the atomic's methods performs them") {
+    List("incremented", "cleared", "exchanged", "accumulated").foreach(name =>
+      assertEquals(effects(s"Behaviours.$name"), Set(Kind.Writes), name)
+    )
+    assertEquals(effects("Behaviours.read"), Set(Kind.Reads))
   }
 
   test("the purity summary tallies verdicts and ranks the causes of unknown") {
@@ -470,7 +494,10 @@ class PuritySuite extends AnalysisSuite {
   private lazy val callbackFindings = Purity.findings(callbacks.purity, callbacks.graph.nodes)
 
   test("dropping the result of an effectful call in a function nothing runs is not reported") {
-    assertEquals(callbackFindings.filter(_.rule == Finding.Rule.PureDiscard).map(_.detail), Vector.empty[String])
+    assertEquals(
+      callbackFindings.collect { case finding if finding.rule == Finding.Rule.PureDiscard => finding.detail },
+      Vector.empty[String]
+    )
   }
 
   private lazy val java = extract(
@@ -495,15 +522,45 @@ class PuritySuite extends AnalysisSuite {
 
   test("dropping the result of a Java method nothing is known of, or that declares what it throws, is not reported") {
     assertEquals(
-      javaFindings.filter(_.rule == Finding.Rule.PureDiscard).map(_.detail.takeWhile(_ != ' ')).sorted,
+      javaFindings.collect {
+        case finding if finding.rule == Finding.Rule.PureDiscard => finding.detail.takeWhile(_ != ' ')
+      }.sorted,
       Vector("Dropped.double", "File.getName")
     )
   }
 
   test("assuming a Java method only reads, or noting what it throws, leaves its callers impure or pure as before") {
     assertEquals(java.purity.verdicts("Dropped.bytes"), Purity.Verdict.Pure)
-    assert(java.purity.verdicts("Dropped.found").isInstanceOf[Purity.Verdict.Impure])
-    assert(java.purity.verdicts("Dropped.pending").isInstanceOf[Purity.Verdict.Impure])
+    assert(isImpure(java.purity.verdicts("Dropped.found")))
+    assert(isImpure(java.purity.verdicts("Dropped.pending")))
+  }
+
+  private lazy val asserted = analysed(
+    "Checked",
+    """import org.scalatest.Assertions
+      |object Checked {
+      |  def positive(x: Int): Unit = { Assertions.assert(x > 0); Assertions.assertResult(1)(x); () }
+      |  def doubled(x: Int): Unit = { val _ = Assertions.double(x) }
+      |}""".stripMargin,
+    Seq(
+      "Compatible.scala" -> "package org.scalatest.compatible\ntrait Assertion",
+      "Package.scala"    ->
+        """package org.scalatest
+          |type Assertion = compatible.Assertion
+          |object Succeeded extends compatible.Assertion""".stripMargin,
+      "Assertions.scala" ->
+        """package org.scalatest
+          |object Assertions {
+          |  def assert(condition: Boolean): Assertion = Succeeded
+          |  def assertResult(expected: Int)(actual: Int): Assertion = Succeeded
+          |  def double(x: Int): Int = x * 2
+          |}""".stripMargin
+    )
+  )
+
+  test("dropping the result of a call that declares ScalaTest's assertion type is not reported, it may throw") {
+    val dropped = Purity.findings(asserted.purity, asserted.graph.nodes).filter(_.rule == Finding.Rule.PureDiscard)
+    assertEquals(dropped.map(_.detail.takeWhile(_ != ' ')), Vector("Assertions.double"))
   }
 
   private lazy val nets = extract(
@@ -530,10 +587,11 @@ class PuritySuite extends AnalysisSuite {
     Vector("Nets.decoded", "Nets.encoded", "Nets.created", "Nets.resolved", "Nets.pathOf").foreach(name =>
       assertEquals(nets.purity.verdicts(name), Purity.Verdict.Pure, name)
     )
-    assertEquals(nets.purity.verdicts("Nets.opened"), Purity.Verdict.Impure("calls java.net.URL.openStream"))
+    assertEquals(nets.purity.verdicts("Nets.opened"), impure("calls java.net.URL.openStream"))
     assertEquals(
-      Purity.findings(nets.purity, nets.graph.nodes).filter(_.rule == Finding.Rule.EffectfulTransform)
-        .map(finding => Located.replaceAllIn(finding.detail, "")),
+      Purity.findings(nets.purity, nets.graph.nodes).collect {
+        case finding if finding.rule == Finding.Rule.EffectfulTransform => Located.replaceAllIn(finding.detail, "")
+      },
       Vector(
         "the function passed to map calls java.net.URL.openStream; keep transformations pure and perform effects in " +
           "foreach or a loop"

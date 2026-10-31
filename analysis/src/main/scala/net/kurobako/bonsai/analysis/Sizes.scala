@@ -5,6 +5,8 @@ import dotty.tools.dotc.core.Constants
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
+import net.kurobako.bonsai.collections.Methods
+import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
 /** Sizes of the collection-valued expressions of one method, and the trip counts of its loops. */
@@ -28,13 +30,7 @@ private class Sizes(
     "sorted",
     "reverse",
     "distinct",
-    "toList",
-    "toVector",
-    "toSeq",
     "toArray",
-    "toIndexedSeq",
-    "toSet",
-    "toMap",
     "toBuffer",
     "view",
     "iterator",
@@ -84,7 +80,7 @@ private class Sizes(
     */
   def seeked(tree: tpd.Tree): Boolean = peeled(tree) match {
     case application: tpd.Apply =>
-      Traversals.selected(application.fun).exists(select =>
+      Calls.selected(application.fun).exists(select =>
         select.name.toString == "drop" && application.args.headOption.exists(searched(_))
       )
     case _ => false
@@ -96,7 +92,7 @@ private class Sizes(
   }
 
   private def root(cls: Symbol): String =
-    if (cls.is(Flags.Module)) cls.fullName.toString.stripSuffix("$")
+    if (cls.is(Flags.Module)) Calls.qualified(cls)
     else if (cls == owner.enclosingClass) "this"
     else s"${cls.fullName}.this"
 
@@ -126,7 +122,33 @@ private class Sizes(
     case tpd.Apply(function, List(wrapped)) if function.symbol.is(Flags.Implicit) => size(wrapped, scope)
     case tpd.Ident(_) if scope.variables.contains(tree.symbol) => variable(scope.variables(tree.symbol), scope)
     case tpd.Ident(_) if scope.sizes.contains(tree.symbol)     => scope.sizes.get(tree.symbol)
-    case _                                                     => derived(tree, scope).orElse(accessed(tree, scope))
+    case _ => derived(tree, scope).orElse(constructedField(tree, scope)).orElse(accessed(tree, scope))
+  }
+
+  /** The application of a primary constructor that `tree` is, or the local value it was bound to. */
+  def construction(tree: tpd.Tree, scope: Scope): Option[tpd.Apply] = peeled(tree) match {
+    case ident: tpd.Ident                                                  => scope.built.get(ident.symbol)
+    case application: tpd.Apply if application.symbol.isPrimaryConstructor => Some(application)
+    case _                                                                 => None
+  }
+
+  /** The size of a field of a freshly constructed object, from the constructor arguments the class body reads. */
+  private def constructedField(tree: tpd.Tree, scope: Scope): Option[Polynomial] = tree match {
+    case select: tpd.Select if library.sized(tree.tpe) && field(select.symbol) =>
+      construction(select.qualifier, scope).flatMap { application =>
+        val constructor = application.symbol
+        val known = Shapes.termClauses(constructor).flatten.zip(arguments(application)).flatMap((parameter, argument) =>
+          size(argument, scope).map(parameter -> _)
+        )
+        val bound = known.flatMap((parameter, count) =>
+          (parameter :: constructor.owner.info.decls.toList.filter(member =>
+            member.isTerm && member.is(Flags.ParamAccessor) && member.name == parameter.name
+          )).map(_ -> count)
+        ).toMap
+        if (select.symbol.is(Flags.ParamAccessor)) bound.get(select.symbol)
+        else initialisers.get(select.symbol).flatMap(size(_, Scope(sizes = bound)))
+      }
+    case _ => None
   }
 
   private def variable(variable: Scope.Variable, scope: Scope): Option[Polynomial] =
@@ -166,7 +188,7 @@ private class Sizes(
         symbol, {
           fixed(symbol) = None
           val result = initialisers.get(symbol).flatMap(initial =>
-            size(initial, Scope()).filter(_.terms.keys.forall(_.isEmpty)).map(_ => Polynomial.One)
+            size(initial, Scope()).collect { case bound if bound.terms.keys.forall(_.isEmpty) => Polynomial.One }
           )
           fixed(symbol) = result
           result
@@ -174,14 +196,13 @@ private class Sizes(
       )
 
   @annotation.tailrec
-  @annotation.tailrec
   private def derived(tree: tpd.Tree, scope: Scope): Option[Polynomial] = tree match {
     case tpd.TypeApply(inner, _) => derived(inner, scope)
     case select: tpd.Select if select.name.toString == "empty" && library.sized(select.tpe.widen.finalResultType) =>
       Some(Polynomial.One)
     case select: tpd.Select if library.traversal(select.qualifier.tpe) => resulting(select, Nil, scope)
     case application: tpd.Apply                                        =>
-      Traversals.selected(application.fun) match {
+      Calls.selected(application.fun) match {
         case Some(select) if library.traversal(select.qualifier.tpe) =>
           resulting(select, arguments(application), scope)
         case Some(select) if Ranges(select.name.toString) && library.sized(application.tpe) =>
@@ -199,7 +220,7 @@ private class Sizes(
 
   private def constructed(application: tpd.Apply, scope: Scope): Option[Polynomial] = {
     val function = application.fun.symbol
-    val factory  = Traversals.selected(application.fun).exists(select =>
+    val factory  = Calls.selected(application.fun).exists(select =>
       select.qualifier.tpe.widenDealias.typeSymbol.is(Flags.Module)
     )
     if (!library.sized(application.tpe)) None
@@ -217,15 +238,17 @@ private class Sizes(
 
   private def resulting(select: tpd.Select, arguments: List[tpd.Tree], scope: Scope): Option[Polynomial] = {
     val name = select.name.toString
-    if (name == "take" && arguments.flatMap(literal(_)).nonEmpty) Some(Polynomial.One)
-    else if (name == "filter" && arguments.flatMap(Traversals.lambda(_)).exists(keyed(_))) Some(Polynomial.One)
-    else if (name == "slice" && arguments.size == 2 && arguments.forall(literal(_).isDefined)) Some(Polynomial.One)
+    if (
+      (name == "take" && arguments.flatMap(literal(_)).nonEmpty) ||
+      (name == "filter" && arguments.flatMap(Calls.lambda(_)).exists(keyed(_))) ||
+      (name == "slice" && arguments.size == 2 && arguments.forall(literal(_).isDefined))
+    ) Some(Polynomial.One)
     else if (Joins(name))
       for {
         left  <- size(select.qualifier, scope)
         right <- arguments.headOption.flatMap(size(_, scope))
       } yield left + right
-    else if (Preserving(name)) size(select.qualifier, scope)
+    else if (Preserving(name) || Methods.Conversions(name)) size(select.qualifier, scope)
     else None
   }
 
@@ -235,7 +258,7 @@ private class Sizes(
     case select: tpd.Select if Sizing(select.name.toString) && library.traversal(select.qualifier.tpe) =>
       size(select.qualifier, scope)
     case tpd.Ident(_) => scope.counts.get(tree.symbol)
-    case tpd.Apply(tpd.Select(left, operator), List(right)) if Set("+", "-", "*", "/")(operator.toString) =>
+    case tpd.Apply(tpd.Select(left, operator), List(right)) if Arithmetic(operator.toString) =>
       (lengthOf(left, scope), lengthOf(right, scope)) match {
         case (Some(l), Some(r)) if operator.toString == "+" => Some(l + r)
         case (Some(l), Some(r)) if operator.toString == "*" => Some(l * r)
@@ -314,6 +337,7 @@ private class Sizes(
 
   private val Mirrored    = Map("<" -> ">", "<=" -> ">=", ">" -> "<", ">=" -> "<=", "!=" -> "!=")
   private val Sizing      = Set("length", "size")
+  private val Arithmetic  = Set("+", "-", "*", "/")
   private val Comparisons = Set("<", "<=", ">", ">=", "==", "!=")
   private val Sized       = Set("fill", "tabulate")
   private val Probes      = Set("!=", "==")
@@ -367,29 +391,25 @@ private class Sizes(
   }
 
   private def shrinking(symbol: Symbol, body: tpd.Tree, scope: Scope): Option[(Polynomial, Symbol)] =
-    scope.variables.get(symbol).filter(_.shrinking).flatMap(variable => variable.initial).filter(_ =>
-      exists(body) {
-        case tpd.Assign(target, _) => target.symbol == symbol
-        case _                     => false
-      }
-    ).map(_ -> symbol)
+    scope.variables.get(symbol).filter(_.shrinking).flatMap(variable => variable.initial).collect {
+      case initial
+          if exists(body) {
+            case tpd.Assign(target, _) => target.symbol == symbol
+            case _                     => false
+          } => initial -> symbol
+    }
 
-  /** Whether every assignment to `symbol` in `trees` takes a part of the value it had. */
-  def shrinks(symbol: Symbol, trees: List[tpd.Tree]): Boolean = {
+  /** Whether every value assigned to `symbol` is a part of the value it had. */
+  def shrinks(symbol: Symbol, assigned: List[tpd.Tree]): Boolean = {
     def part(tree: tpd.Tree): Boolean = peeled(tree) match {
       case ident: tpd.Ident        => ident.symbol == symbol
       case tpd.TypeApply(inner, _) => part(inner)
       case select: tpd.Select      => Shrinking(select.name.toString) && part(select.qualifier)
       case application: tpd.Apply  =>
-        Traversals.selected(application.fun).exists(select => Shrinking(select.name.toString) && part(select.qualifier))
+        Calls.selected(application.fun).exists(select => Shrinking(select.name.toString) && part(select.qualifier))
       case _ => false
     }
-    trees.forall(tree =>
-      !exists(tree) {
-        case tpd.Assign(target, value) => target.symbol == symbol && !part(value)
-        case _                         => false
-      }
-    )
+    assigned.forall(part)
   }
 
   def equality(test: tpd.Tree): Boolean = peeled(test) match {
@@ -436,7 +456,7 @@ private class Sizes(
     def pieces(tree: tpd.Tree): List[Polynomial] =
       (tree match {
         case application: tpd.Apply =>
-          Traversals.selected(application.fun).filter(select => Joins(select.name.toString)).toList.flatMap { select =>
+          Calls.selected(application.fun).filter(select => Joins(select.name.toString)).toList.flatMap { select =>
             val operands = select.qualifier :: arguments(application).take(1)
             if (operands.exists(self(_)))
               operands.collect { case operand if !self(operand) => size(operand, scope).getOrElse(Atoms.Unknown) }

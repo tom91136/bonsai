@@ -5,18 +5,20 @@ import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
-import scala.jdk.CollectionConverters.*
+import java.util.jar.JarOutputStream
+import java.util.jar.Manifest as JarManifest
+import net.kurobako.bonsai.testing.Scratch
 import scala.util.Using
 
 class ExtractionSuite extends AnalysisSuite {
 
   // Corrupt bytes near the end fail only the unpickling of that class, not the reader's setup.
-  private def readBroken(sources: Seq[(String, String)], broken: String): Either[Vector[String], Vector[String]] = {
-    val directory = Files.createTempDirectory("bonsai-")
-    try {
+  private def readBroken(sources: Seq[(String, String)], broken: String): Either[Vector[String], Vector[String]] =
+    Scratch.using("bonsai-") { directory =>
       val classes = Files.createDirectories(directory.resolve("classes"))
-      val paths   = sources.map((name, source) => Files.writeString(directory.resolve(name), source).toString)
-      val _       = Driver().process(
+      sources.foreach((name, source) => Files.writeString(directory.resolve(name), source): Unit)
+      val paths = sources.map((name, _) => directory.resolve(name).toString)
+      val _     = Driver().process(
         Array("-classpath", classpath.mkString(File.pathSeparator), "-d", classes.toString) ++ paths,
         StoreReporter()
       )
@@ -28,8 +30,7 @@ class ExtractionSuite extends AnalysisSuite {
         problems => Left(brief(problems)),
         result => Right(result.graph.nodes.keySet.toVector.sorted ++ brief(result.problems))
       )
-    } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
-  }
+    }
 
   test("a build whose only class cannot be read fails, while readable classes keep the rest of the build") {
     assertEquals(readBroken(Seq("A.scala" -> "class A"), "A"), Left(Vector("class file A could not be read")))
@@ -42,7 +43,29 @@ class ExtractionSuite extends AnalysisSuite {
   test("repository artifact versions compare numerically, part by part") {
     val older = Path.of("/cache/org/example/tool/1.9.0/tool-1.9.0.jar")
     val newer = Path.of("/cache/org/example/tool/1.10.0/tool-1.10.0.jar")
-    assertEquals(Extraction.evicted(Vector(newer, older)), Vector(newer))
+    assertEquals(Classpath.evicted(Vector(newer, older)), Vector(newer))
+  }
+
+  test("eviction identifies a jar outside a repository layout by its manifest") {
+    val directory                          = Scratch.directory("bonsai-")
+    def jar(path: String, version: String) = {
+      val manifest = JarManifest()
+      Seq(
+        "Manifest-Version"         -> "1.0",
+        "Implementation-Vendor-Id" -> "org.scala-lang",
+        "Implementation-Title"     -> "scala-library-bootstrapped",
+        "Implementation-Version"   -> version
+      ).foreach(manifest.getMainAttributes.putValue(_, _))
+      val file = directory.resolve(path)
+      Files.createDirectories(file.getParent)
+      Using.resource(JarOutputStream(Files.newOutputStream(file), manifest))(_ => ())
+      file
+    }
+    val boot  = jar("boot/scala-3.8.4/lib/scala-library.jar", "3.8.4")
+    val rules = jar("cache/org/scala-lang/scala-library/3.9.0/scala-library-3.9.0.jar", "3.9.0")
+    val rest  = jar("cache/org/scala-lang/scala-library/3.10.0/scala-library-3.10.0.jar", "3.10.0")
+    for order <- Seq(Vector(boot, rules, rest), Vector(rest, boot, rules), Vector(rules, rest, boot))
+    do assertEquals(Classpath.evicted(order), Vector(rest))
   }
 
   test("megamorphic sites list implementations by simple name unless two collide, count vals, and skip universals") {
@@ -50,10 +73,10 @@ class ExtractionSuite extends AnalysisSuite {
       Seq(
         "Shapes.scala" ->
           """package shapes
-          |trait Shape { def area: Int; val sides: Int }
-          |class Circle extends Shape { def area = 1; val sides = 0; override def toString = "circle" }
-          |class Square extends Shape { def area = 2; val sides = 4; override def toString = "square" }
-          |class Triangle extends Shape { def area = 3; val sides = 3 }
+          |trait Figure { def area: Int; val sides: Int }
+          |class Circle extends Figure { def area = 1; val sides = 0; override def toString = "circle" }
+          |class Square extends Figure { def area = 2; val sides = 4; override def toString = "square" }
+          |class Triangle extends Figure { def area = 3; val sides = 3 }
           |class Plot { def area: Int = 4 }
           |trait Named { def name: String }
           |object A { class Impl extends Named { def name = "a" } }
@@ -61,10 +84,10 @@ class ExtractionSuite extends AnalysisSuite {
           |class Other extends Named { def name = "c" }
           |object Limits { val most = 1 }
           |object Main {
-          |  def limits(shapes: List[Shape]): Int = shapes.map(_ => Limits.most).sum
-          |  def areas(shapes: List[Shape]): Int = shapes.map(_.area).sum
-          |  def sides(shapes: List[Shape]): Int = shapes.map(_.sides).sum
-          |  def shown(shapes: List[Shape]): Int = shapes.map(_.toString.length).sum
+          |  def limits(shapes: List[Figure]): Int = shapes.map(_ => Limits.most).sum
+          |  def areas(shapes: List[Figure]): Int = shapes.map(_.area).sum
+          |  def sides(shapes: List[Figure]): Int = shapes.map(_.sides).sum
+          |  def shown(shapes: List[Figure]): Int = shapes.map(_.toString.length).sum
           |  def names(values: List[Named]): Int = values.map(_.name.length).sum
           |}""".stripMargin
       ),
@@ -73,8 +96,8 @@ class ExtractionSuite extends AnalysisSuite {
     assertEquals(
       result.megamorphic.map(site => (site.caller, site.callee, site.implementations.sorted)).toSet,
       Set(
-        ("shapes.Main.areas", "Shape.area", Vector("Circle", "Square", "Triangle")),
-        ("shapes.Main.sides", "Shape.sides", Vector("Circle", "Square", "Triangle")),
+        ("shapes.Main.areas", "Figure.area", Vector("Circle", "Square", "Triangle")),
+        ("shapes.Main.sides", "Figure.sides", Vector("Circle", "Square", "Triangle")),
         ("shapes.Main.names", "Named.name", Vector("A.Impl", "B.Impl", "shapes.Other"))
       )
     )
@@ -109,11 +132,11 @@ class ExtractionSuite extends AnalysisSuite {
           |  def safe(amount: Int): Option[Money] = Option.when(amount >= 0)(Money(amount))
           |}""".stripMargin
     ),
-    library = true
+    libraries = Set("m")
   )
 
   private def products[A](names: Set[String])(of: Algebra.Product => A): Map[String, A] =
-    library.algebra.products.filter(product => names(product.name)).map(product => product.name -> of(product))
+    library.algebra.products.view.collect { case product if names(product.name) => product.name -> of(product) }
       .toMap
 
   test("private constructors make construction private and keep a library's case class out of its API") {
@@ -255,14 +278,14 @@ class ExtractionSuite extends AnalysisSuite {
           |  def send(port: Int, retries: Int): Int = port + retries
           |}
           |class Client { def connect(host: String, port: Int = 80): String = host }
-          |case class Config(name: String = "x", retries: Int = 3)
-          |object Config { def make(label: String, count: Int = 5): Config = Config(label, count) }
+          |case class Preferences(name: String = "x", retries: Int = 3)
+          |object Preferences { def make(label: String, count: Int = 5): Preferences = Preferences(label, count) }
           |object Codec { def group(name: String, minimum: Option[String] = Some("1.0")): String = name }
           |object Main {
           |  val sent = Net.send(80, 1)
           |  val connected = Client().connect("a", 80)
-          |  val built = new Config("x", 3)
-          |  val made = Config.make("x", 5)
+          |  val built = new Preferences("x", 3)
+          |  val made = Preferences.make("x", 5)
           |  val grouped = Codec.group(minimum = Some("1.0"), name = "b".trim)
           |}
           |val (connected, count) = identity((Client().connect("b", 80), 1))""".stripMargin
@@ -273,9 +296,9 @@ class ExtractionSuite extends AnalysisSuite {
       ).toSet,
       Set(
         ("Client.connect(host, port)", "port", "80", Vector(false, false)),
-        ("Config", "name", "\"x\"", Vector(false)),
-        ("Config", "retries", "3", Vector(false)),
-        ("Config.make(label, count)", "count", "5", Vector(false)),
+        ("Preferences", "name", "\"x\"", Vector(false)),
+        ("Preferences", "retries", "3", Vector(false)),
+        ("Preferences.make(label, count)", "count", "5", Vector(false)),
         ("Codec.group(name, minimum)", "minimum", "Some(\"1.0\")", Vector(false))
       )
     )
@@ -284,10 +307,10 @@ class ExtractionSuite extends AnalysisSuite {
   test("members record inheritance and visibility, leaving out local methods and abstract types") {
     val result = extract(Seq(
       "Members.scala" ->
-        """trait Shape { def area: Int; def perimeter: Int; type Item }
-          |class Square extends Shape { def area = 1; def perimeter = 4; type Item = Int; protected def hook: Int = 2 }
+        """trait Figure { def area: Int; def perimeter: Int; type Item }
+          |class Square extends Figure { def area = 1; def perimeter = 4; type Item = Int; protected def hook: Int = 2 }
           |object Tools { def run(): Int = { def helper: Int = 1; helper } }
-          |object Main { def main(args: Array[String]): Unit = { val shape: Shape = Square(); println(shape.area + Tools.run()) } }""".stripMargin
+          |object Main { def main(args: Array[String]): Unit = { val shape: Figure = Square(); println(shape.area + Tools.run()) } }""".stripMargin
     ))
     val members = result.members.members.map(member => member.name -> (member.inherited, member.public)).toMap
     assertEquals(
@@ -299,7 +322,7 @@ class ExtractionSuite extends AnalysisSuite {
         "Square.hook"      -> (false, false)
       )
     )
-    assert(!members.contains("Shape.Item") && !members.keys.exists(_.contains("helper")), members.keys.mkString("\n"))
+    assert(!members.contains("Figure.Item") && !members.keys.exists(_.contains("helper")), members.keys.mkString("\n"))
   }
 
   test("visible nested types are exposed by visible signatures and parents, not by private members") {
@@ -346,7 +369,7 @@ class ExtractionSuite extends AnalysisSuite {
           |case class Money(amount: Int)
           |object Money { def apply(text: String): Money = new Money(text.toInt) }
           |object Render { def render(text: String, width: Int): String = text.take(width) }
-          |object Checks {
+          |object Validators {
           |  def trivial(size: Int): Int = { require(true); size }
           |  def positive(size: Int): Int = { require(size > 0); size }
           |}
@@ -362,11 +385,11 @@ class ExtractionSuite extends AnalysisSuite {
     assertEquals(
       sites.get("Render.render(text, width)"),
       Some(Set(
-        Vector(Algebra.Argument.Text("a"), Algebra.Argument.Unknown),
-        Vector(Algebra.Argument.Text("b"), Algebra.Argument.Unknown)
+        Vector(Algebra.Argument.Word(Algebra.Wording.Text, "a"), Algebra.Argument.Unknown),
+        Vector(Algebra.Argument.Word(Algebra.Wording.Text, "b"), Algebra.Argument.Unknown)
       ))
     )
-    assertEquals(result.algebra.preconditions.map(_.name), Vector("Checks.positive(size)"))
+    assertEquals(result.algebra.preconditions.map(_.name), Vector("Validators.positive(size)"))
   }
 
   test("type arguments of a later type clause are counted for that clause's parameters") {
@@ -376,26 +399,26 @@ class ExtractionSuite extends AnalysisSuite {
       "Ext.scala" -> "extension [A](value: A) def tagged[B](tag: B): (A, B) = (value, tag)"
     ))
     assertEquals(
-      result.smells.instantiations.filter(_.owner.endsWith("tagged")).map(use => use.parameter -> use.arguments)
+      result.smells.instantiations.collect {
+        case use if use.owner.endsWith("tagged") => use.parameter -> use.arguments
+      }
         .sortBy(_._1),
       Vector("A" -> Map("Int" -> 2), "B" -> Map("String" -> 2))
     )
   }
 
   test("an output directory with no TASTy is an empty build rather than a failure") {
-    val directory = Files.createTempDirectory("bonsai-")
-    try {
+    Scratch.using("bonsai-") { directory =>
       val result = Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, directory)), classpath, Set.empty))
       assertEquals(result.map(_.graph.nodes.isEmpty), Right(true))
       assertEquals(result.map(_.problems), Right(Vector.empty[String]))
-    } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+    }
   }
 
   test("an output holding a file that is not TASTy fails the read rather than throwing") {
-    val directory = Files.createTempDirectory("bonsai-")
-    try {
+    Scratch.using("bonsai-") { directory =>
       Files.writeString(directory.resolve("Junk.tasty"), "not tasty"): Unit
       assert(Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, directory)), classpath, Set.empty)).isLeft)
-    } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+    }
   }
 }

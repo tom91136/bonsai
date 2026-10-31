@@ -8,7 +8,8 @@ object Members {
     * `inherited` holds when a member it overrides is referenced or declared outside the build, so calls can reach it
     * through dynamic dispatch; `rooted` when it overrides a member of the build, which is reported instead; `constant`
     * when it is a `var` nothing assigns after initialisation; `detachable` when it is a member of an object that names
-    * nothing else of the object; `field` when it is a parameter of a case class.
+    * nothing else of the object; `field` when it is a parameter of a case class; `unlisted` when it is of the kind a
+    * collection of its siblings registers and no such collection lists it.
     */
   case class Member(
       name: String,
@@ -23,7 +24,8 @@ object Members {
       detachable: Boolean,
       test: Boolean,
       suppressed: Set[String],
-      field: Boolean = false
+      field: Boolean = false,
+      unlisted: Boolean = false
   ) {
     def short: String = Finding.short(name)
   }
@@ -53,7 +55,7 @@ object Members {
   def findings(model: Model, nodes: Map[String, Node], live: String => Boolean): Vector[Finding] = {
     val written = model.members.filterNot(member => nodes.get(member.node).exists(_.generated))
     anonymous(model.givens, nodes, live) ++ hidden(model.nested, nodes, live) ++
-      grouped(visibility(written, nodes, live)) ++ misplaced(written, nodes, live)
+      grouped(visibility(written, nodes, live)) ++ misplaced(written, nodes, live) ++ drifted(written, nodes, live)
   }
 
   private val Shown = 6
@@ -68,7 +70,7 @@ object Members {
         val members = several.map(_.detail.stripSuffix(" is referenced only from tests")).sorted
         Vector(
           several.head.copy(detail =
-            s"${members.size} members of ${owner.split('.').last} are referenced only from tests: " +
+            s"${members.size} members of ${Finding.simple(owner)} are referenced only from tests: " +
               Finding.listed(members, Shown)
           )
         )
@@ -76,12 +78,12 @@ object Members {
   }
 
   private def visibility(members: Vector[Member], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
-    members.filter(member => !member.test && live(member.node)).flatMap {
+    members.view.filter(member => !member.test && live(member.node)).flatMap {
       member =>
         val used   = member.users.nonEmpty || member.inherited
         val access =
           if (!used)
-            Option.unless(member.rooted)(
+            Option.unless(member.rooted || drifting(member))(
               if (member.field) s"${member.short} is a field nothing reads; remove it, or read it"
               else s"${member.short} is never referenced"
             ).flatMap(
@@ -108,13 +110,13 @@ object Members {
         val mutability = Option.when(used && member.constant)(s"${member.short} is never reassigned; it can be a val")
           .flatMap(Finding.at(nodes, member.node, Finding.Rule.VarCouldBeVal, _))
         (access ++ mutability).filterNot(_.suppressedBy(member.suppressed))
-    }
+    }.toVector
 
   /** Members of objects that need nothing else of their object and that one other type of the build uses, and nothing
     * else, not even their own object.
     */
   private def misplaced(members: Vector[Member], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
-    members.filter(member =>
+    members.view.filter(member =>
       member.detachable && member.public && !member.test && !member.overriding &&
         !member.inherited && live(member.node)
     ).flatMap { member =>
@@ -126,16 +128,30 @@ object Members {
             nodes,
             member.node,
             Finding.Rule.MisplacedMember,
-            s"${member.short} is used only by ${user.split('.').last}; move it there",
+            s"${member.short} is used only by ${Finding.simple(user)}; move it there",
             Finding.Level.Info
           ).filterNot(_.suppressedBy(member.suppressed))
         case _ => None
       }
-    }
+    }.toVector
+
+  private def drifting(member: Member): Boolean =
+    member.unlisted && member.public && !member.test && !member.inherited && member.users.isEmpty
+
+  private def drifted(members: Vector[Member], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
+    members.view.filter(member => drifting(member) && live(member.node)).flatMap(member =>
+      Finding.at(
+        nodes,
+        member.node,
+        Finding.Rule.RegistryDrift,
+        s"${member.short} is of the kind the collections of its siblings register, but none lists it; add it to one, " +
+          "or derive the registry from the definitions"
+      ).filterNot(_.suppressedBy(member.suppressed))
+    ).toVector
 
   // A name is part of the API: renaming the type renames an anonymous given, so this is information, not a warning.
   private def anonymous(givens: Vector[Given], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
-    givens.filter(instance => !instance.named && live(instance.node)).flatMap(instance =>
+    givens.view.filter(instance => !instance.named && live(instance.node)).flatMap(instance =>
       Finding.at(
         nodes,
         instance.node,
@@ -143,23 +159,33 @@ object Members {
         s"${Finding.short(instance.name)} is never referenced by name; it can be anonymous",
         Finding.Level.Info
       ).filterNot(_.suppressedBy(instance.suppressed))
-    )
+    ).toVector
+
+  // The innermost type, from `scope` outwards, that holds every user.
+  @annotation.tailrec
+  private def enclosure(nodes: Map[String, Node], scope: Option[String], users: Set[String]): Option[String] =
+    scope match {
+      case Some(candidate) if !users.forall(Node.within(nodes, _, candidate)) =>
+        enclosure(nodes, nodes.get(candidate).flatMap(_.outer), users)
+      case other => other
+    }
 
   // Unreferenced nested types are covered by the type-level liveness findings.
   private def hidden(nested: Vector[Nested], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
-    nested.filter(inner =>
-      !inner.exposed && inner.users.nonEmpty && live(inner.node) &&
-        inner.users.forall(Node.within(nodes, _, inner.outer))
-    ).flatMap { inner =>
-      def short(key: String) = key.split('.').last
-      nodes.get(inner.node).filterNot(node => node.test || node.exported).flatMap(_ =>
-        Finding.at(
-          nodes,
-          inner.node,
-          Finding.Rule.WeakerAccess,
-          s"${short(inner.outer)}.${short(inner.node)} is referenced only inside ${short(inner.outer)}; it can be private",
-          Finding.Level.Info
-        )
-      )
-    }
+    nested.view.filter(inner => !inner.exposed && inner.users.nonEmpty && live(inner.node)).flatMap { inner =>
+      nodes.get(inner.node).filterNot(node => node.test || node.exported).flatMap { _ =>
+        enclosure(nodes, Some(inner.outer), inner.users).flatMap { scope =>
+          val name   = Finding.simple(scope)
+          val access = if (scope == inner.outer) "private" else s"private[$name]"
+          Finding.at(
+            nodes,
+            inner.node,
+            Finding.Rule.WeakerAccess,
+            s"${Finding.simple(inner.outer)}.${Finding.simple(inner.node)} is referenced only inside $name; " +
+              s"it can be $access",
+            Finding.Level.Info
+          )
+        }
+      }
+    }.toVector
 }

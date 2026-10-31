@@ -14,18 +14,28 @@ object Algebra {
     case Tag(cases: Vector[String])
   }
 
+  enum Junction {
+    case And, Or
+  }
+
+  /** How a predicate reads a field: an optional for presence, a flag for truth. */
+  enum Probe {
+    case Present, Flag
+  }
+
   /** A `require` predicate over field indices; parts outside this vocabulary are `Unknown`. */
   enum Predicate {
     case Known(value: Boolean)
-    case Present(field: Int)
-    case Flag(field: Int)
+    case Holds(field: Int, probe: Probe)
     case Is(field: Int, value: String)
     case Compare(field: Int, operator: String, value: BigDecimal)
     case SameSize(left: Int, right: Int)
     case Not(predicate: Predicate)
-    case And(left: Predicate, right: Predicate)
-    case Or(left: Predicate, right: Predicate)
+    case Connective(junction: Junction, left: Predicate, right: Predicate)
     case Unknown
+
+    def and(that: Predicate): Predicate = Connective(Junction.And, this, that)
+    def or(that: Predicate): Predicate  = Connective(Junction.Or, this, that)
   }
 
   /** How construction is controlled: freely, only through the companion, or openly beside a validating factory. */
@@ -63,18 +73,22 @@ object Algebra {
     lazy val cases: Vector[Variant] = variants.filter(_.fields.nonEmpty)
   }
 
+  /** Whether a spelled argument names an enum case or symbol, or is a string literal. */
+  enum Wording {
+    case Tag, Text
+  }
+
   /** What a construction site is known to pass for a field. */
   enum Argument {
     case Present, Absent, True, False, Unknown
-    case Tag(name: String)
     case Number(value: BigDecimal)
-    case Text(value: String)
+    case Word(wording: Wording, value: String)
 
     def shown: String = this match {
-      case Tag(name)     => name
-      case Number(value) => value.toString
-      case Text(value)   => s"\"$value\""
-      case other         => other.toString
+      case Word(Wording.Tag, value)  => value
+      case Number(value)             => value.toString
+      case Word(Wording.Text, value) => s"\"$value\""
+      case other                     => other.toString
     }
   }
 
@@ -92,6 +106,14 @@ object Algebra {
       preconditions: Vector[Product],
       enumerations: Vector[Enumeration]
   )
+
+  /** Frequent itemsets, as shared field groups among sum cases or parameter groups among methods. */
+  object Itemsets {
+
+    /** Whether no larger candidate contains `items`. */
+    def maximal(items: Set[String], candidates: Iterable[Set[String]]): Boolean =
+      !candidates.exists(other => other.size > items.size && items.subsetOf(other))
+  }
 
   /** Named fields, rendered as `name: shape`, shared by a set of sum alternatives. */
   private case class Factor(fields: Set[String], cases: Set[String])
@@ -133,7 +155,7 @@ object Algebra {
     def compatibleGroups(group: Vector[Product]): Vector[Vector[Product]] = {
       val isAllPublic = group.forall(_.access != Access.Private)
       val isOneModule = {
-        val modules = group.map(p => nodes.get(p.node).map(_.module)).distinct
+        val modules = group.map(moduleOf(_)._1).distinct
         val pkgs    = group.flatMap(p => topPackage(p.name)).distinct
         modules.size <= 1 && pkgs.size <= 1
       }
@@ -149,15 +171,17 @@ object Algebra {
       model.products.sortBy(_.name).filter(product =>
         product.parents.isEmpty && product.shape.weight >= MinimumDuplicateWeight
       )
-        .groupBy(_.shape.key).values
+        .groupBy(_.shape.key).values.view
         .flatMap { group =>
           val named = group.groupBy(_.fields.map(_.name).sorted).values.view.flatMap(compatibleGroups).collect {
             case named if named.size > 1 => true -> named
           }.toVector
+          val namedSizes = named.map(_._2.size).toSet
           // A wide shape is worth reporting whatever its fields are called, unless one set of names covers it already.
-          val unnamed = compatibleGroups(group).view.filter(g =>
-            g.head.shape.weight >= MinimumUnnamedDuplicateWeight && !named.exists(_._2.size == g.size)
-          ).map(false -> _).toVector
+          val unnamed = compatibleGroups(group).view.collect {
+            case g if g.head.shape.weight >= MinimumUnnamedDuplicateWeight && !namedSizes(g.size) =>
+              false -> g
+          }.toVector
           named ++ unnamed
         }
         .filter((_, group) =>
@@ -180,15 +204,15 @@ object Algebra {
           Finding.at(nodes, group.head.node, Finding.Rule.DuplicateShape, detail, level)
         }
     // Other builds construct a library's public products, so the constructions here do not settle their shape.
-    val constructions = model.products.filterNot(_.exported).flatMap { product =>
+    val constructions = model.products.view.filterNot(_.exported).flatMap { product =>
       model.sites.get(product.name).toVector.flatMap { sites =>
         construction(product, sites).flatMap((rule, detail) =>
           Finding.at(nodes, product.node, rule, detail, onlyTests = onlyTests(sites))
         )
       }
-    }
+    }.toVector
     val enumerations = model.enumerations.flatMap { hierarchy =>
-      val name                 = hierarchy.name.split('.').last
+      val name                 = Finding.simple(hierarchy.name)
       val (level, consequence) =
         if (hierarchy.exported) Finding.Level.Info -> "as an enum it changes for the builds that use it"
         else if (hierarchy.nested) Finding.Level.Warning -> "an enum is equivalent"
@@ -207,7 +231,8 @@ object Algebra {
   /** Names relative to their longest common prefix, so same-named types in different owners stay distinguishable. */
   private def relative(values: Vector[String]): Vector[String] = {
     val segments = values.map(_.split('.').toVector)
-    val common   = segments.reduceOption((left, right) => left.zip(right).takeWhile(_ == _).map(_._1)).fold(0)(_.size)
+    val common   =
+      segments.reduceOption((left, right) => left.view.zip(right).takeWhile(_ == _).map(_._1).toVector).fold(0)(_.size)
     segments.map(parts => parts.drop(common.min(parts.size - 1)).mkString("."))
   }
 
@@ -235,9 +260,9 @@ object Algebra {
     val frequent   = support.filter((_, cases) => cases.size >= MinimumFactorSupport) ++ everywhere
     val groups     = identical.map(_.map(_.name).toSet)
     // A factor is maximal when no larger factor is shared by exactly the same alternatives.
-    val maximal = frequent.groupMap(_._2)(_._1).toVector.flatMap { (cases, candidates) =>
+    val maximal = frequent.groupMap(_._2)(_._1).view.flatMap { (cases, candidates) =>
       candidates.collect { case fields if Itemsets.maximal(fields, candidates) => Factor(fields, cases) }
-    }.filterNot(factor => groups.exists(factor.cases.subsetOf))
+    }.filterNot(factor => groups.exists(factor.cases.subsetOf)).toVector
       .sortBy(factor => (-factor.fields.size * factor.cases.size, factor.fields.toVector.sorted.mkString))
     // Greedily keep factors over mostly different alternatives; overlapping ones describe the same refactoring. Factors
     // over every alternative come first, whatever outranks them, since hoisting those is never a judgement call.
@@ -256,13 +281,14 @@ object Algebra {
       product.fields.zipWithIndex.filter((field, _) => field.kind == Kind.Optional || field.kind == Kind.Flag)
     val optional                       = fields.filter(_._1.kind == Kind.Optional)
     val flags                          = fields.filter(_._1.kind == Kind.Flag)
-    val name                           = product.name.split('.').last
+    val name                           = Finding.simple(product.name)
     def complete(indices: Vector[Int]) = sites.filter(site => indices.forall(site.arguments(_) != Argument.Unknown))
     def evidence(determined: Int)      =
       s"$determined of ${sites.size} constructions determined" +
         (if (determined < sites.size) s", ${sites.size - determined} unknown" else "")
+    val observed = sites.flatMap(_.arguments.zipWithIndex).groupMap(_._2)(_._1)
     val constant = fields.flatMap { (field, index) =>
-      val values = sites.map(_.arguments(index)).distinct
+      val values = observed.getOrElse(index, Vector.empty).distinct
       Option.when(sites.size > 1 && values.size == 1 && values.head != Argument.Unknown) {
         Finding.Rule.ConstantField ->
           s"$name.${field.name} is always ${values.head.shown} across ${sites.size} constructions"
@@ -284,16 +310,20 @@ object Algebra {
             s"${evidence(determined.size)}; ${shapes.map(shape => s"($shape)").mkString("*")} used as $asSum, never $unused")
       }
     }.flatten
-    val redundant = for {
-      (flag, flagIndex)     <- flags
-      (option, optionIndex) <- optional
-      determined = complete(Vector(flagIndex, optionIndex)) if determined.size > 1
-      pairs      = determined.map(site =>
-        (site.arguments(flagIndex) == Argument.True, site.arguments(optionIndex) == Argument.Present)
-      ).distinct
-      if pairs.size == 2 && (pairs.forall(_ == _) || pairs.forall(_ != _))
-    } yield Finding.Rule.RedundantFlag ->
-      s"$name.${flag.name} is determined by $name.${option.name}; ${evidence(determined.size)}"
+    // Like exclusive options, a flag is settled only when every construction is known, so the columns compare whole.
+    def column(index: Int, value: Argument) =
+      Option.when(sites.forall(_.arguments(index) != Argument.Unknown))(sites.map(_.arguments(index) == value))
+    val presences = optional.flatMap((option, index) => column(index, Argument.Present).map(_ -> (option, index)))
+      .groupMap(_._1)(_._2)
+    val redundant = flags.flatMap { (flag, flagIndex) =>
+      val matching = column(flagIndex, Argument.True).filter(_.distinct.size == 2).toVector.flatMap(truth =>
+        presences.getOrElse(truth, Vector.empty) ++ presences.getOrElse(truth.map(!_), Vector.empty)
+      )
+      matching.sortBy(_._2).map((option, _) =>
+        Finding.Rule.RedundantFlag ->
+          s"$name.${flag.name} is determined by $name.${option.name}; ${evidence(sites.size)}"
+      )
+    }
     constant ++ exclusive ++ redundant
   }
 }

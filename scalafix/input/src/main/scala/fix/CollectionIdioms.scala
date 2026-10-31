@@ -8,19 +8,8 @@ object CollectionIdioms {
   val list = List(1, 2, 3)
   val map  = Map("a" -> 1)
 
-  val ex1 = list.exists(_ == 2)// assert: CollectionIdioms.exists-to-contains
-  val ex2 = list.exists(x => x == 2)// assert: CollectionIdioms.exists-to-contains
-  val fa1 = list.forall(_ != 2)// assert: CollectionIdioms.forall-to-not-contains
-  val fa2 = list.forall(x => x != 2)// assert: CollectionIdioms.forall-to-not-contains
-  val gg1 = map.get("a").getOrElse(0)// assert: CollectionIdioms.get-get-or-else
-  val dt1 = list.drop(1).take(2)// assert: CollectionIdioms.drop-take-to-slice
-  val td1 = list.take(2).drop(1)// assert: CollectionIdioms.take-drop-to-slice
-  val dz1 = list.drop(0)// assert: CollectionIdioms.drop-zero
-  val tz1 = list.take(0)// assert: CollectionIdioms.take-zero
   val array = Array(1, 2, 3)
   val text = "abc"
-  val as1 = array.size// assert: CollectionIdioms.size-to-length
-  val ts1 = text.size// assert: CollectionIdioms.size-to-length
   val ap1 = println(array)// assert: CollectionIdioms.array-to-string
 
   val ok1 = list.contains(2)
@@ -38,19 +27,10 @@ object CollectionIdioms {
   val literals = List(2L, 3L)
   val flags = List(true, false)
   val characters = List('a', 'b')
-  val longTarget = literals.exists(_ == 2L)// assert: CollectionIdioms.exists-to-contains
-  val stringTarget = texts.exists(_ == "a")// assert: CollectionIdioms.exists-to-contains
-  val charTarget = characters.exists(_ == 'a')// assert: CollectionIdioms.exists-to-contains
-  val booleanTarget = flags.forall(_ != false)// assert: CollectionIdioms.forall-to-not-contains
   val treeMap = scala.collection.immutable.TreeMap("a" -> 1)
   val hashMap = scala.collection.immutable.HashMap("b" -> 2)
-  val treeLookup = treeMap.get("a").getOrElse(0)// assert: CollectionIdioms.get-get-or-else
-  val hashLookup = hashMap.get("b").getOrElse(0)// assert: CollectionIdioms.get-get-or-else
   val range = 1 to 5
-  val rangeSearch = range.exists(_ == 2)// assert: CollectionIdioms.exists-to-contains
-  val rangeSlice = range.drop(1).take(2)// assert: CollectionIdioms.drop-take-to-slice
   val arraySeq = scala.collection.immutable.ArraySeq(1, 2)
-  val arraySeqSearch = arraySeq.exists(_ == 1)// assert: CollectionIdioms.exists-to-contains
 
   var evaluations = 0
   def next(): Int = { evaluations += 1; evaluations }

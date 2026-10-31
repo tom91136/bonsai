@@ -192,7 +192,7 @@ class LivenessSuite extends AnalysisSuite {
           |private[lib] object Internal
           |object Outer { private object Inner }""".stripMargin),
       Seq("ClientCheck.scala" -> "class ClientCheck { val value = lib.Client.fetch }"),
-      library = true
+      libraries = Set("m")
     )
     val found = Liveness.findings(result.graph).map(finding => s"${finding.rule.id} ${finding.node.name}")
     assertEquals(found.sorted, Vector("unused lib.Hidden", "unused lib.Internal", "unused lib.Outer.Inner"))
@@ -235,8 +235,8 @@ class LivenessSuite extends AnalysisSuite {
     val newest = Path.of("/cache/org/scala-lang/scala-library/3.9.0/scala-library-3.9.0.jar")
     val other  = Path.of("/cache/org/scalameta/munit_3/1.3.6/munit_3-1.3.6.jar")
     val output = Path.of("/build/core/classes")
-    assertEquals(Extraction.evicted(Vector(old, other, newest, output)), Vector(other, newest, output))
+    assertEquals(Classpath.evicted(Vector(old, other, newest, output)), Vector(other, newest, output))
     val stamped = Path.of("/cache/org/example/tool/202508271544/tool-202508271544.jar")
-    assertEquals(Extraction.evicted(Vector(stamped)), Vector(stamped))
+    assertEquals(Classpath.evicted(Vector(stamped)), Vector(stamped))
   }
 }

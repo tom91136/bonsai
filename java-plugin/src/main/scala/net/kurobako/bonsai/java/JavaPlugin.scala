@@ -27,7 +27,7 @@ class JavaPlugin extends Plugin {
     // The linter is of the whole compilation, as the lints of the file as a whole are asked once, and the compiler
     // reads the file one type at a time.
     val linter =
-      Linter(trees, task.getElements, task.getTypes, args.drop(1).flatMap(_.split(",")).filter(_.nonEmpty).toSet)
+      Linter(trees, task.getElements, task.getTypes, args.drop(1).view.flatMap(_.split(",")).filter(_.nonEmpty).toSet)
     // The build names the file of the model as an argument of the compiler, which the compile of a module names
     // without the modules around it; the property of the process is the older way of naming it, which a build that
     // passes no argument keeps.

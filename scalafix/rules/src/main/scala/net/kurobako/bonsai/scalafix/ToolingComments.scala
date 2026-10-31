@@ -8,6 +8,8 @@ import scalafix.v1.*
 
 object ToolingComments {
   def compile(pattern: String): Pattern = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE)
+
+  val Directive = "(?:scalafix|scalafmt|bonsai):\\s*[a-z{]".r
 }
 
 /** Comments that justify code by the tools that check it, naming a linter, a warning, or a dependency cycle. A comment
@@ -48,7 +50,6 @@ class ToolingComments(extra: List[Pattern]) extends SyntacticRule("ToolingCommen
     "\\b(?:imports?|modules?|packages?|rules?|unused|compiler|diagnostics?|warn\\w*|lint\\w*|scalac|sbt)\\b"
   )
   private val Repeats    = ToolingComments.compile("\\b(?:repeat|restat|duplicat|echo)\\w*")
-  private val Directive  = "(?:scalafix|scalafmt|bonsai):\\s*[a-z{]".r
   private val Word       = "[A-Za-z]+".r
   private val RuleWord   = "[A-Z]?[a-z]+".r
   private val Suppressed = "\"(?:scalafix|bonsai|wartremover):([A-Za-z-]+)\"".r
@@ -56,7 +57,7 @@ class ToolingComments(extra: List[Pattern]) extends SyntacticRule("ToolingCommen
   override def fix(using document: SyntacticDocument): Patch = {
     val tokens = document.tokens
     tokens.zipWithIndex.collect {
-      case (comment: Token.Comment, index) if Directive.findFirstIn(comment.syntax).isEmpty =>
+      case (comment: Token.Comment, index) if ToolingComments.Directive.findFirstIn(comment.syntax).isEmpty =>
         suppressed(tokens, index) match {
           case Some(rules) =>
             Option.when(restating(comment.syntax, rules))(
@@ -97,7 +98,7 @@ class ToolingComments(extra: List[Pattern]) extends SyntacticRule("ToolingCommen
     }
     annotation.take(2).toList match {
       case List(_: Token.At, name: Token.Ident) if name.value == "SuppressWarnings" =>
-        val clause = annotation.drop(2).takeWhile(!_.isInstanceOf[Token.LF]).map(_.syntax).mkString
+        val clause = annotation.view.drop(2).takeWhile(!_.isInstanceOf[Token.LF]).map(_.syntax).mkString
         Some(Suppressed.findAllMatchIn(clause).map(_.group(1)).toList)
       case List(_: Token.At, name: Token.Ident) if name.value == "nowarn" => Some(Nil)
       case _                                                              => None

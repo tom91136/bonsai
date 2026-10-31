@@ -1,0 +1,13 @@
+# the compiler plugin of the minor line runs in the compiler of this patch
+> compile
+> set bonsaiErrors += "write-only-field"
+-> compile
+> set bonsaiErrors -= "write-only-field"
+> set bonsaiDisabled += "write-only-field"
+> compile
+# the analysis, built with the newest compiler, reads its TASTy
+> bonsaiAnalyse
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
+-> bonsaiAnalyse
+> set bonsaiDisabled ++= Set("unused-member", "warnings-not-fatal")
+> bonsaiAnalyse

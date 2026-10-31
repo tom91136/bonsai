@@ -13,18 +13,18 @@ class PublicTypes extends SemanticRule("PublicTypes") {
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
     case definition: Defn.Def
         if definition.decltpe.isEmpty && definitions.public(definition.mods) &&
-          definitions.reachable(definition, definition.mods) && !definitions.has[Mod.Transparent](definition.mods) =>
-      lint("missing-public-type", "a public member names its type", definition.name.pos)
+          ancestry.reachable(definition, definition.mods) && !definitions.has[Mod.Transparent](definition.mods) =>
+      definition.name.pos
     case definition: Defn.Val
         if definition.decltpe.isEmpty && !definition.pats.exists(_.is[Pat.Wildcard]) &&
-          definitions.public(definition.mods) && definitions.reachable(definition, definition.mods) &&
+          definitions.public(definition.mods) && ancestry.reachable(definition, definition.mods) &&
           !constant(definition) =>
-      lint("missing-public-type", "a public member names its type", definition.pos)
+      definition.pos
     case definition: Defn.Var
         if definition.decltpe.isEmpty && !definition.pats.exists(_.is[Pat.Wildcard]) &&
-          definitions.public(definition.mods) && definitions.reachable(definition, definition.mods) =>
-      lint("missing-public-type", "a public member names its type", definition.pos)
-  }.asPatch
+          definitions.public(definition.mods) && ancestry.reachable(definition, definition.mods) =>
+      definition.pos
+  }.map(lint("missing-public-type", "a public member names its type", _)).asPatch
 
   // an explicit type widens a constant, and replaces the precise result of a transparent inline def
   private def constant(definition: Defn.Val)(using SemanticDocument): Boolean =

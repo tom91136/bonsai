@@ -30,7 +30,7 @@ object JdkPackages {
     * or None.
     */
   def unsupportedName(name: String): Option[String] = {
-    val prefixes = name.indices.filter(name(_) == '.').map(name.take).reverse.toList
+    val prefixes = name.indices.reverseIterator.filter(name(_) == '.').map(name.take).toList
     (name :: prefixes).find(packages.contains).flatMap(unsupported)
   }
 }

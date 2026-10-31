@@ -21,18 +21,16 @@ class DerivedConstants extends SyntacticRule("DerivedConstants") {
       case pkg: Pkg           => scope(pkg.body.stats)
     }.asPatch
 
-  private def generated(input: Input): Boolean = (input match {
-    case file: Input.File        => file.path.toString
-    case file: Input.VirtualFile => file.path
-    case _                       => ""
-  }).split("[/\\\\]").contains("generated")
+  private def generated(input: Input): Boolean = definitions.path(input).split("[/\\\\]").contains("generated")
 
   private def scope(stats: List[Stat]): Patch = {
-    val constants = stats.collect { case definition: Defn.Val => definition }.flatMap { definition =>
-      definition.pats match {
-        case List(Pat.Var(name)) => Some(name.value -> definition)
-        case _                   => None
-      }
+    val constants = stats.flatMap {
+      case definition: Defn.Val =>
+        definition.pats match {
+          case List(Pat.Var(name)) => Some(name.value -> definition)
+          case _                   => None
+        }
+      case _ => None
     }
     constants.foldLeft((Map.empty[String, Long], Patch.empty)) { case ((known, patches), (name, definition)) =>
       val found = Option.when(literal(definition.rhs))(evaluate(definition.rhs, known)).flatten.filter(_ >= Smallest)
@@ -52,7 +50,7 @@ class DerivedConstants extends SyntacticRule("DerivedConstants") {
     case _                        => false
   }
 
-  private def power(value: Long): Boolean = value > 0L && (value & (value - 1L)) == 0L
+  private def base(value: Long): Boolean = value <= 0L || (value & (value - 1L)) != 0L
 
   private def hex(value: Long, long: Boolean): String =
     s"0x${java.lang.Long.toHexString(value)}${if (long) "L" else ""}"
@@ -64,18 +62,25 @@ class DerivedConstants extends SyntacticRule("DerivedConstants") {
     val named = siblings.toVector.sortBy(_._1).collect {
       case (sibling, a) if a >= Operand && a != value && words(sibling).exists(own) => sibling -> a
     }
-    val sums = for {
-      ((left, a), index) <- named.zipWithIndex
-      (right, b)         <- named.drop(index + 1) if !power(a) || !power(b)
-      found              <- Seq(a + b -> s"$left + $right", a - b -> s"$left - $right", b - a -> s"$right - $left")
-      if found._1 == value
-    } yield found._2
+    val indexed = named.zipWithIndex
+    val byValue = indexed.groupMap { case ((_, a), _) => a } { case ((right, _), at) => right -> at }
+    val sums    = indexed.flatMap { case ((left, a), index) =>
+      Seq[(Long, String => String)](
+        value - a -> (right => s"$left + $right"),
+        a - value -> (right => s"$left - $right"),
+        a + value -> (right => s"$right - $left")
+      ).flatMap { (target, expression) =>
+        byValue.getOrElse(target, Vector.empty).collect {
+          case (right, at) if at > index && (base(a) || base(target)) => at -> expression(right)
+        }
+      }.sortBy(_._1).map(_._2)
+    }
     val moved = for {
-      (base, a) <- named if !power(a)
-      shift     <- 8 to 62
+      (origin, a) <- named if base(a)
+      shift       <- 8 to 62
       step = 1L << shift
       if a % step == 0L && (a + step == value || a - step == value)
-    } yield s"$base ${if (a < value) "+" else "-"} ${hex(step, long)}"
+    } yield s"$origin ${if (a < value) "+" else "-"} ${hex(step, long)}"
     (moved ++ sums).headOption
   }
 

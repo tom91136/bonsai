@@ -12,15 +12,16 @@ import dotty.tools.dotc.core.Types.AnnotatedType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.report
 import dotty.tools.dotc.reporting.CodeAction
-import dotty.tools.dotc.reporting.Diagnostic.OriginWarning
-import dotty.tools.dotc.reporting.NoExplanation
+import dotty.tools.dotc.reporting.ErrorMessageID
+import dotty.tools.dotc.reporting.Message
+import dotty.tools.dotc.reporting.MessageKind
+import dotty.tools.dotc.rewrites.Rewrites
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import dotty.tools.dotc.util.SourceFile
 import dotty.tools.dotc.util.SourcePosition
 import dotty.tools.dotc.util.Spans.Span
 import dotty.tools.dotc.util.SrcPos
 import java.nio.file.Path
-import java.nio.file.PathMatcher
 import scala.collection.mutable
 
 /** Reports each check at its severity unless it is disabled, escalated to an error, kept as a warning by `lenient`, or
@@ -35,9 +36,11 @@ private class Checks(
     disabled: Set[Check],
     errors: Set[Check],
     lenient: Set[Check],
-    instrumented: List[PathMatcher],
+    instrumented: Path => Boolean,
     suppressions: mutable.Map[SourceFile, List[(Span, Set[String])]]
 ) {
+  private val patched = mutable.Map.empty[SourceFile, List[Span]]
+
   def apply(
       check: Check,
       message: String,
@@ -46,24 +49,30 @@ private class Checks(
       escalate: Boolean = false
   )(using Context): Unit =
     if (
-      !disabled(check) && !instrumented.exists(_.matches(Path.of(position.sourcePos.source.path))) &&
+      !disabled(check) && !instrumented(Path.of(position.sourcePos.source.path)) &&
       !suppressed(check, position)
     ) {
       val tagged = s"$message [bonsai:${check.id}]"
       val shown  = start(position)
-      if (escalate || errors(check) || check.severity == Severity.Error && !lenient(check)) report.error(tagged, shown)
-      else if (check.severity == Severity.Info && !lenient(check)) report.echo(tagged, shown)
-      else
-        report.warning(
-          NoExplanation(tagged).withActions(Option.when(fix.nonEmpty)(CodeAction(
-            s"fix ${check.id}",
-            None,
-            fix
-          )).toList*),
-          shown,
-          OriginWarning.NoOrigin
-        )
+      if (escalate || errors(check) || check.severity == Check.Severity.Error && !lenient(check))
+        report.error(tagged, shown)
+      else if (check.severity == Check.Severity.Info && !lenient(check)) report.echo(tagged, shown)
+      else {
+        val actions = Option.when(fix.nonEmpty && disjoint(fix))(CodeAction(s"fix ${check.id}", None, fix)).toList
+        actions.foreach(Rewrites.applyAction)
+        report.warning(Fixable(tagged, actions), shown)
+      }
     }
+
+  // Patches that overlap make the compiler fail, so the fix of the check that reports second is left out.
+  private def disjoint(fix: List[ActionPatch]): Boolean = {
+    val spans = fix.map(patch => patch.srcPos.source -> patch.srcPos.span)
+    val clear = spans.forall((source, span) =>
+      !patched.getOrElse(source, Nil).exists(other => other.start < span.end && span.start < other.end)
+    )
+    if (clear) spans.foreach((source, span) => patched.update(source, span :: patched.getOrElse(source, Nil)))
+    clear
+  }
 
   // The compiler shows every line a position spans, which for a table of thousands of lines exhausts the heap.
   private def start(position: SrcPos)(using Context): SourcePosition = {
@@ -98,8 +107,8 @@ private class Checks(
     }
     def ids(annotation: Annotation): Set[String] =
       annotation.argument(0).toList.flatMap(elements(_)).collect {
-        case tpd.Literal(Constant("bonsai"))              => "*"
-        case tpd.Literal(Constant(s"bonsai:$id": String)) => id
+        case tpd.Literal(Constant("bonsai"))                                   => "*"
+        case tpd.Literal(Constant(text: String)) if text.startsWith("bonsai:") => text.stripPrefix("bonsai:")
       }.toSet
     @annotation.tailrec
     def ascribed(tpe: Type, found: List[Annotation]): List[Annotation] = tpe match {
@@ -118,4 +127,15 @@ private class Checks(
       case _                         => None
     }
   }
+}
+
+/** A message with code actions for editors to offer. `-rewrite` applies them for lint warnings in some compilers only,
+  * so the checks apply them themselves.
+  */
+private final class Fixable(text: String, fixes: List[CodeAction])(using Context)
+    extends Message(ErrorMessageID.NoExplanationID) {
+  def kind: MessageKind                                 = MessageKind.NoKind
+  def msg(using Context): String                        = text
+  def explain(using Context): String                    = ""
+  override def actions(using Context): List[CodeAction] = fixes
 }

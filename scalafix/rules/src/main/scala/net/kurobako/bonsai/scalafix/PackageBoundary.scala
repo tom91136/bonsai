@@ -31,19 +31,13 @@ class PackageBoundary(boundaries: List[PackageBoundary.Boundary]) extends Semant
   )
 
   override def fix(using document: SemanticDocument): Patch = {
-    val source = path(document.input)
-    boundaries.filter(boundary =>
+    val source = definitions.path(document.input)
+    boundaries.view.filter(boundary =>
       boundary.sources.findFirstIn(source).nonEmpty && boundary.exempt.forall(_.findFirstIn(source).isEmpty)
     ).flatMap { boundary =>
       document.tree.collect {
         case name: Name if boundary.forbidden.exists(name.symbol.value.startsWith(_)) => name
-      }.groupBy(_.pos.startLine).values.map(_.head).map(name => lint("package-boundary", boundary.message, name.pos))
-    }.asPatch
-  }
-
-  private def path(input: Input): String = input match {
-    case file: Input.File        => file.path.toString
-    case file: Input.VirtualFile => file.path
-    case _                       => ""
+      }.groupBy(_.pos.startLine).values.map(names => lint("package-boundary", boundary.message, names.head.pos))
+    }.toList.asPatch
   }
 }

@@ -3,8 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.file.Files
 import java.nio.file.Path
 import net.kurobako.bonsai.java.{Model => JavaModel}
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
+import net.kurobako.bonsai.testing.Scratch
 
 class ModulesSuite extends munit.FunSuite {
 
@@ -13,7 +12,7 @@ class ModulesSuite extends munit.FunSuite {
 
   /** A build of an application module and a library module, with the requirement the application declares. */
   private def build(requires: String): (Manifest, Map[String, Node], Vector[JavaModel.Reflection]) = {
-    val root       = Files.createTempDirectory("bonsai-modules")
+    val root       = Scratch.directory("bonsai-modules")
     val libClasses = Files.createDirectories(root.resolve("lib-classes"))
     val appClasses = Files.createDirectories(root.resolve("app-classes"))
     Files.createDirectories(libClasses.resolve("lib"))
@@ -42,13 +41,12 @@ class ModulesSuite extends munit.FunSuite {
     (manifest, nodes, Vector(JavaModel.Reflection("app.App", "lib.Lib", "app/App.java:65")))
   }
 
-  private def descriptors(text: String): Vector[Modules.Descriptor] = {
-    val file = Files.createTempFile("module-", ".java")
-    try {
+  private def descriptors(text: String): Vector[Modules.Descriptor] =
+    Scratch.using("module-") { directory =>
+      val file = directory.resolve("module.java")
       Files.writeString(file, text)
       Modules.descriptor(file).toVector
-    } finally Files.deleteIfExists(file): Unit
-  }
+    }
 
   test("a module that looks a class up without requiring its module is reported") {
     val (manifest, nodes, reflections) = build("")
@@ -94,8 +92,7 @@ class ModulesSuite extends munit.FunSuite {
   }
 
   test("a module that reads another through a transitive requirement is not reported") {
-    val root = Files.createTempDirectory("bonsai-modules")
-    try {
+    Scratch.using("bonsai-modules") { root =>
       val libClasses    = Files.createDirectories(root.resolve("lib-classes"))
       val bridgeClasses = Files.createDirectories(root.resolve("bridge-classes"))
       val appClasses    = Files.createDirectories(root.resolve("app-classes"))
@@ -142,7 +139,7 @@ class ModulesSuite extends munit.FunSuite {
         Modules.uses(manifest, nodes, Vector(JavaModel.Reflection("app.App", "lib.Lib", "app/App.java:65"))),
         Vector.empty
       )
-    } finally Using.resource(Files.walk(root))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+    }
   }
 
   test("a module descriptor names its requirements, including the ones that are transitive") {

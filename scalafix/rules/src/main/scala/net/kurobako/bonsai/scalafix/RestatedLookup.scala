@@ -15,7 +15,14 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
       tree.collect { case definition: Defn.Enum => definition }.groupBy(_.name.value).collect {
         case (name, List(definition)) => name -> enumeration(definition)
       },
-      tree.collect { case importing: Import => importing.importers }.flatten
+      tree.collect { case importing: Import => importing.importers }.flatten.flatMap(importer =>
+        lastName(importer.ref).toList.flatMap(owner =>
+          importer.importees.collect {
+            case _: Importee.Wildcard    => owner -> None
+            case Importee.Name(imported) => owner -> Some(imported.value)
+          }
+        )
+      ).toSet
     )
     tree.collect {
       case map @ Term.Apply.After_4_6_0(Term.Name("Map") | Term.Select(Term.Name("Map"), Term.Name("apply")), args) =>
@@ -25,7 +32,7 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
       case lookup: Term.Match =>
         lookupMatch(index, lookup)
       case definition: Defn.Def =>
-        val params = definition.paramClauseGroups.flatMap(_.paramClauses).flatMap(_.values)
+        val params = definition.paramClauseGroups.flatMap(_.paramClauses.flatMap(_.values))
         reverse(index, definition, params, definition.body)
       case definition: Defn.Val =>
         reverse(index, definition, Nil, definition.rhs)
@@ -43,9 +50,16 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
       overridesToString: Boolean
   ) {
     def singletons: List[String] = variants.collect { case variant if variant.singleton => variant.name }
+
+    def fields: List[Option[Int]] = params.indices.toList.map(Some(_))
+
+    def accessors: List[Option[Int]] = fields ++ Option.when(!overridesToString)(None)
   }
 
-  private final case class Index(enums: Map[String, Enumeration], importers: List[Importer])
+  private final case class Index(enums: Map[String, Enumeration], imports: Set[(String, Option[String])]) {
+    val declaring: Map[String, List[Enumeration]] =
+      enums.values.toList.flatMap(owner => owner.variants.map(_.name -> owner)).groupMap(_._1)(_._2)
+  }
 
   private final case class Entry(key: Any, owner: Enumeration, variant: Variant)
 
@@ -60,7 +74,7 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
     }
     Enumeration(
       name,
-      definition.ctor.paramClauses.toList.flatMap(_.values).map(_.name.value),
+      definition.ctor.paramClauses.toList.flatMap(_.values.map(_.name.value)),
       variants,
       definition.templ.body.stats.exists {
         case method: Defn.Def => method.name.value == "toString"
@@ -71,7 +85,7 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
 
   private def table(index: Index, tree: Tree, values: List[Term]): Option[Patch] = {
     val pairs = values.flatMap(pair)
-    Option.when(pairs.sizeIs == values.size)(pairs).flatMap(resolved(index, _)).flatMap(restated(_, names = true))
+    Option.when(pairs.sizeIs == values.size)(pairs).flatMap(resolved(index, _)).flatMap(restatedNamed)
       .map { case (owner, accessor) => lint("restated-map", mapMessage(owner, accessor), tree.pos) }
   }
 
@@ -90,7 +104,7 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
       case _ => None
     }
     Option.when(arms.sizeIs == cases.size && arms.map(_._1).distinct.sizeIs == 1)(arms.map(_._2))
-      .flatMap(restated(_, names = true)).map { case (owner, accessor) =>
+      .flatMap(restatedNamed).map { case (owner, accessor) =>
         lint("restated-match", lookupMessage(owner, accessor), lookup.pos)
       }
   }
@@ -114,7 +128,7 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
             } yield Entry(key, target, variant)
           case _ => None
         }
-        Option.when(arms.sizeIs == lookup.casesBlock.cases.size)(arms).flatMap(restated(_, names = false)).map {
+        Option.when(arms.sizeIs == lookup.casesBlock.cases.size)(arms).flatMap(restated).map {
           case (target, accessor) => lint("restated-reverse", reverseMessage(target, accessor), lookup.pos)
         }
       }
@@ -126,13 +140,13 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
     val names   = members.map(_._2.name)
     members.headOption.map(_._1).filter { owner =>
       members.sizeIs == values.size && values.sizeIs >= 3 && members.forall(_._1.name == owner.name) &&
-      owner.variants.forall(_.singleton) && names.sorted == owner.singletons.sorted &&
+      owner.variants.forall(_.singleton) && covers(owner, names) &&
       (kind == "Set" || names == owner.singletons)
     }.map(owner => lint("restated-enumeration", enumerationMessage(owner, kind), tree.pos))
   }
 
   private def enclosingEnum(index: Index, definition: Tree): Option[Enumeration] =
-    definitions.ancestors(definition).collectFirst { case template: Template => template }.flatMap(_.parent).collect {
+    ancestry.ancestors(definition).collectFirst { case template: Template => template }.flatMap(_.parent).collect {
       case owner: Defn.Enum => owner.name.value
     }.flatMap(index.enums.get)
 
@@ -171,9 +185,7 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
     case Term.Select(Term.Name(name), Term.Name(variant)) =>
       index.enums.get(name).flatMap(owner => owner.variants.find(_.name == variant).map(owner -> _))
     case Term.Name(variant) =>
-      index.enums.values.filter(owner =>
-        owner.variants.exists(_.name == variant) && visible(index, tree, owner.name, variant)
-      ).toList match {
+      index.declaring.getOrElse(variant, Nil).filter(owner => visible(index, tree, owner.name, variant)) match {
         case List(owner) => owner.variants.find(_.name == variant).map(owner -> _)
         case _           => None
       }
@@ -181,31 +193,34 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
   }
 
   private def visible(index: Index, tree: Tree, owner: String, variant: String): Boolean =
-    definitions.ancestors(tree).exists {
+    ancestry.ancestors(tree).exists {
       case companion: Defn.Object => companion.name.value == owner
       case _                      => false
-    } || index.importers.exists(importer =>
-      named(importer.ref, owner) && importer.importees.exists {
-        case _: Importee.Wildcard    => true
-        case Importee.Name(imported) => imported.value == variant
-        case _                       => false
-      }
-    )
+    } || index.imports.contains(owner -> None) || index.imports.contains(owner -> Some(variant))
 
-  private def named(ref: Term.Ref, name: String): Boolean = ref match {
-    case Term.Name(value)                 => value == name
-    case Term.Select(_, Term.Name(value)) => value == name
-    case _                                => false
+  private def lastName(ref: Term.Ref): Option[String] = ref match {
+    case Term.Name(value)                 => Some(value)
+    case Term.Select(_, Term.Name(value)) => Some(value)
+    case _                                => None
   }
 
-  private def restated(entries: List[Entry], names: Boolean): Option[(Enumeration, Option[Int])] =
+  private def restated(entries: List[Entry]): Option[(Enumeration, Option[Int])] = restating(entries, _.fields)
+
+  private def restatedNamed(entries: List[Entry]): Option[(Enumeration, Option[Int])] =
+    restating(entries, _.accessors)
+
+  private def restating(
+      entries: List[Entry],
+      accessors: Enumeration => List[Option[Int]]
+  ): Option[(Enumeration, Option[Int])] =
     entries.headOption.map(_.owner).filter { owner =>
       entries.sizeIs >= 3 && entries.forall(_.owner.name == owner.name) &&
-      entries.map(_.variant.name).sorted == owner.singletons.sorted
+      covers(owner, entries.map(_.variant.name))
     }.flatMap { owner =>
-      val accessors = owner.params.indices.toList.map(Some(_)) ++ Option.when(names && !owner.overridesToString)(None)
-      accessors.find(accessor => entries.forall(restates(_, accessor))).map(owner -> _)
+      accessors(owner).find(accessor => entries.forall(restates(_, accessor))).map(owner -> _)
     }
+
+  private def covers(owner: Enumeration, names: List[String]): Boolean = names.sorted == owner.singletons.sorted
 
   private def restates(entry: Entry, accessor: Option[Int]): Boolean = accessor match {
     case None        => entry.key == entry.variant.name
@@ -223,15 +238,14 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
     if (owner.variants.forall(_.singleton)) s"derive it with ${owner.name}.values$expression"
     else s"derive it from a list of the singleton cases, as ${owner.name} has no values"
 
-  private def mapMessage(owner: Enumeration, accessor: Option[Int]): String = {
-    val derivation = advice(owner, s".iterator.map(v => v.${member(owner, accessor)} -> v).toMap")
-    s"${restatement("table", owner, accessor)}; $derivation, so it follows the enum"
-  }
+  private def derivedMessage(noun: String, owner: Enumeration, accessor: Option[Int], expression: String): String =
+    s"${restatement(noun, owner, accessor)}; ${advice(owner, expression)}, so it follows the enum"
 
-  private def lookupMessage(owner: Enumeration, accessor: Option[Int]): String = {
-    val derivation = advice(owner, s".find(v => v.${member(owner, accessor)} == key)")
-    s"${restatement("lookup", owner, accessor)}; $derivation, so it follows the enum"
-  }
+  private def mapMessage(owner: Enumeration, accessor: Option[Int]): String =
+    derivedMessage("table", owner, accessor, s".iterator.map(v => v.${member(owner, accessor)} -> v).toMap")
+
+  private def lookupMessage(owner: Enumeration, accessor: Option[Int]): String =
+    derivedMessage("lookup", owner, accessor, s".find(v => v.${member(owner, accessor)} == key)")
 
   private def reverseMessage(owner: Enumeration, accessor: Option[Int]): String = {
     val field = member(owner, accessor)

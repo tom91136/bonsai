@@ -6,11 +6,11 @@ import scalafix.v1.*
 /** Final values use PascalCase, including acronym and numeric segments. */
 class FinalValPascalCase extends SyntacticRule("FinalValPascalCase") {
   override def fix(using document: SyntacticDocument): Patch = document.tree.collect {
-    case definition: Defn.Val if definition.mods.exists(_.isInstanceOf[Mod.Final]) =>
+    case definition: Defn.Val if definitions.has[Mod.Final](definition.mods) =>
       definition.pats.flatMap(_.collect { case Pat.Var(name) => check(name) }).asPatch
     case parameter: Term.Param
-        if parameter.mods.exists(_.isInstanceOf[Mod.Final]) &&
-          parameter.mods.exists(_.isInstanceOf[Mod.ValParam]) => check(parameter.name)
+        if definitions.has[Mod.Final](parameter.mods) && definitions.has[Mod.ValParam](parameter.mods) =>
+      check(parameter.name)
   }.asPatch
 
   private def check(name: Name): Patch =

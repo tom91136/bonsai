@@ -6,8 +6,7 @@ import java.io.File
 import java.nio.file.Files
 import net.kurobako.bonsai.java.JavaLint
 import net.kurobako.bonsai.java.Model as JavaModel
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
+import net.kurobako.bonsai.testing.Scratch
 
 /** The lints the javac plugin finds in the Java code of a build, which the analysis reports as findings of their own.
   */
@@ -16,29 +15,13 @@ class JavaLintsSuite extends AnalysisSuite {
   /** A record of the model of the Java code, with the fields separated by tabs. */
   private def record(kind: String, fields: String*): String = (kind +: fields).mkString("\t")
 
-  /** The model of the Java code of a build, read as the analysis reads it. */
-  private def read(model: Vector[String], scope: Output.Scope = Output.Scope.Main): Extraction.Result = {
-    val directory = Files.createTempDirectory("bonsai-")
-    try {
-      val file = directory.resolve("java-model.tsv")
-      Files.writeString(file, model.mkString("", "\n", "\n")): Unit
-      val manifest = Manifest(
-        Vector.empty,
-        classpath,
-        Set.empty,
-        models = Vector(Output("j", scope, file))
-      )
-      Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
-    } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
-  }
-
   /** The finding of the lint of the given id, which the analysis reports. */
   private def reported(result: Extraction.Result, id: String): Finding =
     Report.findings(result).find(finding => finding.rule.id == id)
       .getOrElse(fail(s"the lint $id was not reported"))
 
   test("a lint in a method of a type is reported on the node of the type") {
-    val result = read(Vector(
+    val result = readJavaModel(Vector(
       record("node", "demo.Counter", "demo/Counter.java", "4", "true"),
       record(
         "lint",
@@ -59,8 +42,34 @@ class JavaLintsSuite extends AnalysisSuite {
     assertEquals(finding.level, Finding.Level.Warning)
   }
 
+  test("a law of a chain of calls in the Java code is reported under the id of the law") {
+    val result = readJavaModel(Vector(
+      record("node", "demo.Counter", "demo/Counter.java", "4", "true"),
+      record(
+        "lint",
+        "size-to-is-empty",
+        "demo.Counter",
+        "demo.Counter.empty",
+        "demo/Counter.java",
+        "9",
+        "use isEmpty() instead of a size comparison with zero: values.isEmpty()"
+      )
+    ))
+
+    val finding = reported(result, "size-to-is-empty")
+    assertEquals(finding.node.name, "demo.Counter")
+    assertEquals(finding.node.line, 9)
+    assertEquals(
+      finding.detail,
+      "Counter.empty: use isEmpty() instead of a size comparison with zero: values.isEmpty()"
+    )
+    assert(finding.suppressedBy(Set("size-to-is-empty")))
+    assert(finding.suppressedBy(Set("SizeReplaceableByIsEmpty")))
+    assert(!finding.suppressedBy(Set("size-to-non-empty")))
+  }
+
   test("a lint of the file itself is reported on a node named by the path of the file") {
-    val result = read(Vector(
+    val result = readJavaModel(Vector(
       record(
         "lint",
         "unused-import",
@@ -80,7 +89,7 @@ class JavaLintsSuite extends AnalysisSuite {
   }
 
   test("a lint of a type the code suppresses is not reported") {
-    val result = read(Vector(
+    val result = readJavaModel(Vector(
       record("node", "demo.Counter", "demo/Counter.java", "4", "true", "", "redundant-cast"),
       record(
         "lint",
@@ -104,7 +113,7 @@ class JavaLintsSuite extends AnalysisSuite {
   }
 
   test("a lint of the test code is reported as information") {
-    val result = read(
+    val result = readJavaModel(
       Vector(
         record("node", "demo.Counter", "demo/Counter.java", "4", "true"),
         record(
@@ -124,8 +133,7 @@ class JavaLintsSuite extends AnalysisSuite {
   }
 
   test("a lint of the Java code of a build of Scala code is reported") {
-    val directory = Files.createTempDirectory("bonsai-")
-    try {
+    Scratch.using("bonsai-") { directory =>
       val classes = Files.createDirectories(directory.resolve("classes"))
       val source  = directory.resolve("A.scala")
       Files.writeString(source, "class A"): Unit
@@ -163,11 +171,11 @@ class JavaLintsSuite extends AnalysisSuite {
       val finding = reported(result, "redundant-cast")
       assertEquals(finding.node.name, "demo.Counter")
       assertEquals(finding.node.line, 12)
-    } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+    }
   }
 
   test("a lint no rule carries is not reported") {
-    val result = read(Vector(
+    val result = readJavaModel(Vector(
       record("node", "demo.Counter", "demo/Counter.java", "4", "true"),
       record(
         "lint",
@@ -184,11 +192,11 @@ class JavaLintsSuite extends AnalysisSuite {
   }
 
   test("no id of a lint is the id of a rule of the Scala code") {
-    val lints = JavaLint.values.map(_.id).toSet
+    val lints = JavaLint.ids
     val rules = Finding.Rule.values.map(_.id)
     // Every lint has a rule of its own, and no other rule carries the id of a lint.
     assertEquals(rules.count(lints.contains), lints.size)
-    assertEquals(rules.distinct.size, rules.size)
+    assertEquals(rules.distinct.length, rules.length)
   }
   test("a lint of generated code is reported, and labelled as generated") {
     val node = Node(

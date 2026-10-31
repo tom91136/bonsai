@@ -11,7 +11,8 @@ object Build {
 
   /** Modules compiled without fatal warnings, which matter in the ci mode only. */
   def fatal(manifest: Manifest): Vector[Finding] = {
-    val compiled = manifest.sources.filter(_.scope == Output.Scope.Main).map(_.module).toSet
+    val compiled =
+      manifest.sources.view.collect { case source if source.scope == Output.Scope.Main => source.module }.toSet
     manifest.options.toVector.sortBy(_._1).collect {
       case (module, options) if compiled(module) && !options.exists(Fatal) =>
         Finding(
@@ -29,18 +30,19 @@ object Build {
       Finding(
         Finding.Rule.UnusedBound,
         node(bound.member, "", Output.Scope.Main, ".bonsai.conf"),
-        s"bounded ${bound.member} matches no collection the complexity analysis sizes; remove the entry or correct " +
-          "the member"
+        s"bounded ${bound.member} (${bound.reason}) matches no collection the complexity analysis sizes; remove the " +
+          "entry or correct the member"
       )
     )
 
   def duplicates(manifest: Manifest): Vector[Finding] =
     manifest.sources.distinctBy(_.path).filter(source => Files.isRegularFile(source.path))
-      .groupBy(source => (source.path.getFileName.toString, digest(source))).values.toVector
-      .filter(
-        _.size > 1
-      ).map(_.map(source => source.copy(path = relative(manifest, source.path))).sortBy(_.path.toString))
-      .sortBy(_.head.path.toString).map { copies =>
+      .groupBy(source => (source.path.getFileName.toString, digest(source))).values.view
+      .collect {
+        case copies if copies.size > 1 =>
+          copies.map(source => source.copy(path = relative(manifest, source.path))).sortBy(_.path.toString)
+      }
+      .toVector.sortBy(_.head.path.toString).map { copies =>
         val first = copies.head
         Finding(
           Finding.Rule.PlatformDuplicate,

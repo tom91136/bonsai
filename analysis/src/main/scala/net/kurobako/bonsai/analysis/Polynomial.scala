@@ -9,9 +9,12 @@ import scala.annotation.targetName
   * keeps every reported isomorphism sound at the cost of completeness.
   */
 object Polynomial {
+  enum Naming {
+    case Atom, Variable
+  }
+
   enum Factor {
-    case Atom(name: String)
-    case Variable(name: String)
+    case Named(naming: Naming, name: String)
     case Power(base: Polynomial, exponent: Polynomial)
   }
 
@@ -24,8 +27,8 @@ object Polynomial {
 
   def constant(value: BigInt): Polynomial = if (value == 0) Zero else Polynomial(Map(Map.empty -> value))
 
-  def atom(name: String): Polynomial     = factor(Factor.Atom(name))
-  def variable(name: String): Polynomial = factor(Factor.Variable(name))
+  def atom(name: String): Polynomial     = factor(Factor.Named(Naming.Atom, name))
+  def variable(name: String): Polynomial = factor(Factor.Named(Naming.Variable, name))
 
   def sum(terms: Iterable[Polynomial]): Polynomial       = terms.foldLeft(Zero)(_ + _)
   def product(factors: Iterable[Polynomial]): Polynomial = factors.foldLeft(One)(_ * _)
@@ -57,9 +60,9 @@ object Polynomial {
   private def opaque(name: String): Polynomial = atom(s"<$name>")
 
   private def show(factor: Factor, full: Boolean): String = factor match {
-    case Factor.Atom(name)            => if (full) name else brief(name)
-    case Factor.Variable(name)        => name
-    case Factor.Power(base, exponent) => s"(${base.render(full)})^(${exponent.render(full)})"
+    case Factor.Named(Naming.Atom, name)     => if (full) name else brief(name)
+    case Factor.Named(Naming.Variable, name) => name
+    case Factor.Power(base, exponent)        => s"(${base.render(full)})^(${exponent.render(full)})"
   }
 
   // Strips package prefixes from every qualified name inside a possibly applied type, keeping the types that hold it.

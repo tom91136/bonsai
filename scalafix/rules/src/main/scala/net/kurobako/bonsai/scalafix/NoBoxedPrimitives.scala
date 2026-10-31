@@ -48,11 +48,11 @@ class NoBoxedPrimitives extends SemanticRule("NoBoxedPrimitives") {
   }
 
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
-    case reference: Type.Ref if !references.isSelectionName(reference) =>
+    case reference: Type.Ref if references.notSelectionName(reference) =>
       boxedTypes.get(reference.symbol.value).map { replacement =>
         lint("boxed-type", s"use Scala $replacement instead of a Java boxed type", reference.pos)
       }
-    case reference: Term.Ref if !references.isSelectionName(reference) =>
+    case reference: Term.Ref if references.notSelectionName(reference) =>
       val symbol = reference.symbol.value
       val owner  = symbol.take(symbol.lastIndexOf('#') + 1)
       val member = symbol.drop(owner.length).takeWhile(character => character != '(' && character != '.')

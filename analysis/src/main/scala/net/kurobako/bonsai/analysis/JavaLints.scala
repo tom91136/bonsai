@@ -10,13 +10,45 @@ object JavaLints {
   /** A lint of the Java code, with the module and the scope of the build it was found in. */
   case class Found(lint: JavaModel.Lint, module: String, scope: Output.Scope, generated: Boolean)
 
+  /** A field that can be final unless the build writes it, with the module and the scope of the build it was found in.
+    */
+  case class Reassignable(field: JavaModel.Reassignable, module: String, scope: Output.Scope, generated: Boolean)
+
+  /** The `can-be-final` lints of the fields that are not private, which only the whole build tells: a field no code of
+    * the build writes, unless other builds can reach it, as they can the public API of a library. A field with no
+    * initialiser is written by its constructors, so only the writes `outside` them count against it.
+    */
+  def unwritten(
+      fields: Vector[Reassignable],
+      written: Set[(String, String)],
+      outside: Set[(String, String)],
+      nodes: Map[String, Node]
+  ): Vector[Found] =
+    fields.collect {
+      case candidate
+          if !(if candidate.field.initialised then written else outside) ((
+            candidate.field.owner,
+            candidate.field.name
+          )) &&
+            !candidate.field.suppressed(JavaLint.CanBeFinal.id) &&
+            !(candidate.field.exported && nodes.get(candidate.field.owner).exists(_.exported)) =>
+        val field = candidate.field
+        val lint  = JavaModel.Lint(
+          JavaLint.CanBeFinal.id,
+          field.owner,
+          "",
+          field.path,
+          field.line,
+          s"the field ${field.name} can be final"
+        )
+        Found(lint, candidate.module, candidate.scope, candidate.generated)
+    }
+
   /** The rules of the lints, by the id of the lint, which the rule of a lint carries; a lint no rule carries is one the
     * plugin found and the analysis does not know yet.
     */
-  private val rules: Map[String, Finding.Rule] = {
-    val lints = JavaLint.values.map(_.id).toSet
-    Finding.Rule.values.filter(rule => lints(rule.id)).map(rule => rule.id -> rule).toMap
-  }
+  private val rules: Map[String, Finding.Rule] =
+    Finding.Rule.values.collect { case rule if JavaLint.ids(rule.id) => rule.id -> rule }.toMap
 
   /** The lints whose inspection the IDE reports as a weak warning, so that their findings inform without failing. */
   private val informational: Set[String] = Set(JavaLint.ExtractMethod.id, JavaLint.LoggingSimilar.id)

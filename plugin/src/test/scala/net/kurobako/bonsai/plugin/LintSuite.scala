@@ -1,11 +1,9 @@
 package net.kurobako.bonsai.plugin
 
-import dotty.tools.dotc.Driver
-import dotty.tools.dotc.reporting.StoreReporter
 import java.nio.file.Files
 import munit.FunSuite
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
+import net.kurobako.bonsai.collections.Laws
+import net.kurobako.bonsai.effects.Throwing
 
 class LintSuite extends FunSuite {
   private def warnings(source: String, options: String*): List[String] = warningsAt("Lints.scala", source, options*)
@@ -48,25 +46,8 @@ class LintSuite extends FunSuite {
     report("Lints.scala", source)._2.map((message, line, _, end) => (message, line, end))
 
   private def report(path: String, source: String, options: String*)
-      : (List[String], List[(String, Int, Int, Int)], List[String], String) = {
-    val directory = Files.createTempDirectory("bonsai-")
-    try {
-      val output = Files.createDirectory(directory.resolve("classes"))
-      val file   = directory.resolve(path)
-      Files.createDirectories(file.getParent)
-      Files.writeString(file, source)
-      val result = Driver().process(
-        Array(
-          "-classpath",
-          sys.props("bonsai.plugin.classpath"),
-          "-d",
-          output.toString,
-          s"-Xplugin:${sys.props("bonsai.plugin.jar")}",
-          "-Xplugin-require:bonsai",
-          "-color:never"
-        ) ++ options.map(option => if (option.startsWith("-")) option else s"-P:bonsai:$option") :+ file.toString,
-        StoreReporter()
-      )
+      : (List[String], List[(String, Int, Int, Int)], List[String], String) =
+    Compilations.run(Seq(path -> source), options) { (result, directory) =>
       (
         result.allErrors.map(_.message).toList,
         result.allWarnings.map(warning =>
@@ -75,10 +56,9 @@ class LintSuite extends FunSuite {
         result.removeBufferedMessages(using dotty.tools.dotc.core.Contexts.NoContext).collect {
           case info if info.level == dotty.tools.dotc.interfaces.Diagnostic.INFO => info.message
         },
-        Files.readString(file)
+        Files.readString(directory.resolve(path))
       )
-    } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
-  }
+    }
 
   private def assertWarns(source: String, fragment: String): Unit = {
     val found = warnings(source)
@@ -86,6 +66,7 @@ class LintSuite extends FunSuite {
   }
 
   test("with -rewrite, argument names, extractors and dropped conversions are written in") {
+    assume(Compilations.minor >= 7, "named patterns need Scala 3.7")
     val source = """case class Point(x: Int, y: Int)
                    |case class Wide(a: Int, b: Int, c: Int, d: Int)
                    |object Geometry {
@@ -275,17 +256,17 @@ class LintSuite extends FunSuite {
   }
 
   test("documented exceptions follow what each call and platform actually throws") {
-    def thrown(platform: Exceptions.Platform, method: String): List[String] =
-      Exceptions.throws(platform).collectFirst { case (pattern, types) if pattern.r.matches(method) => types }
+    def thrown(platform: Throwing.Platform, method: String): List[String] =
+      Throwing.throws(platform).collectFirst { case (pattern, types) if pattern.r.matches(method) => types }
         .getOrElse(Nil)
     // ujson.read wraps its parse errors in a TraceException unless called with trace = false.
     assertEquals(
-      thrown(Exceptions.Platform.JVM, "ujson.read").toSet,
+      thrown(Throwing.Platform.JVM, "ujson.read").toSet,
       Set("upickle.core.TraceVisitor.TraceException", "ujson.ParsingFailedException")
     )
-    assertEquals(thrown(Exceptions.Platform.JVM, "sttp.client4.Request.send"), List("sttp.client4.SttpClientException"))
-    assert(thrown(Exceptions.Platform.JS, "sttp.client4.Request.send").contains("scala.scalajs.js.JavaScriptException"))
-    assert(thrown(Exceptions.Platform.Native, "sttp.client4.Request.send").contains("java.lang.RuntimeException"))
+    assertEquals(thrown(Throwing.Platform.JVM, "sttp.client4.Request.send"), List("sttp.client4.SttpClientException"))
+    assert(thrown(Throwing.Platform.JS, "sttp.client4.Request.send").contains("scala.scalajs.js.JavaScriptException"))
+    assert(thrown(Throwing.Platform.Native, "sttp.client4.Request.send").contains("java.lang.RuntimeException"))
   }
 
   test("boundaries where an exception is the expected outcome are left alone") {
@@ -431,7 +412,7 @@ class LintSuite extends FunSuite {
     )
     assert(found.exists(_.contains("toInt on a value that is already Int")), found.mkString("\n"))
     assert(found.exists(_.contains("toString on a value that is already String")), found.mkString("\n"))
-    assert(found.exists(_.contains("toList on a value that is already")), found.mkString("\n"))
+    assert(found.exists(_.contains("remove the identity collection conversion")), found.mkString("\n"))
     assert(!found.exists(_.contains("toLong")), found.mkString("\n"))
   }
 
@@ -672,6 +653,7 @@ class LintSuite extends FunSuite {
   }
 
   test("a parameter marked unused that nothing needs is leftover, unless the method must keep its shape") {
+    assume(Compilations.minor >= 7, "the compiler keeps @unused on parameters from Scala 3.7")
     val found = warnings(
       """import scala.annotation.unused
         |object Lints {
@@ -916,20 +898,21 @@ class LintSuite extends FunSuite {
 
   test("type tests on open hierarchies") {
     val found = warnings(
-      """trait Shape
-        |sealed trait Colour
-        |abstract class Animal
-        |case class Square(side: Int) extends Shape
-        |trait State
-        |trait LocalView extends State
-        |trait ForeignView extends munit.Assertions
-        |object Lints {
-        |  def local(state: State): Int = state match { case _: LocalView => 1; case _ => 0 }
-        |  def foreign(state: munit.Assertions): Int = state match { case _: ForeignView => 1; case _ => 0 }
-        |  def checked(state: munit.Assertions): Boolean = state.isInstanceOf[ForeignView]
-        |  def area(shape: Shape): Int = shape match { case square: Square => square.side; case _ => 0 }
-        |  def open(value: Any): Boolean = value.isInstanceOf[Shape] || value.isInstanceOf[Square]
-        |  def animal(value: Any): Int = value match { case _: Animal => 1; case _: Colour => 2; case _: Product => 3; case _ => 0 }
+      """object Lints {
+        |  private trait Shape
+        |  private sealed trait Colour
+        |  private abstract class Animal
+        |  private case class Square(side: Int) extends Shape
+        |  private trait State
+        |  private trait LocalView extends State
+        |  private trait ForeignView extends munit.Assertions
+        |  private def local(state: State): Int = state match { case _: LocalView => 1; case _ => 0 }
+        |  private def foreign(state: munit.Assertions): Int = state match { case _: ForeignView => 1; case _ => 0 }
+        |  private def checked(state: munit.Assertions): Boolean = state.isInstanceOf[ForeignView]
+        |  private def area(shape: Shape): Int = shape match { case square: Square => square.side; case _ => 0 }
+        |  private def open(value: Any): Boolean = value.isInstanceOf[Shape] || value.isInstanceOf[Square]
+        |  private def animal(value: Any): Int =
+        |    value match { case _: Animal => 1; case _: Colour => 2; case _: Product => 3; case _ => 0 }
         |}""".stripMargin
     )
     assertEquals(found.count(_.contains("type test on Shape")), 1, found.mkString("\n"))
@@ -942,18 +925,45 @@ class LintSuite extends FunSuite {
     )
   }
 
+  test("type tests on types that code outside the compilation can extend are not reported") {
+    val found = warnings(
+      """trait Shape
+        |abstract class Animal
+        |private trait Packaged
+        |object Lints {
+        |  trait Nested
+        |  protected[Lints] trait Qualified
+        |  private trait Hidden
+        |  private[Lints] abstract class Secret
+        |  def open(value: Any): Int =
+        |    value match { case _: Shape => 1; case _: Animal => 2; case _: Packaged => 3; case _: Nested => 4; case _ => 0 }
+        |  def hidden(value: Any): Int = value match { case _: Hidden => 1; case _: Secret => 2; case _: Qualified => 3; case _ => 0 }
+        |  def local(value: Any): Int = { trait Inner; value match { case _: Inner => 1; case _ => 0 } }
+        |}
+        |private object Closed {
+        |  trait Inside
+        |  def inside(value: Any): Int = value match { case _: Inside => 1; case _ => 0 }
+        |}""".stripMargin
+    )
+    val reported = found.filter(_.contains("type test on")).map(_.takeWhile(_ != ',')).sorted
+    assertEquals(
+      reported,
+      List("type test on Hidden", "type test on Inner", "type test on Qualified", "type test on Secret")
+    )
+  }
+
   test("type tests on a parameter that an override of a library method fixes are not reported") {
     val found = diagnostics(
       """import scala.concurrent.ExecutionContext
-        |trait Rejectable extends Runnable { def reject(e: Throwable): Unit }
-        |trait Job
-        |trait Retrying extends Job
-        |final class Pool extends ExecutionContext {
-        |  override def execute(r: Runnable): Unit = r match { case t: Rejectable => t.reject(null); case _ => () }
-        |  override def reportFailure(t: Throwable): Unit = ()
-        |}
         |object Lints {
-        |  def run(job: Job): Int = job match { case r: Retrying => 1; case _ => 0 }
+        |  private trait Rejectable extends Runnable { def reject(e: Throwable): Unit }
+        |  private trait Job
+        |  private trait Retrying extends Job
+        |  private final class Pool extends ExecutionContext {
+        |    override def execute(r: Runnable): Unit = r match { case t: Rejectable => t.reject(null); case _ => () }
+        |    override def reportFailure(t: Throwable): Unit = ()
+        |  }
+        |  private def run(job: Job): Int = job match { case r: Retrying => 1; case _ => 0 }
         |}""".stripMargin
     )
     assertEquals(found.count(_.contains("type test on Rejectable")), 0, found.mkString("\n"))
@@ -1075,8 +1085,8 @@ class LintSuite extends FunSuite {
   }
 
   test("the ci mode makes the strict checks errors, unless a check is kept a warning") {
-    val source = """trait Shape
-                   |object Lints {
+    val source = """object Lints {
+                   |  private trait Shape
                    |  def check(left: Array[Int], right: Array[Int]) = left == right
                    |  def kind(value: Any): Int = value match { case _: Shape => 1; case _ => 0 }
                    |}""".stripMargin
@@ -1097,7 +1107,7 @@ class LintSuite extends FunSuite {
 
   test("the strict checks are those whose findings have been real wherever they fired, and judgement calls warn") {
     assertEquals(
-      Check.values.filter(_.strict).map(_.id).toSet,
+      Check.all.filter(_.strict).map(_.id).toSet,
       Set(
         "acyclic",
         "array-equality",
@@ -1121,11 +1131,12 @@ class LintSuite extends FunSuite {
         "redundant-try",
         "broad-catch",
         "discarded-cause",
-        "shadowed-extension"
-      )
+        "shadowed-extension",
+        "unstable-equality"
+      ) ++ Laws.ids
     )
     assertEquals(
-      Check.values.filter(_.severity == Severity.Error).map(_.id).toSet,
+      Check.all.filter(_.severity == Check.Severity.Error).map(_.id).toSet,
       Set("accidental-self-call", "unrelated-type-test")
     )
   }
@@ -1134,7 +1145,7 @@ class LintSuite extends FunSuite {
     val source = """import scala.concurrent.Future
                    |object Lints {
                    |  def check(left: Array[Int], right: Array[Int]) = left == right
-                   |  def chain(rows: List[List[Int]]) = rows.map(_.map(_ + 1).filter(_ > 0))
+                   |  def parse(s: String) = "e+".r.matches(s)
                    |  def nested: Future[Future[Int]] = ???
                    |}""".stripMargin
     assertEquals(warningsAt("src/main/scala/Lints.scala", source).size, 3)
@@ -1163,7 +1174,7 @@ class LintSuite extends FunSuite {
   }
 
   private def tagged(found: List[String], check: String): List[String] =
-    found.filter(_.endsWith(s"[bonsai:$check]")).map(_.takeWhile(_ != ';')).sorted
+    found.view.filter(_.endsWith(s"[bonsai:$check]")).map(_.takeWhile(_ != ';')).toList.sorted
 
   test("linear operations inside loops are reported, while the same calls outside a loop are not") {
     val found = warnings(
@@ -1328,27 +1339,6 @@ class LintSuite extends FunSuite {
     assertEquals(tagged(warnings(loop, "hot=**.VM*", "hot=!**.*Suite"), "loop-boxing").size, 1)
     assertEquals(tagged(warnings(loop), "loop-boxing").size, 1)
     assertEquals(tagged(warnings(loop, "hot=**.Other*"), "loop-boxing"), Nil)
-  }
-
-  test("chains of strict collection transformations inside loops are reported once") {
-    val found = warnings(
-      """object Lints {
-        |  def chain(rows: Vector[List[Int]]): Int = rows.map(values => values.map(_ + 1).filter(_ > 2).map(_ * 2).sum).sum
-        |  def array(rows: Vector[Array[Int]]): Int = rows.map(values => values.filter(_ > 0).map(_ + 1).length).sum
-        |  def once(values: List[Int]): Int = values.map(_ + 1).filter(_ > 2).sum
-        |  def single(rows: Vector[List[Int]]): Int = rows.map(values => values.map(_ + 1).sum).sum
-        |  def lazily(rows: Vector[List[Int]]): Int = rows.map(values => values.view.map(_ + 1).filter(_ > 2).sum).sum
-        |  def iterated(rows: Vector[Iterator[Int]]): Int = rows.map(values => values.map(_ + 1).filter(_ > 2).sum).sum
-        |  def optional(rows: Vector[Option[Int]]): Int = rows.map(value => value.map(_ + 1).filter(_ > 2).sum).sum
-        |}""".stripMargin
-    )
-    assertEquals(
-      tagged(found, "strict-chain"),
-      List(
-        "map then filter builds an intermediate collection",
-        "filter then map builds an intermediate collection"
-      ).sorted
-    )
   }
 
   test("regexes compiled from literals on every call, or on every iteration, are reported") {
@@ -2167,7 +2157,9 @@ class LintSuite extends FunSuite {
         "exists over Database.forms scans it on every iteration; use byForm instead [bonsai:keyed-lookup-in-loop]",
         "indexWhere over Database.forms scans it on every iteration; use byForm instead [bonsai:keyed-lookup-in-loop]",
         "filter over Database.forms scans it on every iteration; use byForm instead [bonsai:keyed-lookup-in-loop]",
-        "find over Layouts.layouts scans it on every iteration; use forFormat instead [bonsai:keyed-lookup-in-loop]"
+        "find over Layouts.layouts scans it on every iteration; use forFormat instead [bonsai:keyed-lookup-in-loop]",
+        "find over Plain.forms relates its elements to the loop variable and scans them on every iteration; build an index of them first [bonsai:keyed-lookup-in-loop]",
+        "find over Ids.forms relates its elements to the loop variable and scans them on every iteration; build an index of them first [bonsai:keyed-lookup-in-loop]"
       ).sorted
     )
   }
@@ -2236,6 +2228,7 @@ class LintSuite extends FunSuite {
   }
 
   test("named patterns and named arguments are already named") {
+    assume(Compilations.minor >= 7, "named patterns need Scala 3.7")
     val found = warnings(
       """case class Bookmarks(userId: Long, folder: String, count: Int, order: Int, shared: Boolean)
         |case class Span(begin: Int, end: Int)
@@ -2281,6 +2274,7 @@ class LintSuite extends FunSuite {
   }
 
   test("patterns the compiler writes, arguments of the wrong type and generic values are not misreported") {
+    assume(Compilations.minor >= 5, "-source:3.7 is accepted from Scala 3.5")
     val found = warnings(
       """trait Source
         |class Account extends Source
@@ -2302,6 +2296,7 @@ class LintSuite extends FunSuite {
   }
 
   test("side effects a method returning an effect performs when called, rather than when the effect runs") {
+    assume(Compilations.minor >= 7, "named tuples need Scala 3.7")
     val found = warnings(
       """import java.util.concurrent.atomic.AtomicBoolean
         |trait Monad[F[_]] {
@@ -2353,6 +2348,57 @@ class LintSuite extends FunSuite {
         "drawn returns F but draws nextInt when called, not when the F runs",
         "logged returns F but calls println when called, not when the F runs",
         "optional returns F but assigns count when called, not when the F runs"
+      ).sorted
+    )
+  }
+
+  test("side effects the shared tables describe are eager in a method returning an effect") {
+    val found = warnings(
+      """import java.util.concurrent.atomic.AtomicInteger
+        |import java.util.concurrent.atomic.LongAdder
+        |import scala.collection.mutable.ArrayBuffer
+        |trait Monad[F[_]] { def unit[A](value: A): F[A] }
+        |class Box { var value = 0 }
+        |class Session {
+        |  private val cell    = AtomicInteger(0)
+        |  private val adder   = LongAdder()
+        |  private val history = ArrayBuffer.empty[Int]
+        |  def clock[F[_]](monad: Monad[F]): F[Long] = monad.unit(System.nanoTime())
+        |  def roll[F[_]](monad: Monad[F]): F[Double] = monad.unit(Math.random())
+        |  def bumped[F[_]](monad: Monad[F]): F[Int] = monad.unit(cell.incrementAndGet())
+        |  def counted[F[_]](monad: Monad[F]): F[Unit] = { adder.increment(); monad.unit(()) }
+        |  def remembered[F[_]](monad: Monad[F]): F[Int] = { history += 1; monad.unit(history.size) }
+        |  def appended[F[_]](monad: Monad[F], sink: StringBuilder): F[Int] = { sink.append("x"); monad.unit(sink.length) }
+        |  def aliased[F[_]](monad: Monad[F]): F[Int] = { val alias = history; alias.clear(); monad.unit(0) }
+        |  def written[F[_]](monad: Monad[F], path: java.nio.file.Path): F[Int] = {
+        |    java.nio.file.Files.writeString(path, "x")
+        |    monad.unit(1)
+        |  }
+        |  def read[F[_]](monad: Monad[F]): F[Int] = monad.unit(cell.get() + history.size + adder.sum().toInt)
+        |  def own[F[_]](monad: Monad[F]): F[Int] = {
+        |    val sink = new StringBuilder
+        |    sink.append("x")
+        |    val box = new Box
+        |    box.value = 1
+        |    val queue = scala.collection.mutable.Queue.empty[Int]
+        |    queue.enqueue(box.value)
+        |    monad.unit(sink.length + queue.size)
+        |  }
+        |  def each[F[_]](monad: Monad[F], values: Option[Int]): F[Int] = { values.foreach(_ => ()); monad.unit(1) }
+        |  def checked[F[_]](monad: Monad[F], size: Int): F[Int] = { require(size > 0); assert(size < 10); monad.unit(size) }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "eager-effect"),
+      List(
+        "aliased returns F but calls clear when called, not when the F runs",
+        "appended returns F but calls append when called, not when the F runs",
+        "bumped returns F but calls incrementAndGet when called, not when the F runs",
+        "clock returns F but draws nanoTime when called, not when the F runs",
+        "counted returns F but calls increment when called, not when the F runs",
+        "remembered returns F but calls += when called, not when the F runs",
+        "roll returns F but draws random when called, not when the F runs",
+        "written returns F but calls writeString when called, not when the F runs"
       ).sorted
     )
   }
@@ -2654,6 +2700,7 @@ class LintSuite extends FunSuite {
         """def await(future: java.util.concurrent.CompletableFuture[Int]): Int =
           |    try future.get() catch { case _: InterruptedException => Thread.currentThread.interrupt(); 0 }""".stripMargin,
       "eager-effect"           -> "def effect[F[_]](unit: Int => F[Int]): F[Int] = { println(1); unit(1) }",
+      "implied-condition"      -> "def pick(a: Boolean): Int = if (a) { if (a) 1 else 2 } else 3",
       "regex-in-def"           -> "def parse(s: String): Boolean = \"a+\".r.matches(s)",
       "unspecialised-function" -> "def visit(f: (Long, Long, Int) => Unit): Unit = f(1L, 2L, 3)",
       "wrapped-conversion"     -> "def wrapped(value: java.math.BigDecimal): Double = BigDecimal(value).toDouble",
@@ -2690,9 +2737,27 @@ class LintSuite extends FunSuite {
           |    val forms: Vector[Form]       = Vector()
           |    val byName: Map[String, Form] = Map()
           |    def names(keys: Vector[String]): Vector[Option[Form]] = keys.map(key => forms.find(_.name == key))
-          |  }""".stripMargin
+          |  }""".stripMargin,
+      "identical-branches" ->
+        "def pick(a: Boolean, b: Boolean, text: String): String = if (a) text.trim else if (b) text.trim else text",
+      "repeated-branch-call" ->
+        """def write(kind: Int, n: Int): Int = kind match {
+          |    case 0 => emit(n, 1, 0)
+          |    case 1 => emit(n, 1, n)
+          |    case _ => emit(n, 1, n + 1)
+          |  }
+          |  def emit(a: Int, b: Int, c: Int): Int = a + b + c""".stripMargin,
+      "binding-in-one-branch" ->
+        "def total(flag: Boolean, xs: List[Int]): Int = { val sum = xs.map(_ * 2).sum; if (flag) sum + 1 else 0 }",
+      "hand-written-lazy" ->
+        """final class Node(key: String) {
+          |    private var element: String = null
+          |    def symbol: String = { if (element == null) element = key.trim; element }
+          |  }""".stripMargin,
+      "string-round-trip" ->
+        "def trip(a: String, b: String): Option[String] = s\"$a:$b\" match { case s\"$x:$_\" => Some(x); case _ => None }"
     )
-    bodies.foreach { (id, body) =>
+    bodies.filter((id, _) => id != "unused-private-param" || Compilations.minor >= 7).foreach { (id, body) =>
       val plain = warnings(s"object Lints {\n  $body\n}")
       assert(plain.exists(_.contains(s"bonsai:$id")), s"$id\n${plain.mkString("\n")}")
       List(s"@scala.annotation.nowarn(\"msg=bonsai:$id\")", s"@SuppressWarnings(Array(\"bonsai:$id\"))")
@@ -2716,5 +2781,88 @@ class LintSuite extends FunSuite {
     val source = "object Lints {\n  def same(a: Array[Int], b: Array[Int]): Boolean = a == b\n}"
     assertEquals(tagged(warningsAt("src/main/scala/Lints.scala", source), "array-equality").size, 1)
     assertEquals(tagged(warningsAt("stryker4s-8113/src/main/scala/Lints.scala", source), "array-equality"), Nil)
+  }
+
+  test("case class fields that compare by reference or change after construction give unstable equality") {
+    val found = tagged(
+      warnings(
+        """import scala.collection.mutable
+          |object Lints {
+          |  case class Samples(
+          |      name: String,
+          |      values: Array[Double],
+          |      transform: Double => Double,
+          |      cache: mutable.Map[String, Int]
+          |  )
+          |  case class Active(client: String, var request: Vector[Byte])
+          |  case class Target(endpoint: String, closeFn: () => Unit)
+          |  case class Plain(name: String, values: Vector[Double], cache: Map[String, Int])
+          |  trait Reduction { def apply(a: Int, b: Int): Int }
+          |  trait Named { def name: String }
+          |  sealed trait Shape { def scale(by: Double): Shape }
+          |  case class Kernel(name: String, expected: Reduction)
+          |  case class Labelled(label: Named, shape: Shape)
+          |  class Holder(values: Array[Double])
+          |  trait Thunk { def apply(): Unit }
+          |  case class Deferred(name: String, thunk: Thunk)
+          |  case class Job(name: String, task: Runnable)
+          |  case class Mapper(name: String, transform: java.util.function.Function[Int, Int])
+          |  case class Aliased(values: Aliases.Numbers, buffer: Aliases.Buffer)
+          |  object Aliases { type Numbers = Array[Int]; type Buffer = mutable.ArrayBuffer[Int] }
+          |  case class Generic[A](items: Array[A], head: A)
+          |  case class Multiple(first: Int)(val second: Array[Int])
+          |  trait Strategy { def choose(values: List[Int]): Int }
+          |  object Smallest extends Strategy { def choose(values: List[Int]): Int = values.min }
+          |  case class Planned(name: String, strategy: Strategy)
+          |  case class Sorted(name: String, order: Ordering[Int], same: Equiv[Int], by: java.util.Comparator[Int])
+          |  case class Ranked(name: String, rank: Comparable[Int])
+          |}""".stripMargin
+      ),
+      "unstable-equality"
+    ).map(_.stripSuffix(" [bonsai:unstable-equality]"))
+    assertEquals(
+      found,
+      List(
+        "buffer: mutable fields change the value after construction, so Aliased has unstable equality",
+        "cache: mutable fields change the value after construction, so Samples has unstable equality",
+        "closeFn: functions compare by reference, so Target has unstable equality",
+        "expected: single-method traits that lambdas implement compare by reference, so Kernel has unstable equality",
+        "items: arrays compare by reference, so Generic has unstable equality",
+        "task: single-method traits that lambdas implement compare by reference, so Job has unstable equality",
+        "thunk: single-method traits that lambdas implement compare by reference, so Deferred has unstable equality",
+        "transform: functions compare by reference, so Samples has unstable equality",
+        "transform: single-method traits that lambdas implement compare by reference, so Mapper has unstable equality",
+        "values: arrays compare by reference, so Aliased has unstable equality",
+        "values: arrays compare by reference, so Samples has unstable equality"
+      ).sorted
+    )
+  }
+
+  test("case class fields of library types with mutable state give unstable equality") {
+    val found = tagged(
+      warnings(
+        """package fix {
+          |  object Libraries {
+          |    case class Json(value: ujson.Value)
+          |    case class Document(root: ujson.Obj, items: ujson.Arr)
+          |    case class Text(value: String)
+          |  }
+          |}
+          |package ujson {
+          |  sealed trait Value
+          |  final class Obj extends Value
+          |  final class Arr extends Value
+          |}""".stripMargin
+      ),
+      "unstable-equality"
+    ).map(_.stripSuffix(" [bonsai:unstable-equality]"))
+    assertEquals(
+      found,
+      List(
+        "items: mutable fields change the value after construction, so Document has unstable equality",
+        "root: mutable fields change the value after construction, so Document has unstable equality",
+        "value: mutable fields change the value after construction, so Json has unstable equality"
+      )
+    )
   }
 }

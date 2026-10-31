@@ -1,0 +1,14 @@
+# an unlisted patch of a listed line takes the plugin built for the line
+> checkLine
+# a patch older than the plugin of its line runs in, a newer line than the tools are built for, and releases whose TASTy
+# is not final, take none
+> set ThisBuild / scalaVersion := "3.7.2"
+> checkNone
+> set ThisBuild / scalaVersion := "3.99.0"
+> checkNone
+> set ThisBuild / scalaVersion := "3.7.0-RC1"
+> checkNone
+> set ThisBuild / scalaVersion := "3.8.0-RC1-bin-20250101-abc-NIGHTLY"
+> checkNone
+> set ThisBuild / scalaVersion := "2.13.16"
+> checkNone

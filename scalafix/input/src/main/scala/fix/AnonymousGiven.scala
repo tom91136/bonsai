@@ -10,10 +10,12 @@ object AnonymousGiven {
   case class Kelvin(value: Int)
   case class Fahrenheit(value: Int)
   case class Rank(value: Int)
+  case class Rankine(value: Int)
 
   private given ascending: Ordering[Celsius] = Ordering.by(_.value) // assert: AnonymousGiven.anonymous-given
   private given descending: Ordering[Kelvin] = Ordering.by(-_.value)
   given exported: Ordering[Fahrenheit]       = Ordering.by(-_.value)
+  private[fix] given qualified: Ordering[Rankine] = Ordering.by(_.value)
 
   private given ranked: Ordering[Rank] with { // assert: AnonymousGiven.anonymous-given
     def compare(left: Rank, right: Rank): Int = left.value - right.value

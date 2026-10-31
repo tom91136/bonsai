@@ -1,0 +1,184 @@
+package fix
+
+object ChainLifting {
+  val list    = List(1, 2, 3)
+  def parallel(values: List[Int]): Int = values(0) + values(values.size - 1)
+  def assigned(values: Array[Int]): Unit = values(0) = 1
+  val lists   = List(List(1), List(2))
+  val pairs   = List((1, "a"), (2, "b"))
+  val triples = List((1, "a", true))
+  val map     = Map(1 -> "a")
+  val bound   = 4
+  val divisor = 2
+  val action: Int => Boolean = _ > 0
+  var counter = 0
+  lazy val deferred = 1
+  def effect(value: Int): Boolean = { counter += 1; value > 0 }
+  def label: Int                  = { counter += 1; counter }
+  def byName(thunk: => Int)       = list.map(_ + thunk)
+  case class Point(x: Int, y: Int)
+  val points = List(Point(1, 2))
+  val options = List(Option(1))
+  val optionPairs = List((1, Option("a")))
+  val nestedPairs = List(((1, "a"), true))
+
+  class Custom {
+    def filter(predicate: Int => Boolean): Custom = this
+    def size: Int                                 = 0
+  }
+  val custom = new Custom
+
+  val filterSize       = list.filter(_ > 0).size
+  val filterLength     = list.filter(_ > 0).length
+  val sizeEmpty        = list.filter(_ > 0).size == 0
+  val lengthPositive   = list.filter(_ > 0).length > 0
+  val sizeNonZero      = list.filter(_ > 0).size != 0
+  val findNone         = list.find(_ > 0) != None
+  val findIsNone       = list.find(_ > 0) == None
+  val containsTrue     = list.map(_ > 0).contains(true) == true
+  val containsNotFalse = list.map(_ > 0).contains(true) != false
+  val containsFalse    = list.map(_ > 0).contains(true) == false
+  val noneCompared     = Option(1) == None
+  val noneReversed     = None != Option(1)
+  val someCompared     = Option(1) == Some(2)
+  val someReversed     = Some(2) != Option(1)
+  val firstIndex       = list(0)
+  val lastIndex        = list(list.size - 1)
+  val firstLifted      = list.lift(0)
+  val lastLifted       = list.lift(list.size - 1)
+  val otherIndex       = list(1)
+  val typedChain       = list.map[Int](_ + 1).filter(_ > 0)
+  val typedSorted      = list.sorted[Int].filter(_ > 0)
+  val bareSize         = list.size == 0
+  val plainSize        = list.size
+  val sizeOnePlus      = list.filter(_ > 0).size == 1
+  val viewed           = list.view.map(_ + 1).toList
+  val setBack          = list.toSet.toSeq
+  val setList          = list.toSet.toList
+  val unzipFirst       = pairs.unzip._1
+  val unzipThird       = triples.unzip3._3
+  val infixed          = list map (_ + 1) filter (_ > 1)
+  val folded           = list.foldLeft(true)((acc, value) => acc && value > 0)
+  val foldedOr         = list.foldLeft(false)((acc, value) => acc || value > 0)
+  val ranged2          = 0 until list.size
+  val inclusive        = 0 to list.length - 1
+  val inclusiveSize    = 0 to list.size - 1
+  val untilLoop        = (0 until list.size).foreach(println)
+  val inclusiveLoop    = (0 to list.size - 1).foreach(println)
+  val steppedUntil     = (0 until list.size by 2).toList
+  val steppedTo        = (0 to list.size - 1 by 2).toList
+  val literalSource    = List(1, 2).map(_ * 2)
+  val optional         = Option(1).filter(_ > 0).map(_ * 2)
+  val arrayed          = Array(1, 2).map(_ + 1).filter(_ > 1)
+  val mapped           = map.map(_._1)
+  val mapKeys          = map.keys.toList
+  val customChain      = custom.filter(_ > 0).size
+  val qualified        = fix.ChainLifting.list.filter(_ > 0)
+  val parenthesised    = (list ++ list).filter(_ > 0).size
+  val reversed         = list.reverse.take(2).reverse
+  val sortedHead       = list.sorted.headOption
+  val iterated         = list.iterator.map(_ + 1).toList
+  val lazyList         = LazyList(1, 2).map(_ + 1)
+  val stringed         = "abc".toList.map(_.toInt)
+  val ranged           = (0 until 10).toList.map(_ + 1)
+  val nested           = list.map(value => list.filter(_ > value).size)
+
+  val pureLambdas = list.map(_ + 1).map(value => value * 2).filter(_ > bound).filter(value => value != bound && value < 9)
+  val pureFields  = points.map(_.x).map(_ + 1).filter(_ > 0)
+  val pureTuples  = pairs.filter(pair => pair._1 > 0).map(_._2).map(_ + "!")
+  val pureBounds  = list.map(_ % 2).map(_ / 2)
+  val pureNames   = list.map(_ + divisor).map(identity)
+  val pureNegated = list.filter(value => !(value > 0)).map(value => -value)
+  val impureCalls = list.filter(effect).map(value => effect(value)).filter(_ => label > 0)
+  val impureNamed = list.filter(action).map(value => value.toString)
+  val impureOps   = list.map(_ / divisor).map(_ % bound).map(_ / 0)
+  val impureNames = list.map(_ + counter + deferred)
+  val impureNew   = list.map(value => new Point(value, 1)).map(value => List(value))
+  val impureThunk = list.map(_ => byName(1))
+  val pureCases   = pairs.map { case (a, b) => (b, a) }.map { case (a, b) => a }
+  val pureNested  = nestedPairs.map { case ((a, b), c) => a + 1 }
+  val impureCases = options.map { case Some(value) => value + 1 }.map { case 1 => 2 }
+  val impureTupled = pairs.map { case (a, b) => effect(a) }
+
+  val identityName    = lists.flatMap(identity)
+  val identityLambda  = lists.flatMap(value => value)
+  val projectedFirst  = pairs.map(_._1)
+  val projectedSecond = pairs.map(pair => pair._2)
+  val projectedLambda = pairs.map((a, b) => a)
+  val literals        = list.take(3).drop(0).contains(5)
+  val literalString   = List("a").contains("a")
+  val literalBoolean  = list.map(_ > 0).contains(true)
+  val applications    = list.map(_ + 1).map(value => value * 2).map(identity).filter(effect).map { case 1 => 2 }
+  val appliedFields   = points.map(point => point.x + point.y).map(_ + 1)
+  val appliedPairs    = pairs.map(pair => pair._2)
+  val shadowed        = list.map(value => list.map(value => value + 1).sum + value)
+
+  val forYield = for (value <- list.filter(_ > 0)) yield value + 1
+  val forEach  = for (value <- list.filter(_ > 0)) println(value)
+  val forTwo   = for { value <- list; other <- list.map(_ + 1) } yield value + other
+  val forGuard = for (value <- list if value > 0) yield value
+  val forGuardEach   = for (value <- list if value > 0) println(value)
+  val forGuards      = for (value <- list if value > 0 if value < 9) yield value + 1
+  val forGuardAfter  = for (value <- list.map(_ + 1) if value > 0) yield value
+  val forGuardOption = for (value <- Option(1) if value > 0) yield value + 1
+  val forGuardFirst  = for { value <- list if value > 0; other <- list } yield value + other
+  val forGuardInner  = for { value <- list; other <- list if other > 0 } yield value + other
+  val guardedLazily  = list.withFilter(_ > 0).map(_ + 1)
+
+
+  val forKey            = for ((key, _) <- map) yield key
+  val forValue          = for ((_, value) <- map) yield value
+  val forSame           = for ((a, b) <- pairs) yield (a, b)
+  val forSwap           = for ((a, b) <- pairs) yield (b, a)
+  val forComputed       = for ((a, b) <- pairs) yield a + 1
+  val forTupleEach      = for ((a, b) <- pairs) println(a)
+  val forTupleGuard     = for ((a, b) <- pairs if a > 1) yield b
+  val forTupleGuards    = for ((a, b) <- pairs if a > 1 if a < 9) yield b
+  val forTupleAfter     = for ((a, b) <- pairs.map(pair => pair).map(pair => pair)) yield a
+  val forNestedTuple    = for (((a, b), c) <- nestedPairs) yield a
+  val forCaseClass      = for (Point(x, y) <- points) yield x
+  val forRefutable      = for (case Some(value) <- options) yield value
+  val forNarrow         = for (case (a, "a") <- pairs) yield a
+  val forNestedOption   = for (case (a, Some(b)) <- optionPairs) yield a
+  val forRefutableEach  = for (case Some(value) <- options) println(value)
+  val forRefutableGuard = for (case Some(value) <- options if value > 1) yield value
+  val forTypedTuple     = for ((a: Int, b) <- pairs) yield b
+  val forPatternFirst   = for { (a, b) <- pairs; other <- list } yield a + other
+  val forPatternInner   = for { value <- list; (a, b) <- pairs.map(pair => pair).map(pair => pair) } yield a + value
+  val forPatternLater   = for { value <- list; (a, b) <- pairs if a > 1 } yield a + value
+
+  val forThree         = for { a <- list; b <- list; c <- list } yield a + b + c
+  val forSources       = for { a <- list.map(_ + 1).map(_ * 2); b <- list.map(_ + 1).map(_ * 2) } yield a + b
+  val forFlatten       = for { row <- lists; value <- row } yield value
+  val forFlattenOption = for { row <- options; value <- row } yield value
+  val forNotFlatten    = for { row <- lists; value <- row } yield value + 1
+  val forOtherRow      = for { row <- lists; value <- list } yield value
+  val forFlattenEach   = for { row <- lists; value <- row } println(value)
+
+  val forBinding       = for { value <- list; doubled = value * 2 if doubled > 1 } yield doubled
+  val forBindings      = for { value <- list; doubled = value * 2; tripled = doubled * 3 if tripled > 1 } yield tripled
+  val forBindingGuards =
+    for { value <- list; doubled = value * 2 if doubled > 1; tripled = doubled * 3 if tripled > 1 } yield tripled
+  val forBindingEach   = for { value <- list; doubled = value * 2 if doubled > 1 } println(doubled)
+  val forBindingNext   = for { value <- list; doubled = value * 2; other <- list } yield doubled + other
+  val forBindingPlain  = for { value <- list; doubled = value * 2 } yield doubled
+  val forBindingEffect = for { value <- list; flag = effect(value) if flag } yield flag
+  val forBindingMethod = for { value <- list; text = value.toString if text != "1" } yield text
+  val forBindingAfter  = for { value <- list.map(_ + 1).map(_ * 2); doubled = value * 2 if doubled > 1 } yield doubled
+
+  val forInnerEach      = for { value <- list; other <- list } println(value + other)
+  val forInnerKey       = for { value <- list; (key, _) <- map } yield key
+  val forInnerRefutable = for { value <- list; case Some(found) <- options } yield found + value
+  val forInnerRefutGuard = for { value <- list; case Some(found) <- options if found > value } yield found
+  val forInnerGuards    = for { value <- list; other <- list if other > 0 if other < 9 } yield other + value
+  val forInnerBinding   = for { value <- list; other <- list; doubled = other * 2 if doubled > value } yield doubled
+  val forInnerPlain     = for { value <- list; other <- list; doubled = other * 2 } yield doubled + value
+  val forInnerEffect    = for { value <- list; other <- list; flag = effect(other) if flag } yield flag
+  val forInnerOption    = for { value <- list; other <- Option(value) if other > 0 } yield other
+  val forInnerOptions   = for { value <- Option(1); other <- Option(value) if other > 0 } yield other
+  val forInnerPairs     = for { value <- list; (a, b) <- pairs.map(pair => pair).map(pair => pair) if a > 1 } yield b
+  val forInnerThreeLast = for { a <- list; b <- list; c <- list if c > a } yield a + b + c
+  val forInnerNested    = for { a <- lists; b <- a; c <- list.map(_ + b) } yield c
+  val forInnerBound     = for { a <- list; doubled = a * 2; other <- list } yield doubled + other
+  val forInnerLater     = for { a <- list; b = a + 1; other <- list; c = b + other } yield c
+}

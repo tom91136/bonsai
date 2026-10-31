@@ -52,7 +52,7 @@ class QualifiedPrivate extends SemanticRule("QualifiedPrivate") {
 
   // A qualifier names an enclosing type or package, the innermost first; SemanticDB omits it on primary constructors.
   private def enclosingType(modifier: Mod.Private, qualifier: String): Boolean =
-    definitions.ancestors(modifier).collectFirst {
+    ancestry.ancestors(modifier).collectFirst {
       case owner: Defn.Class if owner.name.value == qualifier        => true
       case owner: Defn.Trait if owner.name.value == qualifier        => true
       case owner: Defn.Object if owner.name.value == qualifier       => true
@@ -87,17 +87,15 @@ class QualifiedPrivate extends SemanticRule("QualifiedPrivate") {
   }
 
   private def owner(definition: Defn): Option[Defn] = definition.parent.flatMap(_.parent).flatMap(_.parent).collect {
-    case owner: Defn.Class  => owner
-    case owner: Defn.Trait  => owner
-    case owner: Defn.Object => owner
+    case owner: (Defn.Class | Defn.Trait | Defn.Object) => owner
   }
 
   // Plain private reaches the owner and its companion.
-  private def scope(owner: Defn): List[Defn] = owner :: owner.parent.toList.flatMap(_.children).collect {
+  private def scope(owner: Defn): List[Defn] = owner :: owner.parent.toList.flatMap(_.children.collect {
     case companion: Defn.Object if !owner.isInstanceOf[Defn.Object] && companion.name.value == name(owner) => companion
     case companion: Defn.Class if owner.isInstanceOf[Defn.Object] && companion.name.value == name(owner)   => companion
     case companion: Defn.Trait if owner.isInstanceOf[Defn.Object] && companion.name.value == name(owner)   => companion
-  }
+  })
 
   private def name(definition: Defn): String = definition match {
     case member: Member => member.name.value

@@ -24,7 +24,7 @@ object TautologicalSizeComparison {
   val trailing = other.nonEmpty || list.size >= 1 && (list.size == 1 || list.size == 2)// assert: CollectionIdioms.tautological-size-comparison
   val wrapped = (list.size >= 1 && (list.size == 1 || list.size == 2)) && other.nonEmpty// assert: CollectionIdioms.tautological-size-comparison
   val zero = list.size >= 0 &&// assert: CollectionIdioms.tautological-size-comparison
-    list.size == 0// assert: CollectionIdioms.size-to-is-empty
+    list.size == 0
   val arrays = array.length >= 2 && (array.length == 2)// assert: CollectionIdioms.tautological-size-comparison
   val reversed = 0 <= list.size// assert: CollectionIdioms.tautological-size-comparison
   val reversedNever = 0 > list.size// assert: CollectionIdioms.tautological-size-comparison

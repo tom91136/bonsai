@@ -34,9 +34,9 @@ public class AnalyseMojo extends BonsaiMojo {
 
   @Override
   public void execute() throws MojoExecutionException {
-    Configuration configuration = configuration();
-    String mode = mode();
     Tools tools = tools();
+    Configuration configuration = configuration(tools);
+    String mode = mode();
 
     Path work = work();
     Path model = Javac.model(work, "main");
@@ -59,11 +59,7 @@ public class AnalyseMojo extends BonsaiMojo {
       configuration.library());
 
     Path root = Path.of(session.getExecutionRootDirectory());
-    List<String> fragment = Analysis.manifest(
-      root,
-      List.of(module),
-      configuration.textExclusions(),
-      configuration.textRules());
+    List<String> fragment = Analysis.manifest(root, List.of(module), configuration.text());
 
     // The fragments of the modules are kept apart, and the manifest of the whole build is made of all of them.
     Path fragments = fragments();
@@ -89,28 +85,29 @@ public class AnalyseMojo extends BonsaiMojo {
     write(merged, manifest);
     getLog().info("bonsai: the analysis reads " + merged);
 
-    List<File> classpath = tools.analysis(scalaVersion(), version);
+    List<File> classpath = analysis(tools);
     List<String> command = new ArrayList<>();
     command.add(javaExecutable());
     command.add("-Xmx" + analysisHeap);
     command.add("-cp");
-    command.add(classpath.stream().map(File::getAbsolutePath).reduce((a, b) -> a + java.io.File.pathSeparator + b).orElseThrow());
+    command.add(Javac.processorPath(classpath));
     command.add("net.kurobako.bonsai.analysis.CLI");
     command.add("--manifest");
     command.add(merged.toString());
-    command.addAll(Analysis.options(configuration, ids(tools), mode, root, writeBaseline()));
+    command.add("--mode");
+    command.add(mode);
+    command.addAll(configuration.options());
+    String baseline = writeBaseline();
+    if (baseline != null) {
+      command.add("--write-baseline");
+      command.add(root.resolve(baseline).toString());
+    }
     run("the analysis", command, root.toFile());
   }
 
   /** The directory the fragments of the modules are kept in, which is at the root of the build. */
   private Path fragments() throws MojoExecutionException {
-    Path fragments = Path.of(session.getExecutionRootDirectory()).resolve("target").resolve("bonsai").resolve("manifests");
-    try {
-      Files.createDirectories(fragments);
-    } catch (IOException error) {
-      throw new MojoExecutionException("bonsai: cannot create " + fragments, error);
-    }
-    return fragments;
+    return directory(Path.of(session.getExecutionRootDirectory()).resolve("target").resolve("bonsai").resolve("manifests"));
   }
 
   /**
@@ -121,13 +118,7 @@ public class AnalyseMojo extends BonsaiMojo {
    */
   private boolean lastOfTheReactor() {
     List<org.apache.maven.project.MavenProject> projects = session.getProjects();
-    int index = projects.indexOf(project);
-    for (int later = index + 1; later < projects.size(); later++) {
-      if (analyses(projects.get(later))) {
-        return false;
-      }
-    }
-    return true;
+    return projects.subList(projects.indexOf(project) + 1, projects.size()).stream().noneMatch(this::analyses);
   }
 
   /** Whether the module analyses the build. */
@@ -139,17 +130,5 @@ public class AnalyseMojo extends BonsaiMojo {
   /** How many modules of the build analyse it, which is how many fragments the analysis reads. */
   private long analysers() {
     return session.getProjects().stream().filter(this::analyses).count();
-  }
-
-  /** The ids the analysis accepts, which the analysis publishes them in. */
-  private Ids ids(Tools tools) throws MojoExecutionException {
-    try {
-      return Ids.of(
-        tools.compilerPlugin(scalaVersion(), version),
-        tools.analysisJar(scalaVersion(), version),
-        tools.rulesJar(version));
-    } catch (java.io.IOException error) {
-      throw new MojoExecutionException("bonsai: cannot read the ids the tools accept", error);
-    }
   }
 }

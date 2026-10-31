@@ -30,5 +30,5 @@ $ delete src/generated/scala/demo/Counter.scala
 > scalafixAll --check
 > Compile/scalafix --check
 # every tool's ids are accepted, and ids no tool knows are rejected
-> set bonsaiDisabled ++= Set("TargetName", "strict-chain", "megamorphic-call")
+> set bonsaiDisabled ++= Set("TargetName", "megamorphic-call")
 -> set bonsaiDisabled += "Bogus"

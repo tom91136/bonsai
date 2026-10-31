@@ -81,12 +81,12 @@ class NestingModelSuite extends FunSuite {
     val scale  = 1 + (seed % 3).toInt
     val tops   = scale * 3 + random.nextInt(6)
     val names  = Vector.tabulate(tops)(index => s"u$index")
-    val module = names.map(name => name -> (if (random.nextInt(4) == 0) "b" else "a")).toMap
-    val top    = names.zipWithIndex.map((name, index) =>
+    val module = names.zip(Vector.fill(tops)(if (random.nextInt(4) == 0) "b" else "a")).toMap
+    val top    = Vector.tabulate(tops)(index =>
       unit(
-        name,
+        names(index),
         s"f${if (index > 0 && random.nextInt(4) == 0) index - 1 else index}.scala",
-        module = module(name),
+        module = module(names(index)),
         lines = 1 + random.nextInt(60),
         movable = random.nextInt(6) > 0,
         owner = random.nextInt(8) > 0,
@@ -113,19 +113,19 @@ class NestingModelSuite extends FunSuite {
           entry = random.nextInt(14) == 0
         )
     }
-    val members = (0 until scale * 3 + random.nextInt(12)).map { index =>
+    val members = Vector.tabulate(scale * 3 + random.nextInt(12)) { index =>
       val parent = nested(random.nextInt(nested.size))
       member(s"${parent.name}.m$index", parent.name, parent.node.source, parent.node.module, 1 + random.nextInt(20))
         .copy(movable = random.nextInt(6) > 0)
     }
     val all   = nested ++ members
     val order = all.map(_.name)
-    val edges = order.zipWithIndex.map { (from, index) =>
-      val targets = (0 until random.nextInt(2 + scale)).map { _ =>
+    val edges = Vector.tabulate(order.size) { index =>
+      val targets = Vector.fill(random.nextInt(2 + scale)) {
         if (random.nextInt(5) > 0) order(index + random.nextInt(order.size - index))
         else order(random.nextInt(order.size))
       }
-      from -> (targets.toSet - from)
+      order(index) -> (targets.toSet - order(index))
     }.toMap
     Nesting.Model(all, edges)
   }
@@ -155,13 +155,13 @@ class NestingModelSuite extends FunSuite {
 
   private val configs = Vector(
     Nesting.Config(),
-    Nesting.Config(depth = 3, damping = 1, size = 60),
+    Nesting.Config(depth = 3, size = 60),
     Nesting.Config(depth = 1, damping = 0, size = 1000),
-    Nesting.Config(depth = 2, damping = 2, size = 25)
+    Nesting.Config(damping = 2, size = 25)
   )
 
-  private def asked(plan: Nesting.Plan): Set[(String, Nesting.Place)] =
-    plan.moves.map(move => move.declaration.name -> move.to).toSet
+  private def asked(moves: Vector[Nesting.Move]): Set[(String, Nesting.Place)] =
+    moves.map(move => move.declaration.name -> move.to).toSet
 
   private def disagreements(seed: Long, config: Nesting.Config): Vector[String] = {
     val model = generate(seed)
@@ -171,18 +171,21 @@ class NestingModelSuite extends FunSuite {
         Option.when(Nesting.plan(done, config).moves.nonEmpty)(s"seed $seed $config: moves remain after applying all")
       case None => Some(s"seed $seed $config: the target is not a tree")
     }
-    val parts = (1L to 3L).flatMap { pick =>
+    val parts = Vector.newBuilder[String]
+    (1L to 3L).foreach { pick =>
       val random = Random(seed * 31 + pick)
-      val chosen = first.moves.filter(_ => random.nextBoolean())
+      val chosen = first.moves.zip(Vector.fill(first.moves.size)(random.nextBoolean())).collect { case (move, true) =>
+        move
+      }
       apply(model, chosen).flatMap { done =>
-        val left  = asked(first) -- asked(first.copy(moves = chosen))
-        val rerun = asked(Nesting.plan(done, config))
+        val left  = asked(first.moves) -- asked(chosen)
+        val rerun = asked(Nesting.plan(done, config).moves)
         Option.when(left != rerun)(
           s"seed $seed $config applying ${chosen.map(_.declaration.name)}: expected $left, found $rerun"
         )
-      }
+      }.foreach(parts += _)
     }
-    every.toVector ++ parts
+    every.toVector ++ parts.result()
   }
 
   test("applying every move leaves none, and applying some leaves the others") {

@@ -59,11 +59,22 @@ object Structures {
   private val Satellite     = 10
   private val Shown         = 4
 
-  def findings(model: Model, graph: Graph): Vector[Finding] = {
+  def findings(model: Model, built: Graph): Vector[Finding] = {
+    val graph = written(built)
     val nodes = graph.nodes
     stutters(model.stutters, nodes) ++ stale(model.mentions, nodes) ++ families(model.applied, nodes) ++
       packages(graph) ++ bases(model.concretes, nodes) ++ disjoint(model.members, nodes) ++
       satellites(model.extents, graph) ++ dispatches(model.dispatches, nodes)
+  }
+
+  /** The graph without generated code, which no one maintains, so no rule reports or counts it. */
+  private def written(graph: Graph): Graph = {
+    val nodes = graph.nodes.filterNot(_._2.generated)
+    Graph(
+      nodes,
+      graph.edges.collect { case (from, targets) if nodes.contains(from) => from -> targets.filter(nodes.contains) },
+      graph.roots.filter(nodes.contains)
+    )
   }
 
   private def stutters(stutters: Vector[Stutter], nodes: Map[String, Node]): Vector[Finding] = stutters.flatMap {
@@ -73,8 +84,8 @@ object Structures {
         nodes,
         stutter.node,
         Finding.Rule.FieldStutter,
-        s"${short(stutter.owner)}.${stutter.field} is named like ${short(stutter.owner)}, so code reads " +
-          s"${stutter.field}.${stutter.field}$read; name it for what it holds, or give ${short(stutter.owner)} the " +
+        s"${Finding.simple(stutter.owner)}.${stutter.field} is named like ${Finding.simple(stutter.owner)}, so code reads " +
+          s"${stutter.field}.${stutter.field}$read; name it for what it holds, or give ${Finding.simple(stutter.owner)} the " +
           "operations on it",
         // Until code reads the field off a value named for its type, the name only risks the stutter.
         if (stutter.accesses > 0) Finding.Level.Warning else Finding.Level.Info
@@ -102,28 +113,32 @@ object Structures {
             nodes,
             family.head.node,
             Finding.Rule.ParameterAliasFamily,
-            s"${family.size} aliases fill ${short(constructor)} with a literal " +
-              s"(${Finding.listed(family.map(alias => short(alias.name)).sorted, Shown)}), giving each type a second " +
-              s"spelling; write ${short(constructor)}[...] where they are used",
+            s"${family.size} aliases fill ${Finding.simple(constructor)} with a literal " +
+              s"(${Finding.listed(family.map(alias => Finding.simple(alias.name)).sorted, Shown)}), giving each type a second " +
+              s"spelling; write ${Finding.simple(constructor)}[...] where they are used",
             Finding.Level.Info
           )
         )
     }
 
-  /** Packages whose files fall into two groups of which only one depends on the other, at the split crossed least. */
+  /** Packages whose files fall into two groups of which only one depends on the other, at the split crossed least. A
+    * group holding an entry point or a type others name, which a package change would break, is not offered a move.
+    */
   private def packages(graph: Graph): Vector[Finding] = {
-    val nodes = graph.nodes
-    val files = nodes.values.filterNot(_.test).groupBy(node => pkg(node.name, nodes))
-    val edges = graph.edges.toVector
+    val nodes          = graph.nodes
+    val files          = nodes.values.filterNot(_.test).groupBy(node => pkg(node.name, nodes))
+    val edgesByPackage = graph.edges.toVector.flatMap { (from, targets) =>
+      nodes.get(from).collect { case node if !node.test => pkg(node.name, nodes) -> (from -> targets) }
+    }.groupMap(_._1)(_._2)
     files.toVector.sortBy(_._1).flatMap { (pkg, members) =>
       val file     = members.map(node => node.name -> node.source).toMap
       val sources  = file.values.toSet
-      val weighted = (for {
-        (from, targets) <- edges
-        source          <- file.get(from).toVector
-        to              <- targets
-        target          <- file.get(to) if source != target
-      } yield (source, target)).groupMapReduce(identity)(_ => 1)(_ + _)
+      val named    = members.collect { case node if graph.roots(node.name) => node.source }.toSet
+      val weighted = edgesByPackage.getOrElse(pkg, Vector.empty).flatMap { (from, targets) =>
+        file.get(from).toVector.flatMap(source =>
+          targets.flatMap(to => file.get(to).collect { case target if source != target => (source, target) })
+        )
+      }.groupMapReduce(identity)(_ => 1)(_ + _)
       val dependents = weighted.keys.groupMap(_._2)(_._1)
       // The files that depend on a file, directly or not, form a group nothing outside it depends on.
       val uppers = sources.toVector.sorted.map(start => reach(List(start), dependents.getOrElse(_, Nil), Set(start)))
@@ -133,9 +148,10 @@ object Structures {
         val internal = weighted.collect {
           case ((from, to), count) if group(from) == group(to) => count
         }.sum
-        Option.when(group.size >= MinimumSide && rest.size >= MinimumSide && crossing > 0 && crossing * 4 <= internal)(
-          (group, rest, crossing)
-        )
+        Option.when(
+          group.size >= MinimumSide && rest.size >= MinimumSide && crossing > 0 && crossing * 4 <= internal &&
+            !group.exists(named)
+        )((group, rest, crossing))
       }
       splits.minByOption((_, _, crossing) => crossing).flatMap { (group, rest, crossing) =>
         Finding.at(
@@ -159,19 +175,19 @@ object Structures {
       reach(found.toList ++ rest, next, seen ++ found)
   }
 
-  private def pkg(name: String, nodes: Map[String, Node]): String = {
-    @annotation.tailrec
-    def top(key: String): String = nodes.get(key).flatMap(_.outer) match {
-      case Some(outer) => top(outer)
-      case None        => key
-    }
-    top(name).split('.').init.mkString(".")
+  @annotation.tailrec
+  private def outermost(nodes: Map[String, Node], key: String): String = nodes.get(key).flatMap(_.outer) match {
+    case Some(outer) => outermost(nodes, outer)
+    case None        => key
   }
+
+  private def pkg(name: String, nodes: Map[String, Node]): String =
+    outermost(nodes, name).split('.').init.mkString(".")
 
   private def bases(concretes: Vector[Concrete], nodes: Map[String, Node]): Vector[Finding] = {
     val subclasses        = concretes.flatMap(concrete => concrete.parents.map(_ -> concrete)).groupMap(_._1)(_._2)
     def test(key: String) = nodes.get(key).exists(_.test)
-    concretes.filter(_.unconstructed).flatMap { concrete =>
+    concretes.view.filter(_.unconstructed).flatMap { concrete =>
       subclasses.getOrElse(concrete.name, Vector.empty) match {
         // A test double extends what main code constructs elsewhere.
         case Vector(only) if test(only.node) == test(concrete.node) && !nodes.get(concrete.node).exists(_.exported) =>
@@ -179,12 +195,12 @@ object Structures {
             nodes,
             concrete.node,
             Finding.Rule.BaseClassSingleSubclass,
-            s"${short(concrete.name)} is never constructed itself and only ${short(only.name)} extends it; merge them, " +
-              s"or give ${short(concrete.name)} a parameter for what ${short(only.name)} adds"
+            s"${Finding.simple(concrete.name)} is never constructed itself and only ${Finding.simple(only.name)} extends it; merge them, " +
+              s"or give ${Finding.simple(concrete.name)} a parameter for what ${Finding.simple(only.name)} adds"
           )
         case _ => None
       }
-    }
+    }.toVector
   }
 
   /** Objects whose members fall into groups that never name each other and use different types. */
@@ -213,7 +229,7 @@ object Structures {
           nodes,
           declared.head.node,
           Finding.Rule.DisjointObject,
-          s"object ${short(owner)} holds ${groups.size} groups of members that never use each other and use " +
+          s"object ${Finding.simple(owner)} holds ${groups.size} groups of members that never use each other and use " +
             s"different types (${groups.map((names, _) => names.take(Shown).mkString("{", ", ", "}")).mkString(", ")}); " +
             "split it, or move each group next to what it uses",
           Finding.Level.Info
@@ -223,12 +239,13 @@ object Structures {
 
   /** Small top-level types alone in their file that only one or two other types use. */
   private def satellites(extents: Map[String, Int], graph: Graph): Vector[Finding] = {
-    val nodes                    = graph.nodes
-    def top(key: String): String = nodes.get(key).flatMap(_.outer).fold(key)(top(_))
-    val alone = nodes.values.filter(_.outer.isEmpty).groupBy(_.source).values.map(_.toVector).collect {
+    val nodes = graph.nodes
+    val alone = nodes.values.filter(_.outer.isEmpty).groupBy(_.source).values.view.map(_.toVector).collect {
       case Vector(node) if !node.test && !node.exported => node
     }
-    val users = graph.edges.toVector.flatMap((from, targets) => targets.map(_ -> top(from))).groupMap(_._1)(_._2)
+    val users = graph.edges.toVector
+      .flatMap((from, targets) => targets.map(_ -> outermost(nodes, from)))
+      .groupMap(_._1)(_._2)
     alone.toVector.sortBy(_.name).flatMap { node =>
       val by =
         users.getOrElse(node.name, Vector.empty).filter(user => user != node.name && nodes.get(user).exists(!_.test))
@@ -238,8 +255,8 @@ object Structures {
           nodes,
           node.name,
           Finding.Rule.SatelliteType,
-          s"${short(node.name)} is ${counted(lines, "line")} in a file of its own, used only by " +
-            s"${by.map(short(_)).sorted.mkString(" and ")}; nest it in the companion of the type it belongs with",
+          s"${Finding.simple(node.name)} is ${counted(lines, "line")} in a file of its own, used only by " +
+            s"${by.map(Finding.simple(_)).sorted.mkString(" and ")}; nest it in the companion of the type it belongs with",
           Finding.Level.Info
         )
       )
@@ -257,14 +274,12 @@ object Structures {
           nodes,
           dispatch.node,
           Finding.Rule.EnumDispatchFunction,
-          s"${short(dispatch.method)} matches its ${short(enumeration)} parameter ${dispatch.parameter} over its cases; " +
-            s"make it a method of ${short(enumeration)}, beside the cases it dispatches on",
+          s"${Finding.simple(dispatch.method)} matches its ${Finding.simple(enumeration)} parameter ${dispatch.parameter} over its cases; " +
+            s"make it a method of ${Finding.simple(enumeration)}, beside the cases it dispatches on",
           level
         )
       )
     }
-
-  private def short(name: String): String = name.split('.').last
 
   private def counted(count: Int, noun: String): String = if (count == 1) s"1 $noun" else s"$count ${noun}s"
 

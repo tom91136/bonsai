@@ -8,6 +8,7 @@ import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
+import net.kurobako.bonsai.lifting.Calls
 
 /** Parameters of inline methods. A by-value parameter is bound once at each expansion, so a function it receives is
   * allocated as a closure and called through `apply`; an inline one is substituted at every use, so its argument runs
@@ -85,7 +86,7 @@ private class Inlines(checks: Checks)(using Context) {
   }
 
   private def body(method: Symbol): Option[tpd.Tree] =
-    method.getAnnotation(defn.BodyAnnot).map(_.tree).filterNot(Trees.unwrap(_).isEmpty)
+    method.getAnnotation(defn.BodyAnnot).map(_.tree).filterNot(Calls.peelInlined(_).isEmpty)
 
   // Macros and compile-time operations take the tree of their argument at expansion, not its value.
   private def reading(method: Symbol): Boolean =
@@ -129,7 +130,7 @@ private class Inlines(checks: Checks)(using Context) {
               val uses = apply(Count.Zero, argument)
               if (uses.most > 0 && inner.is(Flags.Inline)) uses * expanded(callee, inner) else uses
             }.foldLeft(Count.Zero)(_ + _)
-        case tree if Trees.lambda(tree).isDefined => foldOver(Count.Zero, tree).optional
+        case tree if Calls.lambda(tree).isDefined => foldOver(Count.Zero, tree).optional
         case _                                    => foldOver(Count.Zero, tree)
       })
 
@@ -167,7 +168,7 @@ private class Inlines(checks: Checks)(using Context) {
   // does an implicit conversion of one, which refines a literal; and a parameter passed on, inline or not, is judged
   // where its own argument is given.
   private def cheap(argument: tpd.Tree): Boolean = tpd.isIdempotentExpr(argument) ||
-    (Trees.unwrap(argument) match {
+    (Calls.peelInlined(argument) match {
       case reference: tpd.Ident if reference.symbol.is(Flags.Param)                              => true
       case tpd.Apply(tpd.Select(operand, _), operands) if operand.tpe.widen.isPrimitiveValueType =>
         cheap(operand) && operands.forall(cheap(_))

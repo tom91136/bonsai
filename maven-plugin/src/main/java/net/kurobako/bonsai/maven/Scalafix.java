@@ -1,8 +1,5 @@
 package net.kurobako.bonsai.maven;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
 import java.util.TreeSet;
 
 /**
@@ -13,27 +10,20 @@ import java.util.TreeSet;
  */
 public final class Scalafix {
 
-  /** The syntax scalafix itself provides, which bonsai turns on and off as a whole. */
-  private static final List<String> BUILT_INS = List.of("DisableSyntax", "RedundantSyntax");
-
   private Scalafix() {
   }
 
   /** The configuration the rules read. */
   public static String configuration(Configuration configuration, Ids ids) {
-    List<String> rules = new ArrayList<>();
+    StringBuilder scalafix = new StringBuilder("rules = [\n");
     for (String rule : new TreeSet<>(ids.rules())) {
       if (!configuration.disabled().contains(rule)) {
-        rules.add(rule);
+        scalafix.append("  \"").append(rule).append("\"\n");
       }
     }
-    StringBuilder scalafix = new StringBuilder("rules = [\n");
-    for (String rule : rules) {
-      scalafix.append("  \"").append(rule).append("\"\n");
-    }
     scalafix.append("]\n");
-    for (String ban : Ids.bans()) {
-      if (!configuration.disabled().contains("DisableSyntax")) {
+    if (!configuration.disabled().contains("DisableSyntax")) {
+      for (String ban : Ids.bans()) {
         scalafix.append(ban).append(" = ").append(!configuration.disabled().contains(ban)).append("\n");
       }
     }

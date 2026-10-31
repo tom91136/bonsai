@@ -22,8 +22,13 @@ class FullyQualifiedReference(namespaces: List[QualifiedCollectionNamespaces.Nam
   }
 
   override def fix(using document: SemanticDocument): Patch = {
-    val written    = document.tree.collect { case tree @ (_: Term.Select | _: Type.Select) => candidate(tree) }.flatten
-    val rewritable = written.filterNot(clashes(_, written))
+    val written  = document.tree.collect { case tree @ (_: Term.Select | _: Type.Select) => candidate(tree) }.flatten
+    val entities =
+      (document.tree.collect {
+        case name: Name if references.notSelectionName(name) && !name.symbol.isNone =>
+          name.value -> entity(name.symbol.value)
+      } ++ written.map(c => c.name -> c.entity)).groupMap(_._1)(_._2)
+    val rewritable = written.filterNot(c => entities(c.name).exists(_ != c.entity))
     val needed     = rewritable.map(c => (c.pkg, c.name)).distinct.filterNot {
       case (pkg, name) => references.imported(pkg, name)
     }
@@ -41,14 +46,11 @@ class FullyQualifiedReference(namespaces: List[QualifiedCollectionNamespaces.Nam
         val symbol = tree.symbol.value
         Option.when(
           symbol.startsWith(prefix) && !symbol.drop(prefix.length).contains('/') && path != List("java", "lang") &&
-            !namespaces.exists(_.owns(prefix)) && !definitions.ancestors(tree).exists {
-              case _: Import | _: Export => true
-              case _                     => false
-            } && !tree.parent.exists {
+            !namespaces.exists(_.owns(prefix)) && ancestry.outsideImports(tree) && !tree.parent.exists {
               case clause: Pkg => clause.ref eq tree
               case _           => false
             }
-        )(Candidate(tree, path.mkString("."), name.value, symbol.stripSuffix("#").stripSuffix(".")))
+        )(Candidate(tree, path.mkString("."), name.value, entity(symbol)))
       }
   }
 
@@ -63,14 +65,6 @@ class FullyQualifiedReference(namespaces: List[QualifiedCollectionNamespaces.Nam
     case Term.Select(qualifier, name) if name.symbol.value.endsWith("/")              =>
       packagePath(qualifier).map(_ :+ name.value)
     case _ => None
-  }
-
-  private def clashes(candidate: Candidate, candidates: List[Candidate])(using document: SemanticDocument): Boolean = {
-    val others = document.tree.collect {
-      case name: Name if name.value == candidate.name && !references.isSelectionName(name) && !name.symbol.isNone =>
-        entity(name.symbol.value)
-    }
-    (others ++ candidates.filter(_.name == candidate.name).map(_.entity)).exists(_ != candidate.entity)
   }
 
   private def entity(value: String): String = value.stripSuffix("#").stripSuffix(".")

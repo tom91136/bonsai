@@ -1,5 +1,7 @@
 package net.kurobako.bonsai.java
 
+import net.kurobako.bonsai.collections.Laws
+
 /** The lints the Java code is checked for, which the plugin finds in the code it compiles and the analysis reports the
   * findings of them under.
   *
@@ -154,17 +156,11 @@ enum JavaLint(val id: String) {
   /** A modifier argument written as a magic number or unchecked variable. */
   case MagicConstant extends JavaLint("magic-constant")
 
-  /** List.of(...).stream(), which Stream.of(...) states directly. */
-  case StreamOf extends JavaLint("stream-of")
-
   /** A method whose body is empty. */
   case EmptyMethod extends JavaLint("empty-method")
 
   /** A loop or conditional whose body is the empty statement. */
   case EmptyStatementBody extends JavaLint("empty-statement-body")
-
-  /** A size compared with zero, which isEmpty says more directly. */
-  case SizeIsEmpty extends JavaLint("size-is-empty")
 
   /** An explicit unboxing conversion that the context performs anyway. */
   case UnnecessaryUnboxing extends JavaLint("unnecessary-unboxing")
@@ -183,9 +179,6 @@ enum JavaLint(val id: String) {
 
   /** A method that always returns the same literal value. */
   case SameReturnValue extends JavaLint("same-return-value")
-
-  /** A stream collected by joining, which String.join states directly. */
-  case StreamJoin extends JavaLint("stream-join")
 
   /** A serial version field that can carry `@Serial`. */
   case MissingSerialAnnotation extends JavaLint("missing-serial-annotation")
@@ -214,14 +207,8 @@ enum JavaLint(val id: String) {
   /** A loop that fills an array with one value, which Arrays.fill says in one call. */
   case ExplicitArrayFilling extends JavaLint("explicit-array-filling")
 
-  /** An unmodifiable copy of a collection, which a Java 9 factory says in one call. */
-  case CollectionFactory extends JavaLint("java9-collection-factory")
-
   /** A primitive array passed to a varargs method without saying it is one argument. */
   case PrimitiveArrayVarargs extends JavaLint("primitive-array-varargs")
-
-  /** An optional presence check that its own methods state more directly. */
-  case OptionalChain extends JavaLint("optional-chain")
 
   /** A call whose result the code drops, where the result says whether the call worked. */
   case IgnoredCallResult extends JavaLint("ignored-call-result")
@@ -246,9 +233,33 @@ enum JavaLint(val id: String) {
 
   /** An edit at the front of an array list on every turn of a loop. */
   case ListFrontEditInLoop extends JavaLint("list-front-edit-in-loop")
+
+  /** A doc comment that documents nothing, as another doc comment or the end of a body follows it. */
+  case DanglingDocComment extends JavaLint("dangling-doc-comment")
+
+  /** A loop that returns on the first element that matches, which a stream match states. */
+  case LoopToMatch extends JavaLint("loop-to-match")
+
+  /** A check for null that picks a default, which `Objects.requireNonNullElse` states. */
+  case NullDefault extends JavaLint("null-default")
+
+  /** Two loops in a row with the same body, which one loop over both sources runs. */
+  case ConsecutiveIdenticalLoops extends JavaLint("consecutive-identical-loops")
+
+  /** A list that one loop fills and one loop iterates, which the first loop can use directly. */
+  case TemporaryListIteratedOnce extends JavaLint("temporary-list-iterated-once")
+
+  /** A condition in a loop that the turns of the loop never change, which can be tested once outside it. */
+  case LoopInvariantCondition extends JavaLint("loop-invariant-condition")
 }
 
 object JavaLint {
+
+  /** The ids of the laws of collection chains that read as Java, which the lint of the chains reports under. */
+  val chains: Vector[String] = Laws.javaIds
+
+  /** The ids of every lint of the Java code. */
+  val ids: Set[String] = values.map(_.id).toSet ++ chains
 
   /** The IntelliJ inspection short names and their corresponding bonsai rule ids.
     *
@@ -279,9 +290,9 @@ object JavaLint {
     "SameReturnValue"                    -> Set("same-return-value"),
     "ScalaUnusedExpression"              -> Set("pure-discard"),
     "ScalaWeakerAccess"                  -> Set("weaker-access"),
-    "SimplifiableConditionalExpression"  -> Set("simplifiable-conditional", "trivial-if"),
+    "SimplifiableConditionalExpression"  -> Set("simplifiable-conditional"),
     "SimplifyStreamApiCallChains"        -> Set("stream-of", "stream-join"),
-    "SizeReplaceableByIsEmpty"           -> Set("size-is-empty"),
+    "SizeReplaceableByIsEmpty"           -> Set("size-to-is-empty", "size-to-non-empty"),
     "SuspiciousInvocationHandlerImplementation" -> Set("suspicious-invocation-handler"),
     "TryFinallyCanBeTryWithResources"           -> Set("close-in-finally"),
     "UnnecessaryModuleDependencyInspection"     -> Set("module-requirement"),
@@ -298,14 +309,15 @@ object JavaLint {
     "CallToPrintStackTrace"                            -> Set("print-stack-trace"),
     "CanBeFinal"                                       -> Set("can-be-final"),
     "CastNarrowingVariable"                            -> Set("cast-narrowing-variable"),
-    "CatchMayIgnoreException"                          -> Set("catch-may-ignore-exception", "swallowed-exception"),
+    "CatchMayIgnoreException"                          -> Set("catch-may-ignore-exception"),
     "CloseInFinally"                                   -> Set("close-in-finally"),
     "CollectionFactory"                                -> Set("java9-collection-factory"),
     "CollectionSizeInLoop"                             -> Set("collection-size-in-loop"),
+    "DanglingJavadoc"                                  -> Set("dangling-doc-comment"),
     "ConstantConditions"                               -> Set("constant-condition", "constant-value", "data-flow-null"),
     "Convert2Diamond"                                  -> Set("convert-2-diamond"),
     "DuplicateBranchesInSwitch"                        -> Set("if-identical-branches"),
-    "EmptyCatchBlock"                                  -> Set("swallowed-exception", "catch-may-ignore-exception"),
+    "EmptyCatchBlock"                                  -> Set("swallowed-exception"),
     "EqualsAndHashcode"                                -> Set("equals-without-hashcode"),
     "ExplicitArrayFilling"                             -> Set("explicit-array-filling"),
     "fallthrough"                                      -> Set("fallthrough-in-switch"),
@@ -319,7 +331,7 @@ object JavaLint {
     "MissingOverrideAnnotation"                        -> Set("missing-override"),
     "MissingSerialAnnotation"                          -> Set("missing-serial-annotation"),
     "NestedLoopOverSameCollection"                     -> Set("nested-loop-over-same-collection"),
-    "OptionalChain"                                    -> Set("optional-chain"),
+    "OptionalChain"                                    -> Set("none-check"),
     "OptionalGetWithoutIsPresent"                      -> Set("optional-get"),
     "OptionalIsPresent"                                -> Set("optional-is-present"),
     "OverlyBroadCatchBlock"                            -> Set("catch-throwable"),
@@ -345,6 +357,7 @@ object JavaLint {
     "UnnecessaryBoxing"                                -> Set("unnecessary-boxing"),
     "UnnecessaryReturn"                                -> Set("unnecessary-return"),
     "UnusedAssignment"                                 -> Set("unused-assignment"),
+    "TrivialIf"                                        -> Set("trivial-if"),
     "UNUSED_IMPORT"                                    -> Set("unused-import"),
     "UnusedImport"                                     -> Set("unused-import"),
     "WaitNotInLoop"                                    -> Set("wait-not-in-loop"),
@@ -353,7 +366,7 @@ object JavaLint {
 
   /** The rule ids a suppression name names, with `*` for all rules. */
   def resolve(name: String): Set[String] =
-    if (name == "bonsai" || name == "ALL" || name == "all") Set("*")
+    if (name == "bonsai") Set("*")
     else if (name.startsWith("bonsai:")) Set(name.drop("bonsai:".length))
     else IntelliJ.getOrElse(name, Set(name))
 }

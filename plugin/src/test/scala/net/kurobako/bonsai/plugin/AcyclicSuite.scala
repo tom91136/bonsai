@@ -1,36 +1,12 @@
 package net.kurobako.bonsai.plugin
 
-import dotty.tools.dotc.Driver
-import dotty.tools.dotc.reporting.StoreReporter
-import java.nio.file.Files
 import munit.FunSuite
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
 
 class AcyclicSuite extends FunSuite {
-  private def run(options: List[String], sources: Seq[(String, String)]): (List[String], List[String]) = {
-    val directory = Files.createTempDirectory("bonsai-")
-    try {
-      val output = Files.createDirectory(directory.resolve("classes"))
-      val files  = sources.map { case (name, source) =>
-        val path = directory.resolve(name)
-        Files.createDirectories(path.getParent)
-        Files.writeString(path, source).toString
-      }
-      val reporter  = StoreReporter()
-      val arguments = Array(
-        "-classpath",
-        sys.props("bonsai.plugin.classpath"),
-        "-d",
-        output.toString,
-        s"-Xplugin:${sys.props("bonsai.plugin.jar")}",
-        "-Xplugin-require:bonsai",
-        "-color:never"
-      ) ++ options.map(option => s"-P:bonsai:$option") ++ files
-      val result = Driver().process(arguments, reporter)
+  private def run(options: List[String], sources: Seq[(String, String)]): (List[String], List[String]) =
+    Compilations.run(sources, options) { (result, _) =>
       (result.allErrors.map(_.message).toList, result.allWarnings.map(_.message).toList)
-    } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
-  }
+    }
 
   private def compile(sources: (String, String)*): List[String] = run(List("error=acyclic"), sources)._1
 
@@ -64,7 +40,7 @@ class AcyclicSuite extends FunSuite {
     "selected givens contribute dependencies" ->
       Seq(
         "A.scala" -> "object A { import B.given; val n = 1; def value = summon[Ordering[Int]] }",
-        "B.scala" -> "object B { given Ordering[Int] = Ordering.by(_ + A.n) }"
+        "B.scala" -> "object B { given Ordering[Int] = Ordering.by[Int, Int](_ + A.n)(using Ordering.Int) }"
       ),
     "annotations contribute dependencies" ->
       Seq(

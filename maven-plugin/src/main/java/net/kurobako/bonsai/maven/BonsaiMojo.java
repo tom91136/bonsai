@@ -17,13 +17,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
  * The settings the bonsai tools take, which the goals of this plugin share.
  *
- * <p>The configuration of the build is the HOCON the sbt plugin reads, so both builds configure bonsai the same
- * way. The tools are found in the repository the build resolves them from, which is where their own build installs
+ * <p>The configuration of the build is the HOCON the sbt plugin reads, which the analysis reads for this plugin, so
+ * both builds configure bonsai the same way. The tools are found in the repository the build resolves them from, which is where their own build installs
  * them.
  */
 public abstract class BonsaiMojo extends AbstractMojo {
@@ -62,16 +63,12 @@ public abstract class BonsaiMojo extends AbstractMojo {
   protected String scalaVersion;
 
   /** The version of Scala the scalafix rules are built for, which is the one they parse the sources with. */
-  @Parameter(property = "bonsai.scalafixScalaVersion", defaultValue = "3.9.0")
+  @Parameter(property = "bonsai.scalafixScalaVersion")
   protected String scalafixScalaVersion;
 
   /** The version of scalafix the rules run with. */
-  @Parameter(property = "bonsai.scalafixVersion", defaultValue = "0.14.9")
+  @Parameter(property = "bonsai.scalafixVersion")
   protected String scalafixVersion;
-
-  /** The Scala version the tools are used with when the build does not name one, which the tools are published for. */
-  @Parameter(property = "bonsai.scala.version", defaultValue = "3.10.0")
-  protected String defaultScalaVersion;
 
   /** The mode the tools run in, which the environment names when it is not set here. */
   @Parameter(property = "bonsai.mode")
@@ -81,12 +78,32 @@ public abstract class BonsaiMojo extends AbstractMojo {
   @Parameter(property = "bonsai.analysisHeap", defaultValue = "4g")
   protected String analysisHeap;
 
-  /** The configuration of the build, for the module of this project. */
-  protected Configuration configuration() throws MojoExecutionException {
+  /** The configuration of the build for the module of this project, which the analysis jar reads. */
+  protected Configuration configuration(Tools tools) throws MojoExecutionException {
+    List<String> command = List.of(
+      javaExecutable(),
+      "-cp",
+      Javac.processorPath(tools.analysis(version)),
+      "net.kurobako.bonsai.analysis.Configure",
+      "--config",
+      config.toString(),
+      "--module",
+      project.getArtifactId());
     try {
-      return Configuration.read(config.toPath(), project.getArtifactId());
+      Process process = new ProcessBuilder(command).start();
+      String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      String error = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+      int code = process.waitFor();
+      if (code != 0) {
+        throw new MojoExecutionException(
+          error.isEmpty() ? "bonsai: cannot read " + config + ": the reader failed with " + code : error);
+      }
+      return Configuration.parse(output.lines().toList());
     } catch (IOException error) {
-      throw new MojoExecutionException(error.getMessage(), error);
+      throw new MojoExecutionException("bonsai: cannot read " + config, error);
+    } catch (InterruptedException error) {
+      Thread.currentThread().interrupt();
+      throw new MojoExecutionException("bonsai: reading " + config + " was interrupted", error);
     }
   }
 
@@ -114,34 +131,110 @@ public abstract class BonsaiMojo extends AbstractMojo {
     return new Tools(repositorySystem, repositorySystemSession, remoteRepositories);
   }
 
-  /** The Scala version the tools of the build are built for, which the build names, or the one the tools are used with
-    * when it does not. A build of Java code alone has no Scala version of its own, and the tools are still the ones
-    * that read the model of the code. */
-  protected String scalaVersion() {
+  /** The Scala version of the build, or the one the analysis is built with when the build names none. A build of Java
+    * code alone has no Scala version of its own, and the tools are still the ones that read the model of the code. */
+  protected String scalaVersion(Tools tools) throws MojoExecutionException {
+    Optional<String> named = namedScalaVersion();
+    return named.isPresent() ? named.get() : analysisScala(tools);
+  }
+
+  /** The Scala version the build names, if it names one. */
+  protected Optional<String> namedScalaVersion() {
     if (scalaVersion != null && !scalaVersion.isBlank() && !scalaVersion.startsWith("${")) {
-      return scalaVersion;
+      return Optional.of(scalaVersion);
     }
     for (org.apache.maven.model.Dependency dependency : project.getDependencies()) {
       if (dependency.getArtifactId().equals("scala3-library_3")) {
-        return dependency.getVersion();
+        return Optional.of(dependency.getVersion());
       }
     }
     String named = project.getProperties().getProperty("scala.version");
-    if (named != null && !named.isBlank()) {
-      return named;
+    return named != null && !named.isBlank() ? Optional.of(named) : Optional.empty();
+  }
+
+  /** The Scala version the analysis is built with, which is the newest TASTy it reads. */
+  protected String analysisScala(Tools tools) throws MojoExecutionException {
+    try {
+      return Versions.analysisScala(tools.analysisJar(version));
+    } catch (IOException error) {
+      throw new MojoExecutionException(error.getMessage(), error);
     }
-    return defaultScalaVersion;
+  }
+
+  /** The versions of scalafix the rules run with, which the rules jar publishes unless the build names them. */
+  protected Versions.ScalafixVersions scalafix(File rules) throws MojoExecutionException {
+    Versions.ScalafixVersions published;
+    try {
+      published = Versions.scalafix(rules);
+    } catch (IOException error) {
+      throw new MojoExecutionException(error.getMessage(), error);
+    }
+    return new Versions.ScalafixVersions(
+      named(scalafixVersion, published.version()), named(scalafixScalaVersion, published.scalaVersion()));
+  }
+
+  private static String named(String named, String published) {
+    return named != null && !named.isBlank() ? named : published;
+  }
+
+  /** The compiler plugin for the Scala version of the build, which every patch of its minor line shares. */
+  protected File compilerPlugin(Tools tools) throws MojoExecutionException {
+    String scala = scalaVersion(tools);
+    String line = Versions.line(scala).orElseThrow(() ->
+      new MojoExecutionException("bonsai: no compiler plugin for Scala " + scala + "; it is built for the final " +
+        "releases of Scala 3"));
+    File plugin;
+    try {
+      plugin = tools.compilerPlugin(line, version);
+    } catch (MojoExecutionException error) {
+      throw new MojoExecutionException(
+        "bonsai: no compiler plugin for Scala " + scala + "; " + error.getMessage(), error);
+    }
+    try {
+      String oldest = Versions.oldest(plugin);
+      if (!Versions.runsIn(scala, oldest)) {
+        throw new MojoExecutionException("bonsai: no compiler plugin for Scala " + scala + "; the plugin of its " +
+          "line runs in " + oldest + " and later patches");
+      }
+    } catch (IOException error) {
+      throw new MojoExecutionException(error.getMessage(), error);
+    }
+    return plugin;
+  }
+
+  /** The analysis, when it reads the TASTy of the Scala version of the build. */
+  protected List<File> analysis(Tools tools) throws MojoExecutionException {
+    String newest = analysisScala(tools);
+    String scala = namedScalaVersion().orElse(newest);
+    if (!Versions.readable(scala, newest)) {
+      throw new MojoExecutionException("bonsai: no analysis for Scala " + scala + "; it reads the TASTy of Scala " +
+        newest + " and the minor lines before it");
+    }
+    return tools.analysis(version);
   }
 
   /** The directory the goals write their files to. */
   protected Path work() throws MojoExecutionException {
-    Path work = Path.of(project.getBuild().getDirectory()).resolve("bonsai");
+    return directory(Path.of(project.getBuild().getDirectory()).resolve("bonsai"));
+  }
+
+  /** Creates the directory, and its parents. */
+  protected Path directory(Path path) throws MojoExecutionException {
     try {
-      Files.createDirectories(work);
+      Files.createDirectories(path);
     } catch (IOException error) {
-      throw new MojoExecutionException("bonsai: cannot create " + work, error);
+      throw new MojoExecutionException("bonsai: cannot create " + path, error);
     }
-    return work;
+    return path;
+  }
+
+  /** The ids the tools accept, which the tools publish them in. */
+  protected Ids ids(Tools tools, File plugin, File rules) throws MojoExecutionException {
+    try {
+      return Ids.of(plugin, tools.analysisJar(version), rules);
+    } catch (IOException error) {
+      throw new MojoExecutionException("bonsai: cannot read the ids the tools accept", error);
+    }
   }
 
   /** The files of the classpath of the project, which the analysis and the rules read. The output of the project is

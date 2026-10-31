@@ -6,6 +6,7 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
+import net.kurobako.bonsai.lifting.Calls
 
 /** The uses of JDK types and members that the JDK does not support, named in the code or by a lookup of a constant
   * name.
@@ -58,7 +59,7 @@ private class JdkInternals(checks: Checks) extends tpd.TreeTraverser {
   }
 
   private def qualifiedName(symbol: Symbol)(using Context): Option[String] =
-    Option.when(symbol.exists)(s"${symbol.owner.fullName.toString.stripSuffix("$")}.${symbol.name}")
+    Option.when(symbol.exists)(Calls.qualified(symbol))
 
   private def referenced(symbol: Symbol, tree: tpd.Tree)(using Context): Unit =
     unsupported(symbol).foreach(why => report(s"the ${kind(symbol)} ${symbol.showFullName} is $why", tree))
@@ -76,9 +77,7 @@ private class JdkInternals(checks: Checks) extends tpd.TreeTraverser {
 
   private def named(tree: tpd.Tree)(using Context): Boolean = unsupported(tree.symbol).isDefined
 
-  private def constantName(arguments: List[tpd.Tree]): Option[String] = arguments.headOption.collect {
-    case tpd.Literal(Constant(name: String)) => name
-  }
+  private def constantName(arguments: List[tpd.Tree]): Option[String] = arguments.headOption.flatMap(constantOf)
 
   /** The class a receiver names, by a class literal or a lookup of a constant name, and why it is unsupported. */
   private def receiver(tree: tpd.Tree)(using Context): Option[(String, String)] = tree match {

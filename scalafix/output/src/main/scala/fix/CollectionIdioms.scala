@@ -5,19 +5,8 @@ object CollectionIdioms {
   val list = List(1, 2, 3)
   val map  = Map("a" -> 1)
 
-  val ex1 = list.contains(2)
-  val ex2 = list.contains(2)
-  val fa1 = !(list.contains(2))
-  val fa2 = !(list.contains(2))
-  val gg1 = map.getOrElse("a", 0)
-  val dt1 = list.slice(1, 3)
-  val td1 = list.slice(1, 2)
-  val dz1 = list
-  val tz1 = list.take(0)
   val array = Array(1, 2, 3)
   val text = "abc"
-  val as1 = array.length
-  val ts1 = text.length
   val ap1 = println(array)
 
   val ok1 = list.contains(2)
@@ -35,19 +24,10 @@ object CollectionIdioms {
   val literals = List(2L, 3L)
   val flags = List(true, false)
   val characters = List('a', 'b')
-  val longTarget = literals.contains(2L)
-  val stringTarget = texts.contains("a")
-  val charTarget = characters.contains('a')
-  val booleanTarget = !(flags.contains(false))
   val treeMap = scala.collection.immutable.TreeMap("a" -> 1)
   val hashMap = scala.collection.immutable.HashMap("b" -> 2)
-  val treeLookup = treeMap.getOrElse("a", 0)
-  val hashLookup = hashMap.getOrElse("b", 0)
   val range = 1 to 5
-  val rangeSearch = range.contains(2)
-  val rangeSlice = range.slice(1, 3)
   val arraySeq = scala.collection.immutable.ArraySeq(1, 2)
-  val arraySeqSearch = arraySeq.contains(1)
 
   var evaluations = 0
   def next(): Int = { evaluations += 1; evaluations }

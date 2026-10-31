@@ -57,27 +57,28 @@ object Report {
         val repeat = seen.getOrElse(finding.id, 0)
         (seen.updated(finding.id, repeat + 1), numbered :+ (finding -> repeat))
     }._2
-    numbering.filter((finding, _) =>
-      !options.disabled(finding.rule.id) && !finding.suppressedBy(finding.suppressed) &&
-        !suppressed(finding, nodes, Some(finding.node.name)) &&
-        (options.info || finding.level != Finding.Level.Info)
-    ).map { (finding, repeat) =>
-      val id        = finding.rule.id
-      val escalated = !options.baseline(finding.key) &&
-        (finding.level match {
-          case Finding.Level.Error   => !options.lenient(id)
-          case Finding.Level.Warning => options.failing(id)
-          case Finding.Level.Info    => false
-        })
-      val level = if (finding.level == Finding.Level.Info) "info" else "warning"
-      Line(if (escalated) "error" else level, finding, repeat)
-    }
+    numbering.view.collect {
+      case (finding, repeat)
+          if !options.disabled(finding.rule.id) && !finding.suppressedBy(finding.suppressed) &&
+            !suppressed(finding, nodes, Some(finding.node.name)) &&
+            (options.info || finding.level != Finding.Level.Info) =>
+        val id        = finding.rule.id
+        val escalated = !options.baseline(finding.key) &&
+          (finding.level match {
+            case Finding.Level.Error   => !options.lenient(id)
+            case Finding.Level.Warning => options.failing(id)
+            case Finding.Level.Info    => false
+          })
+        val level = if (finding.level == Finding.Level.Info) "info" else "warning"
+        Line(if (escalated) "error" else level, finding, repeat)
+    }.toVector
   }
 
   /** The baseline text recording `lines`, one finding key per line. */
   def write(lines: Vector[Line]): String = lines.map(_.finding.key).mkString("", "\n", "\n")
 
-  def baseline(text: String): Set[String] = text.linesIterator.filter(_.nonEmpty).toSet
+  /** The keys a file of one key per line records, such as a baseline or a purity lock. */
+  def keys(text: String): Set[String] = text.linesIterator.filter(_.nonEmpty).toSet
 
   // A suppression on a type covers everything declared inside it.
   @annotation.tailrec

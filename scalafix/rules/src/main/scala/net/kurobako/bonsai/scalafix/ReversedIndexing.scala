@@ -9,7 +9,7 @@ import scalafix.v1.*
   */
 class ReversedIndexing extends SemanticRule("ReversedIndexing") {
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
-    case call: Term.Apply if call.argClause.values.sizeIs == 1 && !array(call.fun) =>
+    case call: Term.Apply if call.argClause.values.sizeIs == 1 && !definitions.arrayType(call.fun) =>
       fromEnd(call.argClause.values.head, call.fun).filter(iterated(call, call.fun, _)).map(_ =>
         lint(
           "reversed-indexing",
@@ -20,9 +20,6 @@ class ReversedIndexing extends SemanticRule("ReversedIndexing") {
         )
       )
   }.flatten.asPatch
-
-  private def array(collection: Term)(using SemanticDocument): Boolean =
-    definitions.typeSymbol(collection).contains("scala/Array#")
 
   private def same(left: Tree, right: Tree): Boolean = left.structure == right.structure
 
@@ -85,18 +82,18 @@ class ReversedIndexing extends SemanticRule("ReversedIndexing") {
   // Whether `variable` takes the indices of `collection`, in a lambda or a generator around `call`, whose body reads no
   // element at the variable itself.
   private def iterated(call: Term.Apply, collection: Term, variable: String): Boolean =
-    definitions.ancestors(call).exists {
+    ancestry.ancestors(call).exists {
       case outer: Term.Apply =>
         outer.fun match {
           case Term.Select(range, _) =>
             indices(range, collection) && outer.argClause.values.exists(parameters(_).contains(variable)) &&
-            !paired(outer, collection, variable)
+            unpaired(outer, collection, variable)
           case _ => false
         }
       case loop: Term.For =>
-        generated(loop.enumsBlock.enums, collection, variable) && !paired(loop.body, collection, variable)
+        generated(loop.enumsBlock.enums, collection, variable) && unpaired(loop.body, collection, variable)
       case loop: Term.ForYield =>
-        generated(loop.enumsBlock.enums, collection, variable) && !paired(loop.body, collection, variable)
+        generated(loop.enumsBlock.enums, collection, variable) && unpaired(loop.body, collection, variable)
       case _ => false
     }
 
@@ -110,8 +107,8 @@ class ReversedIndexing extends SemanticRule("ReversedIndexing") {
       case _ => false
     }
 
-  private def paired(scope: Tree, collection: Term, variable: String): Boolean = scope.collect {
+  private def unpaired(scope: Tree, collection: Term, variable: String): Boolean = scope.collect {
     case read: Term.Apply if same(read.fun, collection) && read.argClause.values.exists(name(_).contains(variable)) =>
       read
-  }.nonEmpty
+  }.isEmpty
 }

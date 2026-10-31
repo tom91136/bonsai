@@ -6,6 +6,7 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
+import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
 /** Reports indirection that only passes a call on: a private single-method trait nothing but lambdas implement, however
@@ -43,33 +44,35 @@ private class Lambdas(checks: Checks, hot: String => Boolean, cold: String => Bo
   // A private trait with one abstract method and nothing else, outside the classes the build marks hot.
   private def single(symbol: Symbol): Boolean =
     symbol.isClass && symbol.is(Flags.Trait) && (symbol.is(Flags.Private) || symbol.owner.isTerm) &&
-      !symbol.is(Flags.Synthetic) && !hotOwner(symbol) && {
-        val members = symbol.info.decls.toList.filter(member => member.isTerm && !member.isConstructor)
+      !symbol.is(Flags.Synthetic) && outsideHot(symbol) && {
+        val members = methods(symbol)
         members.size == 1 && members.head.is(Flags.Deferred) && members.head.is(Flags.Method)
       }
 
   // The trait's function type would box a primitive on every call, as unspecialised-function finds.
   private def boxing(symbol: Symbol): Boolean = {
-    val method     = symbol.info.decls.toList.filter(member => member.isTerm && !member.isConstructor).head
+    val method     = methods(symbol).head
     val parameters = method.info.paramInfoss.flatten
     val result     = method.info.finalResultType
     (result :: parameters).exists(tpe => Trees.primitive(tpe) && !tpe.isRef(defn.BooleanClass)) &&
     !defn.isSpecializableFunctionSAM(parameters, result)
   }
 
-  private def coldOwner(symbol: Symbol): Boolean = symbol.ownersIterator.exists(owner =>
-    owner.isClass && !owner.is(Flags.Package) && cold(Trees.qualified(owner).stripSuffix("$"))
-  )
+  private def methods(symbol: Symbol): List[Symbol] =
+    symbol.info.decls.toList.filter(member => member.isTerm && !member.isConstructor)
 
-  private def hotOwner(symbol: Symbol): Boolean = symbol.ownersIterator.exists(owner =>
-    owner.isClass && !owner.is(Flags.Package) && hot(Trees.qualified(owner).stripSuffix("$"))
-  )
+  private def coldOwner(symbol: Symbol): Boolean = ownedBy(symbol, cold)
+
+  private def outsideHot(symbol: Symbol): Boolean = !ownedBy(symbol, hot)
+
+  private def ownedBy(symbol: Symbol, marked: String => Boolean): Boolean =
+    Trees.enclosedBy(symbol, owner => marked(Calls.qualified(owner)))
 
   private def candidate(method: tpd.DefDef): Boolean = {
     val symbol = method.symbol
     symbol.exists && !symbol.isOneOf(Flags.Synthetic | Flags.Inline | Flags.Override) && !symbol.isConstructor &&
     (symbol.is(Flags.Private) || symbol.owner.isTerm) && !symbol.allOverriddenSymbols.hasNext &&
-    method.termParamss.size == 1 && !hotOwner(symbol)
+    method.termParamss.size == 1 && outsideHot(symbol)
   }
 
   private def applied(method: tpd.DefDef): Unit = {
@@ -100,16 +103,16 @@ private class Lambdas(checks: Checks, hot: String => Boolean, cold: String => Bo
     !Trees.byName(parameter) && (defn.isFunctionType(tpe) && tpe.argInfos.size > 1 || single(tpe.classSymbol))
   }
 
-  private def forwarding(argument: tpd.Tree): Boolean = Trees.lambda(argument).exists(lambda => call(lambda.rhs))
+  private def forwarding(argument: tpd.Tree): Boolean = Calls.lambda(argument).exists(lambda => call(lambda.rhs))
 
   // One call whose function and arguments are plain references.
-  private def call(body: tpd.Tree): Boolean = Trees.unwrap(body) match {
+  private def call(body: tpd.Tree): Boolean = Calls.peelInlined(body) match {
     case tpd.Apply(function, arguments) => reference(function) && arguments.forall(reference(_))
     case _                              => false
   }
 
   @annotation.tailrec
-  private def reference(tree: tpd.Tree): Boolean = Trees.unwrap(tree) match {
+  private def reference(tree: tpd.Tree): Boolean = Calls.peelInlined(tree) match {
     case tpd.Literal(_) | tpd.Ident(_) | tpd.This(_) => true
     case tpd.Select(qualifier, _)                    => reference(qualifier)
     case tpd.TypeApply(function, _)                  => reference(function)
@@ -149,8 +152,8 @@ private class Lambdas(checks: Checks, hot: String => Boolean, cold: String => Bo
     def single: Boolean = mentioned.size == 1 && found.size == 1 &&
       found.head.args.forall(argument => reference(argument) && own(argument)) && !converted(found.head)
 
-    private def converted(application: tpd.Apply)(using Context): Boolean = Trees.unwrap(method.rhs) match {
-      case tpd.Apply(_, List(argument)) => Trees.unwrap(argument) eq application
+    private def converted(application: tpd.Apply)(using Context): Boolean = Calls.peelInlined(method.rhs) match {
+      case tpd.Apply(_, List(argument)) => Calls.peelInlined(argument) eq application
       case _                            => false
     }
 

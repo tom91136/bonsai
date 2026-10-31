@@ -26,19 +26,21 @@ public class ScalafixMojo extends BonsaiMojo {
 
   @Override
   public void execute() throws MojoExecutionException {
-    Configuration configuration = configuration();
     Tools tools = tools();
+    Configuration configuration = configuration(tools);
+    File plugin = compilerPlugin(tools);
+    File rules = tools.rulesJar(version);
+    Versions.ScalafixVersions scalafix = scalafix(rules);
 
     Path work = work();
     Path file = work.resolve("scalafix.conf");
-    write(file, List.of(Scalafix.configuration(configuration, ids(tools))));
+    write(file, List.of(Scalafix.configuration(configuration, ids(tools, plugin, rules))));
 
     Path root = project.getBasedir().toPath();
+    List<Path> sources = sources(project.getCompileSourceRoots());
+    sources.addAll(sources(project.getTestCompileSourceRoots()));
     List<String> files = new ArrayList<>();
-    for (Path source : sources(project.getCompileSourceRoots())) {
-      files.add(root.relativize(source).toString());
-    }
-    for (Path source : sources(project.getTestCompileSourceRoots())) {
+    for (Path source : sources) {
       files.add(root.relativize(source).toString());
     }
     if (files.isEmpty()) {
@@ -53,10 +55,7 @@ public class ScalafixMojo extends BonsaiMojo {
     List<String> command = new ArrayList<>();
     command.add(javaExecutable());
     command.add("-cp");
-    command.add(tools.scalafix(version, scalafixVersion, scalafixScalaVersion).stream()
-      .map(File::getAbsolutePath)
-      .reduce((a, b) -> a + java.io.File.pathSeparator + b)
-      .orElseThrow());
+    command.add(Javac.processorPath(tools.scalafix(version, scalafix.version(), scalafix.scalaVersion())));
     command.add("scalafix.cli.Cli");
     command.add("--config");
     command.add(file.toString());
@@ -68,17 +67,5 @@ public class ScalafixMojo extends BonsaiMojo {
     // `--files` takes a single path, so repeating it would leave all but one source of the module unchecked
     command.addAll(files);
     run("the scalafix rules", command, root.toFile());
-  }
-
-  /** The ids the scalafix rules accept, which they publish them in. */
-  private Ids ids(Tools tools) throws MojoExecutionException {
-    try {
-      return Ids.of(
-        tools.compilerPlugin(scalaVersion(), version),
-        tools.analysisJar(scalaVersion(), version),
-        tools.rulesJar(version));
-    } catch (java.io.IOException error) {
-      throw new MojoExecutionException("bonsai: cannot read the ids the tools accept", error);
-    }
   }
 }

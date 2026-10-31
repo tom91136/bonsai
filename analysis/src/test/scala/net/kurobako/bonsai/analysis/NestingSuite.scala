@@ -9,7 +9,7 @@ class NestingSuite extends AnalysisSuite {
       test: Seq[(String, String)] = Nil,
       config: Nesting.Config = Nesting.Config()
   ): Vector[String] = {
-    val result = extract(main, test, library = true)
+    val result = extract(main, test, libraries = Set("m"))
     Nesting.plan(result.nesting, config).reported.map(describe).sorted
   }
 

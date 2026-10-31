@@ -12,7 +12,8 @@ object CLI {
       "[--disable <rule>]... [--error <rule>]... [--warn <rule>]... [--baseline <file>] [--write-baseline <file>] " +
       "[--purity-lock <file>] [--write-purity-lock <file>] [--effects <prefix>=<kind>,...]... [--concurrent <method>]... " +
       "[--reflective <glob>]... [--hot <glob>]... [--intended <glob>=<glob>]... " +
-      "[--bounded <member> <max> <reason>]... [--nesting-depth <levels>] [--nesting-damping <users>] " +
+      "[--bounded <member> <max> <reason>]... " +
+      "[--nesting-depth <levels>] [--nesting-damping <users>] " +
       "[--nesting] [--nesting-size <lines>]"
 
   /** The ci mode fails on the warnings of strict rules. */
@@ -52,7 +53,8 @@ object CLI {
       * those kept as warnings.
       */
     def failing: Set[String] = {
-      val strict = if (mode == Mode.CI) Finding.Rule.values.filter(_.strict).map(_.id).toSet else Set.empty
+      val strict = if (mode == Mode.CI) Finding.Rule.values.view.collect { case rule if rule.strict => rule.id }.toSet
+      else Set.empty
       (if (errors("*")) rules else errors) ++ strict -- warnings
     }
   }
@@ -78,7 +80,7 @@ object CLI {
       result.problems.foreach(problem => Console.err.println(s"problem: $problem"))
       if (options.purity) Purity.summary(result.purity).foreach(Console.err.println(_))
       val locked = options.lock.filter(Files.exists(_)).fold(Set.empty[String])(file =>
-        Purity.locked(Files.readString(file))
+        Report.keys(Files.readString(file))
       )
       val (scannedTexts, excluded) = scanned()
       val texts                    = scannedTexts.fold(
@@ -97,7 +99,7 @@ object CLI {
         Purity.violations(result.purity, result.graph.nodes, options.policies)
       options.relock.foreach(file => Files.writeString(file, Purity.lock(result.purity, result.graph.nodes)): Unit)
       val baseline = options.baseline.filter(Files.exists(_)).fold(Set.empty[String])(file =>
-        Report.baseline(Files.readString(file))
+        Report.keys(Files.readString(file))
       )
       val report = Report.Options(options.disabled, options.failing, baseline, options.info, options.warnings)
       options.record.foreach(file =>
@@ -152,6 +154,19 @@ object CLI {
   private def positive(name: String, text: String, least: Int): Either[String, Int] =
     text.toIntOption.filter(_ >= least).toRight(s"a $name is an integer of at least $least, not $text\n$usage")
 
+  /** A pair as written, `<glob>=<glob>`. */
+  private def intended(text: String): Either[String, (String, String)] = text.split("=", -1) match {
+    case Array(left, right) if left.nonEmpty && right.nonEmpty => Right(left -> right)
+    case _ => Left(s"an intended pair is written <glob>=<glob>, not $text")
+  }
+
+  private def bounded(options: Options, member: String, max: String, reason: String): Either[String, Options] =
+    max.toIntOption.filter(_ > 0) match {
+      case None                           => Left(s"a bounded max is a positive integer, not $max\n$usage")
+      case Some(_) if reason.trim.isEmpty => Left(s"a bounded entry for $member needs a reason\n$usage")
+      case Some(limit) => Right(options.copy(bounded = options.bounded :+ Complexity.Bounded(member, limit, reason)))
+    }
+
   @scala.annotation.tailrec
   private def parse(args: List[String], options: Options): Either[String, Options] = args match {
     case Nil                                   => Right(options)
@@ -166,11 +181,9 @@ object CLI {
     case "--reflective" :: glob :: rest        => parse(rest, options.copy(reflective = options.reflective :+ glob))
     case "--hot" :: glob :: rest               => parse(rest, options.copy(hot = options.hot :+ glob))
     case "--bounded" :: member :: max :: reason :: rest =>
-      max.toIntOption.filter(_ > 0) match {
-        case None                           => Left(s"a bounded max is a positive integer, not $max\n$usage")
-        case Some(_) if reason.trim.isEmpty => Left(s"a bounded entry for $member needs a reason\n$usage")
-        case Some(limit)                    =>
-          parse(rest, options.copy(bounded = options.bounded :+ Complexity.Bounded(member, limit, reason)))
+      bounded(options, member, max, reason) match {
+        case Left(error) => Left(error)
+        case Right(next) => parse(rest, next)
       }
     case "--nesting" :: rest => parse(rest, options.copy(nesting = options.nesting.copy(enabled = true)))
     case "--nesting-depth" :: levels :: rest =>
@@ -189,7 +202,7 @@ object CLI {
         case Right(size) => parse(rest, options.copy(nesting = options.nesting.copy(size = size)))
       }
     case "--intended" :: pair :: rest =>
-      Intended.parse(pair) match {
+      intended(pair) match {
         case Left(error)   => Left(s"$error\n$usage")
         case Right(parsed) => parse(rest, options.copy(intended = options.intended :+ parsed))
       }

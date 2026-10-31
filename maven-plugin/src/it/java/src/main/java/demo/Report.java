@@ -15,6 +15,11 @@ public class Report {
     StringBuilder result = new StringBuilder();
     result.append(name);
     result.append(':');
+    result.append(name.length());
+    result.append(';');
+    result.append(name.trim().toUpperCase());
+    result.append(';');
+    result.append(name.isEmpty() ? "empty" : name.substring(1));
     return result.toString();
   }
 }

@@ -72,14 +72,7 @@ public final class Ids {
 
   /** The ids the resource holds, one a line. */
   private static Set<String> read(Path file) throws IOException {
-    Set<String> ids = new LinkedHashSet<>();
-    for (String line : Files.readString(file, StandardCharsets.UTF_8).split("\n")) {
-      String id = line.trim();
-      if (!id.isEmpty()) {
-        ids.add(id);
-      }
-    }
-    return ids;
+    return parse(Files.readString(file, StandardCharsets.UTF_8));
   }
 
   /** The ids the resource of the jar holds, one a line. */
@@ -90,17 +83,22 @@ public final class Ids {
         throw new IOException("bonsai: " + jar + " does not publish " + name + "; the tools are not the ones this " +
           "plugin knows");
       }
-      Set<String> ids = new LinkedHashSet<>();
       try (InputStream stream = file.getInputStream(entry)) {
-        for (String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\n")) {
-          String id = line.trim();
-          if (!id.isEmpty()) {
-            ids.add(id);
-          }
-        }
+        return parse(new String(stream.readAllBytes(), StandardCharsets.UTF_8));
       }
-      return ids;
     }
+  }
+
+  /** The ids the text holds, one a line. */
+  private static Set<String> parse(String text) {
+    Set<String> ids = new LinkedHashSet<>();
+    for (String line : text.split("\n")) {
+      String id = line.trim();
+      if (!id.isEmpty()) {
+        ids.add(id);
+      }
+    }
+    return ids;
   }
 
   /** Fails when an id no tool knows, which catches a typo in the configuration. */

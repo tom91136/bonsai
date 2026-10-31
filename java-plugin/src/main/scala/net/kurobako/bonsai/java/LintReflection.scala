@@ -11,8 +11,11 @@ object LintReflection {
 
   val lints: Vector[Lint] = Vector(ExtractMethod, ReflectionMember, ReflectionInvocation, MagicConstant)
 
+  private val Methods      = Set("getMethod", "getDeclaredMethod")
+  private val Constructors = Set("getConstructor", "getDeclaredConstructor")
+
   /** An anonymous implementation large enough to extract into a named type. */
-  object ExtractMethod extends Lint {
+  private object ExtractMethod extends Lint {
     val id    = JavaLint.ExtractMethod.id
     val kinds = Set(Tree.Kind.VARIABLE)
 
@@ -29,13 +32,11 @@ object LintReflection {
   }
 
   /** A reflected member that the target type does not declare. */
-  object ReflectionMember extends Lint {
+  private object ReflectionMember extends Lint {
     val id    = JavaLint.ReflectionMember.id
     val kinds = Set(Tree.Kind.METHOD_INVOCATION)
 
-    private val Methods      = Set("getMethod", "getDeclaredMethod")
-    private val Constructors = Set("getConstructor", "getDeclaredConstructor")
-    private val Fields       = Set("getField", "getDeclaredField")
+    private val Fields = Set("getField", "getDeclaredField")
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
       case invocation: MethodInvocationTree =>
@@ -43,25 +44,27 @@ object LintReflection {
           case executable: ExecutableElement => Some(executable)
           case _                             => None
         }
-        method.filter(executable => owner(executable).contains("java.lang.Class")).flatMap { executable =>
+        method.filter(executable => Lints.owner(executable).contains("java.lang.Class")).flatMap { executable =>
           invocation.getMethodSelect match {
             case select: MemberSelectTree =>
               classType(context, select.getExpression).flatMap { target =>
                 val name   = executable.getSimpleName.toString
                 val exists =
                   if Methods(name) then
-                    invocation.getArguments.asScala.toVector match {
+                    Lints.arguments(invocation) match {
                       case (literal: LiteralTree) +: parameters =>
                         Some(literal.getValue).collect { case text: String => text }.flatMap { methodName =>
-                          signature(context, parameters).map(types => hasMethod(context, target, methodName, types))
+                          signature(context, parameters).map(types =>
+                            findMethod(context, target, methodName, types, declaredOnly = false).isDefined
+                          )
                         }
                       case _ => None
                     }
                   else if Constructors(name) then
-                    signature(context, invocation.getArguments.asScala.toVector)
-                      .map(types => hasConstructor(context, target, types))
+                    signature(context, Lints.arguments(invocation))
+                      .map(types => findConstructor(context, target, types).isDefined)
                   else if Fields(name) then
-                    invocation.getArguments.asScala.toVector match {
+                    Lints.arguments(invocation) match {
                       case Vector(literal: LiteralTree) =>
                         Option(literal.getValue).collect { case text: String => text }
                           .map(field => hasField(target, field))
@@ -72,7 +75,7 @@ object LintReflection {
                   // the finding is placed on the name of the member, which a lookup that spans lines starts below the call
                   context.found(
                     s"the reflected member ${executable.getSimpleName} does not name a member of $target",
-                    invocation.getArguments.asScala.headOption.getOrElse(invocation)
+                    Lints.arguments(invocation).headOption.getOrElse(invocation)
                   )
                 }
               }
@@ -82,15 +85,6 @@ object LintReflection {
       case _ => Vector.empty
     }
 
-    private def classType(context: Context, tree: ExpressionTree): Option[TypeElement] =
-      context.typeOf(tree) match {
-        case declared: DeclaredType if declared.asElement.toString == "java.lang.Class" =>
-          declared.getTypeArguments.asScala.headOption.flatMap { argument =>
-            Option(context.types.asElement(argument)).collect { case element: TypeElement => element }
-          }
-        case _ => None
-      }
-
     /** The parameter types a reflective lookup names: class literals, or one array of them that the code builds. */
     private def signature(context: Context, trees: Vector[ExpressionTree]): Option[Vector[TypeMirror]] =
       trees match {
@@ -99,74 +93,16 @@ object LintReflection {
         case _ => parameterTypes(context, trees)
       }
 
-    private def parameterTypes(context: Context, trees: Vector[ExpressionTree]): Option[Vector[TypeMirror]] = {
-      val types = trees.map { tree =>
-        context.typeOf(tree) match {
-          case declared: DeclaredType if declared.asElement.toString == "java.lang.Class" =>
-            declared.getTypeArguments.asScala.headOption.filter { argument =>
-              argument.getKind == javax.lang.model.`type`.TypeKind.DECLARED ||
-              argument.getKind == javax.lang.model.`type`.TypeKind.ARRAY ||
-              argument.getKind.isPrimitive
-            }
-          case _ => None
-        }
-      }
-      if types.forall(_.isDefined) then Some(types.flatten) else None
-    }
-
-    private def hasMethod(
-        context: Context,
-        target: TypeElement,
-        name: String,
-        parameters: Vector[TypeMirror]
-    ): Boolean =
-      context.elements.getAllMembers(target).asScala.exists {
-        case method: ExecutableElement =>
-          method.getSimpleName.contentEquals(name) &&
-          matchParameters(context, method.getParameters.asScala.toVector, parameters)
-        case _ => false
-      }
-
-    private def hasConstructor(context: Context, target: TypeElement, parameters: Vector[TypeMirror]): Boolean =
-      target.getEnclosedElements.asScala.exists {
-        case constructor: ExecutableElement
-            if constructor.getKind == ElementKind.CONSTRUCTOR &&
-              matchParameters(context, constructor.getParameters.asScala.toVector, parameters) =>
-          true
-        case _ => false
-      }
-
     private def hasField(target: TypeElement, name: String): Boolean =
       target.getEnclosedElements.asScala.exists {
         case field: VariableElement if field.getKind == ElementKind.FIELD && field.getSimpleName.contentEquals(name) =>
           true
         case _ => false
       }
-
-    private def matchParameters(
-        context: Context,
-        declared: Vector[VariableElement],
-        actual: Vector[TypeMirror]
-    ): Boolean =
-      declared.size == actual.size && declared.zip(actual).forall { (parameter, tpe) =>
-        sameType(context, parameter.asType(), tpe)
-      }
-
-    private def sameType(context: Context, declared: TypeMirror, actual: TypeMirror): Boolean = {
-      val direct = context.types.isSameType(context.types.erasure(declared), context.types.erasure(actual))
-      if direct then true
-      else {
-        val boxed = (tpe: TypeMirror) =>
-          try Some(context.types.unboxedType(tpe))
-          catch case _: IllegalArgumentException => None
-        boxed(declared).exists(context.types.isSameType(_, actual)) ||
-        boxed(actual).exists(context.types.isSameType(declared, _))
-      }
-    }
   }
 
   /** A reflective call whose resolved member the arguments do not fit. */
-  object ReflectionInvocation extends Lint {
+  private object ReflectionInvocation extends Lint {
     val id    = JavaLint.ReflectionInvocation.id
     val kinds = Set(Tree.Kind.METHOD_INVOCATION)
 
@@ -174,7 +110,7 @@ object LintReflection {
       case invocation: MethodInvocationTree =>
         val reflection = context.element match {
           case method: ExecutableElement
-              if owner(method).exists(owner =>
+              if Lints.owner(method).exists(owner =>
                 owner == "java.lang.reflect.Method" || owner == "java.lang.reflect.Constructor"
               ) && Set("invoke", "newInstance")(method.getSimpleName.toString) =>
             Some(method)
@@ -187,8 +123,8 @@ object LintReflection {
               resolved.flatMap { target =>
                 val arguments =
                   if method.getSimpleName.contentEquals("invoke") then
-                    invocation.getArguments.asScala.toVector.drop(1)
-                  else invocation.getArguments.asScala.toVector
+                    Lints.arguments(invocation).drop(1)
+                  else Lints.arguments(invocation)
                 mismatch(context, target, arguments)
               }
             case _ => None
@@ -198,74 +134,27 @@ object LintReflection {
     }
 
     /** The member a local, field or expression names, when the code says which member it is. */
-    private def member(context: Context, tree: ExpressionTree): Option[ExecutableElement] = tree match {
-      case identifier: IdentifierTree =>
-        val e = Option(context.elementOf(identifier))
-        e.flatMap(element => declaration(context, element))
-      case select: MemberSelectTree =>
-        Option(context.elementOf(select)).flatMap(element => declaration(context, element))
-      case invocation: MethodInvocationTree       => factory(context, invocation)
-      case parenthesized: ParenthesizedTree       => member(context, parenthesized.getExpression)
-      case cast: TypeCastTree                     => member(context, cast.getExpression)
-      case conditional: ConditionalExpressionTree =>
-        member(context, conditional.getTrueExpression).orElse(member(context, conditional.getFalseExpression))
-      case _ => None
-    }
-
-    private def targetClass(context: Context, tree: ExpressionTree): Option[TypeElement] =
-      context.typeOf(tree) match {
-        case declared: DeclaredType if declared.asElement.toString == "java.lang.Class" =>
-          declared.getTypeArguments.asScala.headOption.flatMap { argument =>
-            Option(context.types.asElement(argument)).collect { case element: TypeElement => element }
-          }
+    private def member(context: Context, tree: ExpressionTree): Option[ExecutableElement] =
+      Lint.unwrapped(tree) match {
+        case identifier: IdentifierTree =>
+          val e = Option(context.elementOf(identifier))
+          e.flatMap(element => declaration(context, element))
+        case select: MemberSelectTree =>
+          Option(context.elementOf(select)).flatMap(element => declaration(context, element))
+        case invocation: MethodInvocationTree       => factory(context, invocation)
+        case conditional: ConditionalExpressionTree =>
+          member(context, conditional.getTrueExpression).orElse(member(context, conditional.getFalseExpression))
         case _ => None
       }
-
-    private def classParameters(context: Context, trees: Vector[ExpressionTree]): Option[Vector[TypeMirror]] = {
-      val types = trees.map { tree =>
-        context.typeOf(tree) match {
-          case declared: DeclaredType if declared.asElement.toString == "java.lang.Class" =>
-            declared.getTypeArguments.asScala.headOption.filter { argument =>
-              argument.getKind == javax.lang.model.`type`.TypeKind.DECLARED ||
-              argument.getKind == javax.lang.model.`type`.TypeKind.ARRAY ||
-              argument.getKind.isPrimitive
-            }
-          case _ => None
-        }
-      }
-      if types.forall(_.isDefined) then Some(types.flatten) else None
-    }
-
-    private def parametersMatch(
-        context: Context,
-        declared: Vector[VariableElement],
-        actual: Vector[TypeMirror]
-    ): Boolean =
-      declared.size == actual.size && declared.zip(actual).forall { (parameter, tpe) =>
-        sameType(context, parameter.asType(), tpe)
-      }
-
-    private def sameType(context: Context, declared: TypeMirror, actual: TypeMirror): Boolean = {
-      val direct = context.types.isSameType(context.types.erasure(declared), context.types.erasure(actual))
-      if direct then true
-      else {
-        val boxed = (tpe: TypeMirror) =>
-          try Some(context.types.unboxedType(tpe))
-          catch case _: IllegalArgumentException => None
-        boxed(declared).exists(context.types.isSameType(_, actual)) ||
-        boxed(actual).exists(context.types.isSameType(declared, _))
-      }
-    }
 
     private def declaration(context: Context, element: Element): Option[ExecutableElement] = {
       val leaf = Option(context.trees.getPath(element)).map(_.getLeaf)
       leaf.collect {
         case variable: VariableTree if variable.getInitializer != null => variable.getInitializer
       }.flatMap {
-        case invocation: MethodInvocationTree => factory(context, invocation)
-        case parenthesized: ParenthesizedTree => declaration(context, context.elementOf(parenthesized))
-        case cast: TypeCastTree               => declaration(context, context.elementOf(cast))
-        case _                                => None
+        case invocation: MethodInvocationTree            => factory(context, invocation)
+        case wrapped: (ParenthesizedTree | TypeCastTree) => declaration(context, context.elementOf(wrapped))
+        case _                                           => None
       }
     }
 
@@ -275,68 +164,31 @@ object LintReflection {
         case executable: ExecutableElement => Some(executable)
         case _                             => None
       }
-      method.filter(executable => owner(executable).contains("java.lang.Class")).flatMap { executable =>
+      method.filter(executable => Lints.owner(executable).contains("java.lang.Class")).flatMap { executable =>
         invocation.getMethodSelect match {
           case select: MemberSelectTree =>
-            val tc = targetClass(context, select.getExpression)
+            val tc = classType(context, select.getExpression)
             tc.flatMap { target =>
               val name      = executable.getSimpleName.toString
-              val arguments = invocation.getArguments.asScala.toVector
-              if Set("getMethod", "getDeclaredMethod")(name) then
+              val arguments = Lints.arguments(invocation)
+              if Methods(name) then
                 arguments match {
                   case (literal: LiteralTree) +: parameters =>
                     Option(literal.getValue).collect { case text: String => text }.flatMap { methodName =>
-                      val pt = classParameters(context, parameters)
-                      pt.flatMap { types =>
-                        val found = findMethod(context, target, methodName, types, name == "getDeclaredMethod")
-                        found
+                      parameterTypes(context, parameters).flatMap { types =>
+                        findMethod(context, target, methodName, types, name == "getDeclaredMethod")
                       }
                     }
                   case _ => None
                 }
-              else if Set("getConstructor", "getDeclaredConstructor")(name) then
-                classParameters(context, arguments).flatMap { types =>
-                  findConstructor(context, target, types, name == "getDeclaredConstructor")
+              else if Constructors(name) then
+                parameterTypes(context, arguments).flatMap { types =>
+                  findConstructor(context, target, types)
                 }
               else None
             }
           case _ => None
         }
-      }
-    }
-
-    private def findMethod(
-        context: Context,
-        target: TypeElement,
-        name: String,
-        parameters: Vector[TypeMirror],
-        declaredOnly: Boolean
-    ): Option[ExecutableElement] = {
-      val members =
-        if declaredOnly then target.getEnclosedElements.asScala.toVector
-        else context.elements.getAllMembers(target).asScala.toVector
-      members.collectFirst {
-        case method: ExecutableElement
-            if method.getSimpleName.contentEquals(name) &&
-              parametersMatch(context, method.getParameters.asScala.toVector, parameters) =>
-          method
-      }
-    }
-
-    private def findConstructor(
-        context: Context,
-        target: TypeElement,
-        parameters: Vector[TypeMirror],
-        declaredOnly: Boolean
-    ): Option[ExecutableElement] = {
-      val members =
-        if declaredOnly then target.getEnclosedElements.asScala.toVector
-        else target.getEnclosedElements.asScala.toVector
-      members.collectFirst {
-        case constructor: ExecutableElement
-            if constructor.getKind == ElementKind.CONSTRUCTOR &&
-              parametersMatch(context, constructor.getParameters.asScala.toVector, parameters) =>
-          constructor
       }
     }
 
@@ -367,25 +219,13 @@ object LintReflection {
         case _                                                             =>
           val declaredErased = context.types.erasure(declared)
           val actualErased   = context.types.erasure(actual)
-          context.types.isAssignable(actualErased, declaredErased) ||
-          context.types.isSameType(actualErased, declaredErased) ||
-          boxed(context, actual).exists(boxedActual =>
-            context.types.isAssignable(boxedActual, declaredErased) ||
-              context.types.isSameType(boxedActual, declaredErased)
-          ) ||
-          boxed(context, declared).exists(boxedDeclared =>
-            context.types.isAssignable(actualErased, boxedDeclared) ||
-              context.types.isSameType(actualErased, boxedDeclared)
-          ) ||
+          val boxedActual    = boxed(context, actual)
+          related(context, actualErased, declaredErased) ||
+          boxedActual.exists(related(context, _, declaredErased)) ||
+          boxed(context, declared).exists(related(context, actualErased, _)) ||
           (declared.getKind.isPrimitive && (
-            boxed(context, actual).exists { boxedActual =>
-              context.types.isAssignable(boxedActual, declaredErased) ||
-              context.types.isSameType(boxedActual, declaredErased)
-            } ||
-              unboxed(context, actual).exists { unboxedActual =>
-                context.types.isAssignable(unboxedActual, declaredErased) ||
-                context.types.isSameType(unboxedActual, declaredErased)
-              }
+            boxedActual.exists(related(context, _, declaredErased)) ||
+              unboxed(context, actual).exists(related(context, _, declaredErased))
           )) ||
           declaredErased.toString == "java.lang.Object" ||
           // a value typed as a supertype of the parameter may hold an instance of it, which the reflective call needs
@@ -394,26 +234,25 @@ object LintReflection {
       }
     }
 
+    private def related(context: Context, actual: TypeMirror, declared: TypeMirror): Boolean =
+      context.types.isAssignable(actual, declared) || context.types.isSameType(actual, declared)
+
     private def boxed(context: Context, tpe: TypeMirror): Option[TypeMirror] =
       tpe match {
         case primitive: javax.lang.model.`type`.PrimitiveType => Some(context.types.boxedClass(primitive).asType())
         case _                                                => None
       }
-
-    private def unboxed(context: Context, tpe: TypeMirror): Option[TypeMirror] =
-      try Some(context.types.unboxedType(tpe))
-      catch case _: IllegalArgumentException => None
   }
 
   /** A modifier argument written as a magic number or unchecked variable. */
-  object MagicConstant extends Lint {
+  private object MagicConstant extends Lint {
     val id    = JavaLint.MagicConstant.id
     val kinds = Set(Tree.Kind.NEW_CLASS)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
       case newClass: NewClassTree if newClass.getArguments.size > 3 =>
         val owner = context.element match {
-          case constructor: ExecutableElement => LintReflection.owner(constructor)
+          case constructor: ExecutableElement => Lints.owner(constructor)
           case _                              => None
         }
         val modifiers = newClass.getArguments.get(3)
@@ -429,6 +268,78 @@ object LintReflection {
     }
   }
 
-  private def owner(element: Element): Option[String] =
-    Option(element.getEnclosingElement).collect { case owner: TypeElement => owner.getQualifiedName.toString }
+  private def findMethod(
+      context: Context,
+      target: TypeElement,
+      name: String,
+      parameters: Vector[TypeMirror],
+      declaredOnly: Boolean
+  ): Option[ExecutableElement] = {
+    val members =
+      if declaredOnly then target.getEnclosedElements.asScala.toVector
+      else context.elements.getAllMembers(target).asScala.toVector
+    members.collectFirst {
+      case method: ExecutableElement
+          if method.getSimpleName.contentEquals(name) &&
+            matchParameters(context, method.getParameters.asScala.toVector, parameters) =>
+        method
+    }
+  }
+
+  private def findConstructor(
+      context: Context,
+      target: TypeElement,
+      parameters: Vector[TypeMirror]
+  ): Option[ExecutableElement] =
+    target.getEnclosedElements.asScala.collectFirst {
+      case constructor: ExecutableElement
+          if constructor.getKind == ElementKind.CONSTRUCTOR &&
+            matchParameters(context, constructor.getParameters.asScala.toVector, parameters) =>
+        constructor
+    }
+
+  private def classArgument(context: Context, tree: ExpressionTree): Option[TypeMirror] =
+    context.typeOf(tree) match {
+      case declared: DeclaredType if declared.asElement.toString == "java.lang.Class" =>
+        declared.getTypeArguments.asScala.headOption
+      case _ => None
+    }
+
+  private def classType(context: Context, tree: ExpressionTree): Option[TypeElement] =
+    classArgument(context, tree).flatMap { argument =>
+      Option(context.types.asElement(argument)).collect { case element: TypeElement => element }
+    }
+
+  private def parameterTypes(context: Context, trees: Vector[ExpressionTree]): Option[Vector[TypeMirror]] = {
+    val types = trees.map { tree =>
+      classArgument(context, tree).filter { argument =>
+        argument.getKind == javax.lang.model.`type`.TypeKind.DECLARED ||
+        argument.getKind == javax.lang.model.`type`.TypeKind.ARRAY ||
+        argument.getKind.isPrimitive
+      }
+    }
+    if types.forall(_.isDefined) then Some(types.flatten) else None
+  }
+
+  private def matchParameters(
+      context: Context,
+      declared: Vector[VariableElement],
+      actual: Vector[TypeMirror]
+  ): Boolean =
+    declared.size == actual.size && declared.zip(actual).forall { (parameter, tpe) =>
+      sameType(context, parameter.asType(), tpe)
+    }
+
+  private def sameType(context: Context, declared: TypeMirror, actual: TypeMirror): Boolean = {
+    val direct = context.types.isSameType(context.types.erasure(declared), context.types.erasure(actual))
+    if direct then true
+    else {
+      unboxed(context, declared).exists(context.types.isSameType(_, actual)) ||
+      unboxed(context, actual).exists(context.types.isSameType(declared, _))
+    }
+  }
+
+  private def unboxed(context: Context, tpe: TypeMirror): Option[TypeMirror] =
+    try Some(context.types.unboxedType(tpe))
+    catch case _: IllegalArgumentException => None
 }

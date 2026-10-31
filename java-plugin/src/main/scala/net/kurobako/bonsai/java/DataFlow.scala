@@ -48,10 +48,14 @@ private[java] object DataFlow {
     def constant(value: Any): Value = Value(Null.NonNull, Some(value))
   }
 
-  /** A variable, or a chain of fields read from one, whose value the walk follows. */
-  final case class Ref(root: Element, fields: List[Element] = Nil, index: Option[String] = None)
+  private type Ref = Effects.AccessPath
+  private val Ref = Effects.AccessPath
 
-  type Env = Map[Ref, Value]
+  private type Env = Map[Ref, Value]
+
+  private enum LoopTest {
+    case Before, After, Each
+  }
 
   /** A value that the code dereferences or unboxes, where a null fails. */
   final case class Use(tree: ExpressionTree, what: String)
@@ -60,13 +64,13 @@ private[java] object DataFlow {
   final case class Pass(argument: ExpressionTree, parameter: VariableElement, callee: ExecutableElement)
 
   /** A value the code returns; `method` is the method it returns from, or empty when it returns from a lambda. */
-  final case class Return(tree: ReturnTree, expression: ExpressionTree, method: Option[MethodTree])
+  final case class Return(expression: ExpressionTree, method: Option[MethodTree])
 
   /** A value the code stores in an array whose elements have the component type. */
   final case class Store(expression: ExpressionTree, component: TypeMirror)
 
   /** A comparison of a subject with null. */
-  final case class Compare(tree: BinaryTree, subject: ExpressionTree, equal: Boolean)
+  final case class Compare(tree: BinaryTree, subject: ExpressionTree)
 
   /** A call of `Objects.requireNonNullElse` with the value it is given first. */
   final case class Default(invocation: MethodInvocationTree, argument: ExpressionTree)
@@ -93,7 +97,7 @@ private[java] object DataFlow {
   def of(context: Context, method: MethodTree): Facts =
     Option(cache.get(method)).getOrElse {
       context.ancestors.collect { case m: MethodTree => m }.reverse.foreach { outer =>
-        if outer != method && !cache.containsKey(outer) then of(context, outer): Unit
+        if outer != method && !cache.containsKey(outer) then { val _ = of(context, outer) }
       }
       val facts = new DataFlow(context).run(method)
       cache.put(method, facts)
@@ -126,7 +130,7 @@ private[java] final class DataFlow(context: Context) {
 
   private val Limit = 4
 
-  def run(method: MethodTree): Facts = {
+  private def run(method: MethodTree): Facts = {
     functions = List(Some(method))
     root = Some(method)
     val captured = Option(capturedEnvs.get(method)).getOrElse(Map.empty)
@@ -171,18 +175,19 @@ private[java] final class DataFlow(context: Context) {
 
   // -- declarations
 
-  private def element(tree: Tree): Option[Element] =
-    Option(context.trees.getPath(context.unit, tree)).flatMap(path => Option(context.trees.getElement(path)))
+  private def element(tree: Tree): Option[Element] = Option(context.elementOf(tree))
 
-  private def typeOf(tree: Tree): TypeMirror =
-    Option(context.trees.getPath(context.unit, tree)).flatMap(path => Option(context.trees.getTypeMirror(path))).orNull
+  private def inObjects(element: Element): Boolean =
+    Option(element.getEnclosingElement).exists(_.toString == "java.util.Objects")
+
+  private def typeOf(tree: Tree): TypeMirror = context.typeOf(tree)
 
   /** The array type of an expression, preferring the declaration of a variable, which keeps the annotations of its
     * elements that the type of its uses may not.
     */
   private def arrayType(tree: ExpressionTree): Option[ArrayType] = {
-    val declaredType = stripped(tree) match {
-      case _: IdentifierTree | _: MemberSelectTree => element(stripped(tree)).map(_.asType)
+    val declaredType = Lints.unparenthesised(tree) match {
+      case _: IdentifierTree | _: MemberSelectTree => element(Lints.unparenthesised(tree)).map(_.asType)
       case _                                       => None
     }
     declaredType.orElse(Option(typeOf(tree))).collect { case array: ArrayType => array }
@@ -244,8 +249,19 @@ private[java] final class DataFlow(context: Context) {
   private def creation: Option[TreePath] =
     root
       .flatMap(method => Option(context.trees.getPath(context.unit, method)))
-      .flatMap(Lifecycle.enclosingLocalClass)
+      .flatMap(enclosingLocalClass)
       .orElse(lambdas.lastOption.flatMap(lambda => Option(context.trees.getPath(context.unit, lambda))))
+
+  /** The class declaration of the outermost local or anonymous class that holds the path, if any. */
+  private def enclosingLocalClass(path: TreePath): Option[TreePath] =
+    Iterator
+      .iterate(path)(_.getParentPath)
+      .takeWhile(_ != null)
+      .filter(candidate => candidate.getLeaf.isInstanceOf[ClassTree])
+      .filter(candidate => !Option(candidate.getParentPath).exists(_.getLeaf.isInstanceOf[ClassTree]))
+      .filter(candidate => Option(candidate.getParentPath).exists(!_.getLeaf.isInstanceOf[CompilationUnitTree]))
+      .toVector
+      .lastOption
 
   /** The variables whose values the walk follows: the code checks and assigns fields as it does locals. */
   private def trackable(element: Element): Boolean = element.getKind match {
@@ -273,11 +289,10 @@ private[java] final class DataFlow(context: Context) {
 
   private def assign(env: Env, ref: Ref, value: Value): Env = invalidate(env, ref) + (ref -> value)
 
-  private def dropAssigned(env: Env, assigned: Set[Element]): Env =
-    env.filterNot { (ref, _) =>
-      assigned(ref.root) || ref.fields.exists(assigned) ||
-      ref.index.exists(idx => assigned.exists(_.getSimpleName.contentEquals(idx)))
-    }
+  private def dropAssigned(env: Env, assigned: Set[Element]): Env = {
+    val names = assigned.map(_.getSimpleName.toString)
+    env.filterNot((ref, _) => assigned(ref.root) || ref.fields.exists(assigned) || ref.index.exists(names))
+  }
 
   // -- statements
 
@@ -323,10 +338,10 @@ private[java] final class DataFlow(context: Context) {
             join(thenOut, elseOut)
 
           case whileTree: WhileLoopTree =>
-            loop(env, None, Some(whileTree.getCondition), whileTree.getStatement, Nil, check = true)
+            loop(env, None, Some(whileTree.getCondition), whileTree.getStatement, Nil, LoopTest.Before)
 
           case doWhile: DoWhileLoopTree =>
-            loop(env, None, Some(doWhile.getCondition), doWhile.getStatement, Nil, check = false)
+            loop(env, None, Some(doWhile.getCondition), doWhile.getStatement, Nil, LoopTest.After)
 
           case forTree: ForLoopTree =>
             val initialized =
@@ -338,7 +353,7 @@ private[java] final class DataFlow(context: Context) {
                 Option(forTree.getCondition),
                 forTree.getStatement,
                 forTree.getUpdate.asScala.toList.map(_.getExpression),
-                check = true
+                LoopTest.Before
               )
             )
 
@@ -347,28 +362,28 @@ private[java] final class DataFlow(context: Context) {
             use(enhanced.getExpression, "an enhanced for loop")
             val variable = element(enhanced.getVariable)
             val entry    = variable.fold(after)(el => invalidate(after, Ref(el)))
-            loop(entry, variable, None, enhanced.getStatement, Nil, check = true, exhaustible = true)
+            loop(entry, variable, None, enhanced.getStatement, Nil, LoopTest.Each)
 
           case ret: ReturnTree =>
             Option(ret.getExpression).foreach { returned =>
-              expression(returned, env): Unit
-              once(ret)(returns += Return(ret, returned, functions.head))
+              val _ = expression(returned, env)
+              once(ret)(returns += Return(returned, functions.head))
               functions.head.flatMap(element(_)).collect { case executable: ExecutableElement => executable }
                 .foreach(executable => unboxing(returned, executable.getReturnType))
             }
             None
 
           case thrown: ThrowTree =>
-            expression(thrown.getExpression, env): Unit
+            val _ = expression(thrown.getExpression, env)
             use(thrown.getExpression, "a throw")
             None
 
           case jump: BreakTree =>
-            findTarget(Option(jump.getLabel).map(_.toString), loopOnly = false).foreach(_.breaks += env)
+            breakTarget(Option(jump.getLabel).map(_.toString)).foreach(_.breaks += env)
             None
 
           case jump: ContinueTree =>
-            findTarget(Option(jump.getLabel).map(_.toString), loopOnly = true).foreach(_.continues += env)
+            continueTarget(Option(jump.getLabel).map(_.toString)).foreach(_.continues += env)
             None
 
           case yielded: YieldTree =>
@@ -395,18 +410,21 @@ private[java] final class DataFlow(context: Context) {
           case tryTree: TryTree => attempt(tryTree, env)
 
           case switchTree: SwitchTree =>
-            val (_, after) = expression(switchTree.getExpression, env)
-            switchCases(switchTree.getCases.asScala.toList, after, expressionSwitch = false)._2
+            val (_, after)             = expression(switchTree.getExpression, env)
+            val (_, exits, hasDefault) = switchCases(switchTree.getCases.asScala.toList, after)
+            if hasDefault then exits else join(exits, Some(after))
 
           case _ => state
         }
     }
 
-  private def findTarget(label: Option[String], loopOnly: Boolean): Option[Target] =
-    label match {
-      case Some(name) => targets.find(_.label.contains(name))
-      case None       => targets.find(target => target.loop || (!loopOnly && target.label.isEmpty))
-    }
+  private def breakTarget(label: Option[String]): Option[Target] =
+    label.fold(targets.find(target => target.loop || target.label.isEmpty))(labelled)
+
+  private def continueTarget(label: Option[String]): Option[Target] =
+    label.fold(targets.find(_.loop))(labelled)
+
+  private def labelled(name: String): Option[Target] = targets.find(_.label.contains(name))
 
   /** The environment after a loop, whose head is walked again until the values that reach it stop changing. */
   private def loop(
@@ -415,8 +433,7 @@ private[java] final class DataFlow(context: Context) {
       test: Option[ExpressionTree],
       body: StatementTree,
       update: List[ExpressionTree],
-      check: Boolean,
-      exhaustible: Boolean = false
+      mode: LoopTest
   ): Option[Env] = {
     var head    = entry
     var exit    = Option.empty[Env]
@@ -426,31 +443,30 @@ private[java] final class DataFlow(context: Context) {
       turn += 1
       val target = new Target(None, loop = true)
       targets = target :: targets
-      var leaving = Option.empty[Env]
-      val start   =
-        if check then
+      var leaving                                           = Option.empty[Env]
+      def guard(tree: ExpressionTree, at: Env): Option[Env] = {
+        val (_, whenTrue, whenFalse) = condition(tree, at)
+        leaving = whenFalse
+        whenTrue
+      }
+      val start =
+        if mode != LoopTest.After then
           test match {
-            case Some(tree) =>
-              val (_, whenTrue, whenFalse) = condition(tree, head)
-              leaving = whenFalse
-              whenTrue
-            case None =>
-              if exhaustible then leaving = Some(head)
+            case Some(tree) => guard(tree, head)
+            case None       =>
+              if mode == LoopTest.Each then leaving = Some(head)
               Some(head)
           }
         else Some(head)
       val bodyOut = statement(body, start.map(env => variable.fold(env)(el => invalidate(env, Ref(el)))))
       val back    = join(bodyOut, joined(target.continues))
       val looped  =
-        if check then back
+        if mode != LoopTest.After then back
         else
           back.flatMap(env =>
             test match {
-              case Some(tree) =>
-                val (_, whenTrue, whenFalse) = condition(tree, env)
-                leaving = whenFalse
-                whenTrue
-              case None => Some(env)
+              case Some(tree) => guard(tree, env)
+              case None       => Some(env)
             }
           )
       val updated = looped.map(env => update.foldLeft(env)((current, tree) => expression(tree, current)._2))
@@ -501,14 +517,12 @@ private[java] final class DataFlow(context: Context) {
         }
 
         override def visitUnary(node: UnaryTree, unused: Unit): Unit = {
-          if Set(
-              Tree.Kind.PREFIX_INCREMENT,
-              Tree.Kind.PREFIX_DECREMENT,
-              Tree.Kind.POSTFIX_INCREMENT,
-              Tree.Kind.POSTFIX_DECREMENT
-            )
-              .contains(node.getKind)
-          then note(node.getExpression)
+          node.getKind match {
+            case Tree.Kind.PREFIX_INCREMENT | Tree.Kind.PREFIX_DECREMENT |
+                Tree.Kind.POSTFIX_INCREMENT | Tree.Kind.POSTFIX_DECREMENT =>
+              note(node.getExpression)
+            case _ => ()
+          }
           super.visitUnary(node, unused)
         }
       }.scan(path, ())
@@ -517,7 +531,7 @@ private[java] final class DataFlow(context: Context) {
   }
 
   /** Walks the cases of a switch, returning the values it yields and the environment after it. */
-  private def switchCases(cases: List[CaseTree], entry: Env, expressionSwitch: Boolean): (Value, Option[Env]) = {
+  private def switchCases(cases: List[CaseTree], entry: Env): (Value, Option[Env], Boolean) = {
     val target = new Target(None, loop = false)
     targets = target :: targets
     var previous   = Option.empty[Env]
@@ -546,9 +560,8 @@ private[java] final class DataFlow(context: Context) {
     }
     targets = targets.tail
     val exits = join(joined(target.breaks), previous)
-    val all   = if hasDefault || expressionSwitch then exits else join(exits, Some(entry))
     val value = (arms ++ target.yields).reduceOption(_.join(_)).getOrElse(Value.Unknown)
-    (value, all)
+    (value, exits, hasDefault)
   }
 
   // -- expressions
@@ -560,7 +573,18 @@ private[java] final class DataFlow(context: Context) {
     if target != null && target.getKind.isPrimitive then unbox(tree)
 
   private def unbox(tree: ExpressionTree): Unit =
-    if Nullness.boxed(typeOf(tree)) then use(tree, "an unboxing conversion")
+    if boxed(typeOf(tree)) then use(tree, "an unboxing conversion")
+
+  private def boxed(tpe: TypeMirror): Boolean =
+    tpe != null && tpe.getKind == TypeKind.DECLARED &&
+      (tpe match {
+        case declared: DeclaredType =>
+          declared.asElement match {
+            case owner: TypeElement => LintRedundant.qualifiedBoxes.contains(owner.getQualifiedName.toString)
+            case _                  => false
+          }
+        case _ => false
+      })
 
   private def isTypeName(tree: ExpressionTree): Boolean =
     element(tree).exists(element =>
@@ -574,49 +598,20 @@ private[java] final class DataFlow(context: Context) {
   }
 
   /** The variable an expression names, or the chain of fields it reads from one. */
-  private def variableOf(tree: ExpressionTree): Option[Ref] =
-    stripped(tree) match {
-      case identifier: IdentifierTree =>
-        if identifier.getName.contentEquals("this") then None else element(identifier).filter(trackable).map(Ref(_))
-      case assignment: AssignmentTree => variableOf(assignment.getVariable)
-      case select: MemberSelectTree   =>
-        element(select).filter(el => el.getKind == ElementKind.FIELD && trackable(el)).flatMap { field =>
-          stripped(select.getExpression) match {
-            case owner: IdentifierTree if owner.getName.contentEquals("this") => Some(Ref(field))
-            case owner                                                        =>
-              variableOf(owner).map(ref => Ref(ref.root, ref.fields :+ field))
-          }
-        }
-      case access: ArrayAccessTree =>
-        variableOf(access.getExpression).map { base =>
-          val idx = stripped(access.getIndex) match {
-            case id: IdentifierTree => id.getName.toString
-            case lit: LiteralTree   => lit.getValue.toString
-            case other              => other.toString
-          }
-          Ref(base.root, base.fields, Some(idx))
-        }
-      case _ => None
-    }
+  private def variableOf(tree: ExpressionTree): Option[Ref] = Effects.accessPath(tree, context.elementOf, trackable)
 
   /** Records what a check shows of a variable, which leaves what is known of the fields read through it alone. */
   private def refine(tree: ExpressionTree, env: Env, value: Value): Env =
     variableOf(tree).fold(env)(ref => env + (ref -> value))
-
-  private def stripped(tree: ExpressionTree): ExpressionTree = tree match {
-    case parenthesized: ParenthesizedTree => stripped(parenthesized.getExpression)
-    case other                            => other
-  }
 
   private def evaluate(tree: ExpressionTree, env: Env): (Value, Env) = tree match {
     case parenthesized: ParenthesizedTree => expression(parenthesized.getExpression, env)
 
     case literal: LiteralTree =>
       val value = literal.getKind match {
-        case Tree.Kind.NULL_LITERAL    => Value.Nil
-        case Tree.Kind.STRING_LITERAL  => Value.constant(literal.getValue)
-        case Tree.Kind.BOOLEAN_LITERAL => Value.constant(literal.getValue)
-        case Tree.Kind.CHAR_LITERAL    => Value.constant(literal.getValue.asInstanceOf[Char].toLong)
+        case Tree.Kind.NULL_LITERAL                               => Value.Nil
+        case Tree.Kind.STRING_LITERAL | Tree.Kind.BOOLEAN_LITERAL => Value.constant(literal.getValue)
+        case Tree.Kind.CHAR_LITERAL => Value.constant(literal.getValue.asInstanceOf[Char].toLong)
         case Tree.Kind.INT_LITERAL | Tree.Kind.LONG_LITERAL =>
           Value.constant(literal.getValue.asInstanceOf[Number].longValue)
         case _ => Value.NonNull
@@ -654,7 +649,7 @@ private[java] final class DataFlow(context: Context) {
     case newClass: NewClassTree =>
       val inner       = Option(newClass.getEnclosingExpression).fold(env)(expression(_, env)._2)
       val constructor = element(newClass).collect { case executable: ExecutableElement => executable }
-      val after       = forgetFields(arguments(newClass.getArguments.asScala.toList, constructor, inner))
+      val after       = forgetFields(arguments(Lints.arguments(newClass).toList, constructor, inner))
       if newClass.getClassBody != null then {
         val nonNullCaptures = inner.filter { case (ref, v) =>
           v.nonNull && (ref.root.getKind == ElementKind.LOCAL_VARIABLE || ref.root.getKind == ElementKind.PARAMETER)
@@ -688,7 +683,7 @@ private[java] final class DataFlow(context: Context) {
       val (_, first) = expression(array.getExpression, env)
       use(array.getExpression, "an array")
       val (_, second) = expression(array.getIndex, first)
-      val owner       = element(stripped(array.getExpression))
+      val owner       = element(Lints.unparenthesised(array.getExpression))
       val component   = arrayType(array.getExpression).map(_.getComponentType).orNull
       val value       = variableOf(array).flatMap(second.get).getOrElse {
         owner match {
@@ -705,7 +700,7 @@ private[java] final class DataFlow(context: Context) {
 
     case assignment: AssignmentTree =>
       val (value, afterRight) =
-        stripped(assignment.getVariable) match {
+        Lints.unparenthesised(assignment.getVariable) match {
           case access: ArrayAccessTree =>
             val (_, a) = expression(access.getExpression, env)
             use(access.getExpression, "an array")
@@ -752,8 +747,7 @@ private[java] final class DataFlow(context: Context) {
     case unary: UnaryTree =>
       unary.getKind match {
         case Tree.Kind.LOGICAL_COMPLEMENT =>
-          val (value, whenTrue, whenFalse) = condition(unary, env)
-          (value, join(whenTrue, whenFalse).getOrElse(env))
+          outcome(unary, env)
         case Tree.Kind.PREFIX_INCREMENT | Tree.Kind.PREFIX_DECREMENT | Tree.Kind.POSTFIX_INCREMENT |
             Tree.Kind.POSTFIX_DECREMENT =>
           val (_, after) = expression(unary.getExpression, env)
@@ -795,8 +789,8 @@ private[java] final class DataFlow(context: Context) {
       functions = List(None)
       lambdas = lambda :: lambdas
       lambda.getBody match {
-        case body: ExpressionTree => expression(body, env): Unit
-        case body: StatementTree  => statement(body, Some(env)): Unit
+        case body: ExpressionTree => val _ = expression(body, env)
+        case body: StatementTree  => val _ = statement(body, Some(env))
         case _                    => ()
       }
       targets = saved._1
@@ -806,14 +800,14 @@ private[java] final class DataFlow(context: Context) {
 
     case reference: MemberReferenceTree =>
       if !isTypeName(reference.getQualifierExpression) then {
-        expression(reference.getQualifierExpression, env): Unit
+        val _ = expression(reference.getQualifierExpression, env)
         use(reference.getQualifierExpression, "a method reference")
       }
       (Value.NonNull, env)
 
     case switchTree: SwitchExpressionTree =>
-      val (_, after)   = expression(switchTree.getExpression, env)
-      val (value, out) = switchCases(switchTree.getCases.asScala.toList, after, expressionSwitch = true)
+      val (_, after)      = expression(switchTree.getExpression, env)
+      val (value, out, _) = switchCases(switchTree.getCases.asScala.toList, after)
       (value, out.getOrElse(after))
 
     case _ => (Value.Unknown, env)
@@ -846,32 +840,44 @@ private[java] final class DataFlow(context: Context) {
         refine(select.getExpression, a, Value.NonNull)
       case _ => env
     }
-    val afterArguments = forgetFields(arguments(invocation.getArguments.asScala.toList, executable, afterReceiver))
-    val objects        =
-      executable.exists(method => Option(method.getEnclosingElement).exists(_.toString == "java.util.Objects"))
-    val named = executable.map(_.getSimpleName.toString).getOrElse("")
+    val afterArguments = forgetFields(arguments(Lints.arguments(invocation).toList, executable, afterReceiver))
+    val objects        = executable.exists(inObjects)
+    val named          = executable.map(_.getSimpleName.toString).getOrElse("")
     if objects && named == "requireNonNullElse" then
-      invocation.getArguments.asScala.headOption.foreach(argument =>
+      Lints.arguments(invocation).headOption.foreach(argument =>
         once(invocation)(defaults += Default(invocation, argument))
       )
     val narrowed =
       if objects && named == "requireNonNull" then
-        invocation.getArguments.asScala.headOption.fold(afterArguments)(refine(_, afterArguments, Value.NonNull))
+        Lints.arguments(invocation).headOption.fold(afterArguments)(refine(_, afterArguments, Value.NonNull))
       else afterArguments
     (executable.map(result(invocation, _)).getOrElse(Value.Unknown), narrowed)
   }
 
+  /** Methods whose result the JDK promises to be non-null, which the compiler does not annotate for JSpecify. */
+  private def knownNonNull(method: ExecutableElement): Boolean = {
+    val owner = Option(method.getEnclosingElement).map(_.toString).getOrElse("")
+    val name  = method.getSimpleName.toString
+    (owner == "java.util.Objects" && Set("requireNonNull", "requireNonNullElse", "toString").contains(name)) ||
+    (owner == "java.util.Optional" && name == "of") ||
+    (owner == "java.util.List" && name == "of") ||
+    (owner == "java.util.Set" && name == "of") ||
+    (owner == "java.util.Map" && Set("of", "ofEntries").contains(name)) ||
+    (owner == "java.lang.String" && name == "valueOf")
+  }
+
   /** The value a call returns, by what its declaration and the type arguments of the call say. */
   private def result(invocation: MethodInvocationTree, method: ExecutableElement): Value =
-    if Nullness.knownNonNull(method) then Value.NonNull
+    if knownNonNull(method) then Value.NonNull
     else if method.getModifiers.contains(Modifier.NATIVE) then Value.Unknown
     else if Nullness.hasAnnotation(method, Nullness.Nullable) then Value(Null.Maybe)
     else if Nullness.hasBoundary(method) then
       if method.getReturnType.getKind == TypeKind.TYPEVAR then Value(Null.Maybe) else Value.Unknown
     else if method.getReturnType.getKind == TypeKind.TYPEVAR then {
       val bound = binding(invocation, method)
-      if Nullness.hasAnnotation(method.getReturnType, Nullness.Nullable) then Value(Null.Maybe)
-      else if bound.exists(Nullness.nullableType) || Nullness.nullableType(typeOf(invocation)) then Value(Null.Maybe)
+      if Nullness.hasAnnotation(method.getReturnType, Nullness.Nullable) || bound.exists(Nullness.nullableType) ||
+        Nullness.nullableType(typeOf(invocation))
+      then Value(Null.Maybe)
       else if bound.exists(tpe => tpe.getKind != TypeKind.TYPEVAR) && marked(method) then Value.NonNull
       else Value.Unknown
     } else if Nullness.nullableType(method.getReturnType) then Value(Null.Maybe)
@@ -894,21 +900,25 @@ private[java] final class DataFlow(context: Context) {
         case (_, wildcard: WildcardType)           => Option(wildcard.getExtendsBound).flatMap(unify(parameter, _))
         case _                                     => None
       }
-    method.getParameters.asScala.zip(invocation.getArguments.asScala).iterator.flatMap { (parameter, argument) =>
-      val actual = stripped(argument) match {
+    method.getParameters.asScala.zip(Lints.arguments(invocation)).iterator.flatMap { (parameter, argument) =>
+      val actual = Lints.unparenthesised(argument) match {
         case _: IdentifierTree | _: MemberSelectTree =>
-          element(stripped(argument)).map(_.asType).orElse(Option(typeOf(argument)))
+          element(Lints.unparenthesised(argument)).map(_.asType).orElse(Option(typeOf(argument)))
         case other => Option(typeOf(other))
       }
       actual.flatMap(unify(parameter.asType, _))
     }.nextOption()
   }
 
+  private def outcome(tree: ExpressionTree, env: Env): (Value, Env) = {
+    val (value, whenTrue, whenFalse) = condition(tree, env)
+    (value, join(whenTrue, whenFalse).getOrElse(env))
+  }
+
   private def binaryExpression(binary: BinaryTree, env: Env): (Value, Env) =
     binary.getKind match {
       case Tree.Kind.CONDITIONAL_AND | Tree.Kind.CONDITIONAL_OR | Tree.Kind.EQUAL_TO | Tree.Kind.NOT_EQUAL_TO =>
-        val (value, whenTrue, whenFalse) = condition(binary, env)
-        (value, join(whenTrue, whenFalse).getOrElse(env))
+        outcome(binary, env)
       case kind =>
         val (left, first)  = expression(binary.getLeftOperand, env)
         val (right, after) = expression(binary.getRightOperand, first)
@@ -965,38 +975,32 @@ private[java] final class DataFlow(context: Context) {
         val (value, whenTrue, whenFalse) = condition(unary.getExpression, env)
         (booleanValue(value.constant.collect { case flag: Boolean => !flag }), whenFalse, whenTrue)
 
-      case binary: BinaryTree if binary.getKind == Tree.Kind.CONDITIONAL_AND =>
+      case binary: BinaryTree
+          if binary.getKind == Tree.Kind.CONDITIONAL_AND || binary.getKind == Tree.Kind.CONDITIONAL_OR =>
+        val and                         = binary.getKind == Tree.Kind.CONDITIONAL_AND
+        val absorbing                   = !and
         val (left, leftTrue, leftFalse) = condition(binary.getLeftOperand, env)
-        leftTrue match {
-          case None        => (left, None, leftFalse)
+        val continuing                  = if and then leftTrue else leftFalse
+        continuing match {
+          case None        => (left, leftTrue, leftFalse)
           case Some(entry) =>
             val (right, rightTrue, rightFalse) = condition(binary.getRightOperand, entry)
             val constant                       = (left.constant, right.constant) match {
-              case (Some(false), _) | (_, Some(false)) => Some(false)
-              case (Some(true), Some(true))            => Some(true)
-              case _                                   => None
+              case (Some(`absorbing`), _) | (_, Some(`absorbing`)) => Some(absorbing)
+              case (Some(`and`), Some(`and`))                      => Some(and)
+              case _                                               => None
             }
-            (booleanValue(constant), rightTrue, join(leftFalse, rightFalse))
-        }
-
-      case binary: BinaryTree if binary.getKind == Tree.Kind.CONDITIONAL_OR =>
-        val (left, leftTrue, leftFalse) = condition(binary.getLeftOperand, env)
-        leftFalse match {
-          case None        => (left, leftTrue, None)
-          case Some(entry) =>
-            val (right, rightTrue, rightFalse) = condition(binary.getRightOperand, entry)
-            val constant                       = (left.constant, right.constant) match {
-              case (Some(true), _) | (_, Some(true)) => Some(true)
-              case (Some(false), Some(false))        => Some(false)
-              case _                                 => None
-            }
-            (booleanValue(constant), join(leftTrue, rightTrue), rightFalse)
+            if and then (booleanValue(constant), rightTrue, join(leftFalse, rightFalse))
+            else (booleanValue(constant), join(leftTrue, rightTrue), rightFalse)
         }
 
       case binary: BinaryTree
           if binary.getKind == Tree.Kind.EQUAL_TO || binary.getKind == Tree.Kind.NOT_EQUAL_TO =>
         val equal   = binary.getKind == Tree.Kind.EQUAL_TO
-        val subject = (stripped(binary.getLeftOperand), stripped(binary.getRightOperand)) match {
+        val subject = (
+          Lints.unparenthesised(binary.getLeftOperand),
+          Lints.unparenthesised(binary.getRightOperand)
+        ) match {
           case (left, literal: LiteralTree) if literal.getKind == Tree.Kind.NULL_LITERAL  => Some(left)
           case (literal: LiteralTree, right) if literal.getKind == Tree.Kind.NULL_LITERAL => Some(right)
           case _                                                                          => None
@@ -1009,7 +1013,7 @@ private[java] final class DataFlow(context: Context) {
               case Null.NonNull => Some(!equal)
               case _            => None
             }
-            once(binary)(comparisons += Compare(binary, operand, equal))
+            once(binary)(comparisons += Compare(binary, operand))
             val isNull                = refine(operand, after, Value.Nil)
             val notNull               = refine(operand, after, Value.NonNull)
             val (whenTrue, whenFalse) = if equal then (isNull, notNull) else (notNull, isNull)
@@ -1040,11 +1044,10 @@ private[java] final class DataFlow(context: Context) {
 
       case invocation: MethodInvocationTree
           if element(invocation.getMethodSelect).exists(el =>
-            el.getSimpleName.toString.matches("isNull|nonNull") &&
-              Option(el.getEnclosingElement).exists(_.toString == "java.util.Objects")
+            el.getSimpleName.toString.matches("isNull|nonNull") && inObjects(el)
           ) =>
         val (value, after) = call(invocation, env)
-        val checked        = invocation.getArguments.asScala.headOption
+        val checked        = Lints.arguments(invocation).headOption
         val positive       = element(invocation.getMethodSelect).exists(_.getSimpleName.contentEquals("nonNull"))
         checked.fold((value, Some(after), Some(after))) { operand =>
           val isNull  = refine(operand, after, Value.Nil)

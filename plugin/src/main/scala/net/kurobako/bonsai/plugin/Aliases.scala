@@ -10,6 +10,7 @@ import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.MethodType
 import dotty.tools.dotc.core.Types.PolyType
 import dotty.tools.dotc.core.Types.Type
+import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
 /** Reports leftovers of reshuffling code to satisfy detectors: a private, local or inline method that only calls
@@ -57,7 +58,7 @@ private class Aliases(checks: Checks)(using Context) {
     val parameters = method.termParamss.map(_.map(_.symbol))
     val flat       = parameters.flatten
     if (flat.nonEmpty && !flat.exists(parameter => Trees.byName(parameter) || parameter.is(Flags.HasDefault))) {
-      call(Trees.unwrap(method.rhs), Nil, Nil).foreach { (head, typeArguments, argumentLists) =>
+      call(Calls.peelInlined(method.rhs), Nil, Nil).foreach { (head, typeArguments, argumentLists) =>
         val target = head.symbol
         val same   = argumentLists.size == parameters.size &&
           argumentLists.zip(parameters).forall((arguments, own) =>
@@ -106,7 +107,7 @@ private class Aliases(checks: Checks)(using Context) {
   private def passes(method: tpd.DefDef): Option[Symbol] = {
     val symbol     = method.symbol
     val parameters = method.termParamss.flatten.map(_.symbol)
-    call(Trees.unwrap(method.rhs), Nil, Nil) match {
+    call(Calls.peelInlined(method.rhs), Nil, Nil) match {
       case Some((select: tpd.Select, Nil, List(arguments)))
           if visible(symbol) && arguments.map(_.symbol) == parameters && arguments.forall(_.isInstanceOf[tpd.Ident]) &&
             stable(select) && select.symbol.is(Flags.Method) && select.symbol != symbol &&
@@ -180,7 +181,7 @@ private class Aliases(checks: Checks)(using Context) {
 
     // An argument that is a parameter of a lambda written for the call is how a method becomes a function value.
     def forwarded(argument: tpd.Tree)(using Context): Boolean = {
-      val symbol = Trees.unwrap(argument).symbol
+      val symbol = Calls.peelInlined(argument).symbol
       symbol.exists && symbol.is(Flags.Param) && symbol.owner.isAnonymousFunction
     }
 

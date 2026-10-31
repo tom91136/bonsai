@@ -7,6 +7,7 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.util.Spans.Span
+import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
 private object Memberships {
@@ -36,16 +37,16 @@ private class Memberships(checks: Checks)(using Context) {
   def observe(application: tpd.Apply, repetition: Memberships.Repetition, guarded: Symbol => Boolean): List[Span] = {
     val observed = tested(application).map { (set, elements, value, data) =>
       val shown     = Trees.text(set)
-      val category  = set.tpe.widen.baseType(Iterable).argInfos.headOption.fold("")(_.show)
       val immediate =
         if (bound(value, guarded))
           Some(s"$shown in a guard tests what the pattern binds; match it with pattern alternatives instead")
-        else if (elements.forall(Trees.enumerated(_)))
+        else if (elements.forall(Trees.enumerated(_))) {
+          val category = set.tpe.widen.baseType(Iterable).argInfos.headOption.fold("")(_.show)
           Some(
             s"$shown names a category of $category; make it a member of $category or a match, which checks " +
               "exhaustiveness"
           )
-        else None
+        } else None
       val fallback = Option.when(repetition == Memberships.Repetition.Looped)(
         if (data) s"$shown is a table rebuilt on every iteration; make it a val named for what it holds"
         else s"what does $shown stand for? it is rebuilt and hashed on every iteration; name it as a member or a match"
@@ -78,7 +79,7 @@ private class Memberships(checks: Checks)(using Context) {
           if name.toString == "contains" || name == nme.apply && receiver.tpe.widen.derivesFrom(Set) =>
         constants(receiver).map((receiver, _, value, false)).toList
       case tpd.Apply(function, arguments) =>
-        val receiver   = Trees.selected(function).map(_.qualifier)
+        val receiver   = Calls.selected(function).map(_.qualifier)
         val parameters = Trees.parameters(application)
         arguments.zipWithIndex.flatMap((argument, index) =>
           Option.when(parameters.lift(index).exists(parameter => defn.isFunctionType(parameter.info)))(argument)
@@ -89,7 +90,7 @@ private class Memberships(checks: Checks)(using Context) {
   private def constants(tree: tpd.Tree): Option[List[tpd.Tree]] =
     Trees.built(tree).filter(elements => elements.nonEmpty && elements.forall(Trees.constant(_)))
 
-  private def bound(value: tpd.Tree, guarded: Symbol => Boolean): Boolean = Trees.unwrap(value) match {
+  private def bound(value: tpd.Tree, guarded: Symbol => Boolean): Boolean = Calls.peelInlined(value) match {
     case reference: tpd.Ident => guarded(reference.symbol)
     case _                    => false
   }

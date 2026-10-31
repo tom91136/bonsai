@@ -55,9 +55,6 @@ public final class Javac {
     * it.
     */
   public static String processorPath(List<File> files) {
-    return files.stream()
-      .map(File::getAbsolutePath)
-      .reduce((first, second) -> first + File.pathSeparator + second)
-      .orElse("");
+    return String.join(File.pathSeparator, files.stream().map(File::getAbsolutePath).toList());
   }
 }

@@ -9,26 +9,11 @@ object OptionIdioms {
 
   def positive(value: Int): Boolean = value > 0
 
-  val applied = map(1)
-  val missing = !map.contains(1)
-  val present = map.contains(1)
-  val defined = map.contains(1)
-  val folded = option.map(_ + 1).getOrElse(0)
-  val checked = option.map(_ > 0).getOrElse(false)
-  val contained = option.contains(1)
-  val excluded = !option.contains(1)
-  val nothing = option.isEmpty
-  val something = option.isDefined
-  val itself = option
-  val lastItself = option
+  val plainEmpty = option.isEmpty
   val fromNonEmpty = list.headOption
   val fromEmpty = list.headOption
   val lastFromNonEmpty = list.lastOption
-  val first = list.headOption
-  val last = list.lastOption
   def element(index: Int): Option[Int] = list.lift(index)
-  val head = list.head
-  val tail = list.last
   val updated = { val array = Array(1, 2); array(0) = 3; array }
   def pair(text: String): (String, String) = {
     val parts = text.split("=", 2)
@@ -47,12 +32,6 @@ object OptionIdioms {
     val first   = results(0)
     val second  = results(1)
   }
-  def lone(values: List[Int]): Int = if (values.length > 1) values.head else 0
-  def twice(values: List[Int]): Int = {
-    val first = values.head
-    first + values.head
-  }
-  val lifted = map.get(1)
   val filtered = option.filter(positive(_))
   val value = 3
   val emulated = Some(value).filter(positive(_))
@@ -77,7 +56,6 @@ object OptionIdioms {
   val customIndex = custom(0)
   val mapHead = map.headOption
   val longMap = scala.collection.mutable.LongMap(1L -> "a")
-  val longPresent = longMap.contains(1L)
   val immutableLongMap = scala.collection.immutable.LongMap(1L -> "a")
   val immutableLongPresent = immutableLongMap.get(1L).isDefined
   val intMap = scala.collection.immutable.IntMap(1 -> "a")
@@ -90,6 +68,4 @@ object OptionIdioms {
     def pred: Option[Int]
   }
   def render(value: Int): String = value.toString
-  def render(instruction: Instruction): String =
-    instruction.pred.map(predication => s"${render(predication)} ").getOrElse("")
 }

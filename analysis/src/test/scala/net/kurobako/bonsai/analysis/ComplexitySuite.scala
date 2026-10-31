@@ -1,11 +1,14 @@
 package net.kurobako.bonsai.analysis
 
 class ComplexitySuite extends AnalysisSuite {
-  private lazy val found = {
-    val result = extract(Seq(
-      "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Search) }",
-      "Search.scala" ->
-        """object Search {
+  private def complexities(name: String, source: String) = {
+    val result = extract(program(name, source))
+    Complexity.findings(result.complexities, result.graph.nodes, result.hot)
+  }
+
+  private lazy val found = complexities(
+    "Search",
+    """object Search {
                           |  def pairs(rules: List[Int], facts: List[Int]): Int = rules.count(rule => facts.contains(rule))
                           |  def squares(values: Vector[Int]): Int = values.map(value => values.count(_ == value)).sum
                           |  def linear(values: Vector[Int]): Int = values.map(_ + 1).sum
@@ -29,9 +32,7 @@ class ComplexitySuite extends AnalysisSuite {
           |  def joined(rows: List[Int], keys: List[Int]): Int = rows.map(_ => keys.mkString.length).sum
           |  def arrays(left: Array[Int], right: Array[Int]): Int = left.map(value => right.count(_ == value)).sum
           |}""".stripMargin
-    ))
-    Complexity.findings(result.complexities, result.graph.nodes, result.hot)
-  }
+  )
 
   private given Finding.Level = Finding.Level.Warning
 
@@ -67,11 +68,9 @@ class ComplexitySuite extends AnalysisSuite {
     assertFinding(found, "complexity", "Search.joined is O(|keys| * |rows|)")
   }
 
-  private lazy val bounded = {
-    val result = extract(Seq(
-      "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Bounds) }",
-      "Bounds.scala" ->
-        """object Bounds {
+  private lazy val bounded = complexities(
+    "Bounds",
+    """object Bounds {
           |  def optional(rows: Vector[Int], value: Option[Int]): Int = rows.map(row => value.map(_ + row).sum).sum
           |  def argument(values: Vector[Int]): Int = Math.abs(values.map(value => values.count(_ == value)).sum)
           |  def searched(rows: Vector[Int], keys: Vector[Int]): Int = rows.count(row => keys.contains(row))
@@ -83,9 +82,7 @@ class ComplexitySuite extends AnalysisSuite {
           |    total
           |  }
           |}""".stripMargin
-    ))
-    Complexity.findings(result.complexities, result.graph.nodes, result.hot)
-  }
+  )
 
   test(
     "searches of any sequence, and expensive arguments, count; options, ranges, cheap members and unknown loops do not"
@@ -97,11 +94,9 @@ class ComplexitySuite extends AnalysisSuite {
     )
   }
 
-  private lazy val probed = {
-    val result = extract(Seq(
-      "Main.scala"  -> "object Main { def main(args: Array[String]): Unit = println(Table) }",
-      "Table.scala" ->
-        """object Table {
+  private lazy val probed = complexities(
+    "Table",
+    """object Table {
           |  final class Queue {
           |  private var keys  = Array.ofDim[Long](8)
           |  private var count = 0
@@ -134,9 +129,7 @@ class ComplexitySuite extends AnalysisSuite {
           |  def run(queue: Queue, values: Vector[Long]): Unit = values.foreach(value => queue.add(value))
           |  def load(values: Vector[Long]): Int = values.map(value => values.count(_ == value)).sum
           |}""".stripMargin
-    ))
-    Complexity.findings(result.complexities, result.graph.nodes, result.hot)
-  }
+  )
 
   test("probes of a table that doubles as its occupancy passes a fraction of its capacity are constant") {
     assertNoFinding(probed)(finding => finding.detail.startsWith("Table.run"))
@@ -166,10 +159,10 @@ class ComplexitySuite extends AnalysisSuite {
   }
 
   private val encodings = Seq(
-    "Main.scala"     -> "object Main { def main(args: Array[String]): Unit = println(Declared) }",
+    "Main.scala"     -> "object Main { def main(args: Array[String]): Unit = println(Limited) }",
     "Encoding.scala" -> "class Encoding(val operands: Vector[Int], val modifiers: Vector[Int], val extra: Vector[Int])",
-    "Declared.scala" ->
-      """object Declared {
+    "Limited.scala"  ->
+      """object Limited {
         |  def nested(encoding: Encoding, xs: Vector[Int], ys: Vector[Int]): Int =
         |    encoding.operands.map(operand => xs.map(x => ys.count(_ == x + operand)).sum).sum
         |  def paired(encoding: Encoding, other: Encoding): Int =
@@ -190,13 +183,13 @@ class ComplexitySuite extends AnalysisSuite {
   }
 
   test("a bounded member is a constant, so the unbounded loops of its nest are reported without it") {
-    assertFinding(declared, "complexity", "Declared.nested is O(|xs| * |ys|)")
-    assertFinding(declared, "complexity", "Declared.unbounded is O(|xs| * |ys|)")
+    assertFinding(declared, "complexity", "Limited.nested is O(|xs| * |ys|)")
+    assertFinding(declared, "complexity", "Limited.unbounded is O(|xs| * |ys|)")
     assertNoFinding(declared)(_.detail.contains("operands"))
   }
 
   test("two bounded members in one nest are silent") {
-    assertNoFinding(declared)(_.detail.startsWith("Declared.paired"))
+    assertNoFinding(declared)(_.detail.startsWith("Limited.paired"))
   }
 
   test("a bounded member that no collection reaches is reported as unused") {

@@ -33,16 +33,18 @@ private class Nowarns(checks: Checks)(using Context) {
   // The names the annotation suppresses, with `*` for every check, or nothing if any filter is not a bonsai one.
   private def names(annotation: Annotation): Option[List[String]] =
     annotation.argument(0).collect { case tpd.Literal(Constant(filters: String)) =>
-      filters.split('&').toList.map(_.trim).map {
-        case Message(id) => Some(Option(id).getOrElse("*"))
-        case _           => None
+      filters.split('&').toList.map { filter =>
+        filter.trim match {
+          case Message(id) => Some(Option(id).getOrElse("*"))
+          case _           => None
+        }
       }
     }.filter(filters => filters.nonEmpty && filters.forall(_.isDefined)).map(_.flatten.distinct)
 
   private def report(annotation: Annotation): Unit = names(annotation).foreach { ids =>
-    val tree   = annotation.tree
-    val source = tree.source.content
-    val start  = Iterator.iterate(tree.span.start - 1)(_ - 1).dropWhile(at => at >= 0 && source(at).isWhitespace).next()
+    val tree     = annotation.tree
+    val source   = tree.source.content
+    val start    = source.lastIndexWhere(!_.isWhitespace, tree.span.start - 1)
     val written  = if (start >= 0 && source(start) == '@') start else tree.span.start
     val span     = Span(written, tree.span.end)
     val literals = ids.map(id => if (id == "*") "\"bonsai\"" else s"\"bonsai:$id\"").mkString(", ")

@@ -3,6 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.file.Files
 import java.nio.file.Path
 import net.kurobako.bonsai.java.{Model => JavaModel}
+import scala.collection.mutable
 import scala.util.Try
 import scala.util.matching.Regex
 
@@ -41,10 +42,13 @@ object Modules {
     else {
       val byName  = descriptors.map((_, descriptor) => descriptor.name -> descriptor)
       val outputs = manifest.outputs.sortBy(_.scope == Output.Scope.Test).map(output => output.module -> output.path)
-      def holder(name: String): Option[String] = {
-        val relative = name.replace('.', '/') + ".class"
-        outputs.collectFirst { case (module, path) if Files.exists(path.resolve(relative)) => module }
-      }
+      val holders = mutable.Map.empty[String, Option[String]]
+      def holder(name: String): Option[String] = holders.getOrElseUpdate(
+        name, {
+          val relative = name.replace('.', '/') + ".class"
+          outputs.collectFirst { case (module, path) if Files.exists(path.resolve(relative)) => module }
+        }
+      )
       reflections.flatMap { reflection =>
         for {
           caller       <- nodes.get(reflection.caller)

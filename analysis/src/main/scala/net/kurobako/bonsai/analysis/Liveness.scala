@@ -4,26 +4,19 @@ import scala.collection.mutable
 
 object Liveness {
 
-  /** The rules finding definitions nothing uses, or only tests use. */
-  val Rules: List[String] =
-    List(Finding.Rule.Unused, Finding.Rule.TestOnly, Finding.Rule.UnusedMember, Finding.Rule.TestOnlyMember)
-      .map(_.id)
-
   /** Main definitions unreachable from main entry points, reported at their outermost unreachable enclosure. Generated
     * definitions mirror the table they come from, whose own consumers decide which entries live.
     */
   def findings(graph: Graph): Vector[Finding] = {
     val mainNodes   = graph.nodes.values.filter(node => !node.test && !node.generated).toVector
-    val mainRoots   = graph.roots.filter(name => graph.nodes.get(name).exists(!_.test))
-    val testRoots   = graph.nodes.values.filter(_.test).map(_.name).toSet
-    val fromMain    = reachable(graph.edges, mainRoots)
-    val fromAnyRoot = reachable(graph.edges, mainRoots ++ testRoots)
+    val fromMain    = reachable(graph.edges, mainRoots(graph))
+    val fromAnyRoot = live(graph)
     val findings    = mainNodes.collect {
       case node if !fromAnyRoot(node.name) =>
         node.name ->
-          Finding(Finding.Rule.Unused, node, s"${node.name.split('.').last} is unreachable from every entry point")
+          Finding(Finding.Rule.Unused, node, s"${Finding.simple(node.name)} is unreachable from every entry point")
       case node if !fromMain(node.name) =>
-        node.name -> Finding(Finding.Rule.TestOnly, node, s"${node.name.split('.').last} is reachable only from tests")
+        node.name -> Finding(Finding.Rule.TestOnly, node, s"${Finding.simple(node.name)} is reachable only from tests")
     }.toMap
     findings.values.filterNot { finding =>
       finding.node.outer.flatMap(findings.get).exists(_.rule == finding.rule)
@@ -31,11 +24,11 @@ object Liveness {
   }
 
   /** Nodes reachable from main entry points or from tests. */
-  def live(graph: Graph): Set[String] = {
-    val roots = graph.roots.filter(name => graph.nodes.get(name).exists(!_.test)) ++
-      graph.nodes.values.filter(_.test).map(_.name)
-    reachable(graph.edges, roots)
-  }
+  def live(graph: Graph): Set[String] =
+    reachable(graph.edges, mainRoots(graph) ++ graph.nodes.values.view.collect { case node if node.test => node.name })
+
+  private def mainRoots(graph: Graph): Set[String] =
+    graph.roots.filter(name => graph.nodes.get(name).exists(!_.test))
 
   private[analysis] def reachable(edges: Map[String, Set[String]], roots: Set[String]): Set[String] = {
     val visited = mutable.Set.from(roots)

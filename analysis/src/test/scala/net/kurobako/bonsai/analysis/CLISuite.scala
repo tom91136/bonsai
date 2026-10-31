@@ -2,6 +2,8 @@ package net.kurobako.bonsai.analysis
 
 import java.nio.file.Path
 import munit.FunSuite
+import net.kurobako.bonsai.effects.Kind
+import net.kurobako.bonsai.java.JavaLint
 
 class CLISuite extends FunSuite {
   private def thrown(work: () => Int): Throwable =
@@ -65,9 +67,10 @@ class CLISuite extends FunSuite {
       "var-could-be-val",
       "huge-method",
       "method-limit",
+      "intermediate-collections",
       "purity-regression",
       "effect-policy"
-    )
+    ) ++ JavaLint.chains
     assertEquals(
       CLI.parse(List("--mode", "ci", "--error", "complexity")).map(_.failing),
       Right(strict + "complexity")
@@ -106,7 +109,7 @@ class CLISuite extends FunSuite {
       parsed.map(_.policies),
       Right(Vector(
         Purity.Policy("demo.*.core", Set.empty),
-        Purity.Policy("demo.io", Set(Purity.Kind.Input, Purity.Kind.Output))
+        Purity.Policy("demo.io", Set(Kind.Input, Kind.Output))
       ))
     )
     assertEquals(parsed.map(_.concurrent), Right(Set("demo.Pool.run")))

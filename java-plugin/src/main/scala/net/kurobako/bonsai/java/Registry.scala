@@ -23,7 +23,7 @@ final class Registry(named: Option[Int] = None) {
   /** A method that has one trait, such as the value it returns or that its body is empty, or an abstract method, which
     * the end of the compilation reports if every method that overrides it has the trait too.
     */
-  final case class Declared(
+  private final case class Declared(
       kind: String,
       method: ExecutableElement,
       value: Option[String],
@@ -44,7 +44,7 @@ final class Registry(named: Option[Int] = None) {
       method: ExecutableElement,
       value: Option[String],
       report: String => Model.Lint,
-      suppressed: Set[String] = Set.empty
+      suppressed: Set[String]
   ): Unit =
     declared += Declared(kind, method, value, report, suppressed)
 
@@ -53,13 +53,13 @@ final class Registry(named: Option[Int] = None) {
     */
   def agreed(kind: String, detail: String => String): Vector[Model.Lint] = {
     val kindId = if (kind == Registry.Empty) JavaLint.EmptyMethod.id else JavaLint.SameReturnValue.id
-    declared.toVector.filter(d => d.kind == kind && !d.suppressed("*") && !d.suppressed(kindId)).flatMap { found =>
+    declared.view.filter(d => d.kind == kind && !d.suppressed("*") && !d.suppressed(kindId)).flatMap { found =>
       val others = overriders.get((kind, found.method)).fold(Vector.empty[Option[String]])(_.toVector)
       (found.value.toVector.map(Option(_)) ++ others).distinct match {
         case Vector(Some(value)) if found.value.isDefined || others.nonEmpty => Some(found.report(detail(value)))
         case _                                                               => None
       }
-    }
+    }.toVector
   }
 }
 

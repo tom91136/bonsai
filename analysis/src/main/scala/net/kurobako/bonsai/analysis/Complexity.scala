@@ -1,5 +1,8 @@
 package net.kurobako.bonsai.analysis
 
+import net.kurobako.bonsai.lifting.Globs
+import scala.collection.mutable
+
 /** Methods whose time or allocation grows faster than linearly in the sizes of collections they reach. */
 object Complexity {
 
@@ -7,6 +10,23 @@ object Complexity {
     * declares; `reason` says why.
     */
   case class Bounded(member: String, max: Int, reason: String)
+
+  /** The declared sizes of members and parameters, of both languages, and the entries that matched one. */
+  class Declared(bounded: Vector[Bounded]) {
+    private val globs   = bounded.map(entry => Globs.qualifiedNames(entry.member) -> entry)
+    private val reached = mutable.Set.empty[Bounded]
+
+    /** The size declared for a member or parameter `name` of `owner`, from the entries that match either. */
+    def size(name: String, owner: String): Option[Polynomial] = {
+      val hits = globs.collect {
+        case (glob, entry) if Globs.matches(glob, name) || Globs.matches(glob, owner) => entry
+      }
+      reached ++= hits
+      hits.minByOption(_.max).map(entry => Polynomial.constant(entry.max))
+    }
+
+    def unmatched: Vector[Bounded] = bounded.filterNot(reached)
+  }
 
   /** A product of sizes with their powers, and of logarithms of sizes. */
   case class Term(sizes: Vector[(String, Int)], logs: Vector[String]) {

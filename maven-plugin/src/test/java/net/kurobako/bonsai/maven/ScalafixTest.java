@@ -19,10 +19,8 @@ class ScalafixTest {
   @TempDir
   Path root;
 
-  private Configuration configuration(String contents) throws IOException {
-    Path file = root.resolve(".bonsai.conf");
-    Files.writeString(file, contents);
-    return Configuration.read(file, "demo");
+  private Configuration configuration(String... lines) throws IOException {
+    return Configuration.parse(List.of(lines));
   }
 
   private Ids ids() throws IOException {
@@ -37,7 +35,7 @@ class ScalafixTest {
 
   @Test
   void writesTheRulesThatRun() throws IOException {
-    Configuration configuration = configuration("disabled = [OptionIdioms]\n");
+    Configuration configuration = configuration("disabled\tOptionIdioms");
 
     String scalafix = Scalafix.configuration(configuration, ids());
 
@@ -49,7 +47,7 @@ class ScalafixTest {
 
   @Test
   void theBansOfTheDisableSyntaxRuleAreOn() throws IOException {
-    Configuration configuration = configuration("");
+    Configuration configuration = configuration();
 
     String scalafix = Scalafix.configuration(configuration, ids());
 
@@ -59,7 +57,7 @@ class ScalafixTest {
 
   @Test
   void theBansAreOffWhenTheRuleIsLeftOut() throws IOException {
-    Configuration configuration = configuration("disabled = [DisableSyntax]\n");
+    Configuration configuration = configuration("disabled\tDisableSyntax");
 
     String scalafix = Scalafix.configuration(configuration, ids());
 
@@ -69,7 +67,7 @@ class ScalafixTest {
 
   @Test
   void aBanLeftOutOnItsOwnIsOff() throws IOException {
-    Configuration configuration = configuration("disabled = [DisableSyntax.noVars]\n");
+    Configuration configuration = configuration("disabled\tDisableSyntax.noVars");
 
     String scalafix = Scalafix.configuration(configuration, ids());
 

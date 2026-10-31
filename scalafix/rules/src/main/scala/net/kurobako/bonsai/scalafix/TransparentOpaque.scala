@@ -16,13 +16,16 @@ class TransparentOpaque extends SyntacticRule("TransparentOpaque") {
       case owner: Defn.Object => definitions.members(owner.templ).collect { case method: Defn.Def => method }
       case _                  => Nil
     }
-    val extensions = stats.collect { case extension: Defn.ExtensionGroup => extension }
+    val forwarded = methods.filter(forwards).view.flatMap(_.decltpe).map(_.toString).toSet
+    val unwrapped = stats.flatMap {
+      case extension: Defn.ExtensionGroup => unwrapping(extension)
+      case _                              => None
+    }.toSet
     stats.collect {
       case alias: Defn.Type if definitions.has[Mod.Opaque](alias.mods) =>
         val name    = alias.name.value
-        val wraps   = methods.exists(method => forwards(method) && method.decltpe.exists(_.toString == name))
-        val unwraps = methods.exists(method => forwards(method) && method.decltpe.exists(_.toString != name)) ||
-          extensions.exists(unwrapping(_, name))
+        val wraps   = forwarded(name)
+        val unwraps = forwarded.size > (if (wraps) 1 else 0) || unwrapped(name)
         Option.when(wraps && unwraps)(
           lint(
             "transparent-opaque",
@@ -38,21 +41,23 @@ class TransparentOpaque extends SyntacticRule("TransparentOpaque") {
     case _                                  => false
   }
 
-  private def unwrapping(extension: Defn.ExtensionGroup, name: String): Boolean =
-    extension.paramClauseGroup.toList.flatMap(_.paramClauses).flatMap(_.values) match {
-      case List(receiver) if receiver.decltpe.exists(_.toString == name) =>
+  private def unwrapping(extension: Defn.ExtensionGroup): Option[String] =
+    extension.paramClauseGroup.toList.flatMap(_.paramClauses.flatMap(_.values)) match {
+      case List(receiver) =>
         val bodies = extension.body match {
           case method: Defn.Def  => List(method)
           case Term.Block(stats) => stats.collect { case method: Defn.Def => method }
           case _                 => Nil
         }
-        bodies.exists(method =>
-          definitions.parameters(method).isEmpty &&
-            (method.body match {
-              case Term.Name(value) => value == receiver.name.value
-              case _                => false
-            })
+        receiver.decltpe.map(_.toString).filter(_ =>
+          bodies.exists(method =>
+            definitions.parameters(method).isEmpty &&
+              (method.body match {
+                case Term.Name(value) => value == receiver.name.value
+                case _                => false
+              })
+          )
         )
-      case _ => false
+      case _ => None
     }
 }

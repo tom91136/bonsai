@@ -7,6 +7,7 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.NoSymbol
 import dotty.tools.dotc.core.Symbols.Symbol
+import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
 /** Reports a private case class that is built at one call, passed to a method, and unpacked there at once into its
@@ -58,7 +59,7 @@ private class Bundles(checks: Checks)(using Context) {
     }
     val accessors                            = cls.caseAccessors.toSet
     val holders                              = mutable.Set.empty[Symbol]
-    def unpacked(value: tpd.ValDef): Boolean = Trees.unwrap(value.rhs) match {
+    def unpacked(value: tpd.ValDef): Boolean = Calls.peelInlined(value.rhs) match {
       case select: tpd.Select if select.qualifier.symbol == parameter => accessors(select.symbol)
       case select: tpd.Select                                         => holders(select.qualifier.symbol)
       case tpd.Match(selector, _) if selector.symbol == parameter     => holders += value.symbol: Unit; true
@@ -93,11 +94,10 @@ private class Bundles(checks: Checks)(using Context) {
       case method: tpd.DefDef if method.symbol.is(Flags.Synthetic) => ()
       case method: tpd.DefDef                                      =>
         mention(method.tpt.tpe)
-        method.termParamss.flatten.foreach(parameter =>
-          candidates.find(_ == parameter.tpt.tpe.widen.classSymbol).foreach(cls =>
-            consumers(cls) = consumers.getOrElse(cls, Nil) :+ (method -> parameter)
-          )
-        )
+        method.termParamss.flatten.foreach { parameter =>
+          val cls = parameter.tpt.tpe.widen.classSymbol
+          if (candidates(cls)) consumers(cls) = consumers.getOrElse(cls, Nil) :+ (method -> parameter)
+        }
         traverseChildren(tree)
       case value: tpd.ValDef =>
         mention(value.tpt.tpe)
@@ -106,7 +106,7 @@ private class Bundles(checks: Checks)(using Context) {
         val cls = built(application)
         if (candidates(cls)) constructions(cls) = constructions.getOrElse(cls, Nil) :+ application
         application.args.foreach(argument =>
-          Trees.unwrap(argument) match {
+          Calls.peelInlined(argument) match {
             case inner: tpd.Apply if candidates(built(inner)) => passed(inner) = application.fun.symbol
             case _                                            => ()
           }

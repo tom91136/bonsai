@@ -8,10 +8,10 @@ import scala.jdk.CollectionConverters.*
 /** What the JSpecify annotations of the code say about the nullness of its declarations and types. */
 private[java] object Nullness {
 
-  val Nullable     = "org.jspecify.annotations.Nullable"
-  val NullMarked   = "org.jspecify.annotations.NullMarked"
-  val NullUnmarked = "org.jspecify.annotations.NullUnmarked"
-  val Boundary     = "NullableBoundary"
+  val Nullable             = "org.jspecify.annotations.Nullable"
+  private val NullMarked   = "org.jspecify.annotations.NullMarked"
+  private val NullUnmarked = "org.jspecify.annotations.NullUnmarked"
+  private val Boundary     = "NullableBoundary"
 
   def hasAnnotation(target: AnnotatedConstruct, name: String): Boolean =
     target.getAnnotationMirrors.asScala.exists(annotation => annotationName(annotation) == name)
@@ -49,9 +49,9 @@ private[java] object Nullness {
     else if element.asType.getKind == TypeKind.ARRAY then nullableType(element.asType)
     else hasAnnotation(element, Nullable) || nullableType(element.asType)
 
-  /** Whether the method says its result may be null. */
-  def nullableMethod(method: ExecutableElement): Boolean =
-    hasAnnotation(method, Nullable) || hasSimpleName(method, Boundary) || nullableType(method.getReturnType)
+  /** Whether the method says its result is never null. */
+  def nonNullMethod(method: ExecutableElement): Boolean =
+    !hasSimpleName(method, Boundary) && !nullableResult(method)
 
   /** Whether the method declares a nullable result itself, which a boundary annotation does not: it only says that the
     * method meets values the scope cannot vouch for.
@@ -85,38 +85,4 @@ private[java] object Nullness {
   /** Whether a parameter of a null-marked scope must be given a value that is not null. */
   def nonNullParameter(parameter: VariableElement): Boolean =
     !nullableElement(parameter) && marked(parameter)
-
-  /** Methods whose result the JDK promises to be non-null, which the compiler does not annotate for JSpecify. */
-  def knownNonNull(method: ExecutableElement): Boolean = {
-    val owner = Option(method.getEnclosingElement).map(_.toString).getOrElse("")
-    val name  = method.getSimpleName.toString
-    (owner == "java.util.Objects" && Set("requireNonNull", "requireNonNullElse", "toString").contains(name)) ||
-    (owner == "java.util.Optional" && name == "of") ||
-    (owner == "java.util.List" && name == "of") ||
-    (owner == "java.util.Set" && name == "of") ||
-    (owner == "java.util.Map" && Set("of", "ofEntries").contains(name)) ||
-    (owner == "java.lang.String" && name == "valueOf")
-  }
-
-  /** Whether the type is a box of a primitive. */
-  def boxed(tpe: TypeMirror): Boolean =
-    tpe != null && tpe.getKind == TypeKind.DECLARED &&
-      (tpe match {
-        case declared: DeclaredType =>
-          declared.asElement match {
-            case owner: TypeElement =>
-              Set(
-                "java.lang.Integer",
-                "java.lang.Long",
-                "java.lang.Short",
-                "java.lang.Byte",
-                "java.lang.Character",
-                "java.lang.Boolean",
-                "java.lang.Float",
-                "java.lang.Double"
-              ).contains(owner.getQualifiedName.toString)
-            case _ => false
-          }
-        case _ => false
-      })
 }

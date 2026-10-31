@@ -23,7 +23,7 @@ object Designs {
       receiving: Boolean,
       test: Boolean
   ) {
-    def short: String = name.split('.').last
+    def short: String = Finding.simple(name)
   }
 
   /** A transparent type alias beside an object of the same name holding `operations` methods; `tupled` when it names a
@@ -40,7 +40,6 @@ object Designs {
   // Fewer methods are a coincidence of naming rather than a design.
   private val MinimumFamily = 3
   private val Shown         = 4
-  private val Width         = "[0-9]+".r
   private val Widths        = "#+".r
 
   def findings(model: Model, nodes: Map[String, Node]): Vector[Finding] =
@@ -53,14 +52,15 @@ object Designs {
       .flatMap { (owner, members) =>
         val firsts = members.map(_.first).distinct
         firsts match {
-          case Vector(Some(tpe)) if members.size > 1 && nodes.contains(tpe) && plural(short(owner), short(tpe)) =>
+          case Vector(Some(tpe))
+              if members.size > 1 && nodes.contains(tpe) && plural(Finding.simple(owner), Finding.simple(tpe)) =>
             Finding.at(
               nodes,
               members.head.node,
               Finding.Rule.DetachedCompanion,
-              s"object ${short(owner)} holds ${members.size} methods that take ${article(short(tpe))} first " +
+              s"object ${Finding.simple(owner)} holds ${members.size} methods that take ${article(Finding.simple(tpe))} first " +
                 s"(${Finding.listed(members.map(_.short).distinct.sorted, Shown)}); make them members or extension methods in " +
-                s"the companion of ${short(tpe)}",
+                s"the companion of ${Finding.simple(tpe)}",
               onlyTests = members.forall(_.test)
             )
           case _ => None
@@ -71,28 +71,28 @@ object Designs {
     owner == s"${tpe}s" || owner == s"${tpe}es" || tpe.endsWith("y") && owner == s"${tpe.dropRight(1)}ies"
 
   private def aliased(aliases: Vector[Alias], nodes: Map[String, Node]): Vector[Finding] =
-    aliases.filter(_.operations > 0).flatMap { alias =>
+    aliases.view.filter(_.operations > 0).flatMap { alias =>
       val element = if (alias.tupled) ", with a case class for the elements its tuples stand for" else ""
       Finding.at(
         nodes,
         alias.node,
         Finding.Rule.AliasWithOperations,
-        s"type ${short(alias.name)} = ${alias.target} has ${alias.operations} " +
+        s"type ${Finding.simple(alias.name)} = ${alias.target} has ${alias.operations} " +
           s"${if (alias.operations == 1) "operation" else "operations"} in an object of its name; " +
           s"make it a class or an opaque type that holds them$element"
       )
-    }
+    }.toVector
 
   /** Families of functions in one object that call nothing but the parameter they take first. */
   private def receivers(methods: Vector[Method], nodes: Map[String, Node]): Vector[Finding] =
     methods.filter(_.receiving).groupBy(method => (method.owner, method.first)).toVector.sortBy(_._1._1).flatMap {
       case ((owner, Some(tpe)), members) if members.size >= MinimumFamily =>
-        val owned = if (nodes.contains(tpe)) s"members of ${short(tpe)} or " else ""
+        val owned = if (nodes.contains(tpe)) s"members of ${Finding.simple(tpe)} or " else ""
         Finding.at(
           nodes,
           members.head.node,
           Finding.Rule.ReceiverParameter,
-          s"${members.size} methods of ${short(owner)} take ${article(short(tpe))} first and only call it " +
+          s"${members.size} methods of ${Finding.simple(owner)} take ${article(Finding.simple(tpe))} first and only call it " +
             s"(${Finding.listed(members.map(_.short).distinct.sorted, Shown)}); make them ${owned}extension methods of it",
           onlyTests = members.forall(_.test)
         )
@@ -101,8 +101,10 @@ object Designs {
 
   /** Sibling methods named and typed alike but for a width, one per width where one generic method would do. */
   private def numbered(methods: Vector[Method], nodes: Map[String, Node]): Vector[Finding] =
-    methods.filter(method => Width.findAllIn(method.short).size == 1)
-      .groupBy(method => (method.owner, Width.replaceAllIn(method.short, "#"))).toVector.sortBy(_._1).flatMap {
+    methods.filter(method => Finding.Numbers.findAllIn(method.short).size == 1)
+      .groupBy(method => (method.owner, Finding.Numbers.replaceAllIn(method.short, "#"))).toVector.sortBy(
+        _._1
+      ).flatMap {
         (_, members) =>
           val shapes = members.map(method => (method.parameters :+ method.result).map(unsized(_)))
           // Methods taking the same parameters cannot be overloads of one another, and those alike in body take the
@@ -132,8 +134,6 @@ object Designs {
     }._2.mkString
     Widths.replaceAllIn(marked, "#")
   }
-
-  private def short(name: String): String = name.split('.').last
 
   private def article(word: String): String = if ("AEIOUaeiou".contains(word.head)) s"an $word" else s"a $word"
 }

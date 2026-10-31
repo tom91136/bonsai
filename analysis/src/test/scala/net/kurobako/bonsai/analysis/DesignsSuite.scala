@@ -7,7 +7,7 @@ class DesignsSuite extends AnalysisSuite {
   }
 
   private def of(found: Vector[Finding], rule: Finding.Rule): Vector[String] =
-    found.filter(_.rule == rule).map(_.detail.takeWhile(_ != ';')).sorted
+    found.view.collect { case finding if finding.rule == rule => finding.detail.takeWhile(_ != ';') }.toVector.sorted
 
   test("an object named for a type whose methods all take it first belongs in the type's companion") {
     val found = findings(
@@ -61,7 +61,8 @@ class DesignsSuite extends AnalysisSuite {
           |type Word = Word.Type
           |object Word extends Newtype[Int] { def zero: Type = wrap(0) }""".stripMargin
     )
-    val aliased = found.filter(_.rule == Finding.Rule.AliasWithOperations).map(_.detail).sorted
+    val aliased =
+      found.collect { case finding if finding.rule == Finding.Rule.AliasWithOperations => finding.detail }.sorted
     assertEquals(aliased.size, 3, aliased.mkString("\n"))
     assert(
       aliased.exists(detail => detail.startsWith("type Plain") && !detail.contains("case class")),

@@ -7,7 +7,7 @@ import net.kurobako.bonsai.java.JavaLint
 class LintIdsSuite extends FunSuite {
 
   /** The ids of the lints of the Java code, which the analysis holds a rule of every one of them. */
-  private val lintIds: Set[String] = JavaLint.values.map(_.id).toSet
+  private val lintIds: Set[String] = JavaLint.ids
 
   /** The ids of the rules of the analysis. */
   private val ruleIds: Array[String] = Finding.Rule.values.map(_.id)
@@ -18,7 +18,7 @@ class LintIdsSuite extends FunSuite {
   }
 
   test("the ids of the rules are distinct, so that the id of a lint is the id of no other rule") {
-    assertEquals(ruleIds.distinct.size, ruleIds.size)
+    assertEquals(ruleIds.distinct.length, ruleIds.length)
   }
 
   test("every rule of a lint has a lint of its own") {

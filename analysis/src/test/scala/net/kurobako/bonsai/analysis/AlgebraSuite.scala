@@ -61,8 +61,9 @@ class AlgebraSuite extends AnalysisSuite {
           |case class Right(a: Int, b: String, c: Long)""".stripMargin
     ))
     def shapes(intended: Intended) =
-      Algebra.findings(result.algebra, result.graph.nodes, intended).filter(_.rule == Finding.Rule.DuplicateShape)
-        .map(_.detail.takeWhile(_ != ':'))
+      Algebra.findings(result.algebra, result.graph.nodes, intended).collect {
+        case finding if finding.rule == Finding.Rule.DuplicateShape => finding.detail.takeWhile(_ != ':')
+      }
     assertEquals(shapes(Intended()).size, 2)
     assertEquals(shapes(Intended(Vector("bits.Left" -> "bits.Right"))).size, 1)
     assertEquals(shapes(Intended(Vector("bits.Right" -> "bits.Left"))).size, 1)
@@ -113,7 +114,7 @@ class AlgebraSuite extends AnalysisSuite {
         "A.scala" -> "package foo\ncase class PublicA(offset: Int, width: Int)",
         "B.scala" -> "package bar\ncase class PublicB(offset: Int, width: Int)"
       ),
-      library = true
+      libraries = Set("m")
     )
     val publicFound =
       Algebra.findings(publicResult.algebra, publicResult.graph.nodes).filter(_.rule == Finding.Rule.DuplicateShape)
@@ -350,14 +351,18 @@ class AlgebraSuite extends AnalysisSuite {
 
   private val int = atom("Int")
 
-  private def node(key: String, test: Boolean = false, generated: Boolean = false): Node =
+  private enum Origin {
+    case Handwritten, Generated, Test
+  }
+
+  private def node(key: String, origin: Origin = Origin.Handwritten): Node =
     Node(
       key,
       "m",
-      if (test) Output.Scope.Test else Output.Scope.Main,
+      if (origin == Origin.Test) Output.Scope.Test else Output.Scope.Main,
       s"$key.scala",
       line = 1,
-      generated = generated,
+      generated = origin == Origin.Generated,
       exported = false,
       outer = None
     )
@@ -391,13 +396,13 @@ class AlgebraSuite extends AnalysisSuite {
     found.map(finding => finding.detail -> finding.level)
 
   test("duplicate shapes start at two fields, and from five fields regardless of names") {
-    def twins(name: String, size: Int, renamed: Boolean) = Vector(
+    def twins(name: String, size: Int, rightNames: String = "abcdef") = Vector(
       caseClass(s"left.$name", ints("abcdef".take(size))),
-      caseClass(s"right.$name", ints((if (renamed) "uvwxyz" else "abcdef").take(size)))
+      caseClass(s"right.$name", ints(rightNames.take(size)))
     )
     val found = analyse(model(products =
-      twins("One", 1, renamed = false) ++ twins("Two", 2, renamed = false) ++ twins("Four", 4, renamed = true) ++
-        twins("Five", 5, renamed = true) ++ twins("Six", 6, renamed = true)
+      twins("One", 1) ++ twins("Two", 2) ++ twins("Four", 4, "uvwxyz") ++ twins("Five", 5, "uvwxyz") ++
+        twins("Six", 6, "uvwxyz")
     ))
     assertEquals(
       shown(found),
@@ -450,7 +455,7 @@ class AlgebraSuite extends AnalysisSuite {
           caseClass("c.Name", ints("xy"))
         )
       ),
-      node("c.Name", test = true)
+      node("c.Name", Origin.Test)
     )
     assertEquals(
       shown(found),
@@ -477,8 +482,8 @@ class AlgebraSuite extends AnalysisSuite {
     )
     val sum = Algebra.Sum("Op", "Op", variants)
     assertEquals(
-      shown(analyse(model(sums = Vector(sum)), node("Op", generated = true))),
-      shown(analyse(model(sums = Vector(sum)), node("Op", generated = false)))
+      shown(analyse(model(sums = Vector(sum)), node("Op", Origin.Generated))),
+      shown(analyse(model(sums = Vector(sum)), node("Op")))
     )
   }
 
@@ -490,15 +495,15 @@ class AlgebraSuite extends AnalysisSuite {
       s"$group$index",
       Vector(field(s"${group}x"), field(s"${group}y"), field("own", atom(s"$group$index")))
     )
-    def factors(generated: Boolean) =
-      analyse(model(sums = Vector(Algebra.Sum("S", "S", variants))), node("S", generated = generated)).map(_.detail)
+    def factors(origin: Origin) =
+      analyse(model(sums = Vector(Algebra.Sum("S", "S", variants))), node("S", origin)).map(_.detail)
     assertEquals(
-      factors(generated = true),
+      factors(Origin.Generated),
       Vector("p", "q", "r").map(group =>
         s"S: 3 of 12 cases share (${group}x: Int, ${group}y: Int): ${group}1, ${group}2, ${group}3"
       )
     )
-    assertEquals(factors(generated = true), factors(generated = false))
+    assertEquals(factors(Origin.Generated), factors(Origin.Handwritten))
   }
 
   test("common factors over mostly the same alternatives are reported once") {
@@ -522,11 +527,11 @@ class AlgebraSuite extends AnalysisSuite {
     val cases =
       Vector("V1", "V2", "V3").map(name => Algebra.Variant(name, ints("mpabc") :+ field("own", atom(name)))) :+
         Algebra.Variant("V4", ints("mp"))
-    val sum                         = Algebra.Sum("S", "S", cases)
-    def factors(generated: Boolean) = analyse(model(sums = Vector(sum)), node("S", generated = generated))
-      .filter(_.rule == Finding.Rule.CommonFactor).map(_.detail)
-    assertEquals(factors(generated = true), factors(generated = false))
-    assert(factors(generated = true).contains("S: 4 of 4 cases share (m: Int, p: Int): V1, V2, V3, V4"))
+    val sum                     = Algebra.Sum("S", "S", cases)
+    def factors(origin: Origin) = analyse(model(sums = Vector(sum)), node("S", origin))
+      .collect { case finding if finding.rule == Finding.Rule.CommonFactor => finding.detail }
+    assertEquals(factors(Origin.Generated), factors(Origin.Handwritten))
+    assert(factors(Origin.Generated).contains("S: 4 of 4 cases share (m: Int, p: Int): V1, V2, V3, V4"))
   }
 
   test("the types of different newtypes, and cases of sums told apart by name, are no duplicate shape") {
@@ -544,7 +549,7 @@ class AlgebraSuite extends AnalysisSuite {
           |case class Span(first: Ids.Region.Type, last: Ids.Region.Type, step: Ids.Region.Type)""".stripMargin
     )
     assertEquals(
-      found.filter(_.rule == Finding.Rule.DuplicateShape).map(_.detail),
+      found.collect { case finding if finding.rule == Finding.Rule.DuplicateShape => finding.detail },
       Vector("2 types with the same field names of shape Ids.Region.Type^3: Range, Span")
     )
   }
@@ -614,6 +619,39 @@ class AlgebraSuite extends AnalysisSuite {
     )
   }
 
+  test("a flag is not redundant while a construction leaves it or the option unknown") {
+    import Algebra.Argument.*
+    val done  = field("done", constant(2), Algebra.Kind.Flag)
+    val value = field("value", One + a, Algebra.Kind.Optional)
+    assertEquals(
+      constructed(done, value)(Vector(True, Absent), Vector(False, Present), Vector(Unknown, Present)),
+      Vector.empty
+    )
+    assertEquals(
+      constructed(done, value)(Vector(True, Absent), Vector(False, Present), Vector(True, Unknown)),
+      Vector.empty
+    )
+  }
+
+  test("a flag is determined by every option that matches or negates it, in field order") {
+    import Algebra.Argument.*
+    val done    = field("done", constant(2), Algebra.Kind.Flag)
+    val same    = field("same", One + a, Algebra.Kind.Optional)
+    val negated = field("negated", One + b, Algebra.Kind.Optional)
+    val other   = field("other", One + a * b, Algebra.Kind.Optional)
+    assertEquals(
+      constructed(done, same, negated, other)(
+        Vector(True, Present, Absent, Present),
+        Vector(False, Absent, Present, Present),
+        Vector(True, Present, Absent, Absent)
+      ),
+      Vector(
+        "Load.done is determined by Load.same; 3 of 3 constructions determined",
+        "Load.done is determined by Load.negated; 3 of 3 constructions determined"
+      )
+    )
+  }
+
   test("a field a sum declares as an accessor is no common factor, which the cases implement") {
     val declared = findings(
       "Typed.scala" ->
@@ -625,7 +663,9 @@ class AlgebraSuite extends AnalysisSuite {
           |}""".stripMargin
     )
     assertEquals(
-      declared.filter(_.rule.id == "common-factor").map(_.detail).filter(_.contains("id: Int")),
+      declared.collect { case finding if finding.rule.id == "common-factor" => finding.detail }.filter(_.contains(
+        "id: Int"
+      )),
       Vector.empty
     )
     val undeclared = findings(

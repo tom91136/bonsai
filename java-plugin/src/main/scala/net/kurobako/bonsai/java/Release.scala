@@ -25,7 +25,7 @@ object Release {
   )
 
   /** The newest release whose class the code can see, or 8 when it can see none of them. */
-  def probe(context: Context): Int =
+  private def probe(context: Context): Int =
     Markers.foldLeft(8) { case (found, (release, marker)) =>
       val (name, member) = marker.span(_ != '#')
       val present        = Option(context.elements.getTypeElement(name)).exists { tpe =>
@@ -35,9 +35,6 @@ object Release {
       if present then release else found
     }
 
-  /** The release the code is compiled for. */
-  def of(context: Context): Int = context.registry.release(probe(context))
-
   /** Whether the code may use what the release introduced. */
-  def atLeast(context: Context, release: Int): Boolean = of(context) >= release
+  def atLeast(context: Context, release: Int): Boolean = context.registry.release(probe(context)) >= release
 }

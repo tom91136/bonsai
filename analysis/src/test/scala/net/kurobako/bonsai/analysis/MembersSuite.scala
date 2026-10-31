@@ -52,7 +52,7 @@ class MembersSuite extends AnalysisSuite {
       )
     )
     assertEquals(
-      found.filter(_.rule == Finding.Rule.UnreadField).map(_.detail).sorted,
+      found.collect { case finding if finding.rule == Finding.Rule.UnreadField => finding.detail }.sorted,
       Vector(
         "Packed.control is a field nothing reads; remove it, or read it",
         "Packed.fourth is a field nothing reads; remove it, or read it",
@@ -64,6 +64,45 @@ class MembersSuite extends AnalysisSuite {
         "Tagged.tag is a field nothing reads; remove it, or read it",
         "Wrapper.unused is a field nothing reads; remove it, or read it"
       ).sorted
+    )
+  }
+
+  test(
+    "fields of case classes collected into buffers and read by projection are unread when no projection names them"
+  ) {
+    val found = findings(
+      Seq(
+        entry("println(demo.Flow.run().size)"),
+        "Flow.scala" ->
+          """package demo
+            |import scala.collection.mutable
+            |object Flow {
+            |  final case class Return(tree: AnyRef, expression: String, method: Option[String])
+            |  final case class Compare(tree: AnyRef, subject: String, equal: Boolean)
+            |  final case class Variant(name: String, fields: Vector[String])
+            |  final case class Kept(tree: AnyRef, subject: String)
+            |  def run(): Vector[String] = {
+            |    val returns     = mutable.ArrayBuffer.empty[Return]
+            |    val comparisons = mutable.ArrayBuffer.empty[Compare]
+            |    val kept        = mutable.ArrayBuffer.empty[Kept]
+            |    returns += Return("a", "x", None)
+            |    comparisons += Compare("b", "y", true)
+            |    kept += Kept("c", "z")
+            |    val variants = Vector(Variant("v", Vector.empty))
+            |    returns.map(r => r.expression + r.method.size).toVector ++ comparisons.map(_.subject) ++
+            |      variants.map(_.name) ++ kept.map(k => k.tree.toString + k.subject)
+            |  }
+            |}""".stripMargin
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnreadField => finding.detail }.sorted,
+      Vector(
+        "Compare.equal is a field nothing reads; remove it, or read it",
+        "Compare.tree is a field nothing reads; remove it, or read it",
+        "Return.tree is a field nothing reads; remove it, or read it",
+        "Variant.fields is a field nothing reads; remove it, or read it"
+      )
     )
   }
 
@@ -90,7 +129,7 @@ class MembersSuite extends AnalysisSuite {
       )
     )
     assertEquals(
-      found.filter(_.rule == Finding.Rule.UnreadField).map(_.detail),
+      found.collect { case finding if finding.rule == Finding.Rule.UnreadField => finding.detail },
       Vector("Silent.dropped is a field nothing reads; remove it, or read it")
     )
   }
@@ -135,7 +174,7 @@ class MembersSuite extends AnalysisSuite {
       )
     )
     assertEquals(
-      found.filter(_.rule == Finding.Rule.UnreadField).map(_.detail).sorted,
+      found.collect { case finding if finding.rule == Finding.Rule.UnreadField => finding.detail }.sorted,
       Vector(
         "Plain.a is a field nothing reads; remove it, or read it",
         "Plain.b is a field nothing reads; remove it, or read it",
@@ -195,7 +234,7 @@ class MembersSuite extends AnalysisSuite {
           |private[lib] class Hidden { def spare: Int = 6 }
           |object Main { def main(args: Array[String]): Unit = println(Hidden()) }""".stripMargin),
       Seq("ClientCheck.scala" -> "class ClientCheck { val value = lib.Client().fetch }"),
-      library = true
+      libraries = Set("m")
     )
     val found = Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
     assertEquals(
@@ -269,13 +308,13 @@ class MembersSuite extends AnalysisSuite {
 
   test("dynamic dispatch reaches implementations, and an unused declaration is reported once") {
     val found = findings(Seq(
-      entry("val shape: Shape = Square(); println(shape.area)"),
-      "Shape.scala" ->
-        """trait Shape { def area: Int; def perimeter: Int }
-                         |class Square extends Shape { def area = 4; def perimeter = 8; override def toString = "square" }""".stripMargin
+      entry("val shape: Figure = Square(); println(shape.area)"),
+      "Figure.scala" ->
+        """trait Figure { def area: Int; def perimeter: Int }
+                         |class Square extends Figure { def area = 4; def perimeter = 8; override def toString = "square" }""".stripMargin
     ))
-    assertFinding(found, "unused-member", "Shape.perimeter is never referenced")
-    assertNoFinding(found)(finding => finding.detail.contains("Square.") || finding.detail.contains("Shape.area"))
+    assertFinding(found, "unused-member", "Figure.perimeter is never referenced")
+    assertNoFinding(found)(finding => finding.detail.contains("Square.") || finding.detail.contains("Figure.area"))
   }
 
   test("several members of one type that only tests use are one finding") {
@@ -348,6 +387,82 @@ class MembersSuite extends AnalysisSuite {
     assertNoFinding(found)(finding =>
       finding.rule == Finding.Rule.WeakerAccess &&
         Vector("Boundary", "Point", "Inner", "Hidden").exists(finding.detail.contains(_))
+    )
+  }
+
+  test("types nested at depth used only inside the type that holds them can be private to it") {
+    val found = findings(Seq(
+      entry("println(Lints.names); println(Collector.count)"),
+      "Lints.scala" ->
+        """object Lints {
+          |  trait Lint { def name: String }
+          |  object Groups {
+          |    object Redundant extends Lint { def name = "redundant" }
+          |    class Cast(val target: Int)
+          |    sealed trait Known
+          |    case class Item(value: Int) extends Known
+          |  }
+          |  val names: Vector[String] = Vector(Groups.Redundant.name, Groups.Cast(1).target.toString)
+          |  def items: Vector[Groups.Known] = Vector(Groups.Item(1))
+          |}""".stripMargin,
+      "Collector.scala" ->
+        """object Collector {
+          |  object Phase { case class Step(label: String) }
+          |  object Pool { def steps: Int = Vector(Phase.Step("a")).size }
+          |  def count: Int = Pool.steps
+          |}""".stripMargin
+    ))
+    given Finding.Level = Finding.Level.Info
+    assertFinding(found, "weaker-access", "Groups.Redundant is referenced only inside Lints; it can be private[Lints]")
+    assertFinding(found, "weaker-access", "Groups.Cast is referenced only inside Lints; it can be private[Lints]")
+    assertFinding(
+      found,
+      "weaker-access",
+      "Phase.Step is referenced only inside Collector; it can be private[Collector]"
+    )
+  }
+
+  test("nested declarations used from another top-level type, or published by a visible signature, stay visible") {
+    val found = findings(Seq(
+      entry("println(Lints.names); println(Outside.value); println(Exposed.make)"),
+      "Lints.scala" ->
+        """object Lints {
+          |  object Groups {
+          |    class Cast(val target: Int)
+          |    class Shared(val target: Int)
+          |    val shared = 1
+          |  }
+          |  val names: Vector[String] = Vector(Groups.Cast(1).target.toString, Groups.Shared(2).target.toString)
+          |}
+          |object Exposed {
+          |  object Inner { class Handle }
+          |  def make: Inner.Handle = Inner.Handle()
+          |}""".stripMargin,
+      "Outside.scala" -> "object Outside { val value = Lints.Groups.Shared(3).target + Lints.Groups.shared }"
+    ))
+    given Finding.Level = Finding.Level.Info
+    assertFinding(found, "weaker-access", "Groups.Cast is referenced only inside Lints; it can be private[Lints]")
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.WeakerAccess &&
+        Vector("Shared", "Groups.shared", "Handle").exists(finding.detail.contains(_))
+    )
+  }
+
+  test("nested declarations already private or qualified are not told to be private again") {
+    val found = findings(Seq(
+      entry("println(Parser.parse(\"1\")); println(Counter(1).next)"),
+      "Parser.scala" ->
+        """object Parser {
+          |  private object Inner { class Reader(val text: String) }
+          |  object Open { private[Parser] class Hidden; private val limit = 1 }
+          |  def parse(text: String): Option[Int] = Option(Inner.Reader(text).text.length).filter(_ > Open.Hidden().hashCode)
+          |}
+          |class Counter(val value: Int) { def next: Int = Counter.Step.by + value }
+          |object Counter { object Step { val by = 1 } }""".stripMargin
+    ))
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.WeakerAccess &&
+        Vector("Reader", "Hidden", "limit").exists(finding.detail.contains(_))
     )
   }
 
@@ -446,6 +561,76 @@ class MembersSuite extends AnalysisSuite {
     )
   }
 
+  test("qualified private givens are reported here and private ones are left to scalafix") {
+    val found = findings(Seq(
+      entry("println(Hidden.touch)"),
+      "Hidden.scala" ->
+        """case class Reaumur(value: Int)
+          |case class Delisle(value: Int)
+          |object Hidden {
+          |  private[Hidden] given qualified: Ordering[Reaumur] = Ordering.by(_.value)
+          |  private given plain: Ordering[Delisle] = Ordering.by(_.value)
+          |  def touch: Int = List(Reaumur(1)).sorted.size + List(Delisle(1)).sorted.size
+          |}""".stripMargin
+    ))
+    assertFinding(found, "anonymous-given", "Hidden.qualified is never referenced by name")(using Finding.Level.Info)
+    assertNoFinding(found)(finding => finding.rule == Finding.Rule.AnonymousGiven && finding.detail.contains("plain"))
+  }
+
+  test("values of the kind the collections of their siblings register, which nothing lists or uses, are reported") {
+    val found = findings(Seq(
+      entry(
+        """println(Endpoints.all); println(Endpoints.more); println(Endpoints.numbers); println(Endpoints.shared)
+          |println(Handlers.registered); println(Stages.listed); println(Stages.indexed)""".stripMargin
+      ),
+      "Endpoints.scala" ->
+        """final class Endpoint[I, O](val path: String)
+          |object Endpoints {
+          |  type AnyEndpoint = Endpoint[?, ?]
+          |  val user: Endpoint[Long, String]       = Endpoint("user")
+          |  val illust: Endpoint[Long, Int]        = Endpoint("illust")
+          |  val novel: Endpoint[String, String]    = Endpoint("novel")
+          |  val forgotten: Endpoint[Long, Boolean] = Endpoint("forgotten")
+          |  val shared: Endpoint[Long, Long]       = Endpoint("shared")
+          |  val base: Endpoint[Unit, Unit]         = Endpoint("base")
+          |  val derived: Endpoint[Unit, String]    = Endpoint(base.path + "/derived")
+          |  private val hidden: Endpoint[Int, Int] = Endpoint("hidden")
+          |  val limit: Int                         = 10
+          |  val other: Int                         = 20
+          |  val all: Vector[AnyEndpoint]  = Vector(user, illust, derived)
+          |  val more: Vector[AnyEndpoint] = Vector(novel, hidden)
+          |  val numbers: List[Int]        = List(limit, 1)
+          |}
+          |object Handlers {
+          |  val first: Endpoint[Int, Int]    = Endpoint("first")
+          |  val second: Endpoint[Int, Int]   = Endpoint("second")
+          |  val third: Endpoint[Int, Int]    = Endpoint("third")
+          |  val registered: Seq[Endpoints.AnyEndpoint] = Seq(first, second)
+          |}
+          |object Stages {
+          |  val one: Endpoint[Long, Long]        = Endpoint("one")
+          |  val two: Endpoint[Long, Long]        = Endpoint("two")
+          |  val three: Endpoint[Long, Long]      = Endpoint("three")
+          |  val listed: Set[Endpoints.AnyEndpoint]         = Set.apply(one, two)
+          |  val indexed: IndexedSeq[Endpoints.AnyEndpoint] = IndexedSeq(one, two)
+          |}""".stripMargin
+    ))
+    assertEquals(
+      found.collect {
+        case finding if finding.rule == Finding.Rule.RegistryDrift => finding.detail.takeWhile(_ != ';')
+      }.sorted,
+      Vector("Endpoints.forgotten", "Handlers.third", "Stages.three").map(name =>
+        s"$name is of the kind the collections of its siblings register, but none lists it"
+      )
+    )
+    assertEquals(
+      found.filter(finding =>
+        finding.rule == Finding.Rule.UnusedMember && finding.detail.startsWith("Endpoints.forgotten")
+      ),
+      Vector.empty
+    )
+  }
+
   private def member(name: String, users: Set[String]): Members.Member = Members.Member(
     name,
     name.split('.').init.mkString("."),
@@ -461,11 +646,16 @@ class MembersSuite extends AnalysisSuite {
     suppressed = Set.empty
   )
 
-  private def node(key: String, test: Boolean = false, generated: Boolean = false, exported: Boolean = false) =
+  private def node(
+      key: String,
+      scope: Output.Scope = Output.Scope.Main,
+      generated: Boolean = false,
+      exported: Boolean = false
+  ) =
     key -> Node(
       key,
       "m",
-      if (test) Output.Scope.Test else Output.Scope.Main,
+      scope,
       s"$key.scala",
       line = 1,
       generated = generated,
@@ -476,7 +666,7 @@ class MembersSuite extends AnalysisSuite {
   private val nodes = Map(
     node("lib.Tools"),
     node("app.Main"),
-    node("check.Suite", test = true),
+    node("check.Suite", Output.Scope.Test),
     node("lib.Outer"),
     node("lib.Outer.Plain"),
     node("lib.Outer.Shared"),
@@ -546,7 +736,7 @@ class MembersSuite extends AnalysisSuite {
       layout
     ))
     assertEquals(
-      found.filter(_.rule == Finding.Rule.UnusedMember).map(_.detail),
+      found.collect { case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail },
       Vector("Layout.spare is never referenced")
     )
     assertEquals(found.filter(_.detail.startsWith("Layout.row")), Vector.empty)

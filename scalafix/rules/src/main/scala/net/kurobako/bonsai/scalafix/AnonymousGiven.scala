@@ -17,7 +17,8 @@ class AnonymousGiven extends SemanticRule("AnonymousGiven") {
       unreferenced(parameter.name, parameter.name.symbol :: field(parameter).toList*)
     document.tree.collect {
       case alias: Defn.GivenAlias
-          if hidden(alias.mods, alias.name, alias) && unreferenced(alias.name, alias.name.symbol) && !clashes(alias) =>
+          if hidden(alias.mods, alias.name, alias) && unreferenced(alias.name, alias.name.symbol) &&
+            uniquelyTyped(alias) =>
         lint(
           "anonymous-given",
           s"${alias.name.value} is never referenced by name; make the given anonymous",
@@ -25,7 +26,7 @@ class AnonymousGiven extends SemanticRule("AnonymousGiven") {
         )
       case instance: Defn.Given
           if hidden(instance.mods, instance.name, instance) && unreferenced(instance.name, instance.name.symbol) &&
-            !clashes(instance) =>
+            uniquelyTyped(instance) =>
         lint(
           "anonymous-given",
           s"${instance.name.value} is never referenced by name; make the given anonymous",
@@ -50,23 +51,27 @@ class AnonymousGiven extends SemanticRule("AnonymousGiven") {
 
   private def named(name: Name): Boolean = !name.isInstanceOf[Name.Anonymous] && name.value.nonEmpty
 
-  // Members of a template or package are visible to other files unless private.
+  // Members of a template or package are visible to other files unless private; the analysis reports qualified private
+  // ones.
   private def hidden(mods: List[Mod], name: Name, definition: Defn): Boolean =
     named(name) && !definitions.has[Mod.Override](mods) &&
-      (definitions.has[Mod.Private](mods) || !definition.parent.exists {
+      (mods.exists {
+        case Mod.Private(Name.Anonymous() | Term.This(_)) => true
+        case _                                            => false
+      } || !definition.parent.exists {
         case _: Template.Body | _: Pkg.Body | _: Source => true
         case _                                          => false
       })
 
   // The compiler names an anonymous given after its type, so a sibling of the same type would collide.
-  private def clashes(definition: Defn): Boolean = {
+  private def uniquelyTyped(definition: Defn): Boolean = {
     def tpe(tree: Tree): Option[String] = tree match {
       case alias: Defn.GivenAlias => Some(alias.decltpe.structure)
       case instance: Defn.Given   => instance.templ.inits.headOption.map(_.tpe.structure)
       case _                      => None
     }
     val own = tpe(definition)
-    definition.parent.exists(_.children.exists(sibling =>
+    !definition.parent.exists(_.children.exists(sibling =>
       (sibling ne definition) && own.isDefined && tpe(sibling) == own
     ))
   }

@@ -20,8 +20,9 @@ import java.util.List;
 /**
  * The tools the build runs, which the repository the build resolves them from holds.
  *
- * <p>The compiler plugin and the analysis are built for one Scala version each, so the build names the one it uses, and
- * the scalafix rules are built for Scala 3 whatever its version.
+ * <p>The compiler plugin is built for each minor line of Scala 3, so the build names the line it uses. The analysis is
+ * built once, with the newest compiler, which reads the TASTy of every older line, and the scalafix rules are built for
+ * Scala 3 whatever its version.
  */
 public final class Tools {
 
@@ -35,14 +36,14 @@ public final class Tools {
     this.repositories = repositories;
   }
 
-  /** The compiler plugin of the Scala version, which the compiler reads. */
-  public File compilerPlugin(String scalaVersion, String version) throws MojoExecutionException {
-    return artifact("net.kurobako", "bonsai-plugin_" + scalaVersion, version);
+  /** The compiler plugin of the minor line of Scala, which the compiler reads. */
+  public File compilerPlugin(String line, String version) throws MojoExecutionException {
+    return artifact("net.kurobako", "bonsai-plugin_" + line, version);
   }
 
-  /** The analysis of the Scala version, which the analysis reads the output of the build with. */
-  public File analysisJar(String scalaVersion, String version) throws MojoExecutionException {
-    return artifact("net.kurobako", "bonsai-analysis_" + scalaVersion, version);
+  /** The analysis, which reads the output of the build. */
+  public File analysisJar(String version) throws MojoExecutionException {
+    return artifact("net.kurobako", "bonsai-analysis_3", version);
   }
 
   /** The scalafix rules, which the command that runs them reads. */
@@ -53,8 +54,7 @@ public final class Tools {
   /** The javac plugin, with the library it runs on, which the compiler of the build reads. */
   public List<File> javaPlugin(String version) throws MojoExecutionException {
     // The plugin runs on the library of Scala it is written in, which the processor path of the compiler holds alike.
-    return resolve(new DefaultArtifact(
-      "net.kurobako", Javac.ARTIFACT, null, "jar", version));
+    return bonsai(Javac.ARTIFACT, version);
   }
 
   /** The jar of the artifact, which the build resolves without the artifacts it depends on. */
@@ -69,20 +69,23 @@ public final class Tools {
     }
   }
 
-  /** The analysis of the Scala version, with the compiler it reads the output with. */
-  public List<File> analysis(String scalaVersion, String version) throws MojoExecutionException {
-    return resolve(new DefaultArtifact(
-      "net.kurobako", "bonsai-analysis_" + scalaVersion, null, "jar", version));
+  /** The analysis, with the compiler it reads the output with. */
+  public List<File> analysis(String version) throws MojoExecutionException {
+    return bonsai("bonsai-analysis_3", version);
   }
 
   /** The scalafix rules and the command that runs them. */
   public List<File> scalafix(String version, String scalafixVersion, String scalafixScalaVersion)
     throws MojoExecutionException {
-    List<File> classpath = new java.util.ArrayList<>(resolve(new DefaultArtifact(
-      "net.kurobako", "bonsai-scalafix_3", null, "jar", version)));
+    List<File> classpath = new java.util.ArrayList<>(bonsai("bonsai-scalafix_3", version));
     classpath.addAll(resolve(new DefaultArtifact(
       "ch.epfl.scala", "scalafix-cli_" + scalafixScalaVersion, null, "jar", scalafixVersion)));
     return classpath;
+  }
+
+  /** The bonsai artifact and the artifacts it depends on. */
+  private List<File> bonsai(String artifactId, String version) throws MojoExecutionException {
+    return resolve(new DefaultArtifact("net.kurobako", artifactId, null, "jar", version));
   }
 
   /** The artifact and the artifacts it depends on, which the tools run beside. */

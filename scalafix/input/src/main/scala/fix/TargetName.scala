@@ -22,6 +22,10 @@ object TargetName {
     override def <>(left: Int, right: Int): Int = left + right
   }
 
+  object Implementation extends Monoid[String] {
+    def <>(left: String, right: String): String = left + right
+  }
+
   extension (value: Vec) def *(scale: Int): Vec = Vec(value.x * scale, value.y * scale) // assert: TargetName.missing-target-name
 
   type <+>[A, B] = Either[A, B]

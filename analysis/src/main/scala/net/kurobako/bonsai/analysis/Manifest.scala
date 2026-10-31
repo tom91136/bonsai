@@ -6,6 +6,9 @@ import scala.jdk.CollectionConverters.*
 
 object Manifest {
 
+  private def scopeOf(path: Path, index: Int, scope: String): Either[String, Output.Scope] =
+    Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope")
+
   /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <entry>`, `library <module>`,
     * `platform <module>`, `option <module> <compiler option>`, `source <module> <scope> <file>`, `model <module>
     * <scope> <file>`, `root <directory>`, `text-exclude <glob>` and `text <rule index> <field> <value>` lines.
@@ -17,7 +20,7 @@ object Manifest {
           manifest.flatMap { current =>
             line.split('\t').toList match {
               case List("output", module, scope, location) =>
-                Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope").map {
+                scopeOf(path, index, scope).map {
                   parsed => current.copy(outputs = current.outputs :+ Output(module, parsed, Path.of(location)))
                 }
               case List("classpath", location) =>
@@ -29,11 +32,11 @@ object Manifest {
                   current.options.updated(module, current.options.getOrElse(module, Vector.empty) :+ option)
                 ))
               case List("source", module, scope, location) =>
-                Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope").map {
+                scopeOf(path, index, scope).map {
                   parsed => current.copy(sources = current.sources :+ Output(module, parsed, Path.of(location)))
                 }
               case List("model", module, scope, location) =>
-                Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope").map {
+                scopeOf(path, index, scope).map {
                   parsed => current.copy(models = current.models :+ Output(module, parsed, Path.of(location)))
                 }
               case List("root", location)     => Right(current.copy(root = Some(Path.of(location))))

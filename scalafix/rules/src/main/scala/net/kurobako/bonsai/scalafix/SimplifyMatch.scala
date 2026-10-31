@@ -18,13 +18,14 @@ class SimplifyMatch extends SyntacticRule("SimplifyMatch") {
                 case use: Term.Name if use.value == name.value => use
               }.nonEmpty) =>
           val cases       = matched.casesBlock.cases.map(_.syntax).mkString("\n")
+          val block       = Patch.replaceTree(function, s"{\n$cases\n}")
           val replacement = function.parent match {
             case Some(clause: Term.ArgClause) if clause.values == List(function) =>
               clause.parent match {
                 case Some(call: Term.Apply) => Patch.replaceTree(call, s"${call.fun.syntax} {\n$cases\n}")
-                case _                      => Patch.replaceTree(function, s"{\n$cases\n}")
+                case _                      => block
               }
-            case _ => Patch.replaceTree(function, s"{\n$cases\n}")
+            case _ => block
           }
           replacement + lint(
             "simplify-match",

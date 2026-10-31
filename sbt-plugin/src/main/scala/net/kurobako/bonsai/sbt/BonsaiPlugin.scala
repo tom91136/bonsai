@@ -1,14 +1,12 @@
 package net.kurobako.bonsai.sbt
 
-import com.typesafe.config.Config
-import com.typesafe.config.ConfigException
-import com.typesafe.config.ConfigFactory
-import com.typesafe.config.ConfigUtil
+import net.kurobako.bonsai.sbt.BonsaiConfiguration.Configuration
+import net.kurobako.bonsai.sbt.BonsaiConfiguration.Settings
+import net.kurobako.bonsai.sbt.ManifestLines
 import sbt.*
 import sbt.Keys.*
 import sbt.internal.util.MessageOnlyException
 import sbt.librarymanagement.DependencyResolution
-import scala.jdk.CollectionConverters.*
 import scalafix.sbt.ScalafixPlugin
 import scalafix.sbt.ScalafixPlugin.autoImport.*
 
@@ -150,18 +148,18 @@ object BonsaiPlugin extends AutoPlugin {
   private val Version      = BonsaiArtifacts.version
 
   /** Every check the compiler plugin knows. */
-  val Checks: Set[String] = BonsaiArtifacts.checks
+  private val Checks: Set[String] = BonsaiArtifacts.checks
 
   /** Every scalafix rule, in the order they run, with the built-in ones last. */
   val Rules: Seq[String] = BonsaiArtifacts.rules ++ Seq("DisableSyntax", "RedundantSyntax")
 
   /** The DisableSyntax bans on by default, each disabled by its own id. */
-  val Bans: Seq[String] =
+  private val Bans: Seq[String] =
     Seq("noVars", "noReturns", "noNulls", "noAsInstanceOf", "noIsInstanceOf", "noXml", "noFinalize")
       .map("DisableSyntax." + _)
 
   /** Every analysis rule. */
-  val Findings: Set[String] = BonsaiArtifacts.findings
+  private val Findings: Set[String] = BonsaiArtifacts.findings
 
   private val bonsaiScalafixConfig =
     taskKey[File]("Write the scalafix configuration of the selected rules").withRank(KeyRanks.Invisible)
@@ -173,31 +171,6 @@ object BonsaiPlugin extends AutoPlugin {
     settingKey[Boolean]("Whether bonsai analyses this project").withRank(KeyRanks.Invisible)
   private val bonsaiConfiguration =
     settingKey[Configuration]("The settings .bonsai.conf gives").withRank(KeyRanks.Invisible)
-
-  private case class Settings(
-      disabled: Option[Set[String]],
-      errors: Option[Set[String]],
-      warnings: Option[Set[String]],
-      wildcards: Option[Int],
-      library: Option[Boolean]
-  )
-
-  private case class Configuration(
-      build: Settings,
-      baseline: Option[String],
-      purity: Option[String],
-      effects: Option[Map[String, Set[String]]],
-      concurrent: Option[Set[String]],
-      generated: Option[Set[String]],
-      hot: Option[Set[String]],
-      reflective: Option[Set[String]],
-      intended: Option[Set[String]],
-      checked: Option[Set[String]],
-      bounded: Vector[(String, Int, String)],
-      nesting: Map[String, Int],
-      text: Vector[String],
-      projects: Map[String, Settings]
-  )
 
   /** The kinds of effects a policy may allow. */
   private val Effects = Set("reads", "writes", "input", "output", "random", "unknown")
@@ -215,7 +188,7 @@ object BonsaiPlugin extends AutoPlugin {
 
   // Defaults live in ThisBuild so one assignment there configures every project, and a project can still override.
   override def buildSettings: Seq[Setting[?]] = Seq(
-    bonsaiConfiguration := configured(baseDirectory.value / ".bonsai.conf"),
+    bonsaiConfiguration := BonsaiConfiguration.read(baseDirectory.value / ".bonsai.conf"),
     bonsaiDisabled      := bonsaiConfiguration.value.build.disabled.getOrElse(Set.empty),
     bonsaiErrors        := bonsaiConfiguration.value.build.errors.getOrElse(Set.empty),
     bonsaiWarnings      := bonsaiConfiguration.value.build.warnings.getOrElse(Set.empty),
@@ -223,10 +196,13 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiBaseline      :=
       IO.resolve(
         baseDirectory.value,
-        file(bonsaiConfiguration.value.baseline.getOrElse("bonsai-baseline.tsv"))
+        file(bonsaiConfiguration.value.baseline.getOrElse(BonsaiConfiguration.DefaultBaseline))
       ),
     bonsaiPurity :=
-      IO.resolve(baseDirectory.value, file(bonsaiConfiguration.value.purity.getOrElse("bonsai-purity.tsv"))),
+      IO.resolve(
+        baseDirectory.value,
+        file(bonsaiConfiguration.value.purity.getOrElse(BonsaiConfiguration.DefaultPurity))
+      ),
     bonsaiEffects    := bonsaiConfiguration.value.effects.getOrElse(Map.empty),
     bonsaiConcurrent := bonsaiConfiguration.value.concurrent.getOrElse(Set.empty),
     bonsaiGenerated  := bonsaiConfiguration.value.generated.getOrElse(Set.empty),
@@ -241,15 +217,11 @@ object BonsaiPlugin extends AutoPlugin {
   )
 
   override def projectSettings: Seq[Setting[?]] = Seq(
-    bonsaiEnabled  := true,
-    bonsaiDisabled := own(bonsaiConfiguration.value, thisProject.value.id).flatMap(_.disabled)
-      .getOrElse((ThisBuild / bonsaiDisabled).value),
-    bonsaiErrors := own(bonsaiConfiguration.value, thisProject.value.id).flatMap(_.errors)
-      .getOrElse((ThisBuild / bonsaiErrors).value),
-    bonsaiWarnings := own(bonsaiConfiguration.value, thisProject.value.id).flatMap(_.warnings)
-      .getOrElse((ThisBuild / bonsaiWarnings).value),
-    bonsaiWildcards := own(bonsaiConfiguration.value, thisProject.value.id).flatMap(_.wildcards)
-      .getOrElse((ThisBuild / bonsaiWildcards).value),
+    bonsaiEnabled   := true,
+    bonsaiDisabled  := ownOr(bonsaiDisabled)(_.disabled).value,
+    bonsaiErrors    := ownOr(bonsaiErrors)(_.errors).value,
+    bonsaiWarnings  := ownOr(bonsaiWarnings)(_.warnings).value,
+    bonsaiWildcards := ownOr(bonsaiWildcards)(_.wildcards).value,
     bonsaiValidated := {
       val unknown = (bonsaiDisabled.value ++ bonsaiErrors.value ++ bonsaiWarnings.value) --
         (Checks ++ Findings ++ Rules ++ Bans)
@@ -274,22 +246,23 @@ object BonsaiPlugin extends AutoPlugin {
         )
     },
     bonsaiModeId  := bonsaiMode.value.toString.toLowerCase(java.util.Locale.ROOT),
-    bonsaiLibrary := Def.uncached(own(bonsaiConfiguration.value, thisProject.value.id).flatMap(_.library)
+    bonsaiLibrary := Def.uncached(bonsaiConfiguration.value.library(thisProject.value.id)
       .getOrElse(!(publish / skip).value && (Compile / discoveredMainClasses).value.isEmpty)),
     libraryDependencies ++= {
-      if (supported(scalaVersion.value))
-        Seq(compilerPlugin((Organization % "bonsai-plugin" % Version).cross(CrossVersion.full)))
-      else {
-        sLog.value.warn(
-          s"bonsai: no compiler plugin for Scala ${scalaVersion.value} in ${name.value}; " +
-            s"its checks are skipped (built for ${BonsaiArtifacts.scalaVersions.mkString(", ")})"
-        )
-        Nil
+      ScalaVersions.plugin(scalaVersion.value) match {
+        case Some(line) =>
+          Seq(compilerPlugin((Organization % "bonsai-plugin" % Version).cross(CrossVersion.constant(line))))
+        case None =>
+          sLog.value.warn(
+            s"bonsai: no compiler plugin for Scala ${scalaVersion.value} in ${name.value}; " +
+              s"its checks are skipped (built for $builtLines)"
+          )
+          Nil
       }
     },
     scalacOptions ++= {
       def option(name: String, ids: Set[String]) = (ids & Checks).toSeq.sorted.map(id => s"-P:bonsai:$name=$id")
-      if (!supported(scalaVersion.value)) Nil
+      if (ScalaVersions.plugin(scalaVersion.value).isEmpty) Nil
       else
         (s"-P:bonsai:mode=${bonsaiModeId.value}" +:
           (option("disable", bonsaiDisabled.value) ++ option("error", bonsaiErrors.value) ++
@@ -307,7 +280,7 @@ object BonsaiPlugin extends AutoPlugin {
       (ThisBuild / baseDirectory).value / ".scalafix.conf",
       Rules.filterNot(bonsaiDisabled.value),
       Rules.filter(bonsaiWarnings.value),
-      Bans.filter(_ => !bonsaiDisabled.value("DisableSyntax")).partition(!bonsaiDisabled.value(_))
+      (if (bonsaiDisabled.value("DisableSyntax")) Nil else Bans).partition(!bonsaiDisabled.value(_))
     )),
     Compile / scalafix := (Compile / scalafix).dependsOn(bonsaiScalafixConfig).evaluated,
     Test / scalafix    := (Test / scalafix).dependsOn(bonsaiScalafixConfig).evaluated,
@@ -329,156 +302,16 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiPurityWrite / aggregate := false
   )
 
+  // The lines the compiler plugin is built for, with the oldest patch of those it does not run in from the first.
+  private def builtLines: String =
+    BonsaiArtifacts.lines.map(line => BonsaiArtifacts.oldest.get(line).fold(line)(oldest => s"$line from $oldest"))
+      .mkString(", ")
+
   private def own(configured: Configuration, project: String): Option[Settings] =
     configured.projects.get(project)
 
-  private def configured(file: File): Configuration =
-    if (!file.exists)
-      Configuration(
-        Settings(None, None, None, None, None),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Vector.empty,
-        Map.empty,
-        Vector.empty,
-        Map.empty
-      )
-    else
-      try {
-        val config   = ConfigFactory.parseFile(file).resolve()
-        val projects = Option.when(config.hasPath("projects"))(config.getConfig("projects")).fold(Map.empty) {
-          projects =>
-            projects.root.keySet.asScala.toSeq.map(id =>
-              id -> settings(projects.getConfig(ConfigUtil.joinPath(id)), s"projects.$id", Set.empty)
-            ).toMap
-        }
-        def path(key: String) = Option.when(config.hasPath(key))(config.getString(key))
-        Configuration(
-          settings(
-            config,
-            "",
-            Set(
-              "baseline",
-              "purity",
-              "effects",
-              "concurrent",
-              "generated",
-              "hot",
-              "reflective",
-              "intended",
-              "checked",
-              "bounded",
-              "nesting",
-              "text",
-              "projects"
-            )
-          ),
-          path("baseline"),
-          path("purity"),
-          Option.when(config.hasPath("effects"))(config.getConfig("effects")).map(effects =>
-            effects.root.keySet.asScala.toSeq.map(prefix =>
-              prefix -> effects.getStringList(ConfigUtil.joinPath(prefix)).asScala.toSet
-            ).toMap
-          ),
-          Option.when(config.hasPath("concurrent"))(config.getStringList("concurrent").asScala.toSet),
-          Option.when(config.hasPath("generated"))(config.getStringList("generated").asScala.toSet),
-          Option.when(config.hasPath("hot"))(config.getStringList("hot").asScala.toSet),
-          Option.when(config.hasPath("reflective"))(config.getStringList("reflective").asScala.toSet),
-          Option.when(config.hasPath("intended"))(config.getStringList("intended").asScala.toSet),
-          Option.when(config.hasPath("checked"))(config.getStringList("checked").asScala.toSet),
-          Option.when(config.hasPath("bounded"))(config.getConfigList("bounded").asScala.toVector.map(entry =>
-            (entry.getString("member"), entry.getInt("max"), entry.getString("reason"))
-          )).getOrElse(Vector.empty),
-          nesting(config),
-          Option.when(config.hasPath("text"))(config.getConfig("text")).fold(Vector.empty)(texts(_)),
-          projects
-        )
-      } catch {
-        case error: ConfigException => throw MessageOnlyException(s"bonsai: $file: ${error.getMessage}")
-      }
-
-  private val NestingLimits = Seq("depth", "damping", "size")
-
-  /** The limits of the nesting rule the configuration names. */
-  private def nesting(config: Config): Map[String, Int] =
-    if (!config.hasPath("nesting")) Map.empty
-    else {
-      val block   = config.getConfig("nesting")
-      val unknown = block.root.keySet.asScala.toSet -- NestingLimits
-      if (unknown.nonEmpty)
-        throw MessageOnlyException(
-          s"bonsai: .bonsai.conf has unknown keys ${unknown.toSeq.sorted.map("nesting." + _).mkString(", ")}; " +
-            s"the keys are ${NestingLimits.map("nesting." + _).mkString(", ")}"
-        )
-      NestingLimits.filter(block.hasPath).map(limit => limit -> block.getInt(limit)).toMap
-    }
-
-  private val TextKinds  = Seq("terms", "patterns", "binary", "licences", "preceded", "followed")
-  private val TextFields = Map(
-    "terms"    -> Set("words", "message"),
-    "patterns" -> Set("pattern", "message"),
-    "binary"   -> Set("message"),
-    "licences" -> Set("message"),
-    "preceded" -> Set("pattern", "message"),
-    "followed" -> Set("pattern", "continues", "neutral", "message")
-  ).view.mapValues(_ ++ Set("files", "exclude", "level")).toMap
-  private val TextLists = Set("words", "files", "exclude")
-
-  /** The manifest lines of the text rules: the exclusions, then each rule's fields by its index. */
-  private def texts(config: Config): Vector[String] = {
-    def known(found: Set[String], keys: Set[String], where: String) = {
-      val unknown = found -- keys
-      if (unknown.nonEmpty)
-        throw MessageOnlyException(
-          s"bonsai: .bonsai.conf has unknown keys ${unknown.toSeq.sorted.map(where + _).mkString(", ")}; the " +
-            s"keys are ${keys.toSeq.sorted.mkString(", ")}"
-        )
-    }
-    // The manifest is tab-separated, one entry a line.
-    def plain(value: String) =
-      if (value.exists(character => character == '\t' || character == '\n'))
-        throw MessageOnlyException(s"bonsai: .bonsai.conf text values cannot hold tabs or newlines: $value")
-      else value
-    known(config.root.keySet.asScala.toSet, TextKinds.toSet + "exclude", "text.")
-    val exclusions = Option.when(config.hasPath("exclude"))(config.getStringList("exclude").asScala.toVector)
-      .getOrElse(Vector.empty).map(glob => s"text-exclude\t${plain(glob)}")
-    val rules = TextKinds.flatMap(kind =>
-      if (!config.hasPath(kind)) Nil
-      else if (kind == "binary" || kind == "licences") List(kind -> config.getConfig(kind))
-      else config.getConfigList(kind).asScala.toList.map(kind -> _)
-    )
-    exclusions ++ rules.zipWithIndex.flatMap { case ((kind, rule), index) =>
-      known(rule.root.keySet.asScala.toSet, TextFields(kind), s"text.$kind.")
-      s"text\t$index\tkind\t$kind" +: rule.root.keySet.asScala.toVector.sorted.flatMap(field =>
-        (if (TextLists(field)) rule.getStringList(field).asScala.toVector else Vector(rule.getString(field)))
-          .map(value => s"text\t$index\t$field\t${plain(value)}")
-      )
-    }
-  }
-
-  private def settings(config: Config, where: String, others: Set[String]): Settings = {
-    val keys    = Set("disabled", "errors", "warnings", "wildcards", "library")
-    val unknown = config.root.keySet.asScala.toSet -- keys -- others
-    if (unknown.nonEmpty)
-      throw MessageOnlyException(
-        s"bonsai: .bonsai.conf has unknown keys ${unknown.toSeq.sorted.map(where + _).mkString(", ")}; the " +
-          s"keys are ${(keys ++ others).toSeq.sorted.mkString(", ")}"
-      )
-    def ids(path: String) = Option.when(config.hasPath(path))(config.getStringList(path).asScala.toSet)
-    Settings(
-      ids("disabled"),
-      ids("errors"),
-      ids("warnings"),
-      Option.when(config.hasPath("wildcards"))(config.getInt("wildcards")),
-      Option.when(config.hasPath("library"))(config.getBoolean("library"))
-    )
+  private def ownOr[A](key: SettingKey[A])(pick: Settings => Option[A]): Def.Initialize[A] = Def.setting {
+    own(bonsaiConfiguration.value, thisProject.value.id).flatMap(pick).getOrElse((ThisBuild / key).value)
   }
 
   private def extendsTest(configuration: sbt.librarymanagement.Configuration): Boolean =
@@ -507,8 +340,6 @@ object BonsaiPlugin extends AutoPlugin {
         else (kept :+ entry, dropped)
       }._2
     }
-
-  private def supported(scalaVersion: String): Boolean = BonsaiArtifacts.scalaVersions.contains(scalaVersion)
 
   // The user's own file supplies rule settings and any rules of its own, which bonsai's rules extend; it can turn
   // a ban off, while a disabled ban stays off.
@@ -545,24 +376,15 @@ object BonsaiPlugin extends AutoPlugin {
     val (twins, jvm) = enabled.partition(twin(_))
     val platforms    = if (jvm.nonEmpty) twins.map(_.project).toSet else Set.empty[String]
     // Configurations that extend Test, as integration tests do, hold test code too.
-    val tests = enabled.flatMap(ref => (ref / thisProject).get(data).toList.flatMap(_.configurations))
-      .filter(extendsTest).distinctBy(_.name)
+    val tests = enabled.view.flatMap(ref => (ref / thisProject).get(data).toList.flatMap(_.configurations))
+      .filter(extendsTest).toSeq.distinctBy(_.name)
     val testNames      = tests.map(_.name).toSet + Test.name
     val configurations = Compile +: Test +: tests
     val analysed       = ScopeFilter(inProjects(enabled*), inConfigurations(configurations*))
     // The JVM projects' libraries come first, so they decide where a platform's library has the same classes.
     val jvmLibraries      = ScopeFilter(inProjects(jvm*), inConfigurations(configurations*))
     val platformLibraries = ScopeFilter(inProjects(twins*), inConfigurations(configurations*))
-    // A project that other projects depend on only from their tests, as fixtures are, is test code itself.
-    val dependents = buildStructure.value.allProjectRefs.flatMap(ref =>
-      (ref / thisProject).get(data).toList.flatMap(_.dependencies)
-    ).groupMap(_.project.project)(_.configuration)
-    val fixtures = dependents.collect {
-      case (id, configurations)
-          if configurations.forall(_.exists(mappings =>
-            mappings.split(';').forall(_.trim.takeWhile(_ != '-') == Test.name)
-          )) => id
-    }.toSet
+    val fixtures          = Fixtures.fixtures(buildStructure.value)
     // The projects an analysed project depends on, analysed or not, are read from the classpath.
     val external = Def.task {
       val converter = fileConverter.value
@@ -575,60 +397,65 @@ object BonsaiPlugin extends AutoPlugin {
         val _     = (compile.value, copyResources.value)
         val id    = thisProject.value.id
         val name  = configuration.value.name
-        val scope = if (testNames(name) || fixtures(id)) "test" else "main"
+        val scope = ManifestLines.scope(fixtures, id, testNames(name))
         Analysed(
           id,
           name,
           scope,
           classDirectory.value.toString,
-          scope == "main" && bonsaiLibrary.value,
+          bonsaiLibrary.value,
           unmanagedSources.value.map(_.toString)
         )
       }.all(analysed).value
       val kept    = entries.filterNot(redundant(entries).toSet)
       val outputs = kept.flatMap(entry =>
-        s"output\t${entry.project}\t${entry.scope}\t${entry.classes}" +:
-          Option.when(entry.library)(s"library\t${entry.project}").toSeq
+        ManifestLines.outputs(entry.project, entry.scope, entry.classes, entry.library)
       )
-      val analysedOutputs = outputs.collect { case s"output\t$_\t$_\t$directory" => directory }.toSet
+      val analysedOutputs = kept.map(_.classes).toSet
       val libraries       = (external.all(jvmLibraries).value ++ external.all(platformLibraries).value).flatten.distinct
         .filterNot(analysedOutputs)
       val log       = streams.value.log
-      val classpath = (libraries ++ javalibInterface(libraries, dependencyResolution.value, target.value, log))
-        .map(entry => s"classpath\t$entry")
+      val classpath = ManifestLines.classpath(
+        libraries ++ javalibInterface(libraries, dependencyResolution.value, target.value, log)
+      )
       val platform        = platforms.toSeq.sorted.map(id => s"platform\t$id")
       val compilerOptions = Def.task {
         val id = thisProject.value.id
-        if (fixtures(id)) Nil else scalacOptions.value.map(option => s"option\t$id\t$option")
+        if (fixtures(id)) Nil else ManifestLines.options(id, scalacOptions.value)
       }.all(ScopeFilter(inProjects((if (jvm.nonEmpty) jvm else enabled)*), inConfigurations(Compile))).value.flatten
       // Every platform's sources, so copies between the directories of a cross-built project show.
-      val sources = kept.flatMap(entry => entry.sources.map(file => s"source\t${entry.project}\t${entry.scope}\t$file"))
+      val sources  = kept.flatMap(entry => ManifestLines.sources(entry.project, entry.scope, entry.sources))
       val baseline = bonsaiBaseline.value
       val purity   = bonsaiPurity.value
       val manifest = target.value / "bonsai" / "manifest.tsv"
-      val root     = s"root\t${(ThisBuild / baseDirectory).value}"
       val text     = bonsaiConfiguration.value.text
       IO.write(
         manifest,
-        (outputs ++ platform ++ classpath ++ compilerOptions ++ sources ++ text :+ root).mkString("", "\n", "\n")
+        ManifestLines.render(
+          outputs ++ platform ++ classpath ++ compilerOptions ++ sources ++ text,
+          (ThisBuild / baseDirectory).value
+        )
       )
-      val tool = analysisClasspath(dependencyResolution.value, scalaVersion.value, target.value, log)
-      def option(name: String, ids: Set[String]) = (ids & Findings).toSeq.sorted.flatMap(id => Seq(s"--$name", id))
-      val options = Seq("--mode", bonsaiModeId.value) ++ option("disable", bonsaiDisabled.value) ++
-        option("error", bonsaiErrors.value) ++ option("warn", bonsaiWarnings.value) ++
-        Seq("--baseline", baseline.getAbsolutePath, "--purity-lock", purity.getAbsolutePath) ++
-        bonsaiEffects.value.toSeq.sortBy(_._1).flatMap((prefix, kinds) =>
-          Seq("--effects", s"$prefix=${kinds.toSeq.sorted.mkString(",")}")
-        ) ++ bonsaiConcurrent.value.toSeq.sorted.flatMap(method => Seq("--concurrent", method)) ++
-        bonsaiGenerated.value.toSeq.sorted.flatMap(glob => Seq("--generated", glob)) ++
-        bonsaiReflective.value.toSeq.sorted.flatMap(glob => Seq("--reflective", glob)) ++
-        bonsaiHot.value.toSeq.sorted.flatMap(glob => Seq("--hot", glob)) ++
-        bonsaiIntended.value.toSeq.sorted.flatMap(pair => Seq("--intended", pair)) ++
-        bonsaiBounded.value.flatMap((member, max, reason) => Seq("--bounded", member, max.toString, reason)) ++
-        (if (bonsaiNesting.value.isEmpty) Nil
-         else "--nesting" +: bonsaiNesting.value.toSeq.sortBy(_._1).flatMap((limit, value) =>
-           Seq(s"--nesting-$limit", value.toString)
-         )) ++
+      // What the build generates is reported where its generator lives, not where it lands.
+      val generated =
+        Def.task(BonsaiConfiguration.generatedGlob((ThisBuild / baseDirectory).value, sourceManaged.value))
+          .all(analysed).value.toSet
+      val versions = Def.task(scalaVersion.value).all(analysed).value.distinct
+      val tool     = analysisClasspath(dependencyResolution.value, versions, target.value, log)
+      val options  = Seq("--mode", bonsaiModeId.value) ++
+        BonsaiConfiguration.Analysis(
+          bonsaiDisabled.value,
+          bonsaiErrors.value,
+          bonsaiWarnings.value,
+          bonsaiEffects.value,
+          bonsaiConcurrent.value,
+          bonsaiGenerated.value ++ generated,
+          bonsaiReflective.value,
+          bonsaiHot.value,
+          bonsaiIntended.value,
+          bonsaiBounded.value,
+          bonsaiNesting.value
+        ).options(Findings, baseline, purity) ++
         extra(baseline, purity)
       Fork.java(
         ForkOptions().withRunJVMOptions(Vector(s"-Xmx${bonsaiAnalysisHeap.value}")),
@@ -665,15 +492,17 @@ object BonsaiPlugin extends AutoPlugin {
 
   private def analysisClasspath(
       resolution: DependencyResolution,
-      scalaVersion: String,
+      scalaVersions: Seq[String],
       target: File,
       log: Logger
   ): Vector[File] = {
-    if (!supported(scalaVersion))
+    scalaVersions.find(!ScalaVersions.readable(_)).foreach(scalaVersion =>
       throw MessageOnlyException(
-        s"bonsai: no analysis for Scala $scalaVersion (built for ${BonsaiArtifacts.scalaVersions.mkString(", ")})"
+        s"bonsai: no analysis for Scala $scalaVersion (it reads the TASTy of Scala ${BonsaiArtifacts.analysisScala} " +
+          "and the minor lines before it)"
       )
-    val module = Organization % s"bonsai-analysis_$scalaVersion" % Version
+    )
+    val module = Organization % "bonsai-analysis_3" % Version
     resolution.retrieve(module, None, target / "bonsai" / "analysis", log) match {
       case Right(files)  => files.toVector
       case Left(warning) =>

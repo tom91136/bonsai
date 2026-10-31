@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.scalafix
 
+import metaconfig.Conf
 import metaconfig.Configured
 import scala.meta.*
 import scalafix.v1.*
@@ -8,7 +9,10 @@ object QualifiedCollectionNamespaces {
 
   /** Members of `pkg`, and of its subpackages when `subpackages` holds, are written `prefix.Member`. */
   case class Namespace(pkg: String, prefix: String, subpackages: Boolean) {
-    val symbol: String = pkg.replace('.', '/') + "/"
+    private val symbol: String = pkg.replace('.', '/') + "/"
+
+    // The package that holds the prefix as a member.
+    def parent: String = pkg.stripSuffix(s".$prefix")
 
     // Members of the types in a package are owned by those types, whose symbols do not end in a slash.
     def owns(owner: String): Boolean =
@@ -25,11 +29,18 @@ object QualifiedCollectionNamespaces {
       .flatMap(fields =>
         (settings.string(fields, "package"), settings.string(fields, "prefix")) match {
           case (Some(pkg), Some(prefix)) =>
-            Some(Namespace(pkg, prefix, settings.bool(fields, "subpackages").getOrElse(true)))
+            Some(Namespace(pkg, prefix, bool(fields, "subpackages").getOrElse(true)))
           case _ => None
         }
       )
     if (configured.isEmpty) Defaults else configured
+  }
+
+  private def bool(fields: Map[String, Conf], key: String): Option[Boolean] = fields.get(key).flatMap {
+    case Conf.Bool(value)  => Some(value)
+    case Conf.Str("true")  => Some(true)
+    case Conf.Str("false") => Some(false)
+    case _                 => None
   }
 }
 
@@ -50,14 +61,14 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
 
   override def fix(using document: SemanticDocument): Patch = {
     val imported = document.tree.collect {
-      case importer: Importer if importer.parent.exists { case _: Import => true; case _ => false } =>
+      case importer: Importer if importer.parent.exists(_.is[Import]) =>
         namespace(importer.ref.symbol.value).toList.flatMap(space =>
           importer.importees.collect {
             case importee @ (_: Importee.Name | _: Importee.Rename | _: Importee.Wildcard) =>
               lint(
                 "member-import",
                 s"import ${
-                    if (space.prefix == space.pkg) "nothing of" else space.pkg.stripSuffix(s".${space.prefix}")
+                    if (space.prefix == space.pkg) "nothing of" else space.parent
                   } " +
                   s"${space.pkg}; write its members as ${space.prefix}.${member(importee)}",
                 importee.pos
@@ -80,9 +91,10 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
         }
     }.flatten
     val needed = prefixed.nonEmpty || imported.nonEmpty
-    val added  = namespaces.filter(space => space.prefix != space.pkg && needed && !importsPackage(space)).map(space =>
-      Patch.addGlobalImport(importer(space))
-    )
+    val added  = namespaces.collect {
+      case space if space.prefix != space.pkg && needed && !importsPackage(space) =>
+        Patch.addGlobalImport(importer(space))
+    }
     (imported ++ prefixed ++ added).asPatch
   }
 
@@ -99,10 +111,7 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
   // stand for packages, which no namespace owns.
   private def reference(name: Name): Boolean = name match {
     case _: Term.Name | _: Type.Name =>
-      !name.isDefinition && !definitions.ancestors(name).exists {
-        case _: Import | _: Export => true
-        case _                     => false
-      }
+      !name.isDefinition && ancestry.outsideImports(name)
     case _ => false
   }
 
@@ -128,7 +137,7 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
       document: SemanticDocument
   ): Boolean =
     document.tree.collect {
-      case Importer(reference, importees) if reference.syntax == space.pkg.stripSuffix(s".${space.prefix}") =>
+      case Importer(reference, importees) if reference.syntax == space.parent =>
         importees.exists {
           case Importee.Name(name) => name.value == space.prefix
           case _                   => false

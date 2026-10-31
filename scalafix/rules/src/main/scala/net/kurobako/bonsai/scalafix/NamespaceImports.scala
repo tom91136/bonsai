@@ -11,6 +11,8 @@ import scalafix.v1.*
 class NamespaceImports(packages: List[List[String]]) extends SemanticRule("NamespaceImports") {
   def this() = this(Nil)
 
+  private val prefixes = packages.map(_.mkString("", "/", "/"))
+
   override def withConfiguration(config: Configuration): Configured[Rule] = Configured.Ok(
     NamespaceImports(settings.strings(
       settings.section(config.conf, "NamespaceImports"),
@@ -31,14 +33,15 @@ class NamespaceImports(packages: List[List[String]]) extends SemanticRule("Names
         "use a namespace wildcard import; retain rename, exclusion, and given selectors where needed",
         importer.pos
       )
-    case reference: Term.Select if qualified(reference) && namespaced(reference) && codeReference(reference) =>
-      qualifiedDiagnostic(reference)
-    case reference: Type.Select if qualified(reference) && namespaced(reference) && codeReference(reference) =>
+    case reference: (Term.Select | Type.Select)
+        if qualified(reference) && namespaced(reference) && codeReference(reference) =>
       qualifiedDiagnostic(reference)
   }.asPatch
 
-  private def namespaced(tree: Tree)(using SemanticDocument): Boolean =
-    packages.exists(root => tree.symbol.value.startsWith(root.mkString("", "/", "/")))
+  private def namespaced(tree: Tree)(using SemanticDocument): Boolean = {
+    val symbol = tree.symbol.value
+    prefixes.exists(symbol.startsWith(_))
+  }
 
   private def qualified(tree: Tree): Boolean = {
     val segments = path(tree).dropWhile(_ == "_root_")

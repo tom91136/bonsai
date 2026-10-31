@@ -1,5 +1,6 @@
 package scalafix.compat
 
+import com.github.difflib.DiffUtils
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -7,6 +8,7 @@ import metaconfig.Conf
 import metaconfig.typesafeconfig.typesafeConfigMetaconfigParser
 import org.scalatest.funsuite.AnyFunSuite
 import scala.io.Source as IOSource
+import scala.jdk.CollectionConverters.*
 import scala.meta.*
 import scala.meta.io.RelativePath
 import scala.util.Using
@@ -46,11 +48,8 @@ class RuleCompatibilitySuite extends AnyFunSuite {
   private val fixtures: List[Fixture] = TestkitPath.fromProperties(props).sortBy(_.testName).map { path =>
     val text                          = Files.readString(path.input.toNIO)
     val (header, conf, rulesConf, sc) = SemanticRuleSuite.parseTestkitCommentOpt(path.toInput.text.tokenize.get).get
-    val headerRules                   = (rulesConf match {
-      case Conf.Lst(values) => values.collect { case Conf.Str(name) => name }
-      case Conf.Str(name)   => List(name)
-      case _                => Nil
-    }).toSet
+    val headerRules                   =
+      rulesConf.as[List[String]].orElse(rulesConf.as[String].map(List(_))).getOrElse(Nil).toSet
     Fixture(path, text, header.pos.endLine, conf, sc, headerRules, path.resolveOutput(props).toOption.map(_.toNIO))
   }
 
@@ -114,7 +113,7 @@ class RuleCompatibilitySuite extends AnyFunSuite {
     else {
       val before = sdoc.input.text.linesIterator.toVector
       val after  = result.fixed.linesIterator.toVector
-      val lines  = hunks(before, after).flatMap(_._1).map(_ + 1)
+      val lines  = hunks(before, after).flatMap(hunk => hunk._1.map(_ + 1))
       (if (lines.isEmpty) List(1) else lines).map(Finding(rule, rule, _, "rewritten", rewrites = true))
     }
   }
@@ -134,11 +133,18 @@ class RuleCompatibilitySuite extends AnyFunSuite {
     )
   }
 
-  private def introduced(r: Rewrite, header: Set[String], before: List[Finding], after: List[Finding]): List[Finding] =
-    r.hunks.flatMap { case (gone, made) =>
-      val known = before.filter(x => gone(x.line)).map(_.id).toSet
-      after.filter(x => made(x.line)).filter(x => header(x.rule) || !known(x.id))
-    }
+  private def introduced(
+      r: Rewrite,
+      header: Set[String],
+      before: List[Finding],
+      after: List[Finding]
+  ): List[Finding] = {
+    val idsAt  = before.groupMap(_.line)(_.id)
+    val known  = r.hunks.toVector.map((gone, _) => gone.flatMap(idsAt.getOrElse(_, Nil)))
+    val hunkAt = r.hunks.zipWithIndex.flatMap { case ((_, made), hunk) => made.map(_ -> hunk) }.toMap
+    after.flatMap(x => hunkAt.get(x.line).filter(hunk => header(x.rule) || !known(hunk)(x.id)).map(_ -> x))
+      .sortBy(_._1).map(_._2)
+  }
 
   private def baseline(): Map[String, Set[(String, Int)]] = fixtures.flatMap { f =>
     rewrite(f).map(r =>
@@ -163,7 +169,7 @@ class RuleCompatibilitySuite extends AnyFunSuite {
     rewrite(f).toList.flatMap { r =>
       val sdoc     = inputDocument(f)
       val asserted = CommentAssertion.extract(sdoc.tokens).map(_.anchorPosition.startLine + 1).toSet
-      ruleNames.filterNot(f.headerRules).flatMap { rule =>
+      ruleNames.view.filterNot(f.headerRules).flatMap { rule =>
         val all     = findings(rule, f.conf, f, sdoc)
         val found   = all.filterNot(x => asserted(x.line) && !x.rewrites)
         val touched = found.filter(x => r.removed(x.line))
@@ -173,7 +179,7 @@ class RuleCompatibilitySuite extends AnyFunSuite {
         touched.groupBy(_.id).toList.sortBy(_._1).map { case (id, hits) =>
           Candidate(Stage.Input, f.path.testName, id, describe(hits, f.headerRules))
         }
-      }
+      }.toList
     }
   }
 
@@ -280,29 +286,14 @@ object RuleCompatibilitySuite {
 
   private def normalise(line: String): String = line.replaceFirst("""\s*//\s*assert:.*$""", "").stripTrailing()
 
-  def hunks(before: Vector[String], after: Vector[String]): List[(Range, Range)] = {
-    val table = Array.ofDim[Int](before.size + 1, after.size + 1)
-    for {
-      i <- before.indices.reverse
-      j <- after.indices.reverse
+  def hunks(before: Vector[String], after: Vector[String]): List[(Range, Range)] =
+    DiffUtils.diff(before.asJava, after.asJava).getDeltas.asScala.toList.map { delta =>
+      val (source, target) = (delta.getSource, delta.getTarget)
+      (
+        source.getPosition until source.getPosition + source.size,
+        target.getPosition until target.getPosition + target.size
+      )
     }
-      table(i)(j) =
-        if (before(i) == after(j)) table(i + 1)(j + 1) + 1
-        else math.max(table(i + 1)(j), table(i)(j + 1))
-    val matches = scala.collection.mutable.ListBuffer.empty[(Int, Int)]
-    var (i, j)  = (0, 0)
-    while (i < before.size && j < after.size)
-      if (before(i) == after(j)) { matches += ((i, j)); i += 1; j += 1 }
-      else if (table(i + 1)(j) >= table(i)(j + 1)) i += 1
-      else j += 1
-    var (pi, pj) = (0, 0)
-    (matches.toList :+ ((before.size, after.size))).flatMap { case (mi, mj) =>
-      val hunk = (pi until mi, pj until mj)
-      pi = mi + 1
-      pj = mj + 1
-      Option.when(hunk._1.nonEmpty || hunk._2.nonEmpty)(hunk)
-    }
-  }
 
   def overlay(conf: Conf, rule: String, section: Conf): Conf = conf match {
     case Conf.Obj(values) => Conf.Obj(values.filterNot(_._1 == rule) :+ (rule -> section))
@@ -418,11 +409,6 @@ object RuleCompatibilitySuite {
     configured(
       "qualified-collection-namespaces",
       "FullyQualifiedReferenceSubpackages",
-      "FullyQualifiedReference.fully-qualified-reference"
-    ) -> followsConfig,
-    configured(
-      "qualified-collection-namespaces",
-      "RedundantCollectionConversion",
       "FullyQualifiedReference.fully-qualified-reference"
     )                                                                                               -> followsConfig,
     configured("namespace-imports", "FullyQualifiedReference", "NamespaceImports.namespace-import") -> reconfigured,

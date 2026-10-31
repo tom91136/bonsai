@@ -3,8 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import munit.FunSuite
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
+import net.kurobako.bonsai.testing.Scratch
 
 class TextsSuite extends FunSuite {
   private def rule(fields: (String, String)*): Texts.Rule =
@@ -95,8 +94,7 @@ class TextsSuite extends FunSuite {
   }
 
   test("a source file excluded by name is reported, while globs and files that are not source are not") {
-    val root = Files.createTempDirectory("bonsai-excluded-")
-    try {
+    Scratch.using("bonsai-excluded-") { root =>
       List("isa/Mufu.scala", "build.sbt", "native/a.cc").foreach { path =>
         Files.createDirectories(root.resolve(path).getParent)
         Files.writeString(root.resolve(path), "x"): Unit
@@ -107,7 +105,7 @@ class TextsSuite extends FunSuite {
         Texts.excludedSources(root, globs).map(finding => (finding.node.source, finding.rule.id)),
         Vector("isa/Mufu.scala" -> "excluded-source", "native/a.cc" -> "excluded-source")
       )
-    } finally Using.resource(Files.walk(root))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+    }
   }
 
   test("a binary file is reported once, and line rules skip it") {
@@ -159,8 +157,8 @@ class TextsSuite extends FunSuite {
   }
 
   test("rules are read from the manifest, and a rule missing what it needs is rejected") {
-    val file = Files.createTempFile("bonsai-", ".tsv")
-    try {
+    Scratch.using("bonsai-") { directory =>
+      val file = directory.resolve("manifest.tsv")
       Files.writeString(
         file,
         "text-exclude\t**/vendor/**\ntext\t0\tkind\tterms\ntext\t0\twords\tplan\ntext\t0\tlevel\twarning\n" +
@@ -174,12 +172,11 @@ class TextsSuite extends FunSuite {
         terms.map(rule => (rule.kind, rule.level, rule.words)),
         Vector((Texts.Kind.Terms, Finding.Level.Warning, Vector("plan")))
       )
-    } finally Files.delete(file)
+    }
   }
 
   test("the files git sees are checked against the globs of each rule, and errors fail unless kept as warnings") {
-    val root = Files.createTempDirectory("bonsai-texts-")
-    try {
+    Scratch.using("bonsai-texts-") { root =>
       def write(path: String, text: String) = {
         val file = root.resolve(path)
         Files.createDirectories(file.getParent)
@@ -205,6 +202,6 @@ class TextsSuite extends FunSuite {
         Report(found, Map.empty, options.copy(baseline = found.map(_.key).toSet)).map(_.level),
         Vector("warning")
       )
-    } finally Using.resource(Files.walk(root))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+    }
   }
 }

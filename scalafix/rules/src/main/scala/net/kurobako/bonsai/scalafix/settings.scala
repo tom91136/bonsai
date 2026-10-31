@@ -14,13 +14,6 @@ private object settings {
     value
   }
 
-  def bool(fields: Map[String, Conf], key: String): Option[Boolean] = fields.get(key).flatMap {
-    case Conf.Bool(value)  => Some(value)
-    case Conf.Str("true")  => Some(true)
-    case Conf.Str("false") => Some(false)
-    case _                 => None
-  }
-
   def strings(fields: Map[String, Conf], key: String): List[String] = fields.get(key).toList.flatMap {
     case Conf.Lst(values) => values.collect { case Conf.Str(value) => value }
     case Conf.Str(value)  => List(value)
@@ -31,9 +24,4 @@ private object settings {
     case Conf.Lst(values) => values.collect { case Conf.Obj(entries) => entries.toMap }
     case _                => Nil
   }
-
-  def table(fields: Map[String, Conf], key: String): Map[String, String] = fields.get(key).toList.flatMap {
-    case Conf.Obj(entries) => entries.collect { case (name, Conf.Str(value)) => name -> value }
-    case _                 => Nil
-  }.toMap
 }

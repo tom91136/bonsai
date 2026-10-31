@@ -17,7 +17,7 @@ object LintScopes {
   )
 
   /** An AutoCloseable local used outside try-with-resources. */
-  object AutoCloseableResource extends Lint {
+  private object AutoCloseableResource extends Lint {
     val id    = JavaLint.AutoCloseableResource.id
     val kinds = Set(Tree.Kind.VARIABLE)
 
@@ -40,7 +40,7 @@ object LintScopes {
   }
 
   /** A non-null field that is not initialized where it is declared. */
-  object NotNullField extends Lint {
+  private object NotNullField extends Lint {
     val id    = JavaLint.NotNullField.id
     val kinds = Set(Tree.Kind.VARIABLE)
 
@@ -63,8 +63,7 @@ object LintScopes {
     val method     = context.ancestors.collectFirst { case method: MethodTree => method }
     val root       = method.flatMap(method => Option(context.trees.getPath(context.unit, method)))
     val declaredIn = context.ancestors.collect {
-      case lambda: LambdaExpressionTree => lambda
-      case clazz: ClassTree             => clazz
+      case declared: (LambdaExpressionTree | ClassTree) => declared
     }.toSet
     var escaped = false
     var closed  = false
@@ -88,7 +87,7 @@ object LintScopes {
             parent.getLeaf match {
               case ret: ReturnTree if ret.getExpression eq path.getLeaf => escaped = true
               case invocation: MethodInvocationTree                     =>
-                if invocation.getArguments.asScala.exists(_ eq path.getLeaf) then escaped = true
+                if Lints.arguments(invocation).exists(_ eq path.getLeaf) then escaped = true
               case select: MemberSelectTree if select.getExpression eq path.getLeaf =>
                 val grandparent = parent.getParentPath
                 if grandparent != null then
@@ -98,10 +97,10 @@ object LintScopes {
                       closed = true
                     case _ => ()
                   }
-              case newClass: NewClassTree if newClass.getArguments.asScala.exists(_ eq path.getLeaf) => escaped = true
-              case assignment: AssignmentTree if assignment.getExpression eq path.getLeaf            => escaped = true
-              case variable: VariableTree if variable.getInitializer eq path.getLeaf                 => escaped = true
-              case _: MemberReferenceTree                                                            => escaped = true
+              case newClass: NewClassTree if Lints.arguments(newClass).exists(_ eq path.getLeaf) => escaped = true
+              case assignment: AssignmentTree if assignment.getExpression eq path.getLeaf        => escaped = true
+              case variable: VariableTree if variable.getInitializer eq path.getLeaf             => escaped = true
+              case _: MemberReferenceTree                                                        => escaped = true
               case array: NewArrayTree
                   if array.getInitializers != null && array.getInitializers.asScala.exists(_ eq path.getLeaf) =>
                 escaped = true
@@ -123,7 +122,6 @@ object LintScopes {
     ResourceUse(escaped, closed)
   }
 
-  /** Whether the initializer acquires a resource, rather than naming one that another owner holds. */
   /** The methods that close a resource: its own close, and the release or disposal it closes through. */
   private val Closing = Set("close", "release", "dispose")
 
@@ -133,48 +131,48 @@ object LintScopes {
   /** Names of methods that open a resource, which the code that calls one closes. */
   private val Opening = "(create|open|new|build|start|connect|from|subscribe|acquire)[A-Z0-9_]?.*".r
 
-  private def ownedResource(context: Context, tree: Tree, depth: Int = 0): Boolean = tree match {
+  /** The static factories of resources, by the class that declares them. */
+  private val Factories = Map(
+    "java.nio.file.Files" -> Set(
+      "newInputStream",
+      "newOutputStream",
+      "newBufferedReader",
+      "newBufferedWriter",
+      "lines",
+      "list",
+      "walk",
+      "find"
+    ),
+    "java.nio.channels.FileChannel"             -> Set("open"),
+    "java.nio.channels.AsynchronousFileChannel" -> Set("open"),
+    "java.nio.channels.Channels"                ->
+      Set("newChannel", "newInputStream", "newOutputStream", "newReader", "newWriter"),
+    "java.nio.channels.SocketChannel"       -> Set("open"),
+    "java.nio.channels.ServerSocketChannel" -> Set("open"),
+    "java.nio.channels.DatagramChannel"     -> Set("open"),
+    "java.nio.file.FileSystems"             -> Set("newFileSystem"),
+    "java.net.http.HttpClient"              -> Set("newHttpClient"),
+    "java.net.http.HttpClient.Builder"      -> Set("build"),
+    "java.lang.ProcessBuilder"              -> Set("start"),
+    "java.util.concurrent.ForkJoinPool"     -> Set("commonPool")
+  )
+
+  private def ownedResource(context: Context, tree: Tree, depth: Int = 0): Boolean = Lint.unwrapped(tree) match {
     case newClass: NewClassTree =>
       !elementAt(context, newClass).exists(constructor =>
         NoOpClose(constructor.getEnclosingElement.toString)
       )
-    case parenthesized: ParenthesizedTree       => ownedResource(context, parenthesized.getExpression, depth)
-    case cast: TypeCastTree                     => ownedResource(context, cast.getExpression, depth)
     case conditional: ConditionalExpressionTree =>
       ownedResource(context, conditional.getTrueExpression, depth) &&
       ownedResource(context, conditional.getFalseExpression, depth)
     case invocation: MethodInvocationTree =>
       elementAt(context, invocation.getMethodSelect).exists {
         case method: ExecutableElement =>
-          val owner = method.getEnclosingElement match {
-            case element: TypeElement => element.getQualifiedName.toString
-            case _                    => ""
-          }
-          val name = method.getSimpleName.toString
-          (owner == "java.nio.file.Files" && Set(
-            "newInputStream",
-            "newOutputStream",
-            "newBufferedReader",
-            "newBufferedWriter",
-            "lines",
-            "list",
-            "walk",
-            "find"
-          ).contains(name)) ||
-          (owner == "java.nio.channels.FileChannel" && name == "open") ||
-          (owner == "java.nio.channels.AsynchronousFileChannel" && name == "open") ||
-          (owner == "java.nio.channels.Channels" &&
-            Set("newChannel", "newInputStream", "newOutputStream", "newReader", "newWriter").contains(name)) ||
-          (owner == "java.nio.channels.SocketChannel" && name == "open") ||
-          (owner == "java.nio.channels.ServerSocketChannel" && name == "open") ||
-          (owner == "java.nio.channels.DatagramChannel" && name == "open") ||
-          (owner == "java.nio.file.FileSystems" && name == "newFileSystem") ||
-          (owner == "java.net.http.HttpClient" && name == "newHttpClient") ||
-          (owner == "java.net.http.HttpClient.Builder" && name == "build") ||
-          (owner == "java.lang.ProcessBuilder" && name == "start") ||
+          val owner = Lints.owner(method).getOrElse("")
+          val name  = method.getSimpleName.toString
+          Factories.get(owner).exists(_.contains(name)) ||
           (owner == "java.util.concurrent.Executors" && name.startsWith("new")) ||
-          (owner == "java.util.concurrent.ForkJoinPool" && name == "commonPool") ||
-          unwrapped(context, invocation, method, owner, name, depth) ||
+          unwrapped(context, invocation, owner, name, depth) ||
           opening(context, method, depth)
         case _ => false
       }
@@ -185,7 +183,6 @@ object LintScopes {
   private def unwrapped(
       context: Context,
       invocation: MethodInvocationTree,
-      method: ExecutableElement,
       owner: String,
       name: String,
       depth: Int
@@ -211,15 +208,7 @@ object LintScopes {
     holds && depth < 3 &&
     (Option(context.trees.getTree(method)) match {
       case Some(source) if source.getBody != null =>
-        val returned = scala.collection.mutable.ArrayBuffer.empty[ExpressionTree]
-        new TreeScanner[Unit, Unit] {
-          override def visitReturn(node: ReturnTree, unused: Unit): Unit = {
-            if node.getExpression != null then returned += node.getExpression
-            super.visitReturn(node, unused)
-          }
-          override def visitClass(node: ClassTree, unused: Unit): Unit                       = ()
-          override def visitLambdaExpression(node: LambdaExpressionTree, unused: Unit): Unit = ()
-        }.scan(source.getBody, ())
+        val returned = Lints.returns(source.getBody).flatMap(node => Option(node.getExpression))
         returned.nonEmpty && returned.forall(expression => allocated(context, expression, depth + 1))
       case Some(_) => false
       case None    => Opening.matches(method.getSimpleName.toString)
@@ -286,8 +275,7 @@ object LintScopes {
     }
   }
 
-  private def elementAt(context: Context, tree: Tree): Option[Element] =
-    Option(context.trees.getPath(context.unit, tree)).flatMap(path => Option(context.trees.getElement(path)))
+  private def elementAt(context: Context, tree: Tree): Option[Element] = Option(context.elementOf(tree))
 
   private def subtype(context: Context, tpe: TypeMirror, name: String): Boolean =
     Option(context.elements.getTypeElement(name)).exists(target => context.types.isSubtype(tpe, target.asType()))

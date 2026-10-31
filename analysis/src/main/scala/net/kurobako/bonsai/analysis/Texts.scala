@@ -1,10 +1,10 @@
 package net.kurobako.bonsai.analysis
 
 import java.nio.charset.StandardCharsets
-import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.PathMatcher
+import net.kurobako.bonsai.lifting.Globs
 import scala.util.Try
 import scala.util.matching.Regex
 
@@ -38,7 +38,9 @@ object Texts {
       continues: Option[Regex],
       neutral: Option[Regex],
       message: Option[String]
-  )
+  ) {
+    lazy val terms: Vector[(String, Regex)] = words.map(word => word -> term(word))
+  }
 
   // Git's own test for a binary file.
   private val Probe  = 8000
@@ -133,7 +135,7 @@ object Texts {
   }
 
   def matchers(globs: Vector[String]): Vector[PathMatcher] =
-    globs.map(glob => FileSystems.getDefault.getPathMatcher(s"glob:$glob"))
+    globs.map(Globs.matcher)
 
   /** The findings of `rules` over the files git sees under `root`, leaving out those `excluded` matches, with the files
     * git could not list as a problem.
@@ -190,6 +192,8 @@ object Texts {
     lazy val ignored = lines.zipWithIndex.flatMap((line, index) =>
       Ignore.findAllMatchIn(line).flatMap(found => Vector((index, found.group(1)), (index + 1, found.group(1))))
     ).toSet
+    lazy val notices                   = licensed(lines, Notices)
+    lazy val noticed                   = notices.flatten.toSet
     def exempt(index: Int, rule: Rule) = ignored((index, rule.kind.rule.id)) || ignored((index, "*"))
     rules.flatMap { rule =>
       val found = rule.kind match {
@@ -205,17 +209,15 @@ object Texts {
             )
           ).toVector
         case Kind.Terms =>
-          val terms  = rule.words.map(word => word -> term(word))
-          val notice = licensed(lines, Notices)
-          lines.zipWithIndex.flatMap((line, index) =>
-            terms.collect {
-              case (word, regex) if regex.findFirstIn(line).isDefined && !notice.exists(_.contains(index)) =>
+          lines.zipWithIndex.flatMap { (line, index) =>
+            rule.terms.collect {
+              case (word, regex) if regex.findFirstIn(line).isDefined && !noticed(index) =>
                 index -> rule.message.fold(s"$word is a forbidden term")(message => s"$word: $message")
             }
-          )
+          }
         case Kind.Pattern =>
           lines.zipWithIndex.collect {
-            case (line, index) if rule.pattern.exists(_.findFirstIn(line).isDefined) => index -> rule.message.get
+            case (line, index) if matching(rule.pattern, line) => index -> rule.message.get
           }
         case Kind.Preceded =>
           lines.zipWithIndex.collect {
@@ -232,21 +234,27 @@ object Texts {
   }
 
   /** The lines of each licence notice: from the line holding its first phrase to the end of the comment around it. */
-  private def licensed(lines: Vector[String], phrases: Vector[String]): Vector[Range] =
+  private def licensed(lines: Vector[String], phrases: Vector[String]): Vector[Range] = {
+    lazy val ends = commentEnds(lines)
     lines.indices.filter(index => phrases.exists(lines(index).contains)).foldLeft(Vector.empty[Range]) { (found, start) =>
-      if (found.exists(_.contains(start))) found else found :+ (start to commentEnd(lines, start))
+      if (found.lastOption.exists(_.contains(start))) found else found :+ (start to ends(start))
     }
+  }
 
   // A block comment runs to its closing line, and a run of line comments to its last line.
-  private def commentEnd(lines: Vector[String], start: Int): Int = {
-    val opened = lines.lastIndexWhere(_.contains("/*"), start)
-    if (opened >= 0 && !lines.slice(opened, start).exists(_.contains("*/")))
-      lines.indices.drop(start).find(lines(_).contains("*/")).getOrElse(lines.size - 1)
-    else {
-      def comment(line: String) = Comments.exists(line.trim.startsWith)
-      if (!comment(lines(start))) start
-      else lines.indices.drop(start).takeWhile(index => comment(lines(index))).lastOption.getOrElse(start)
+  private def commentEnds(lines: Vector[String]): Vector[Int] = {
+    val last                   = lines.size - 1
+    def latest(marker: String) = lines.indices.scanLeft(-1)((seen, i) => if (lines(i).contains(marker)) i else seen)
+    def comment(line: String)  = Comments.exists(line.trim.startsWith)
+    val opened                 = latest("/*")
+    val closed                 = latest("*/")
+    val closes                 = lines.indices.scanRight(last)((i, next) => if (lines(i).contains("*/")) i else next)
+    val runs                   = lines.indices.scanRight(last) { (i, next) =>
+      if (comment(lines(i)) && i < last && comment(lines(i + 1))) next else i
     }
+    lines.indices.map(start =>
+      if (opened(start + 1) >= 0 && closed(start) < opened(start + 1)) closes(start) else runs(start)
+    ).toVector
   }
 
   private def matching(pattern: Option[Regex], line: String): Boolean = pattern.exists(_.findFirstIn(line).isDefined)
@@ -255,8 +263,8 @@ object Texts {
   private def followed(lines: Vector[String], rule: Rule): Vector[Int] =
     lines.indices.foldLeft((Vector.empty[Int], false)) { case ((found, inside), index) =>
       val line = lines(index)
-      if (matching(rule.pattern, line)) (found, true)
-      else if (inside && (matching(rule.continues, line) || matching(rule.neutral, line))) (found, true)
+      if (matching(rule.pattern, line) || (inside && (matching(rule.continues, line) || matching(rule.neutral, line))))
+        (found, true)
       else if (inside && line.trim.nonEmpty) (found :+ index, false)
       else (found, false)
     }._1

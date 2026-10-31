@@ -23,7 +23,7 @@ class ReportSuite extends AnalysisSuite {
   private val every    = Finding.Rule.values.map(_.id).toSet
 
   private def details(found: Vector[Report.Line], level: String): Vector[String] =
-    found.filter(_.level == level).map(_.finding.detail)
+    found.view.collect { case line if line.level == level => line.finding.detail }.toVector
 
   test("suppression applies to a member by rule, and to a type with everything declared inside it") {
     val found = lines(defaults).map(line => s"${line.finding.node.name}: ${line.finding.detail}")
@@ -150,7 +150,7 @@ class ReportSuite extends AnalysisSuite {
 
   test("baselines round trip through their text form") {
     val found = lines(defaults)
-    assertEquals(Report.baseline(Report.write(found)), found.map(_.finding.key).toSet)
+    assertEquals(Report.keys(Report.write(found)), found.map(_.finding.key).toSet)
   }
 
   test("escalating every rule fails on any warning, while information stays information") {
@@ -177,9 +177,9 @@ class ReportSuite extends AnalysisSuite {
           |    val sets = xs.map(x => ys.toSet)
           |    xs.map(x => ys.map(y => zs.count(_ == y))).size + sets.size
           |  }
-          |  def plain(values: List[Int]): Int = values.map(_ + 1).filter(_ > 0).size
+          |  def plain(values: List[Int]): Int = values.map(_ + 1).filter(_ > 0).sum
           |  @SuppressWarnings(Array("bonsai:intermediate-collections")) def piped(values: List[Int]): Int =
-          |    values.map(_ + 1).filter(_ > 0).size
+          |    values.map(_ + 1).filter(_ > 0).sum
           |  def noisy(values: List[Int]): List[Int] = values.map { value => println(value); value }
           |  @SuppressWarnings(Array("bonsai:effectful-transform")) def printed(values: List[Int]): List[Int] =
           |    values.map { value => println(value); value }
@@ -219,11 +219,11 @@ class ReportSuite extends AnalysisSuite {
     assert(reported("Costly.cubic is O"), found.mkString("\n"))
     assert(reported("Costly.copiesQuiet is O"), found.mkString("\n"))
     assert(reported("Costly.copies allocates"), found.mkString("\n"))
-    assert(reported("Costly.plain chains"), found.mkString("\n"))
+    assert(reported("Costly.plain: map then filter"), found.mkString("\n"))
     assert(reported("Looping.looped calls"), found.mkString("\n"))
     assert(!reported("Costly.quiet is O"), found.mkString("\n"))
     assert(!reported("Costly.copiesQuiet allocates"), found.mkString("\n"))
-    assert(!reported("Costly.piped chains"), found.mkString("\n"))
+    assert(!reported("Costly.piped: map then filter"), found.mkString("\n"))
     assert(!reported("Looping.quiet calls"), found.mkString("\n"))
     assertEquals(found.count(_.startsWith("the function passed to map")), 1, found.mkString("\n"))
   }

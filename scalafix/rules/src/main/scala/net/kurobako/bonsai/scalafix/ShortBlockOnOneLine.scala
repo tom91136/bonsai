@@ -13,8 +13,10 @@ class ShortBlockOnOneLine extends SyntacticRule("ShortBlockOnOneLine") {
   private val maxColumn = 120
 
   override def fix(using document: SyntacticDocument): Patch = document.tree.collect { case branch: Term.If =>
-    val replaced = List(branch.thenp, branch.elsep).collect { case block: Term.Block => block }
-      .flatMap(block => oneLine(block).map(Patch.replaceTree(block, _)))
+    val replaced = List(branch.thenp, branch.elsep).flatMap {
+      case block: Term.Block => oneLine(block).map(Patch.replaceTree(block, _))
+      case _                 => None
+    }
     (replaced ++ Option.when(replaced.nonEmpty)(lint(
       "one-line-block",
       "write the block on one line, separating the statement from the result with a semicolon",

@@ -1,0 +1,5 @@
+# the compiler plugin of every line runs in the oldest patch it is said to run in, and the sources compile in the patch
+# below it without the plugin
+> oldestCompiles
+# the compiler plugin fails in the patch below
+> belowFails

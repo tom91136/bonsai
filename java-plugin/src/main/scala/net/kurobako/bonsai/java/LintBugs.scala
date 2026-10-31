@@ -2,8 +2,6 @@ package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
 import com.sun.source.util.TreePath
-import com.sun.source.util.TreePathScanner
-import com.sun.source.util.TreeScanner
 import javax.lang.model.`type`.TypeKind
 import javax.lang.model.`type`.TypeMirror
 import javax.lang.model.element.Element
@@ -12,7 +10,6 @@ import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.Modifier
 import javax.lang.model.element.TypeElement
 import javax.lang.model.element.VariableElement
-import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
 /** The lints of the probable bugs of the Java code, which the code of a type holds.
@@ -35,19 +32,16 @@ object LintBugs {
       SystemGetProperty,
       ThreadDefaultRun,
       ExplicitArrayFilling,
-      CollectionFactory,
       PrimitiveArrayVarargs,
       IgnoredCallResult,
       ReadString,
       SameReturnValue,
-      StreamJoin,
       SuspiciousInvocationHandler,
-      OptionalSignature,
-      StreamOf
+      OptionalSignature
     )
 
   /** A cast of a value to the type it already has. */
-  object RedundantCast extends Lint {
+  private object RedundantCast extends Lint {
     val id    = JavaLint.RedundantCast.id
     val kinds = Set(Tree.Kind.TYPE_CAST)
 
@@ -79,7 +73,7 @@ object LintBugs {
   }
 
   /** A value that is assigned to itself. */
-  object SelfAssignment extends Lint {
+  private object SelfAssignment extends Lint {
     val id    = JavaLint.SelfAssignment.id
     val kinds = Set(Tree.Kind.ASSIGNMENT)
 
@@ -102,7 +96,7 @@ object LintBugs {
   }
 
   /** Two strings that are compared by reference and not by their text. */
-  object StringReferenceEquality extends Lint {
+  private object StringReferenceEquality extends Lint {
     val id    = JavaLint.StringReferenceEquality.id
     val kinds = Set(Tree.Kind.EQUAL_TO, Tree.Kind.NOT_EQUAL_TO)
 
@@ -117,7 +111,7 @@ object LintBugs {
   }
 
   /** A type that compares its values and does not give them a hash code. */
-  object EqualsWithoutHashCode extends Lint {
+  private object EqualsWithoutHashCode extends Lint {
     val id    = JavaLint.EqualsWithoutHashCode.id
     val kinds = Set(Tree.Kind.CLASS, Tree.Kind.ENUM, Tree.Kind.RECORD)
 
@@ -159,14 +153,14 @@ object LintBugs {
   }
 
   /** A cast that a narrower declaration of the variable would make unnecessary. */
-  object CastNarrowingVariable extends Lint {
+  private object CastNarrowingVariable extends Lint {
     val id    = JavaLint.CastNarrowingVariable.id
     val kinds = Set(Tree.Kind.TYPE_CAST)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val cast       = tree.asInstanceOf[TypeCastTree]
-      val expression = LintBugs.stripped(cast.getExpression)
-      val element    = LintBugs.elementAt(context, expression)
+      val expression = Lints.unparenthesised(cast.getExpression)
+      val element    = context.elementOf(expression)
       Option(element).collect {
         case variable: VariableElement if variable.getKind == ElementKind.LOCAL_VARIABLE =>
           variable
@@ -174,10 +168,10 @@ object LintBugs {
         Option(context.trees.getTree(variable)).collect { case declaration: VariableTree => declaration }.flatMap {
           declaration =>
             Option(declaration.getInitializer).flatMap { initializer =>
-              val declared = LintBugs.typeAt(context, expression)
-              val castType = LintBugs.typeAt(context, cast)
-              val initType = LintBugs.typeAt(context, initializer)
-              if LintBugs.subtype(context, initType, castType) && LintBugs.subtype(context, castType, declared) &&
+              val declared = context.typeOf(expression)
+              val castType = context.typeOf(cast)
+              val initType = context.typeOf(initializer)
+              if Lints.subtype(context, initType, castType) && Lints.subtype(context, castType, declared) &&
                 !context.types.isSameType(castType, declared) && !LintBugs.assigned(context, variable)
               then
                 Some(context.found(
@@ -191,7 +185,7 @@ object LintBugs {
   }
 
   /** A charset name or `Charset.forName` call that names one of the standard charsets. */
-  object StandardCharset extends Lint {
+  private object StandardCharset extends Lint {
     val id    = JavaLint.StandardCharset.id
     val kinds = Set(Tree.Kind.METHOD_INVOCATION)
 
@@ -209,7 +203,7 @@ object LintBugs {
       context.element match {
         case method: ExecutableElement
             if method.getSimpleName.contentEquals("forName") &&
-              LintBugs.owner(method).contains("java.nio.charset.Charset") =>
+              Lints.owner(method).contains("java.nio.charset.Charset") =>
           if invocation.getArguments.size == 1 then
             invocation.getArguments.get(0) match {
               case literal: LiteralTree =>
@@ -222,10 +216,10 @@ object LintBugs {
         case method: ExecutableElement if method.getSimpleName.contentEquals("name") =>
           invocation.getMethodSelect match {
             case select: MemberSelectTree =>
-              LintBugs.elementAt(context, select.getExpression) match {
+              context.elementOf(select.getExpression) match {
                 case field: VariableElement
                     if field.getKind == ElementKind.FIELD &&
-                      LintBugs.owner(field).contains("java.nio.charset.StandardCharsets") =>
+                      Lints.owner(field).contains("java.nio.charset.StandardCharsets") =>
                   Vector(context.found(s"use ${select.getExpression} instead of ${select.getExpression}.name()"))
                 case _ => Vector.empty
               }
@@ -237,7 +231,7 @@ object LintBugs {
   }
 
   /** A system property that a standard constant or method already names. */
-  object SystemGetProperty extends Lint {
+  private object SystemGetProperty extends Lint {
     val id    = JavaLint.SystemGetProperty.id
     val kinds = Set(Tree.Kind.METHOD_INVOCATION)
 
@@ -246,7 +240,7 @@ object LintBugs {
       context.element match {
         case method: ExecutableElement
             if method.getSimpleName.contentEquals("getProperty") &&
-              LintBugs.owner(method).contains("java.lang.System") &&
+              Lints.owner(method).contains("java.lang.System") &&
               invocation.getArguments.size == 1 =>
           invocation.getArguments.get(0) match {
             case literal: LiteralTree =>
@@ -263,7 +257,7 @@ object LintBugs {
   }
 
   /** A thread built without a task, whose default run method does nothing. */
-  object ThreadDefaultRun extends Lint {
+  private object ThreadDefaultRun extends Lint {
     val id    = JavaLint.ThreadDefaultRun.id
     val kinds = Set(Tree.Kind.NEW_CLASS)
 
@@ -271,12 +265,12 @@ object LintBugs {
       val newClass = tree.asInstanceOf[NewClassTree]
       val thread   = context.element match {
         case constructor: ExecutableElement =>
-          LintBugs.owner(constructor).contains("java.lang.Thread")
+          Lints.owner(constructor).contains("java.lang.Thread")
         case _ => false
       }
       val taskless = newClass.getArguments.isEmpty ||
         (newClass.getArguments.size == 1 &&
-          Option(context.typeOf(newClass.getArguments.get(0))).exists(_.toString == "java.lang.String"))
+          Lints.isType(context.typeOf(newClass.getArguments.get(0)), "java.lang.String"))
       if thread && newClass.getClassBody == null && taskless then
         Vector(context.found("the thread has no task, so its default run method does nothing"))
       else Vector.empty
@@ -284,7 +278,7 @@ object LintBugs {
   }
 
   /** A loop that fills an array with one value, which Arrays.fill says in one call. */
-  object ExplicitArrayFilling extends Lint {
+  private object ExplicitArrayFilling extends Lint {
     val id    = JavaLint.ExplicitArrayFilling.id
     val kinds = Set(Tree.Kind.FOR_LOOP)
 
@@ -292,7 +286,7 @@ object LintBugs {
       val loop = tree.asInstanceOf[ForLoopTree]
       val fill = loop.getInitializer.asScala.toVector match {
         case Vector(variable: VariableTree) if variable.getInitializer != null =>
-          Option(loop.getCondition).flatMap(condition =>
+          Option(loop.getCondition).flatMap(_ =>
             Option(
               loop.getStatement
             ).collect { case block: BlockTree => block }.flatMap(_.getStatements.asScala.toVector match {
@@ -313,35 +307,8 @@ object LintBugs {
     }
   }
 
-  /** An unmodifiable copy of a collection, which a Java 9 factory says in one call. */
-  object CollectionFactory extends Lint {
-    val id    = JavaLint.CollectionFactory.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
-
-    private val Factories = Map(
-      "unmodifiableList" -> "List.copyOf",
-      "unmodifiableSet"  -> "Set.copyOf",
-      "unmodifiableMap"  -> "Map.copyOf"
-    )
-
-    def check(context: Context, tree: Tree): Vector[Found] = {
-      val invocation = tree.asInstanceOf[MethodInvocationTree]
-      context.element match {
-        case method: ExecutableElement
-            if LintBugs.owner(method).contains("java.util.Collections") &&
-              invocation.getArguments.size == 1 =>
-          val name = method.getSimpleName.toString
-          Factories.get(name).collect {
-            case factory if invocation.getArguments.get(0).isInstanceOf[NewClassTree] && Release.atLeast(context, 10) =>
-              context.found(s"use $factory instead of $name of a copy")
-          }.toVector
-        case _ => Vector.empty
-      }
-    }
-  }
-
   /** A primitive array passed to a varargs method without saying it is one argument. */
-  object PrimitiveArrayVarargs extends Lint {
+  private object PrimitiveArrayVarargs extends Lint {
     val id    = JavaLint.PrimitiveArrayVarargs.id
     val kinds = Set(Tree.Kind.METHOD_INVOCATION)
 
@@ -349,8 +316,8 @@ object LintBugs {
       val invocation = tree.asInstanceOf[MethodInvocationTree]
       context.element match {
         case method: ExecutableElement
-            if method.isVarArgs && LintBugs.owner(method).contains("java.lang.reflect.Method") =>
-          invocation.getArguments.asScala.toVector.zipWithIndex.collectFirst {
+            if method.isVarArgs && Lints.owner(method).contains("java.lang.reflect.Method") =>
+          Lints.arguments(invocation).zipWithIndex.collectFirst {
             case (argument, index) if index > 0 && LintBugs.primitiveArray(context, argument) =>
               context.found("a primitive array passed to a varargs method is one argument; cast it to Object to say so")
           }.toVector
@@ -360,7 +327,7 @@ object LintBugs {
   }
 
   /** A call whose result the code drops, where the result says whether the call worked. */
-  object IgnoredCallResult extends Lint {
+  private object IgnoredCallResult extends Lint {
     val id    = JavaLint.IgnoredCallResult.id
     val kinds = Set(Tree.Kind.METHOD_INVOCATION)
 
@@ -376,7 +343,7 @@ object LintBugs {
     def check(context: Context, tree: Tree): Vector[Found] =
       context.element match {
         case method: ExecutableElement =>
-          val key = LintBugs.owner(method).map(_ + "#" + method.getSimpleName).getOrElse("")
+          val key = Lints.owner(method).map(_ + "#" + method.getSimpleName).getOrElse("")
           if Checked(key) && method.getReturnType.getKind != TypeKind.VOID && Collector.discarded(context.path) then
             Vector(context.found(s"the result of ${method.getSimpleName} says whether the call worked"))
           else Vector.empty
@@ -385,22 +352,22 @@ object LintBugs {
   }
 
   /** A string built from the bytes of a file, which Files.readString reads directly. */
-  object ReadString extends Lint {
+  private object ReadString extends Lint {
     val id    = JavaLint.ReadString.id
     val kinds = Set(Tree.Kind.NEW_CLASS)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
-      case newClass: NewClassTree if newClass.getArguments.asScala.nonEmpty =>
+      case newClass: NewClassTree if Lints.arguments(newClass).nonEmpty =>
         val string = context.element match {
-          case constructor: ExecutableElement => LintBugs.owner(constructor).contains("java.lang.String")
+          case constructor: ExecutableElement => Lints.owner(constructor).contains("java.lang.String")
           case _                              => false
         }
         val reads = newClass.getArguments.get(0) match {
           case invocation: MethodInvocationTree =>
-            LintBugs.elementAt(context, invocation) match {
+            context.elementOf(invocation) match {
               case method: ExecutableElement =>
                 method.getSimpleName.contentEquals("readAllBytes") &&
-                LintBugs.owner(method).contains("java.nio.file.Files")
+                Lints.owner(method).contains("java.nio.file.Files")
               case _ => false
             }
           case _ => false
@@ -418,7 +385,7 @@ object LintBugs {
     }
 
   /** An InvocationHandler whose invoke returns null for every method, including equals. */
-  object SuspiciousInvocationHandler extends Lint {
+  private object SuspiciousInvocationHandler extends Lint {
     val id    = JavaLint.SuspiciousInvocationHandler.id
     val kinds = Set(Tree.Kind.METHOD, Tree.Kind.LAMBDA_EXPRESSION)
 
@@ -448,16 +415,8 @@ object LintBugs {
 
     /** The first value the body returns, when it returns, and returns null on every path that does. */
     private def returnsOnlyNull(body: BlockTree): Option[ExpressionTree] = {
-      val returned = mutable.ArrayBuffer.empty[Option[ExpressionTree]]
-      new TreeScanner[Unit, Unit] {
-        override def visitReturn(node: ReturnTree, unused: Unit): Unit = {
-          returned += Option(node.getExpression)
-          super.visitReturn(node, unused)
-        }
-        override def visitClass(node: ClassTree, unused: Unit): Unit                       = ()
-        override def visitLambdaExpression(node: LambdaExpressionTree, unused: Unit): Unit = ()
-      }.scan(body, ())
-      val allNull = returned.nonEmpty && returned.forall {
+      val returned = Lints.returns(body).map(node => Option(node.getExpression))
+      val allNull  = returned.nonEmpty && returned.forall {
         case Some(literal: LiteralTree) => literal.getKind == Tree.Kind.NULL_LITERAL
         case _                          => false
       }
@@ -466,7 +425,7 @@ object LintBugs {
   }
 
   /** An Optional used as a field or parameter, which a project chooses to forbid or allow. */
-  object OptionalSignature extends Lint {
+  private object OptionalSignature extends Lint {
     val id    = JavaLint.OptionalSignature.id
     val kinds = Set(Tree.Kind.VARIABLE)
 
@@ -524,35 +483,8 @@ object LintBugs {
     }
   }
 
-  /** List.of(...).stream(), which Stream.of(...) states directly. */
-  object StreamOf extends Lint {
-    val id    = JavaLint.StreamOf.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
-
-    def check(context: Context, tree: Tree): Vector[Found] = tree match {
-      case invocation: MethodInvocationTree =>
-        invocation.getMethodSelect match {
-          case select: MemberSelectTree
-              if select.getIdentifier.contentEquals("stream") && invocation.getArguments.isEmpty =>
-            select.getExpression match {
-              case of: MethodInvocationTree =>
-                of.getMethodSelect match {
-                  case factory: MemberSelectTree
-                      if factory.getIdentifier.contentEquals("of") &&
-                        factory.getExpression.toString.endsWith("List") =>
-                    Vector(context.found("use Stream.of instead of List.of(...).stream()"))
-                  case _ => Vector.empty
-                }
-              case _ => Vector.empty
-            }
-          case _ => Vector.empty
-        }
-      case _ => Vector.empty
-    }
-  }
-
   /** A method that always returns the same literal value, and so does every method that overrides it. */
-  object SameReturnValue extends Lint {
+  private object SameReturnValue extends Lint {
     val id    = JavaLint.SameReturnValue.id
     val kinds = Set(Tree.Kind.METHOD)
 
@@ -563,7 +495,9 @@ object LintBugs {
             val value  = Option.when(method.getBody != null)(returnedValue(method)).flatten
             val parent = Hierarchy.overridden(context, element)
             if parent.nonEmpty then context.registry.overrides(Registry.Returns, parent, value)
-            else if value.isDefined || element.getModifiers.contains(Modifier.ABSTRACT) || method.getBody == null then
+            else if Hierarchy.closed(element) &&
+              (value.isDefined || element.getModifiers.contains(Modifier.ABSTRACT) || method.getBody == null)
+            then
               context.registry.declares(
                 Registry.Returns,
                 element,
@@ -579,53 +513,9 @@ object LintBugs {
 
     /** The literal every return of the method gives, if they all give the same. */
     private def returnedValue(method: MethodTree): Option[String] = {
-      val returned = mutable.ArrayBuffer.empty[ExpressionTree]
-      new TreeScanner[Unit, Unit] {
-        override def visitReturn(node: ReturnTree, unused: Unit): Unit = {
-          if node.getExpression != null then returned += node.getExpression
-          super.visitReturn(node, unused)
-        }
-        override def visitClass(node: ClassTree, unused: Unit): Unit                       = ()
-        override def visitLambdaExpression(node: LambdaExpressionTree, unused: Unit): Unit = ()
-      }.scan(method.getBody, ())
-      val values = returned.map(_.toString).distinct
+      val returned = Lints.returns(method.getBody).flatMap(node => Option(node.getExpression))
+      val values   = returned.map(_.toString).distinct
       Option.when(returned.nonEmpty && values.size == 1 && returned.forall(_.isInstanceOf[LiteralTree]))(values.head)
-    }
-  }
-
-  /** A stream collected by joining, which String.join states directly. */
-  object StreamJoin extends Lint {
-    val id    = JavaLint.StreamJoin.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
-
-    def check(context: Context, tree: Tree): Vector[Found] = tree match {
-      case invocation: MethodInvocationTree =>
-        invocation.getMethodSelect match {
-          case collect: MemberSelectTree
-              if collect.getIdentifier.contentEquals("collect") && invocation.getArguments.size == 1 =>
-            invocation.getArguments.get(0) match {
-              case join: MethodInvocationTree =>
-                join.getMethodSelect match {
-                  case select: MemberSelectTree
-                      if select.getIdentifier.contentEquals("joining") &&
-                        join.getArguments.size == 1 &&
-                        join.getArguments.get(0).isInstanceOf[LiteralTree] =>
-                    collect.getExpression match {
-                      case stream: MethodInvocationTree =>
-                        stream.getMethodSelect match {
-                          case method: MemberSelectTree if method.getIdentifier.contentEquals("stream") =>
-                            Vector(context.found("use String.join instead of collecting a stream with joining"))
-                          case _ => Vector.empty
-                        }
-                      case _ => Vector.empty
-                    }
-                  case _ => Vector.empty
-                }
-              case _ => Vector.empty
-            }
-          case _ => Vector.empty
-        }
-      case _ => Vector.empty
     }
   }
 
@@ -635,59 +525,11 @@ object LintBugs {
       case _                                              => false
     }
 
-  private def stripped(tree: Tree): ExpressionTree = tree match {
-    case parenthesized: ParenthesizedTree => stripped(parenthesized.getExpression)
-    case expression: ExpressionTree       => expression
-    case _                                => tree.asInstanceOf[ExpressionTree]
-  }
-
-  private def elementAt(context: Context, tree: Tree): Element =
-    Option(context.trees.getPath(context.unit, tree)).flatMap(path => Option(context.trees.getElement(path))).orNull
-
-  private def typeAt(context: Context, tree: Tree): TypeMirror =
-    Option(context.trees.getPath(context.unit, tree)).flatMap(path => Option(context.trees.getTypeMirror(path))).orNull
-
-  private def owner(element: Element): Option[String] =
-    Option(element.getEnclosingElement).collect { case owner: TypeElement => owner.getQualifiedName.toString }
-
-  private def subtype(context: Context, left: TypeMirror, right: TypeMirror): Boolean =
-    left != null && right != null &&
-      (try context.types.isSubtype(left, right)
-      catch { case _: IllegalArgumentException => false })
-
   /** Whether the code assigns the variable after its declaration. */
   private def assigned(context: Context, variable: Element): Boolean = {
     val scope = context.ancestors.collectFirst {
-      case method: MethodTree => method
-      case clazz: ClassTree   => clazz
+      case declared: (MethodTree | ClassTree) => declared
     }
-    scope.exists { root =>
-      var found = false
-      new TreePathScanner[Unit, Unit] {
-        private def check(tree: Tree): Unit =
-          if context.trees.getElement(new TreePath(getCurrentPath, tree)) == variable then found = true
-
-        override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
-          check(node.getVariable)
-          super.visitAssignment(node, unused)
-        }
-
-        override def visitCompoundAssignment(node: CompoundAssignmentTree, unused: Unit): Unit = {
-          check(node.getVariable)
-          super.visitCompoundAssignment(node, unused)
-        }
-
-        override def visitUnary(node: UnaryTree, unused: Unit): Unit = {
-          node.getKind match {
-            case Tree.Kind.PREFIX_INCREMENT | Tree.Kind.PREFIX_DECREMENT |
-                Tree.Kind.POSTFIX_INCREMENT | Tree.Kind.POSTFIX_DECREMENT =>
-              check(node.getExpression)
-            case _ => ()
-          }
-          super.visitUnary(node, unused)
-        }
-      }.scan(new TreePath(new TreePath(context.unit), root), ())
-      found
-    }
+    scope.exists(root => Effects.assigns(context, new TreePath(new TreePath(context.unit), root), variable))
   }
 }

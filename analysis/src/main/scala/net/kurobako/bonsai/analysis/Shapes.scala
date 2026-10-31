@@ -62,9 +62,12 @@ object Shapes {
   def parameters(method: Symbol)(using Context): Vector[Algebra.Field] =
     clauses(method).headOption.getOrElse(Vector.empty)
 
+  def termClauses(method: Symbol)(using Context): List[List[Symbol]] =
+    method.paramSymss.filter(_.headOption.exists(_.isTerm))
+
   /** The term parameter lists of a method, in order. */
   def clauses(method: Symbol)(using Context): Vector[Vector[Algebra.Field]] =
-    method.paramSymss.filter(_.headOption.exists(_.isTerm)).toVector.map(_.toVector.map { parameter =>
+    termClauses(method).toVector.map(_.toVector.map { parameter =>
       Algebra.Field(
         parameter.name.toString,
         of(parameter.info),

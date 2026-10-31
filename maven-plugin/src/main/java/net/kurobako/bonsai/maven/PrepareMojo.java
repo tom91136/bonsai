@@ -47,13 +47,12 @@ public class PrepareMojo extends BonsaiMojo {
 
   @Override
   public void execute() throws MojoExecutionException {
-    Configuration configuration = configuration();
-    String mode = mode();
     Tools tools = tools();
-    File plugin = tools.compilerPlugin(scalaVersion(), version);
-    Ids ids;
+    Configuration configuration = configuration(tools);
+    String mode = mode();
+    File plugin = compilerPlugin(tools);
+    Ids ids = ids(tools, plugin, tools.rulesJar(version));
     try {
-      ids = Ids.of(plugin, tools.analysisJar(scalaVersion(), version), tools.rulesJar(version));
       ids.validate(configuration.disabled(), configuration.errors(), configuration.warnings());
     } catch (java.io.IOException error) {
       throw new MojoExecutionException("bonsai: cannot read the ids the tools accept", error);
@@ -72,9 +71,7 @@ public class PrepareMojo extends BonsaiMojo {
     write(file, options);
     getLog().info("bonsai: the compiler reads " + file);
 
-    project.getProperties().setProperty("bonsai.scalac.args", file.toString());
-    if (scalacArgs != null && !scalacArgs.isBlank()) {
-      project.getProperties().setProperty("bonsai.scalac.args", scalacArgs);
-    }
+    project.getProperties().setProperty(
+      "bonsai.scalac.args", scalacArgs != null && !scalacArgs.isBlank() ? scalacArgs : file.toString());
   }
 }

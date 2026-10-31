@@ -3,69 +3,20 @@ package net.kurobako.bonsai.scalafix
 import scala.meta.*
 import scalafix.v1.*
 
-/** Members of one type that disagree with their siblings: a value of the kind a registry of the type collects that the
-  * registry leaves out, and a parameter whose type or default differs in one method from several others sharing its
-  * name.
+/** Parameters of the methods of one type that disagree with their siblings: a type or default that differs in one
+  * method from several others sharing the parameter's name.
   */
-class ApiConsistency extends SemanticRule("ApiConsistency") {
+class ApiConsistency extends SyntacticRule("ApiConsistency") {
   // A parameter of a method, with its declared type as written.
   private type Use = (Defn.Def, Term.Param, String)
 
-  private val Collections     = Set("Vector", "Seq", "List", "Set", "IndexedSeq")
-  private val MinimumRegistry = 2
   private val MinimumAgreeing = 2
 
-  override def fix(using document: SemanticDocument): Patch = {
-    val references =
-      document.tree.collect { case name: Term.Name => name.symbol }.groupMapReduce(identity)(_ => 1)(_ + _)
-    document.tree.collect {
-      case owner: Defn.Object => registries(owner.templ, references) + parameters(owner.templ, owner.name.value)
-      case owner: Defn.Class  => registries(owner.templ, references) + parameters(owner.templ, owner.name.value)
-      case owner: Defn.Trait  => registries(owner.templ, references) + parameters(owner.templ, owner.name.value)
-    }.asPatch
-  }
-
-  /** Values listed by a collection literal of their siblings, all of one type constructor, form a registry of it. A
-    * public sibling of that type nothing else in the file refers to is likely missing from it.
-    */
-  private def registries(template: Template, references: Map[Symbol, Int])(using SemanticDocument): Patch = {
-    val values = definitions.members(template).collect {
-      case value @ Defn.Val(mods, List(Pat.Var(name)), _, _) => (value, mods, name)
-    }
-    val siblings = values.map(_._3.symbol).toSet
-    val kinds    = values.flatMap((_, _, name) => definitions.valueType(name.symbol).map(name.symbol -> _)).toMap
-    val listed   = values.flatMap((value, _, _) =>
-      value.rhs match {
-        case application: Term.Apply if collection(application.fun) =>
-          val members = application.argClause.values.collect { case name: Term.Name => name.symbol }
-          Option.when(
-            members.size >= MinimumRegistry && members.size == application.argClause.values.size &&
-              members.forall(member => siblings(member) && kinds.contains(member)) &&
-              members.map(kinds).distinct.size == 1
-          )(kinds(members.head) -> members)
-        case _ => None
-      }
-    ).groupMapReduce(_._1)(_._2.toSet)(_ ++ _)
-    values.collect {
-      case (_, mods, name)
-          if definitions.public(mods) && kinds.get(name.symbol).exists(listed.contains) &&
-            !listed(kinds(name.symbol))(name.symbol) && references.getOrElse(name.symbol, 0) <= 1 =>
-        lint(
-          "registry-drift",
-          s"${name.value} is of the kind the collections of its siblings register, but none lists it; add it to one, " +
-            "or derive the registry from the definitions",
-          name.pos
-        )
-    }.asPatch
-  }
-
-  @annotation.tailrec
-  private def collection(function: Term)(using SemanticDocument): Boolean = function match {
-    case Term.Name(name)                        => Collections(name) && function.symbol.value.startsWith("scala/")
-    case application: Term.ApplyType            => collection(application.fun)
-    case Term.Select(inner, Term.Name("apply")) => collection(inner)
-    case _                                      => false
-  }
+  override def fix(using document: SyntacticDocument): Patch = document.tree.collect {
+    case owner: Defn.Object => parameters(owner.templ, owner.name.value)
+    case owner: Defn.Class  => parameters(owner.templ, owner.name.value)
+    case owner: Defn.Trait  => parameters(owner.templ, owner.name.value)
+  }.asPatch
 
   private def common[K](variants: Map[K, List[Use]]): Option[(K, List[Use])] =
     variants.maxByOption(_._2.size).filter(_._2.size >= MinimumAgreeing)

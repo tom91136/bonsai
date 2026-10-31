@@ -199,7 +199,7 @@ class ComplexityPatternsSuite extends AnalysisSuite {
           |  val Filled: Vector[Int] = Vector.fill(4)(0)
           |}
           |
-          |object Registry {
+          |object Ledger {
           |  val Built: Vector[Int] = scala.util.Random.shuffle(Vector(1, 2, 3))
           |  val Live               = scala.collection.mutable.ArrayBuffer.empty[Int]
           |  def known(xs: Vector[Int]): Int = xs.count(x => Built.contains(x))
@@ -268,7 +268,7 @@ class ComplexityPatternsSuite extends AnalysisSuite {
     assertFinding(found, "complexity", "Patterns.unguarded is O(|xs| * |ys|)")
     assertFinding(found, "complexity", "Patterns.looseFilter is O(|es|^2)")
     assertFinding(found, "complexity", "Patterns.dynamicArgument is O(|info.encodings| * |xs|)")
-    assertFinding(found, "complexity", "Registry.growing is O(|Registry.Live| * |xs|)")
+    assertFinding(found, "complexity", "Ledger.growing is O(|Ledger.Live| * |xs|)")
   }
 
   test("accumulating with appends or concatenation in a loop is quadratic in time and in allocation") {
@@ -312,7 +312,7 @@ class ComplexityPatternsSuite extends AnalysisSuite {
       "Patterns.staticArgument",
       "Patterns.lanes",
       "Tables.known",
-      "Registry.known",
+      "Ledger.known",
       "Tables.pairs",
       "Tables.scaled"
     )
@@ -325,9 +325,10 @@ class ComplexityPatternsSuite extends AnalysisSuite {
     silent("Hot.cold")
   }
 
-  test("output-sized work is not reported as accidental complexity, while accidental scans keep firing") {
+  test("work that grows its own output is not reported, while scans and unbounded tables keep firing") {
     assertFinding(found, "complexity", "Patterns.containsDuplicate is O(|items|^2)")
-    silent("Patterns.renderMatrix", "Patterns.renderCombinations")
+    assertFinding(found, "complexity", "Patterns.renderMatrix is O(|cols| * |rows|)")
+    silent("Patterns.renderCombinations")
   }
 
   private lazy val seeking = extract(

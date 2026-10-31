@@ -1,5 +1,4 @@
 net.kurobako.bonsai.scalafix.BannedSyntax
-net.kurobako.bonsai.scalafix.CollectionChains
 net.kurobako.bonsai.scalafix.CollectionIdioms
 net.kurobako.bonsai.scalafix.CompanionOrder
 net.kurobako.bonsai.scalafix.ExplicitEtaExpansion
@@ -14,7 +13,6 @@ net.kurobako.bonsai.scalafix.PackageBoundary
 net.kurobako.bonsai.scalafix.RedundantCaseClassVal
 net.kurobako.bonsai.scalafix.RequireTailRec
 net.kurobako.bonsai.scalafix.SimplifyMatch
-net.kurobako.bonsai.scalafix.CaseClassEquality
 net.kurobako.bonsai.scalafix.MutableExposure
 net.kurobako.bonsai.scalafix.PublicSignatures
 net.kurobako.bonsai.scalafix.PublicTypes
@@ -38,3 +36,7 @@ net.kurobako.bonsai.scalafix.TimeRelativeComments
 net.kurobako.bonsai.scalafix.FullyQualifiedReference
 net.kurobako.bonsai.scalafix.ShortBlockOnOneLine
 net.kurobako.bonsai.scalafix.RestatedLookup
+net.kurobako.bonsai.scalafix.DanglingDocComment
+net.kurobako.bonsai.scalafix.DuplicateAnnotation
+net.kurobako.bonsai.scalafix.DisjunctionTables
+net.kurobako.bonsai.scalafix.FoldIdentity

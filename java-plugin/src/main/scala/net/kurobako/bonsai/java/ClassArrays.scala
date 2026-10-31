@@ -13,6 +13,7 @@ import scala.jdk.CollectionConverters.*
   */
 private[java] final class ClassArrays(context: Context) {
   import ClassArrays.*
+  import Known.*
 
   private val Depth = 4
 
@@ -104,13 +105,16 @@ private[java] final class ClassArrays(context: Context) {
     found
   }
 
+  private def invokedMethod(invocation: MethodInvocationTree): Option[ExecutableElement] =
+    Option(context.elementOf(invocation.getMethodSelect)).collect { case method: ExecutableElement => method }
+
   /** The value a call of a helper of the build gives: its statements run over the values of the arguments. */
   private def call(invocation: MethodInvocationTree, env: Env, depth: Int): Option[Known] =
-    Option(context.elementOf(invocation.getMethodSelect)).collect { case method: ExecutableElement => method }.flatMap {
+    invokedMethod(invocation).flatMap {
       method =>
-        if method.getEnclosingElement.toString == "java.util.Arrays" && method.getSimpleName.contentEquals("copyOf")
+        if Lints.owner(method).contains("java.util.Arrays") && method.getSimpleName.contentEquals("copyOf")
         then
-          invocation.getArguments.asScala.toVector match {
+          Lints.arguments(invocation) match {
             case Vector(source, size) =>
               for {
                 array <- evaluate(source, env, depth)
@@ -124,7 +128,7 @@ private[java] final class ClassArrays(context: Context) {
           }
         else
           Option(context.trees.getTree(method)).filter(_.getBody != null).flatMap { source =>
-            val arguments = invocation.getArguments.asScala.toVector.map(evaluate(_, env, depth))
+            val arguments = Lints.arguments(invocation).map(evaluate(_, env, depth))
             if arguments.exists(_.isEmpty) || arguments.size != method.getParameters.size then None
             else {
               val bound = method.getParameters.asScala.zip(arguments.flatten).map((p, v) => (p: Element) -> v).toMap
@@ -174,11 +178,11 @@ private[java] final class ClassArrays(context: Context) {
 
   /** The environment after `System.arraycopy`, which copies a range of classes between arrays. */
   private def copying(invocation: MethodInvocationTree, env: Env, depth: Int): Option[Env] =
-    Option(context.elementOf(invocation.getMethodSelect)).collect { case method: ExecutableElement => method }
+    invokedMethod(invocation)
       .filter(method =>
-        method.getEnclosingElement.toString == "java.lang.System" && method.getSimpleName.contentEquals("arraycopy")
+        Lints.owner(method).contains("java.lang.System") && method.getSimpleName.contentEquals("arraycopy")
       ).flatMap { _ =>
-        invocation.getArguments.asScala.toVector match {
+        Lints.arguments(invocation) match {
           case Vector(from, fromAt, to, toAt, length) =>
             for {
               source  <- evaluate(from, env, depth)
@@ -202,11 +206,12 @@ private[java] final class ClassArrays(context: Context) {
 private[java] object ClassArrays {
   def apply(context: Context): ClassArrays = new ClassArrays(context)
 
-  type Env = Map[Element, Known]
+  private type Env = Map[Element, Known]
 
   /** What the evaluation knows of a value. */
-  sealed trait Known
-  final case class Item(tpe: TypeMirror)                    extends Known
-  final case class Items(items: Vector[Option[TypeMirror]]) extends Known
-  final case class Count(value: Int)                        extends Known
+  private enum Known {
+    case Item(tpe: TypeMirror)
+    case Items(types: Vector[Option[TypeMirror]])
+    case Count(value: Int)
+  }
 }

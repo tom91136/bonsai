@@ -21,24 +21,19 @@ class FilenameConventions extends SyntacticRule("FilenameConventions") {
       if (mismatches.isEmpty) Patch.empty
       else {
         val names = mismatches.map(_.name).distinct.sorted.mkString(", ")
-        Patch.lint(
-          Diagnostic(
-            id = "top-level-filename",
-            message = s"named top-level declarations in $fileName must be named $expected; found: $names",
-            position = mismatches.head.position
-          )
+        lint(
+          "top-level-filename",
+          s"named top-level declarations in $fileName must be named $expected; found: $names",
+          mismatches.head.position
         )
       }
     }
 
-  private def sourceName(input: Input): Option[String] = input match {
-    case file: Input.File        => file.path.toString.split("[/\\\\]").lastOption.filter(_.nonEmpty)
-    case file: Input.VirtualFile => file.path.split("[/\\\\]").lastOption.filter(_.nonEmpty)
-    case _                       => None
-  }
+  private def sourceName(input: Input): Option[String] =
+    definitions.path(input).split("[/\\\\]").lastOption.filter(_.nonEmpty)
 
   private def topLevelDeclarations(tree: Tree): List[Declaration] = tree match {
-    case Source(stats) => stats.flatMap(packageStats(_)).flatMap(declarations(_))
+    case Source(stats) => stats.flatMap(stat => packageStats(stat).flatMap(declarations(_)))
     case _             => Nil
   }
 
@@ -48,21 +43,18 @@ class FilenameConventions extends SyntacticRule("FilenameConventions") {
   }
 
   private def declarations(stat: Stat): List[Declaration] = stat match {
-    case value: Defn.Val        => patternDeclarations(value.pats)
-    case value: Decl.Val        => patternDeclarations(value.pats)
-    case value: Defn.Var        => patternDeclarations(value.pats)
-    case value: Decl.Var        => patternDeclarations(value.pats)
-    case value: Defn.Def        => named(value.name)
-    case value: Decl.Def        => named(value.name)
-    case value: Defn.Type       => named(value.name)
-    case value: Decl.Type       => named(value.name)
-    case value: Defn.Class      => named(value.name)
-    case value: Defn.Trait      => named(value.name)
-    case value: Defn.Object     => named(value.name)
-    case value: Defn.Enum       => named(value.name)
-    case value: Defn.Given      => named(value.name)
-    case value: Defn.GivenAlias => named(value.name)
-    case _                      => Nil
+    case value: (Defn.Val | Decl.Val | Defn.Var | Decl.Var) => patternDeclarations(value.pats)
+    case value: Defn.Def                                    => named(value.name)
+    case value: Decl.Def                                    => named(value.name)
+    case value: Defn.Type                                   => named(value.name)
+    case value: Decl.Type                                   => named(value.name)
+    case value: Defn.Class                                  => named(value.name)
+    case value: Defn.Trait                                  => named(value.name)
+    case value: Defn.Object                                 => named(value.name)
+    case value: Defn.Enum                                   => named(value.name)
+    case value: Defn.Given                                  => named(value.name)
+    case value: Defn.GivenAlias                             => named(value.name)
+    case _                                                  => Nil
   }
 
   private def named(name: Name): List[Declaration] =

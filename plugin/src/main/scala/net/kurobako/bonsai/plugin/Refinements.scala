@@ -14,6 +14,7 @@ import dotty.tools.dotc.core.Types.MethodType
 import dotty.tools.dotc.core.Types.PolyType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeRef
+import net.kurobako.bonsai.lifting.Calls
 
 /** Definitions and calls that opaque and refined types make mean something other than they read: extensions a member of
   * the underlying type replaces, methods that only call themselves, checked operations a conversion bypasses, equality
@@ -71,7 +72,7 @@ private class Refinements(checks: Checks, checked: Set[String], hot: => Boolean)
   def selfCall(method: tpd.DefDef): Unit = {
     val symbol = method.symbol
     if (!symbol.isOneOf(Flags.Deferred | Flags.Synthetic) && !method.rhs.isEmpty)
-      callee(Trees.unwrap(method.rhs), symbol.owner).filter(_ == symbol).foreach(_ =>
+      callee(Calls.peelInlined(method.rhs), symbol.owner).filter(_ == symbol).foreach(_ =>
         checks(
           Check.AccidentalSelfCall,
           s"${symbol.name} does nothing but call itself, so it recurses until the stack overflows; an overload or " +
@@ -131,7 +132,7 @@ private class Refinements(checks: Checks, checked: Set[String], hot: => Boolean)
   }
 
   /** The refined value a tree converts implicitly to its carrier. */
-  private def unrefined(tree: tpd.Tree): Option[tpd.Tree] = Trees.unwrap(tree) match {
+  private def unrefined(tree: tpd.Tree): Option[tpd.Tree] = Calls.peelInlined(tree) match {
     case tpd.Apply(function, List(value)) if conversion(function) && refined(value.tpe) && !refined(tree.tpe) =>
       Some(value)
     case _ => None
@@ -140,12 +141,12 @@ private class Refinements(checks: Checks, checked: Set[String], hot: => Boolean)
   private def conversion(function: tpd.Tree): Boolean =
     function.symbol.is(Flags.Implicit) ||
       function.symbol.name ==
-      nme.apply && Trees.selected(function).exists(_.qualifier.tpe.derivesFrom(defn.ConversionClass))
+      nme.apply && Calls.selected(function).exists(_.qualifier.tpe.derivesFrom(defn.ConversionClass))
 
   /** The extensions the scope of a refinement type declares, on itself or in its companion. */
   private def extensions(tpe: Type): List[Symbol] = refinement(tpe).toList.flatMap { symbol =>
     val scopes = List(symbol.owner, symbol.companionModule.moduleClass).filter(_.exists)
-    scopes.flatMap(_.info.decls.toList).filter(_.is(Flags.ExtensionMethod))
+    scopes.flatMap(_.info.decls.toList.filter(_.is(Flags.ExtensionMethod)))
   }
 
   // An extension on a refinement of another carrier, as on Long where the value is an Int, is not what was bypassed.
@@ -154,12 +155,14 @@ private class Refinements(checks: Checks, checked: Set[String], hot: => Boolean)
 
   private def refined(tpe: Type): Boolean = refinement(tpe).isDefined
 
+  private def head(tpe: Type): Symbol = tpe match {
+    case AppliedType(constructor, _) => constructor.typeSymbol
+    case other                       => other.typeSymbol
+  }
+
   private def refinement(tpe: Type): Option[Symbol] = {
-    val symbol = tpe.widen.dealias match {
-      case AppliedType(constructor, _) => constructor.typeSymbol
-      case other                       => other.typeSymbol
-    }
-    Option.when(symbol.exists && checked(Trees.qualified(symbol)))(symbol)
+    val symbol = head(tpe.widen.dealias)
+    Option.when(symbol.exists && checked(Calls.qualified(symbol)))(symbol)
   }
 
   /** Comparisons the compiler makes on boxed values when an opaque type stands for a primitive: `equals`, and `==` or
@@ -202,10 +205,7 @@ private class Refinements(checks: Checks, checked: Set[String], hot: => Boolean)
 
   private def boxing(tpe: Type): Boolean = opaque(tpe) && Trees.primitive(underlying(tpe))
 
-  private def opaque(tpe: Type): Boolean = tpe.dealias match {
-    case AppliedType(constructor, _) => constructor.typeSymbol.isOpaqueAlias
-    case other                       => other.typeSymbol.isOpaqueAlias
-  }
+  private def opaque(tpe: Type): Boolean = head(tpe.dealias).isOpaqueAlias
 
   /** The type an opaque type stands for, through any opaque types it is defined by. */
   @annotation.tailrec

@@ -21,7 +21,7 @@ java -Xss1g -Xmx4g -cp "$(cat "$stage/classpath")" net.kurobako.bonsai.analysis.
 cut -f2 "$stage/analysis.txt" | sort | uniq -c | awk '{ print $2 "\t" $1 }' >"$stage/counts.tsv"
 if [[ -n "$copy" ]]; then
   sbt --batch -Dsbt.ivy.home="$stage" -Divy.home="$stage" \
-    'publishLocal; ++3.10.0; plugin/publishLocal; analysis/publishLocal' >/dev/null
+    publishLocalAll >/dev/null
   (cd "$copy" && sbt --batch -Dsbt.ivy.home="$stage" -Divy.home="$stage" \
     'set Global / localCacheDirectory := file(sys.props("java.io.tmpdir") + "/bonsai-corpus-cache")' \
     'Test/compile' >"$stage/compile.txt" 2>&1 || true)

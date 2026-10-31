@@ -24,6 +24,8 @@ import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import dotty.tools.dotc.typer.Applications
 import dotty.tools.dotc.util.NoSourcePosition
 import dotty.tools.dotc.util.Spans.Span
+import net.kurobako.bonsai.effects.Partials
+import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
 /** Lints that need the types of expressions, which SemanticDB does not record: array comparisons, conversions to the
@@ -33,8 +35,8 @@ import scala.collection.mutable
 private class LintPhase(
     wildcards: Int,
     checks: Checks,
-    partials: Map[String, Exceptions.Partial],
-    throwing: List[(scala.util.matching.Regex, List[String])],
+    partials: Map[String, Partials.Partial],
+    throwing: Deferred[List[(scala.util.matching.Regex, List[String])]],
     hot: String => Boolean,
     hotDeclared: Boolean,
     cold: String => Boolean,
@@ -51,12 +53,7 @@ private class LintPhase(
     "toChar",
     "toDouble",
     "toFloat",
-    "toString",
-    "toList",
-    "toVector",
-    "toSeq",
-    "toIndexedSeq",
-    "toArray"
+    "toString"
   )
 
   // Compiler-generated methods are not the author's code, but lambdas, which are synthetic methods too, are.
@@ -66,22 +63,28 @@ private class LintPhase(
     Refinements(
       checks,
       checked,
-      ctx.owner.ownersIterator.exists(owner =>
-        owner.isClass && !owner.is(Flags.Package) && hot(Trees.qualified(owner).stripSuffix("$"))
-      )
+      Trees.enclosedBy(ctx.owner, owner => hot(Calls.qualified(owner)))
     )
 
   override def transformUnit(tree: tpd.Tree)(using Context): tpd.Tree = {
     Loops(checks, hot, hotDeclared).run(tree)
-    Exceptions(checks, partials, throwing).run(tree)
+    Chains(checks).run(tree)
+    Repeats(checks).run(tree)
+    Exceptions(checks, partials, throwing.value).run(tree)
     Effects(checks).run(tree)
+    Implied(checks).run(tree)
     Concurrency(checks).traverse(tree)
     Fields(checks).run(tree)
+    Equality(checks).run(tree)
     Nowarns(checks).run(tree)
     Lambdas(checks, hot, cold).run(tree)
     Aliases(checks).run(tree)
     Bundles(checks).run(tree)
     JdkInternals(checks).traverse(tree)
+    Branches(checks).run(tree)
+    Bindings(checks).run(tree)
+    Lazies(checks).run(tree)
+    RoundTrips(checks).run(tree)
     tree
   }
 
@@ -104,7 +107,7 @@ private class LintPhase(
         case tpd.Apply(select: tpd.Select, Nil) if select.symbol.name == nme.toString_ =>
           conversion(tree, select.qualifier)
         case tpd.Apply(function @ (_: tpd.Select | _: tpd.TypeApply), List(argument)) =>
-          Trees.selected(function).filter(select => OrderedComparisons(select.name)).foreach(select =>
+          Calls.selected(function).filter(select => OrderedComparisons(select.name)).foreach(select =>
             unordered(tree, select.qualifier, argument)
           )
         case _ => ()
@@ -124,7 +127,7 @@ private class LintPhase(
   override def transformTypeApply(tree: tpd.TypeApply)(using Context): tpd.Tree = {
     if (authored && tree.fun.symbol == defn.Any_isInstanceOf)
       tree.args.foreach(argument =>
-        typeTest(tree, argument.tpe, Trees.selected(tree.fun).fold(defn.AnyType)(_.qualifier.tpe), fixed = false)
+        typeTest(tree, argument.tpe, Calls.selected(tree.fun).fold(defn.AnyType)(_.qualifier.tpe), fixed = false)
       )
     tree
   }
@@ -271,7 +274,8 @@ private class LintPhase(
     val contextual = parameters.exists(_.isOneOf(Flags.Given | Flags.Implicit))
     val repeated   = parameters.exists(_.info.isRepeatedParam)
     val written    = tree.args.zip(parameters).takeWhile((argument, _) =>
-      !argument.isInstanceOf[tpd.NamedArg] && !Trees.named(argument) && !argument.symbol.name.is(DefaultGetterName) &&
+      !argument.isInstanceOf[tpd.NamedArg] && !LintPhase.labelled(argument) &&
+        !argument.symbol.name.is(DefaultGetterName) &&
         argument.span.exists &&
         !argument.span.isSynthetic
     )
@@ -303,8 +307,9 @@ private class LintPhase(
           )
         case _ => ()
       }
+      val byParameter = written.groupBy((_, parameter) => parameter.name)
       written.foreach { (argument, parameter) =>
-        written.find((crossed, other) =>
+        called(argument).flatMap(byParameter.get).getOrElse(Nil).find((crossed, other) =>
           other != parameter && named(argument, other) && named(crossed, parameter) &&
             argument.tpe.widen <:< other.info.widen && !deliberate(argument, crossed)
         ).foreach((_, other) =>
@@ -359,18 +364,18 @@ private class LintPhase(
       standard(overridden.owner)
     )
 
-  /** Only hierarchies the build can seal are reported: those sharing the two leading package segments of the test, and
-    * matched on a value whose static type is not an open trait of another module, which no sealing here makes checked.
+  /** Only types nothing outside the compilation can extend are reported: local ones and those whose access is confined
+    * to a class or object, which sealing makes checked. A scrutinee whose static type is an open trait of another
+    * module stays unchecked however the tested type is sealed.
     */
   private def typeTest(tree: tpd.Tree, tpe: Type, scrutinee: Type, fixed: Boolean)(using Context): Unit = {
-    val symbol                      = tpe.widen.dealias.classSymbol
-    val matched                     = scrutinee.widen.dealias.classSymbol
-    def organisation(owner: Symbol) = owner.enclosingPackageClass.fullName.toString.split('.').take(2).toList
-    val foreign                     = matched.is(Flags.Trait) && !matched.is(Flags.Sealed) &&
+    val symbol  = tpe.widen.dealias.classSymbol
+    val matched = scrutinee.widen.dealias.classSymbol
+    val foreign = matched.is(Flags.Trait) && !matched.is(Flags.Sealed) &&
       (fixed || !standard(matched) && !matched.isDefinedInCurrentRun)
     if (
       symbol.isOneOf(Flags.Trait | Flags.Abstract) && !symbol.isOneOf(Flags.Sealed | Flags.Final) &&
-      !symbol.is(Flags.JavaDefined) && organisation(symbol) == organisation(ctx.owner) && !foreign
+      !symbol.is(Flags.JavaDefined) && confined(symbol) && !foreign
     )
       checks(
         Check.OpenTypeTest,
@@ -378,6 +383,15 @@ private class LintPhase(
         tree.srcPos
       )
   }
+
+  @annotation.tailrec
+  private def confined(symbol: Symbol)(using Context): Boolean =
+    if (!symbol.exists || symbol.is(Flags.Package)) false
+    else if (symbol.owner.isTerm) true
+    else {
+      val boundary = symbol.accessBoundary(defn.RootClass)
+      if (boundary != defn.RootClass && !boundary.is(Flags.Package)) true else confined(symbol.owner)
+    }
 
   /** A type test that no value of the scrutinee's static type passes: two classes neither of which extends the other,
     * which no class can extend both of, or a trait and a class that cannot be extended and does not implement it.
@@ -490,10 +504,13 @@ private class LintPhase(
     case _                       => false
   }
 
-  private def named(argument: tpd.Tree, parameter: Symbol)(using Context): Boolean = argument match {
-    case tpd.Ident(name)     => name == parameter.name
-    case tpd.Select(_, name) => name == parameter.name
-    case _                   => false
+  private def named(argument: tpd.Tree, parameter: Symbol)(using Context): Boolean =
+    called(argument).contains(parameter.name)
+
+  private def called(argument: tpd.Tree): Option[Name] = argument match {
+    case tpd.Ident(name)     => Some(name)
+    case tpd.Select(_, name) => Some(name)
+    case _                   => None
   }
 
   private def unitInMap(tree: tpd.Tree, receiver: tpd.Tree, function: tpd.Tree)(using Context): Unit = {
@@ -544,11 +561,11 @@ private class LintPhase(
     * without the wrapper.
     */
   private def wrapped(tree: tpd.Select)(using Context): Unit = Unwrapped.get(tree.name.toString).foreach { method =>
-    Trees.unwrap(tree.qualifier) match {
+    Calls.peelInlined(tree.qualifier) match {
       case tpd.Apply(function, List(argument)) =>
         val symbol = function.symbol
         val owner  = symbol.owner.companionClass
-        Wrappers.get(Trees.qualified(owner)).filter((java, converter) =>
+        Wrappers.get(Calls.qualified(owner)).filter((java, converter) =>
           (symbol.name == nme.apply || symbol.name.toString == converter) &&
             argument.tpe.widen.derivesFrom(requiredClass(java))
         ).foreach { _ =>
@@ -575,9 +592,8 @@ private class LintPhase(
     }
   }
 
-  private def coldCode(using Context): Boolean = ctx.owner.ownersIterator.exists(owner =>
-    owner.isClass && !owner.is(Flags.Package) && cold(Trees.qualified(owner).stripSuffix("$"))
-  )
+  private def coldCode(using Context): Boolean =
+    Trees.enclosedBy(ctx.owner, owner => cold(Calls.qualified(owner)))
 
   /** Parameters, fields and values of a function type that Scala does not specialise for its primitive type arguments.
     * Boxing a Boolean returns a shared instance, so predicates are left alone. A constructor reports its parameters
@@ -612,14 +628,14 @@ private class LintPhase(
   // An error's message is prose for people; deciding control flow by it breaks when the wording changes.
   private def classification(condition: tpd.Tree, bound: Set[Symbol])(using Context): Unit = {
     @annotation.tailrec
-    def message(candidate: tpd.Tree): Boolean = Trees.unwrap(candidate) match {
+    def message(candidate: tpd.Tree): Boolean = Calls.peelInlined(candidate) match {
       case tpd.Apply(select: tpd.Select, Nil) => message(select)
       case tpd.Select(owner, name)            =>
         Messages(name.toString) && (name.toString == "message" || owner.tpe.widen.derivesFrom(defn.ThrowableClass))
       case reference: tpd.Ident => bound(reference.symbol)
       case _                    => false
     }
-    def text(candidate: tpd.Tree): Boolean = Trees.unwrap(candidate) match {
+    def text(candidate: tpd.Tree): Boolean = Calls.peelInlined(candidate) match {
       case tpd.Literal(constant) => constant.tag == Constants.StringTag
       case _                     => false
     }
@@ -651,26 +667,32 @@ private class LintPhase(
   /** A local closed by a statement of its own block after others that can fail first, leaking it when they do. A value
     * a `Using.Manager` registered closes on every path, as does one an earlier statement already closes.
     */
-  private def closing(statements: List[tpd.Tree])(using Context): Unit = statements.zipWithIndex.foreach {
-    case (value: tpd.ValDef, index) if closeable(value.symbol.info) && !registered(value.rhs) =>
-      def closes(tree: tpd.Tree) = Trees.unwrap(tree) match {
-        case tpd.Apply(tpd.Select(reference: tpd.Ident, name), Nil) =>
-          name.toString == "close" && reference.symbol == value.symbol
-        case _ => false
-      }
-      val after = statements.drop(index + 1)
-      val first = after.indexWhere(_.existsSubTree(closes(_)))
-      if (first > 0 && closes(after(first)))
-        checks(
-          Check.UnguardedClose,
-          s"${value.name} is closed only when the statements before close succeed; use Using.resource or try/finally",
-          after(first).srcPos
-        )
-    case _ => ()
+  private def closing(statements: List[tpd.Tree])(using Context): Unit = {
+    val all     = statements.toVector
+    val closers = all.zipWithIndex.flatMap((statement, at) =>
+      statement.filterSubTrees(closed(_).isDefined).flatMap(closed(_)).distinct.map(_ -> at)
+    ).groupMap(_._1)(_._2)
+    all.zipWithIndex.foreach {
+      case (value: tpd.ValDef, index) if closeable(value.symbol.info) && !registered(value.rhs) =>
+        closers.getOrElse(value.symbol, Vector.empty).find(_ > index).filter(_ > index + 1)
+          .filter(at => closed(all(at)).contains(value.symbol)).foreach(at =>
+            checks(
+              Check.UnguardedClose,
+              s"${value.name} is closed only when the statements before close succeed; use Using.resource or try/finally",
+              all(at).srcPos
+            )
+          )
+      case _ => ()
+    }
+  }
+
+  private def closed(tree: tpd.Tree)(using Context): Option[Symbol] = Calls.peelInlined(tree) match {
+    case tpd.Apply(tpd.Select(reference: tpd.Ident, name), Nil) if name.toString == "close" => Some(reference.symbol)
+    case _                                                                                  => None
   }
 
   private def registered(value: tpd.Tree)(using Context): Boolean =
-    Trees.qualified(Trees.unwrap(value).symbol) == "scala.util.Using.Manager.apply"
+    Calls.qualified(Calls.peelInlined(value).symbol) == "scala.util.Using.Manager.apply"
 
   private def closeable(tpe: Type)(using Context): Boolean =
     tpe.member(termName("close")).alternatives.exists(_.info.paramInfoss.flatten.isEmpty)
@@ -702,32 +724,44 @@ private class LintPhase(
     }
   }
 
-  private def fresh(tree: tpd.Tree)(using Context): Boolean = Trees.unwrap(tree) match {
+  private def fresh(tree: tpd.Tree)(using Context): Boolean = Calls.peelInlined(tree) match {
     case application @ tpd.Apply(_, Nil) =>
       application.fun.symbol.isConstructor && application.fun.symbol.owner == defn.ObjectClass
     case _ => false
   }
-
-  private def constructs(symbol: Symbol)(using Context): Boolean =
-    symbol.isConstructor || symbol.name == nme.apply && symbol.is(Flags.Synthetic)
 
   private class Tokens(candidates: Set[Symbol]) extends tpd.TreeTraverser {
     val compared: mutable.Set[Symbol] = mutable.Set.empty
     val other: mutable.Set[Symbol]    = mutable.Set.empty
 
     private def token(tree: tpd.Tree)(using Context): Option[Symbol] =
-      Some(Trees.unwrap(tree).symbol).filter(candidates)
+      Some(Calls.peelInlined(tree).symbol).filter(candidates)
 
     override def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
       case field: tpd.ValDef if candidates(field.symbol) => ()
       case tpd.Apply(function @ tpd.Select(left, _), List(right))
           if function.symbol == defn.Object_eq || function.symbol == defn.Object_ne =>
         List(left, right).foreach(operand => token(operand).fold(traverse(operand))(compared += _))
-      case application @ tpd.Apply(function, arguments) if constructs(application.fun.symbol) =>
+      case application @ tpd.Apply(function, arguments) if Trees.constructs(application.fun.symbol) =>
         traverse(function)
         arguments.foreach(argument => if (token(argument).isEmpty) traverse(argument))
       case reference: (tpd.Ident | tpd.Select) if candidates(reference.symbol) => other += reference.symbol
       case _                                                                   => traverseChildren(tree)
     }
   }
+}
+
+private object LintPhase {
+  private val Preceded = """(?s).*[(,]\s*[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*""".r
+  private val Labelled = """(?s)[A-Za-z_$][A-Za-z0-9_$]*\s*=[^=>].*""".r
+
+  /** Whether an argument was written as `name = value`, which typing can erase, as overload resolution does. Its span
+    * may start at the value or at the name.
+    */
+  private def labelled(argument: tpd.Tree)(using Context): Boolean = argument.span.exists &&
+    !argument.span.isSynthetic && {
+      val start = argument.span.start
+      Preceded.matches(argument.source.content.slice((start - 256).max(0), start).mkString) ||
+      Labelled.matches(Trees.text(argument))
+    }
 }

@@ -3,14 +3,11 @@ package net.kurobako.bonsai.analysis
 import java.nio.file.Files
 import java.nio.file.Path
 import munit.FunSuite
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
+import net.kurobako.bonsai.testing.Scratch
 
 class BuildSuite extends FunSuite {
-  private val directory = FunFixture[Path](
-    setup = _ => Files.createTempDirectory("bonsai-build-"),
-    teardown = root => Using.resource(Files.walk(root))(_.toList.asScala.reverse.foreach(Files.delete(_)))
-  )
+  private def withRoot(name: String)(body: Path => Unit): Unit =
+    test(name)(Scratch.using("bonsai-build-")(body))
 
   private def write(root: Path, relative: String, content: String): Path = {
     val file = root.resolve(relative)
@@ -18,7 +15,14 @@ class BuildSuite extends FunSuite {
     Files.writeString(file, content)
   }
 
-  directory.test("the manifest carries compiler options and hand-written sources") { root =>
+  withRoot("an unknown scope is named whichever record gives it") { root =>
+    Vector("output", "source", "model").foreach { tag =>
+      val manifest = write(root, s"$tag.tsv", s"$tag\tcore\tclasses\t/x\n")
+      assert(Manifest.read(manifest).left.exists(_.contains("unknown scope: classes")), tag)
+    }
+  }
+
+  withRoot("the manifest carries compiler options and hand-written sources") { root =>
     val manifest = write(
       root,
       "manifest.tsv",
@@ -30,7 +34,7 @@ class BuildSuite extends FunSuite {
     assertEquals(read.map(_.root), Right(Some(root)))
   }
 
-  directory.test("the manifest reads classpath and library lines, and names malformed lines with their position") {
+  withRoot("the manifest reads classpath and library lines, and names malformed lines with their position") {
     root =>
       val complete = write(
         root,
@@ -67,7 +71,7 @@ class BuildSuite extends FunSuite {
     assertEquals(Build.fatal(manifest).map(_.node.name), Vector("api"))
   }
 
-  directory.test("identical sources under the directories of different platforms are reported once per copy set") {
+  withRoot("identical sources under the directories of different platforms are reported once per copy set") {
     root =>
       val jvm      = write(root, "api/src/main/scalajvm/Digest.scala", "object Digest")
       val native   = write(root, "api/src/main/scalanative/Digest.scala", "object Digest")

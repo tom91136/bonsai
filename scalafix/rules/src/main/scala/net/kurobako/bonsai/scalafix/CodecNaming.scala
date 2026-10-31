@@ -15,7 +15,7 @@ class CodecNaming extends SemanticRule("CodecNaming") {
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
     case definition: Defn.Class if definitions.has[Mod.Case](definition.mods) =>
       val documented = schema(definition)
-      definition.ctor.paramClauses.flatMap(_.values).map { parameter =>
+      definition.ctor.paramClauses.flatMap(_.values.map { parameter =>
         val keys    = renames(parameter.mods, Key)
         val encoded = renames(parameter.mods, EncodedName).map(_._2).toSet
         keys.map { (annotation, wire) =>
@@ -34,7 +34,7 @@ class CodecNaming extends SemanticRule("CodecNaming") {
             )
           else Patch.empty
         }.asPatch
-      }.asPatch
+      }).asPatch
   }.asPatch
 
   /** The annotations of `symbol` among `mods`, with the string each passes. */
@@ -48,8 +48,8 @@ class CodecNaming extends SemanticRule("CodecNaming") {
     definition.templ.derives.exists(derived => derived.syntax.split('.').last == "Schema")
 
   private def removal(annotation: Mod.Annot): Patch = {
-    val spacing = annotation.parent.toList.flatMap(_.tokens).dropWhile(_.start < annotation.pos.end)
-      .takeWhile(_.is[Token.Whitespace])
+    val spacing = annotation.parent.iterator.flatMap(_.tokens).dropWhile(_.start < annotation.pos.end)
+      .takeWhile(_.is[Token.Whitespace]).toList
     Patch.removeTokens(annotation.tokens) + Patch.removeTokens(spacing)
   }
 }

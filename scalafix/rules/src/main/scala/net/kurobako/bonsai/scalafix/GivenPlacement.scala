@@ -39,7 +39,7 @@ class GivenPlacement extends SemanticRule("GivenPlacement") {
       case _                       => Nil
     }
     val companions = (constructor :: arguments).map(type_ => Symbol(type_.value.stripSuffix("#") + "."))
-    if (ambient(constructor.value) || definitions.function(tpe))
+    if (ambient(constructor.value) || function(tpe))
       lint(
         "ambient-given",
         "a given of a common type is picked up by unrelated code; give it a specific type",
@@ -55,4 +55,9 @@ class GivenPlacement extends SemanticRule("GivenPlacement") {
       )
     else Patch.empty
   }.asPatch
+
+  private def function(tpe: Type): Boolean = tpe match {
+    case _: Type.Function | _: Type.ContextFunction => true
+    case _                                          => false
+  }
 }

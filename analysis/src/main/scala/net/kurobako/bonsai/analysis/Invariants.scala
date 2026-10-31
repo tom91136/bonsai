@@ -12,28 +12,28 @@ object Invariants {
 
   /** Kleene evaluation: `None` when the arguments do not decide the predicate. */
   private def evaluate(predicate: Predicate, value: IndexedSeq[Argument]): Option[Boolean] = predicate match {
-    case Predicate.Known(known)    => Some(known)
-    case Predicate.Present(field)  => decide(value(field), Argument.Present, Argument.Absent)
-    case Predicate.Flag(field)     => decide(value(field), Argument.True, Argument.False)
-    case Predicate.Is(field, name) => value(field) match {
-        case Argument.Tag(actual) => Some(actual == name)
-        case _                    => None
+    case Predicate.Known(known)                => Some(known)
+    case Predicate.Holds(field, Probe.Present) => decide(value(field), Argument.Present, Argument.Absent)
+    case Predicate.Holds(field, Probe.Flag)    => decide(value(field), Argument.True, Argument.False)
+    case Predicate.Is(field, name)             => value(field) match {
+        case Argument.Word(Wording.Tag, actual) => Some(actual == name)
+        case _                                  => None
       }
     case Predicate.Compare(field, operator, bound) => value(field) match {
         case Argument.Number(actual) => Some(compare(actual, operator, bound))
         case _                       => None
       }
-    case Predicate.SameSize(_, _) | Predicate.Unknown => None
-    case Predicate.Not(inner)                         => evaluate(inner, value).map(!_)
-    case Predicate.And(left, right)                   =>
+    case Predicate.SameSize(_, _) | Predicate.Unknown    => None
+    case Predicate.Not(inner)                            => evaluate(inner, value).map(!_)
+    case Predicate.Connective(Junction.And, left, right) =>
       (evaluate(left, value), evaluate(right, value)) match {
         case (Some(false), _) | (_, Some(false)) => Some(false)
         case (Some(true), Some(true))            => Some(true)
         case _                                   => None
       }
     // De Morgan's laws hold in Kleene logic too.
-    case Predicate.Or(left, right) =>
-      evaluate(Predicate.Not(Predicate.And(Predicate.Not(left), Predicate.Not(right))), value)
+    case Predicate.Connective(Junction.Or, left, right) =>
+      evaluate(Predicate.Not(Predicate.Not(left).and(Predicate.Not(right))), value)
   }
 
   private def decide(argument: Argument, yes: Argument, no: Argument): Option[Boolean] =
@@ -49,16 +49,15 @@ object Invariants {
   }
 
   private def leaves(predicate: Predicate): Vector[Predicate] = predicate match {
-    case Predicate.Not(inner)       => leaves(inner)
-    case Predicate.And(left, right) => leaves(left) ++ leaves(right)
-    case Predicate.Or(left, right)  => leaves(left) ++ leaves(right)
-    case leaf                       => Vector(leaf)
+    case Predicate.Not(inner)                 => leaves(inner)
+    case Predicate.Connective(_, left, right) => leaves(left) ++ leaves(right)
+    case leaf                                 => Vector(leaf)
   }
 
   private def values(kind: Kind): Vector[Argument] = kind match {
     case Kind.Optional   => OptionalValues
     case Kind.Flag       => FlagValues
-    case Kind.Tag(cases) => cases.map(Argument.Tag(_))
+    case Kind.Tag(cases) => cases.map(Argument.Word(Wording.Tag, _))
     case _               => Vector.empty
   }
 
@@ -67,7 +66,7 @@ object Invariants {
 
   def findings(model: Algebra.Model, nodes: Map[String, Node]): Vector[Finding] = {
     val subjects =
-      model.products.map(product => Subject(product, product.name.split('.').last, "invariant", "constructions")) ++
+      model.products.map(product => Subject(product, Finding.simple(product.name), "invariant", "constructions")) ++
         model.preconditions.map(product =>
           Subject(product, Finding.short(product.name), "precondition", "calls")
         )
@@ -88,11 +87,10 @@ object Invariants {
   private def states(subject: Subject): Vector[(String, Finding.Rule)] = {
     val Subject(product, name, condition, _) = subject
     val domain                               = leaves(product.invariant).collect {
-      case Predicate.Present(field) => field
-      case Predicate.Flag(field)    => field
-      case Predicate.Is(field, _)   => field
-    }.distinct.sorted.map(index => (index, product.fields(index), values(product.fields(index).kind)))
-      .filter(_._3.nonEmpty)
+      case Predicate.Holds(field, _) => field
+      case Predicate.Is(field, _)    => field
+    }.distinct.sorted.view.map(index => (index, product.fields(index), values(product.fields(index).kind)))
+      .filter(_._3.nonEmpty).toVector
     if (domain.isEmpty || domain.map(_._3.size).product > MaxAssignments) Vector.empty
     else {
       val assignments = domain.foldLeft(Vector(Map.empty[Int, Argument])) { case (partial, (index, _, choices)) =>
@@ -102,18 +100,18 @@ object Invariants {
         } yield assignment.updated(index, value)
       }
       val valid = assignments.filter(assignment =>
-        evaluate(
+        !evaluate(
           product.invariant,
           Vector.tabulate(product.fields.size)(index => assignment.getOrElse(index, Argument.Unknown))
-        ) != Some(false)
+        ).contains(false)
       )
       val excluded = assignments.size - valid.size
       if (excluded == 0 || valid.isEmpty) Vector.empty
       else {
         val constant  = domain.filter((index, _, _) => valid.map(_(index)).distinct.size == 1)
-        val redundant = domain.filterNot(constant.toSet).filter { (index, field, _) =>
+        val redundant = domain.view.filterNot(constant.toSet).filter { (index, field, _) =>
           field.kind != Kind.Optional && valid.groupBy(_.removed(index)).values.forall(_.size == 1)
-        }
+        }.toVector
         val forced = constant.map((index, field, _) =>
           s"$name: the $condition forces ${field.name} to ${valid.head(index)}; it carries no information" ->
             Finding.Rule.InvariantConstant
@@ -135,7 +133,7 @@ object Invariants {
             val shown = domain.flatMap((index, field, _) =>
               assignment(index) match {
                 case Argument.Present | Argument.True => Some(field.name)
-                case Argument.Tag(tag)                => Some(s"${field.name}=$tag")
+                case Argument.Word(Wording.Tag, tag)  => Some(s"${field.name}=$tag")
                 case _                                => None
               }
             )
@@ -152,7 +150,7 @@ object Invariants {
 
   /** Constructions or calls whose known arguments definitely violate the invariant, with those sites. */
   private def violations(subject: Subject, sites: Vector[Algebra.Site]) = {
-    val failing = sites.filter(site => evaluate(subject.product.invariant, site.arguments) == Some(false))
+    val failing = sites.filter(site => evaluate(subject.product.invariant, site.arguments).contains(false))
     Option.when(failing.nonEmpty)(
       s"${subject.name}: ${failing.size} ${subject.uses} violate the ${subject.condition}: " +
         Finding.listed(failing.map(_.location), MaxShownSites) -> failing

@@ -31,7 +31,7 @@ class SmellsSuite extends AnalysisSuite {
             |  }
             |}""".stripMargin
       ),
-      library = true
+      libraries = Set("m")
     )
     val judged = Set(
       "constant-argument",
@@ -43,7 +43,7 @@ class SmellsSuite extends AnalysisSuite {
       "exclusive-options",
       "redundant-flag"
     )
-    val found = Report.findings(result).filter(finding => judged(finding.rule.id)).map(_.detail).sorted
+    val found = Report.findings(result).collect { case finding if judged(finding.rule.id) => finding.detail }.sorted
     assertEquals(
       found,
       Vector(
@@ -78,7 +78,7 @@ class SmellsSuite extends AnalysisSuite {
           |}""".stripMargin
     )
     assertEquals(
-      found.filter(_.rule == Finding.Rule.ConstantArgument).map(_.detail),
+      found.collect { case finding if finding.rule == Finding.Rule.ConstantArgument => finding.detail },
       Vector("Single.read(slot, into).into is always 30 across 2 calls")
     )
   }
@@ -192,6 +192,375 @@ class SmellsSuite extends AnalysisSuite {
           |}""".stripMargin
     )
     assertNoFinding(found)(_.rule.id == "inverted-boolean")
+  }
+
+  test("a private boolean method negated in every condition of an && or || chain is inverted") {
+    assertFinding(
+      findings(
+        "Visibility.scala" ->
+          """object Visibility {
+            |  private def hidden(flags: Int): Boolean = (flags & 1) != 0 || (flags & 2) != 0
+            |  def first(flags: Int, name: String): Boolean = name.nonEmpty && !hidden(flags)
+            |  def second(flags: Int, other: Int): Boolean = !hidden(flags) || other > 3
+            |}""".stripMargin
+      ),
+      "inverted-boolean",
+      "Visibility.hidden(flags): its Boolean result is inverted at all 2 calls"
+    )
+  }
+
+  test("a local boolean method negated at every call is inverted") {
+    assertFinding(
+      findings(
+        "Loops.scala" ->
+          """object Loops {
+            |  def independent(left: String, right: String, terms: List[String]): List[String] = {
+            |    def mentions(term: String, name: String): Boolean = term.contains(name)
+            |    terms.filter(term => !mentions(term, left) && !mentions(term, right))
+            |  }
+            |}""".stripMargin
+      ),
+      "inverted-boolean",
+      "mentions(term, name): its Boolean result is inverted at all 2 calls"
+    )
+  }
+
+  test("a nullary boolean method negated at every use is inverted") {
+    assertFinding(
+      findings(
+        "Gate.scala" ->
+          """class Gate(open: Boolean, forced: Boolean) {
+            |  private def ready: Boolean = open && !forced
+            |  def first: Boolean = !ready
+            |  def second(extra: Boolean): Boolean = extra && !ready
+            |}""".stripMargin
+      ),
+      "inverted-boolean",
+      "Gate.ready(): its Boolean result is inverted at all 2 calls"
+    )
+  }
+
+  test("a boolean method with a using clause negated at every call is inverted") {
+    assertFinding(
+      findings(
+        "Powers.scala" ->
+          """object Powers {
+            |  private def power(value: Long)(using scale: Int): Boolean = value > 0L && (value & (value - 1L)) == scale
+            |  def pairs(a: Long, b: Long)(using Int): Boolean = !power(a) || !power(b)
+            |  def single(a: Long)(using Int): Boolean = !power(a)
+            |}""".stripMargin
+      ),
+      "inverted-boolean",
+      "Powers.power(value): its Boolean result is inverted at all 3 calls"
+    )
+  }
+
+  test("a private boolean method already named as a negation is not inverted") {
+    val found = findings(
+      "Names.scala" ->
+        """object Names {
+          |  private def notEmpty(text: String): Boolean = text.nonEmpty
+          |  private def isNonZero(value: Int): Boolean = value != 0
+          |  private def hasNoParent(depth: Int): Boolean = depth == 0
+          |  def first(text: String, value: Int, depth: Int): Boolean =
+          |    !notEmpty(text) && !isNonZero(value) && !hasNoParent(depth)
+          |  def second(text: String, value: Int, depth: Int): Boolean =
+          |    !notEmpty(text) || !isNonZero(value) || !hasNoParent(depth)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule.id == "inverted-boolean")
+  }
+
+  test("a boolean method that implements a method of a supertype is not inverted") {
+    val found = findings(
+      "Checks.scala" ->
+        """trait Check { def holds(value: Int): Boolean }
+          |class Positive extends Check { def holds(value: Int): Boolean = value > 0 }
+          |object Use {
+          |  def first(check: Positive): Boolean = !check.holds(1)
+          |  def second(check: Positive): Boolean = !check.holds(2)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule.id == "inverted-boolean")
+  }
+
+  test("a boolean method negated at one call and read directly at another is not inverted") {
+    val found = findings(
+      "Visibility.scala" ->
+        """object Visibility {
+          |  private def hidden(flags: Int): Boolean = (flags & 1) != 0
+          |  def first(flags: Int): Boolean = !hidden(flags)
+          |  def second(flags: Int): Boolean = !hidden(flags) && hidden(flags + 1)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule.id == "inverted-boolean")
+  }
+
+  test("a boolean method negated at a single call is not inverted") {
+    val found = findings(
+      "Visibility.scala" ->
+        """object Visibility {
+          |  private def hidden(flags: Int): Boolean = (flags & 1) != 0
+          |  def first(flags: Int): Boolean = !hidden(flags)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule.id == "inverted-boolean")
+  }
+
+  test("a default that the only caller of a private method never relies on is unused") {
+    assertFinding(
+      findings(
+        "Linter.scala" ->
+          """object Linter {
+            |  private def walk(tree: Int, registry: Int = 0): Int = tree + registry
+            |  def run(tree: Int, registry: Int): Int = walk(tree, registry)
+            |}""".stripMargin
+      ),
+      "unused-default",
+      "Linter.walk(tree, registry).registry"
+    )
+  }
+
+  test("only the defaults no call relies on are unused, whether the call names its arguments or not") {
+    val found = findings(
+      "Render.scala" ->
+        """object Render {
+          |  def render(text: String, width: Int = 80, indent: Int = 2, fill: Char = ' '): String =
+          |    text.take(width) + indent + fill
+          |}""".stripMargin,
+      "Main.scala" ->
+        """object Main {
+          |  val first  = Render.render("a", 10, 4)
+          |  val second = Render.render("b", fill = '-', width = 20, indent = 1)
+          |  val third  = Render.render("c", 30, 3, '.')
+          |}""".stripMargin
+    )
+    assertFinding(found, "unused-default", "Render.render(text, width, indent, fill).width")
+    assertFinding(found, "unused-default", "Render.render(text, width, indent, fill).indent")
+    assertNoFinding(found)(finding => finding.rule.id == "unused-default" && finding.detail.contains(".fill"))
+  }
+
+  test("a default that some call relies on is used") {
+    val found = findings(
+      "Render.scala" -> "object Render { def render(text: String, width: Int = 80): String = text.take(width) }",
+      "Main.scala"   ->
+        """object Main {
+          |  val first  = Render.render("a", 10)
+          |  val second = Render.render("b")
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule.id == "unused-default")
+  }
+
+  test("a default that only a named argument leaves out is used") {
+    val found = findings(
+      "Render.scala" ->
+        "object Render { def render(text: String, width: Int = 80, fill: Char = ' '): String = text.take(width) + fill }",
+      "Main.scala" ->
+        "object Main { val first = Render.render(\"a\", fill = '-'); val second = Render.render(\"b\", 5, '.') }"
+    )
+    assertFinding(found, "unused-default", "Render.render(text, width, fill).fill")
+    assertNoFinding(found)(finding => finding.rule.id == "unused-default" && finding.detail.contains(".width"))
+  }
+
+  test("a default that only a test relies on is used") {
+    val result = extract(
+      Seq(
+        "Render.scala" -> "object Render { def render(text: String, width: Int = 80): String = text.take(width) }",
+        "Main.scala"   -> "object Main { val first = Render.render(\"a\", 10) }"
+      ),
+      Seq("RenderCheck.scala" -> "class RenderCheck { val second = Render.render(\"b\") }")
+    )
+    assertNoFinding(Smells.findings(result.smells, result.algebra.products, result.graph.nodes))(
+      _.rule.id == "unused-default"
+    )
+  }
+
+  test("a default of a method that a subclass may override or that implements another is not judged") {
+    val found = findings(
+      "Shapes.scala" ->
+        """trait Shape { def area(scale: Int = 1): Int }
+          |class Square extends Shape { def area(scale: Int = 1): Int = 4 * scale }
+          |class Base { def grow(by: Int = 1): Int = by }
+          |object Use {
+          |  def run(shape: Shape, square: Square, base: Base): Int = shape.area(2) + square.area(3) + base.grow(4)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule.id == "unused-default")
+  }
+
+  test("a default of the public API of a library is not judged by the callers of its own build") {
+    val result = extract(
+      Seq(
+        "Api.scala" ->
+          """package lib
+            |object Client { def fetch(name: String, retries: Int = 3): Int = retries + name.length }
+            |object Use { val value = Client.fetch("a", 1) }""".stripMargin
+      ),
+      libraries = Set("m")
+    )
+    assertNoFinding(Report.findings(result))(_.rule.id == "unused-default")
+  }
+
+  test("a method nothing calls and the defaults of constructors and case classes are not judged") {
+    val found = findings(
+      "Config.scala" ->
+        """class Config(val retries: Int = 3)
+          |case class Options(depth: Int = 1)
+          |object Config { def spare(count: Int = 1): Int = count }
+          |object Use { val config = Config(2); val options = Options(5) }""".stripMargin
+    )
+    assertNoFinding(found)(_.rule.id == "unused-default")
+  }
+
+  test("a default of a later parameter list that a call relies on is not judged") {
+    val found = findings(
+      "Fold.scala" ->
+        """object Fold {
+          |  def fold(seed: Int)(step: Int = 1): Int = seed + step
+          |  val first  = fold(1)()
+          |  val second = fold(2)(3)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule.id == "unused-default")
+  }
+
+  test("two flags that take three of their four combinations at literal calls encode three states") {
+    val found = findings(
+      "Loops.scala" ->
+        """object Loops {
+          |  private def loop(body: Int, check: Boolean, exhaustible: Boolean): Int =
+          |    if (check) { if (exhaustible) body else body + 1 } else if (exhaustible) body + 2 else body + 3
+          |  def first: Int  = loop(1, true, false)
+          |  def second: Int = loop(2, false, false)
+          |  def third: Int  = loop(3, false, true)
+          |  def fourth: Int = loop(4, false, false)
+          |}""".stripMargin
+    )
+    assertFinding(
+      found,
+      "flag-argument",
+      "check and exhaustible take only 3 of their 4 combinations across 4 calls"
+    )
+    assertNoFinding(found)(_.detail.contains("is a literal at all"))
+  }
+
+  test("flags are paired among several, each flag in at most one pair") {
+    val found = findings(
+      "Draw.scala" ->
+        """object Draw {
+          |  def draw(shape: String, filled: Boolean, dashed: Boolean, bold: Boolean): String =
+          |    if (filled && dashed && bold) shape else shape.toLowerCase
+          |  val a = draw("a", true, true, true)
+          |  val b = draw("b", true, false, true)
+          |  val c = draw("c", false, true, true)
+          |}""".stripMargin
+    )
+    assertFinding(found, "flag-argument", "Draw.draw(shape, filled, dashed, bold): filled and dashed take only 3")
+    assertNoFinding(found)(finding =>
+      finding.detail.contains("dashed is a literal") || finding.detail.contains("filled is a literal")
+    )
+  }
+
+  test("flags that take all four combinations, or only two, encode no three states") {
+    val found = findings(
+      "Draw.scala" ->
+        """object Draw {
+          |  def draw(shape: String, filled: Boolean, dashed: Boolean): String =
+          |    if (filled && dashed) shape else shape.toLowerCase
+          |  def mirror(shape: String, filled: Boolean, dashed: Boolean): String =
+          |    if (filled || dashed) shape else shape.toLowerCase
+          |  val a = draw("a", true, true)
+          |  val b = draw("b", true, false)
+          |  val c = draw("c", false, true)
+          |  val d = draw("d", false, false)
+          |  val e = mirror("e", true, true)
+          |  val f = mirror("f", false, false)
+          |  val g = mirror("g", false, false)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.detail.contains("combinations"))
+    assertFinding(found, "flag-argument", "Draw.draw(shape, filled, dashed).filled is a literal at all 4 calls")
+  }
+
+  test("a flag that some call computes cannot pair with another") {
+    val found = findings(
+      "Draw.scala" ->
+        """object Draw {
+          |  def draw(shape: String, filled: Boolean, dashed: Boolean): String =
+          |    if (filled && dashed) shape else shape.toLowerCase
+          |  def run(flag: Boolean): Unit = {
+          |    println(draw("a", true, true))
+          |    println(draw("b", true, false))
+          |    println(draw("c", false, flag))
+          |  }
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.detail.contains("combinations"))
+  }
+
+  test("two flags a method only stores are data of the value it builds, not states of the caller") {
+    val found = findings(
+      "Mesh.scala" ->
+        """case class Vertex(x: Int, bgra: Boolean, wide: Boolean)
+          |object Mesh { def uniform(x: Int, bgra: Boolean, wide: Boolean): Vertex = Vertex(x * 2, bgra, wide) }""".stripMargin,
+      "Main.scala" ->
+        """object Main {
+          |  val a = Mesh.uniform(1, true, true)
+          |  val b = Mesh.uniform(2, false, true)
+          |  val c = Mesh.uniform(3, true, false)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.detail.contains("combinations"))
+  }
+
+  test("a reference parameter that three calls leave null and others give a value is mostly null") {
+    val render =
+      method("lib.Api.render", "lib.Api", Vector(field("text", Algebra.Kind.Text), field("style", Algebra.Kind.Other)))
+    val found = smells(model(
+      methods = Vector(render),
+      sites = Map(
+        render.name -> Vector(
+          site(Algebra.Argument.Word(Algebra.Wording.Text, "a"), Algebra.Argument.Absent),
+          site(Algebra.Argument.Word(Algebra.Wording.Text, "b"), Algebra.Argument.Absent),
+          site(Algebra.Argument.Word(Algebra.Wording.Text, "c"), Algebra.Argument.Absent),
+          site(Algebra.Argument.Word(Algebra.Wording.Text, "d"), Algebra.Argument.Unknown),
+          site(Algebra.Argument.Word(Algebra.Wording.Text, "e"), Algebra.Argument.Present)
+        )
+      )
+    ))
+    assertFinding(
+      found,
+      "constant-argument",
+      "Api.render.style is null at 3 of 5 calls and given a value at the others"
+    )
+  }
+
+  test(
+    "a reference parameter left null by fewer than three calls, or by every call, or a value-giving one, is not mostly null"
+  ) {
+    val few    = method("lib.Api.few", "lib.Api", Vector(field("style", Algebra.Kind.Other)))
+    val all    = method("lib.Api.all", "lib.Api", Vector(field("style", Algebra.Kind.Other)))
+    val none   = method("lib.Api.none", "lib.Api", Vector(field("style", Algebra.Kind.Other)))
+    val option = method("lib.Api.option", "lib.Api", Vector(field("style", Algebra.Kind.Optional)))
+    val shared = method("lib.Api.shared", "lib.Api", Vector(field("style", Algebra.Kind.Other))).copy(shared = true)
+    val over   = method("lib.Api.over", "lib.Api", Vector(field("style", Algebra.Kind.Other))).copy(overriding = true)
+    val api    = method("lib.Api.api", "lib.Api", Vector(field("style", Algebra.Kind.Other))).copy(exported = true)
+    val mixed  =
+      Vector(Algebra.Argument.Absent, Algebra.Argument.Absent, Algebra.Argument.Absent, Algebra.Argument.Unknown)
+    val found = smells(model(
+      methods = Vector(few, all, none, option, shared, over, api),
+      sites = Map(
+        few.name    -> Vector(Algebra.Argument.Absent, Algebra.Argument.Absent, Algebra.Argument.Unknown).map(site(_)),
+        all.name    -> Vector.fill(4)(site(Algebra.Argument.Absent)),
+        none.name   -> Vector.fill(4)(site(Algebra.Argument.Unknown)),
+        option.name -> mixed.map(site(_)),
+        shared.name -> mixed.map(site(_)),
+        over.name   -> mixed.map(site(_)),
+        api.name    -> mixed.map(site(_))
+      )
+    ))
+    assertNoFinding(found)(_.detail.contains("is null at"))
   }
 
   test("a result kept by one caller and read only by a local method is not ignored") {
@@ -315,7 +684,7 @@ class SmellsSuite extends AnalysisSuite {
           |      other.pick(7) + other.pick(8)
           |  }
           |}""".stripMargin
-    ).filter(_.rule == Finding.Rule.FixedTypeParameter).map(_.detail)
+    ).collect { case finding if finding.rule == Finding.Rule.FixedTypeParameter => finding.detail }
     assertEquals(
       found,
       Vector(
@@ -427,10 +796,10 @@ class SmellsSuite extends AnalysisSuite {
   private def site(arguments: Algebra.Argument*): Algebra.Site =
     Algebra.Site(arguments.toVector, test = false, own = false, location = "Main.scala:1")
 
-  private def smells(model: Smells.Model, generated: Boolean = false): Vector[Finding] = {
+  private def smells(model: Smells.Model, nodeOf: String => Node = node(_)): Vector[Finding] = {
     val keys = model.methods.map(_.node) ++ model.usages.map(_.method.node) ++ model.abstractions.map(_.node) ++
       model.instantiations.map(_.node) ++ model.moduleUses.map(_.caller)
-    Smells.findings(model, Vector.empty, keys.map(key => key -> node(key, generated)).toMap)
+    Smells.findings(model, Vector.empty, keys.map(key => key -> nodeOf(key)).toMap)
   }
 
   private def model(
@@ -446,7 +815,10 @@ class SmellsSuite extends AnalysisSuite {
     val run   = method("lib.Api.run", "lib.Api", Vector(field("name", Algebra.Kind.Text)))
     val found = smells(model(
       methods = Vector(run),
-      sites = Map(run.name -> Vector(site(Algebra.Argument.Text("a")), site(Algebra.Argument.Text("a"))))
+      sites = Map(run.name -> Vector(
+        site(Algebra.Argument.Word(Algebra.Wording.Text, "a")),
+        site(Algebra.Argument.Word(Algebra.Wording.Text, "a"))
+      ))
     ))
     assertFinding(found, "constant-argument", "Api.run.name is always \"a\" across 2 calls")
   }
@@ -490,7 +862,7 @@ class SmellsSuite extends AnalysisSuite {
     val usages = Vector(method("lib.Api.generated", "lib.Api", Vector.empty))
       .map(Smells.Usage(_, "Int", calls = 2, discarded = 2, testCalls = 0))
     assertFinding(
-      smells(model(usages = usages), generated = true),
+      smells(model(usages = usages), node(_, generated = true)),
       "ignored-result",
       "Api.generated: its Int result is discarded at all 2 calls"
     )
@@ -628,17 +1000,17 @@ class SmellsSuite extends AnalysisSuite {
     val methods   = Vector("one.A", "one.B", "two.C").map(owner =>
       method(s"$owner.run", owner, Vector("a", "b", "c").map(primitive(_)))
     )
-    val keys                                             = methods.map(_.node)
-    def found(hot: Option[Set[String]], inline: Boolean) =
+    val keys                                                             = methods.map(_.node)
+    def found(hot: Option[Set[String]], reviewed: Vector[Smells.Method]) =
       Smells.findings(
-        model(methods = methods.map(_.copy(inline = inline))),
+        model(methods = reviewed),
         Vector.empty,
         keys.map(key => key -> node(key)).toMap,
         hot
       ).filter(_.rule == Finding.Rule.DataClump)
-    assertEquals(found(None, inline = false).size, 1)
-    assertEquals(found(Some(Set("one.A.run")), inline = false).size, 0)
-    assertEquals(found(None, inline = true).size, 0)
+    assertEquals(found(None, methods).size, 1)
+    assertEquals(found(Some(Set("one.A.run")), methods).size, 0)
+    assertEquals(found(None, methods.map(_.copy(inline = true))).size, 0)
   }
 
   test("primitive parameters recurring in the methods of a hot class are no data clump, references still are") {
@@ -666,7 +1038,7 @@ class SmellsSuite extends AnalysisSuite {
     def clumps(hot: Vector[String]) = {
       val result = extract(sources, hot = hot)
       Smells.findings(result.smells, result.algebra.products, result.graph.nodes, result.hot)
-        .filter(_.rule == Finding.Rule.DataClump).map(_.detail)
+        .collect { case finding if finding.rule == Finding.Rule.DataClump => finding.detail }
     }
     assertEquals(clumps(Vector.empty).size, 2, clumps(Vector.empty).mkString("\n"))
     val marked = clumps(Vector("hot.Kernels", "hot.Others", "hot.Operands"))
@@ -748,7 +1120,7 @@ class SmellsSuite extends AnalysisSuite {
   private def clumpsIn(sources: (String, String)*): Vector[String] = {
     val result = extract(sources)
     Smells.findings(result.smells, result.algebra.products, result.graph.nodes, result.hot)
-      .filter(_.rule == Finding.Rule.DataClump).map(_.detail)
+      .view.collect { case finding if finding.rule == Finding.Rule.DataClump => finding.detail }.toVector
   }
 
   test("defs local to an inline method are no data clump, since each expansion specialises them") {

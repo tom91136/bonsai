@@ -9,49 +9,41 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.ConstantType
+import net.kurobako.bonsai.lifting.Binary
+import net.kurobako.bonsai.lifting.Calls
 
 /** Reads `require` invariants and argument values, interpreting only standard library and language operations. */
 object Predicates {
   private val Flipped = Map("<" -> ">", "<=" -> ">=", ">" -> "<", ">=" -> "<=", "==" -> "==", "!=" -> "!=")
 
-  /** The conditions of the `require` calls among `statements`. */
-  def conditions(statements: List[tpd.Tree])(using Context): List[tpd.Tree] = statements.collect {
-    case tpd.Apply(function, condition :: _)
-        if function.symbol.name.toString == "require" && function.symbol.owner == defn.ScalaPredefModule.moduleClass =>
-      condition
-  }
-
   /** The conjunction of `conditions`, over the parameters or fields of `owner`. */
   def required(owner: Symbol, conditions: List[tpd.Tree], fields: Vector[Algebra.Field])(using Context): Predicate = {
     val reader = Reader(owner, fields)
-    conditions.map(reader.read(_)).reduceOption(Predicate.And(_, _)).getOrElse(Predicate.Known(true))
+    conditions.map(reader.read(_)).reduceOption(_.and(_)).getOrElse(Predicate.Known(true))
   }
 
-  /** The tree without ascriptions, argument names and empty inline or block wrappers. */
-  @annotation.tailrec
-  def unwrap(tree: tpd.Tree): tpd.Tree = tree match {
-    case tpd.NamedArg(_, argument)      => unwrap(argument)
-    case tpd.Typed(expression, _)       => unwrap(expression)
-    case tpd.Inlined(_, Nil, expansion) => unwrap(expansion)
-    case tpd.Block(Nil, expression)     => unwrap(expression)
-    case other                          => other
-  }
+  /** The arguments of a call with each varargs sequence spread into its elements. */
+  def spread(arguments: List[tpd.Tree])(using Context): List[tpd.Tree] =
+    arguments.flatMap(Calls.peel(_) match {
+      case tpd.SeqLiteral(elements, _) => elements
+      case other                       => List(other)
+    })
 
   /** The value an argument tree is known to have, if it is a literal, `None`, `Some`, or an enum case. */
   def argument(tree: tpd.Tree)(using Context): Option[Argument] = {
-    val bare = unwrap(tree)
+    val bare = Calls.peel(tree)
     val kind = bare.tpe.widen.typeSymbol
     bare match {
       case tpd.Literal(Constant(flag: Boolean)) => Some(if (flag) Argument.True else Argument.False)
-      case tpd.Literal(Constant(text: String))  => Some(Argument.Text(text))
+      case tpd.Literal(Constant(text: String))  => Some(Argument.Word(Wording.Text, text))
       case _ if bare.symbol == defn.NoneModule || kind == defn.NoneModule.moduleClass => Some(Argument.Absent)
       case _ if kind == defn.SomeClass                                                => Some(Argument.Present)
-      case _ => number(bare).map(Argument.Number(_)).orElse(singleton(bare).map(Argument.Tag(_)))
+      case _ => number(bare).map(Argument.Number(_)).orElse(singleton(bare).map(Argument.Word(Wording.Tag, _)))
     }
   }
 
   /** The value of a numeric literal or constant reference. */
-  def number(tree: tpd.Tree)(using Context): Option[BigDecimal] = {
+  private def number(tree: tpd.Tree)(using Context): Option[BigDecimal] = {
     val constant = tree match {
       case tpd.Literal(value) => Some(value)
       case _                  => tree.tpe.widenTermRefExpr match {
@@ -59,12 +51,14 @@ object Predicates {
           case _                   => None
         }
     }
-    constant.filter(value => value.isNumeric && value.tag != Constants.CharTag && value.doubleValue.isFinite)
-      .map(value => BigDecimal(value.stringValue))
+    constant.collect {
+      case value if value.isNumeric && value.tag != Constants.CharTag && value.doubleValue.isFinite =>
+        BigDecimal(value.stringValue)
+    }
   }
 
   /** The name of an enum case or case object a tree refers to. */
-  def singleton(tree: tpd.Tree)(using Context): Option[String] = {
+  private def singleton(tree: tpd.Tree)(using Context): Option[String] = {
     val symbol = tree.symbol
     Option.when(
       symbol.exists && (symbol.isAllOf(Flags.EnumValue) || symbol.is(Flags.Module) && symbol.moduleClass.is(Flags.Case))
@@ -97,33 +91,30 @@ object Predicates {
       }
     }
 
-    def read(tree: tpd.Tree): Predicate = unwrap(tree) match {
+    def read(tree: tpd.Tree): Predicate = Calls.peel(tree) match {
       case tpd.Literal(Constant(value: Boolean))                                   => Predicate.Known(value)
       case tpd.Select(inner, name) if name.toString == "unary_!"                   => Predicate.Not(read(inner))
       case tpd.Apply(tpd.Select(left, name), List(right)) if name.toString == "&&" =>
-        Predicate.And(read(left), read(right))
+        read(left).and(read(right))
       case tpd.Apply(tpd.Select(left, name), List(right)) if name.toString == "||" =>
-        Predicate.Or(read(left), read(right))
-      case tpd.Apply(tpd.Select(left, name), List(right)) if Flipped.contains(name.toString) =>
-        relation(left, name.toString, right)
-      case tpd.Select(OptionalField(index), name) =>
+        read(left).or(read(right))
+      case Binary(binary) if Flipped.contains(binary.operator) => relation(binary)
+      case tpd.Select(OptionalField(index), name)              =>
         name.toString match {
-          case "isDefined" | "nonEmpty" => Predicate.Present(index)
-          case "isEmpty"                => Predicate.Not(Predicate.Present(index))
+          case "isDefined" | "nonEmpty" => Predicate.Holds(index, Probe.Present)
+          case "isEmpty"                => Predicate.Not(Predicate.Holds(index, Probe.Present))
           case _                        => Predicate.Unknown
         }
-      case Field(index) if fields(index).kind == Algebra.Kind.Flag => Predicate.Flag(index)
+      case Field(index) if fields(index).kind == Algebra.Kind.Flag => Predicate.Holds(index, Probe.Flag)
       case _                                                       => Predicate.Unknown
     }
 
-    private def relation(left: tpd.Tree, operator: String, right: tpd.Tree): Predicate = {
+    private def relation(binary: Binary): Predicate = {
+      import binary.{left, operator, right}
       val equality = operator == "==" || operator == "!="
       if (equality && left.tpe.widen.isRef(defn.BooleanClass)) {
         val (first, second) = (read(left), read(right))
-        val same            = Predicate.Or(
-          Predicate.And(first, second),
-          Predicate.And(Predicate.Not(first), Predicate.Not(second))
-        )
+        val same            = first.and(second).or(Predicate.Not(first).and(Predicate.Not(second)))
         if (operator == "==") same else Predicate.Not(same)
       } else
         Some(compare(left, operator, right, equality)).filter(_ != Predicate.Unknown)
@@ -141,12 +132,12 @@ object Predicates {
         case (Field(index), _)                     =>
           fields(index).kind match {
             case Algebra.Kind.Optional if equality && argument(value).contains(Argument.Absent) =>
-              Predicate.Not(Predicate.Present(index))
+              Predicate.Not(Predicate.Holds(index, Probe.Present))
             case Algebra.Kind.Tag(_) if equality => singleton(value).fold(Predicate.Unknown)(Predicate.Is(index, _))
             case Algebra.Kind.Flag if equality   =>
               argument(value) match {
-                case Some(Argument.True)  => Predicate.Flag(index)
-                case Some(Argument.False) => Predicate.Not(Predicate.Flag(index))
+                case Some(Argument.True)  => Predicate.Holds(index, Probe.Flag)
+                case Some(Argument.False) => Predicate.Not(Predicate.Holds(index, Probe.Flag))
                 case _                    => Predicate.Unknown
               }
             case Algebra.Kind.Number => number(value).fold(Predicate.Unknown)(Predicate.Compare(index, operator, _))

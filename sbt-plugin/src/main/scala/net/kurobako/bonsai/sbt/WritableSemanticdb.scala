@@ -1,0 +1,32 @@
+package net.kurobako.bonsai.sbt
+
+import java.nio.file.Files
+import java.nio.file.Path
+import sbt.*
+import sbt.Keys.*
+import scala.jdk.CollectionConverters.*
+import scala.util.Using
+
+/** sbt restores cached outputs as links into its read-only cache, and the compiler rewrites the semanticdb of a changed
+  * source in place, through such a link; each link becomes a file of its own before compiling, so the write lands.
+  */
+object WritableSemanticdb extends AutoPlugin {
+  override def requires: Plugins      = plugins.JvmPlugin
+  override def trigger: PluginTrigger = allRequirements
+
+  override def projectSettings: Seq[Setting[?]] = Seq(Compile, Test).flatMap(configuration =>
+    inConfig(configuration)(
+      compileIncremental := Def.uncached(
+        compileIncremental.dependsOn(Def.task(copyLinks(semanticdbTargetRoot.value.toPath))).value
+      )
+    )
+  )
+
+  private def copyLinks(root: Path): Unit =
+    if (Files.isDirectory(root))
+      Using.resource(Files.walk(root))(_.iterator.asScala.filter(Files.isSymbolicLink).toVector).foreach { link =>
+        val bytes = Files.readAllBytes(link)
+        Files.delete(link)
+        Files.write(link, bytes)
+      }
+}

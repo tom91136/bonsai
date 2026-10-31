@@ -15,15 +15,19 @@ import scala.collection.mutable
 
 object Placements {
 
-  /** What the extraction knows of the symbols of the build. */
-  trait Resolver {
+  /** Runs `body` with `value` on top of `stack`. */
+  private[analysis] def pushing[A](stack: mutable.Stack[A], value: A)(body: => Unit): Unit = {
+    stack.push(value)
+    try body
+    finally stack.pop(): Unit
+  }
 
-    /** The key of the node a symbol belongs to. */
-    def key(symbol: Symbol)(using Context): Option[String]
-
-    def described(node: String): Option[Node]
-
-    def suppressions(symbol: Symbol)(using Context): Set[String]
+  // Overloads, and a method named like a type beside it, are told apart by their parameter types.
+  def signed(symbol: Symbol, name: String)(using Context): String = {
+    val decls  = symbol.owner.info.decls
+    val shared = symbol.is(Flags.Method) &&
+      (decls.lookupAll(symbol.name).exists(_ != symbol) || decls.lookup(symbol.name.toTypeName).exists)
+    if (shared) name + symbol.info.paramInfoss.map(_.map(_.show).mkString("(", ", ", ")")).mkString else name
   }
 
   private case class Held(node: Node, lines: Int, inside: Boolean, movable: Boolean, owner: Boolean, bare: Boolean)
@@ -33,7 +37,7 @@ object Placements {
   * declaration it names and for nothing around it: the imports, the prefix of a type, and a module named only to reach
   * what it declares are not references, so the graph is the same wherever its declarations stand.
   */
-private class Placements(resolver: Placements.Resolver)(using Context) extends tpd.TreeTraverser {
+private class Placements(resolver: Symbols)(using Context) extends tpd.TreeTraverser {
   import Placements.*
 
   private val units   = mutable.LinkedHashMap.empty[String, Held]
@@ -61,12 +65,6 @@ private class Placements(resolver: Placements.Resolver)(using Context) extends t
     case self: tpd.This                                               => reach(self.symbol)
     case typed: tpd.TypeTree                                          => referred.traverse(typed.tpe)
     case _                                                            => traverseChildren(tree)
-  }
-
-  private def pushing[A](stack: mutable.Stack[A], value: A)(body: => Unit): Unit = {
-    stack.push(value)
-    try body
-    finally stack.pop(): Unit
   }
 
   private def enter(definition: tpd.TypeDef, template: tpd.Template)(using Context): Unit = {
@@ -123,7 +121,7 @@ private class Placements(resolver: Placements.Resolver)(using Context) extends t
   // Marks the types inside `cls` as needing an instance of it.
   private def reach(cls: Symbol)(using Context): Unit =
     if (cls.isClass && !cls.is(Flags.ModuleClass) && classes.exists(_._1 == cls))
-      classes.toList.takeWhile(_._1 != cls).flatMap(_._2).foreach(pinned += _)
+      classes.iterator.takeWhile(_._1 != cls).flatMap(_._2).foreach(pinned += _)
 
   private def reference(symbol: Symbol)(using Context): Unit = {
     if (symbol.is(Flags.TypeParam) && symbol.owner.isClass) reach(symbol.owner)
@@ -168,21 +166,13 @@ private class Placements(resolver: Placements.Resolver)(using Context) extends t
       else !symbol.isAliasType || symbol.isOneOf(Flags.Opaque | Flags.Synthetic | Flags.Deferred | Flags.Exported)
     if (!symbol.exists || symbol.isClass || tied || !owner.is(Flags.ModuleClass) || !static(owner.owner)) None
     else if (owner.isTopLevelDefinitionsObject)
-      resolver.key(symbol).filter(described(_).exists(!_.test)).map(signed(symbol, _))
-    else unit(owner).map(name => signed(symbol, s"$name.${symbol.name}"))
+      resolver.key(symbol).collect { case key if described(key).exists(!_.test) => Placements.signed(symbol, key) }
+    else unit(owner).map(name => Placements.signed(symbol, s"$name.${symbol.name}"))
   }
 
   private def receivesOpaque(symbol: Symbol)(using Context): Boolean =
     symbol.is(Flags.ExtensionMethod) &&
-      symbol.paramSymss.flatten.filter(_.isTerm).headOption.exists(_.info.typeSymbol.is(Flags.Opaque))
-
-  // Overloads, and a method named like a type beside it, are told apart by their parameter types.
-  private def signed(symbol: Symbol, name: String)(using Context): String = {
-    val decls  = symbol.owner.info.decls
-    val shared = symbol.is(Flags.Method) &&
-      (decls.lookupAll(symbol.name).exists(_ != symbol) || decls.lookup(symbol.name.toTypeName).exists)
-    if (shared) name + symbol.info.paramInfoss.map(_.map(_.show).mkString("(", ", ", ")")).mkString else name
-  }
+      symbol.paramSymss.flatten.find(_.isTerm).exists(_.info.typeSymbol.is(Flags.Opaque))
 
   private def extent(definition: tpd.MemberDef)(using Context): Int =
     if (definition.span.exists) definition.sourcePos.endLine - definition.sourcePos.startLine + 1 else 0

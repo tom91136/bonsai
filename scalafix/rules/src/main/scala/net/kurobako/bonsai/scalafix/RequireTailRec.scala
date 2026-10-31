@@ -9,7 +9,7 @@ class RequireTailRec extends SemanticRule("RequireTailRec") {
     val missing = document.tree.collect {
       case defn: Defn.Def
           if isEligible(defn) &&
-            !defn.mods.exists(_.isInstanceOf[Mod.Inline]) &&
+            !definitions.has[Mod.Inline](defn.mods) &&
             !hasTailrec(defn) &&
             isTailRecursive(defn) =>
         val indent = " " * defn.pos.startColumn
@@ -29,7 +29,7 @@ class RequireTailRec extends SemanticRule("RequireTailRec") {
   private def hasTailrec(defn: Defn.Def): Boolean = definitions.annotated(defn.mods, "tailrec")
 
   private def isEligible(defn: Defn.Def): Boolean =
-    defn.mods.exists(m => m.isInstanceOf[Mod.Private] || m.isInstanceOf[Mod.Final]) ||
+    definitions.has[Mod.Private](defn.mods) || definitions.has[Mod.Final](defn.mods) ||
       isLocalDef(defn) ||
       isInsideObject(defn)
 

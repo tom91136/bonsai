@@ -22,7 +22,9 @@ class UnusedExpressionSuite extends AnalysisSuite {
 
   private def discards(sources: (String, String)*): Vector[String] = {
     val result = extract(sources)
-    Report.findings(result).filter(_.rule == Finding.Rule.PureDiscard).map(_.detail.takeWhile(_ != ' '))
+    Report.findings(result).view.collect {
+      case finding if finding.rule == Finding.Rule.PureDiscard => finding.detail.takeWhile(_ != ' ')
+    }.toVector
   }
 
   test("a guard and the result of a case written with named patterns are used, whatever the case binds") {

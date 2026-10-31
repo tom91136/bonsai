@@ -17,8 +17,8 @@ class MutableExposure extends SemanticRule("MutableExposure") {
             value.pos
           )
       }.asPatch
-    case owner: Defn.Class if definitions.reachable(owner, owner.mods) => exposed(definitions.members(owner.templ))
-    case owner: Defn.Trait if definitions.reachable(owner, owner.mods) => exposed(definitions.members(owner.templ))
+    case owner: (Defn.Class | Defn.Trait)
+        if ancestry.reachable(owner, owner.mods) => exposed(definitions.members(owner.templ))
   }.asPatch
 
   private def exposed(stats: List[Stat])(using SemanticDocument): Patch = stats.collect {
@@ -26,7 +26,7 @@ class MutableExposure extends SemanticRule("MutableExposure") {
       lint("exposed-mutable", "this public value exposes a mutable collection; expose a read-only view", value.pos)
     case method: Defn.Def
         if definitions.public(method.mods) &&
-          method.decltpe.exists(tpe => definitions.mutableType(definitions.symbol(tpe))) =>
+          method.decltpe.exists(tpe => mutables.contains(definitions.symbol(tpe))) =>
       lint(
         "exposed-mutable",
         "this public method returns a mutable collection; return a read-only view",
@@ -36,9 +36,9 @@ class MutableExposure extends SemanticRule("MutableExposure") {
 
   // Inferred types are read from the definition's own symbol, which SemanticDB records within the same file.
   private def mutable(declared: Option[Type], patterns: List[Pat])(using SemanticDocument): Boolean =
-    declared.map(tpe => definitions.mutableType(definitions.symbol(tpe))).getOrElse(patterns.exists {
+    declared.map(tpe => mutables.contains(definitions.symbol(tpe))).getOrElse(patterns.exists {
       case Pat.Var(name) => definitions.info(name.symbol).exists(_.signature match {
-          case ValueSignature(TypeRef(_, symbol, _)) => definitions.mutableType(symbol)
+          case ValueSignature(TypeRef(_, symbol, _)) => mutables.contains(symbol)
           case _                                     => false
         })
       case _ => false

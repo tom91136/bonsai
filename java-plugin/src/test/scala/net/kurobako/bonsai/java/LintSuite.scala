@@ -1,9 +1,9 @@
 package net.kurobako.bonsai.java
 
 import java.nio.file.Files
-import javax.tools.JavaFileObject
 import javax.tools.StandardLocation
 import javax.tools.ToolProvider
+import net.kurobako.bonsai.testing.Scratch
 import scala.jdk.CollectionConverters.*
 
 /** The suite of the lints the plugin finds in the code it compiles, which the model of the compilation holds.
@@ -17,7 +17,7 @@ class LintSuite extends munit.FunSuite {
   private def processorPath: String =
     getClass.getClassLoader match {
       case loader: java.net.URLClassLoader =>
-        loader.getURLs.toVector
+        loader.getURLs.view
           .filter(url => url.getProtocol == "file")
           .map(url => url.getPath)
           .mkString(java.io.File.pathSeparator)
@@ -33,36 +33,26 @@ class LintSuite extends munit.FunSuite {
 
   /** Compiles the sources with the extra options of the compiler, such as the release, and the lints enabled. */
   private def compileWith(options: Seq[String], enabled: Vector[String], sources: (String, String)*): Model.Model = {
-    val root  = Files.createTempDirectory("bonsai-lint")
-    val files = sources.map { case (name, source) =>
-      val file = root.resolve(s"demo/$name.java")
-      Files.createDirectories(file.getParent)
-      Files.writeString(file, source)
-      file
-    }
+    val root    = Scratch.directory("bonsai-lint")
+    val files   = Fixtures.write(root, sources)
     val classes = root.resolve("classes")
     Files.createDirectories(classes)
     val output = root.resolve("model.tsv")
 
     val compiler    = ToolProvider.getSystemJavaCompiler
     val diagnostics = new java.util.ArrayList[java.lang.String]()
-    val fileManager = compiler.getStandardFileManager(null, null, null)
-    fileManager.setLocation(StandardLocation.CLASS_OUTPUT, java.util.List.of(classes.toFile))
+    val fileManager = Fixtures.fileManager(classes)
     // The annotations of the test code, such as JSpecify, are on the classpath of the suite.
-    val classpath = processorPath.split(java.io.File.pathSeparator).toVector.filter(_.nonEmpty).map(path =>
+    val classpath = processorPath.split(java.io.File.pathSeparator).view.filter(_.nonEmpty).map(path =>
       new java.io.File(path)
-    )
+    ).toVector
     fileManager.setLocation(StandardLocation.CLASS_PATH, classpath.asJava)
-    val units    = fileManager.getJavaFileObjectsFromFiles(files.map(_.toFile).asJava)
-    val listener = new javax.tools.DiagnosticListener[JavaFileObject] {
-      def report(diagnostic: javax.tools.Diagnostic[? <: JavaFileObject]): Unit =
-        diagnostics.add(diagnostic.getMessage(null)): Unit
-    }
-    val task =
+    val units = fileManager.getJavaFileObjectsFromFiles(files.map(_.toFile).asJava)
+    val task  =
       compiler.getTask(
         null,
         fileManager,
-        listener,
+        Fixtures.listener(diagnostics),
         ((Seq("-proc:full", "-processorpath", processorPath) ++ options) :+
           ("-Xplugin:bonsai " + output + (if enabled.nonEmpty then " " + enabled.mkString(",") else ""))).asJava,
         null,
@@ -254,7 +244,7 @@ class LintSuite extends munit.FunSuite {
   }
 
   test("the file of the model is the argument of the plugin, not a property the modules of a build share") {
-    val stale = Files.createTempDirectory("bonsai-stale").resolve("model.tsv")
+    val stale = Scratch.directory("bonsai-stale").resolve("model.tsv")
     System.setProperty(JavaPlugin.Output, stale.toString)
     try {
       val model = compile("Quiet" -> """
@@ -267,7 +257,7 @@ class LintSuite extends munit.FunSuite {
 
       assert(model.nodes.exists(_.name == "demo.Quiet"))
       assert(!Files.exists(stale), s"the model was written to the property $stale")
-    } finally System.clearProperty(JavaPlugin.Output)
+    } finally System.clearProperty(JavaPlugin.Output): Unit
   }
 
   test("a modifier the code around it implies is of no use") {
@@ -2011,7 +2001,7 @@ class LintSuite extends munit.FunSuite {
       |    throw new IOException("failure");
       |  }
       |
-      |  public void redundant() throws IOException {
+      |  private void redundant() throws IOException {
       |    System.out.println("no failure");
       |  }
       |
@@ -2022,6 +2012,72 @@ class LintSuite extends munit.FunSuite {
     val found = model.lints.filter(_.id == "redundant-throws")
     assertEquals(found.size, 1, model.lints.mkString("\n"))
     assert(found.head.detail.contains("IOException"), found.head.detail)
+  }
+
+  test("a checked exception that callers outside the compilation can rely on is not redundant") {
+    val model = compile("Api" -> """
+      |package demo;
+      |
+      |import java.io.IOException;
+      |
+      |public class Api {
+      |  public void open() throws IOException {
+      |    System.out.println("open");
+      |  }
+      |
+      |  public final void sealed() throws IOException {
+      |    System.out.println("sealed");
+      |  }
+      |
+      |  public static void shared() throws IOException {
+      |    System.out.println("shared");
+      |  }
+      |
+      |  void local() throws IOException {
+      |    System.out.println("local");
+      |  }
+      |
+      |  private static final class Impl implements AutoCloseable {
+      |    @Override
+      |    public void close() throws Exception {
+      |      System.out.println("close");
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "redundant-throws"), Vector.empty, model.lints.mkString("\n"))
+  }
+
+  test("a checked exception that only the file can see is redundant when the method never throws it") {
+    val model = compile("Inside" -> """
+      |package demo;
+      |
+      |import java.io.IOException;
+      |
+      |public class Inside {
+      |  private void hidden() throws IOException {
+      |    System.out.println("hidden");
+      |  }
+      |
+      |  private static void shared() throws IOException {
+      |    System.out.println("shared");
+      |  }
+      |
+      |  private static final class Impl {
+      |    void run() throws IOException {
+      |      System.out.println("run");
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "redundant-throws").map(_.method).sorted
+    assertEquals(
+      found,
+      Vector("demo.Inside.Impl.run", "demo.Inside.hidden", "demo.Inside.shared"),
+      model.lints.mkString("\n")
+    )
   }
 
   test("a Thread.sleep in a loop is a busy wait") {
@@ -2080,9 +2136,9 @@ class LintSuite extends munit.FunSuite {
       |
       |public class Tabs {
       |  private static final class Entry {
-      |    String title = "New Tab";
-      |    int visits = 0;
-      |    int kept = 1;
+      |    private String title = "New Tab";
+      |    private int visits = 0;
+      |    private int kept = 1;
       |  }
       |
       |  private final Entry entry = new Entry();
@@ -2127,6 +2183,50 @@ class LintSuite extends munit.FunSuite {
     val found = model.lints.filter(_.id == "can-be-final").map(_.detail).sorted
     assertEquals(found, Vector("the field kept can be final"), model.lints.mkString("\n"))
   }
+
+  test("a field that only another file can write is not reported as able to be final") {
+    val model = compile(
+      "Shared" -> """
+        |package demo;
+        |
+        |public class Shared {
+        |  int count = 0;
+        |  protected int level = 0;
+        |  public int open = 0;
+        |  private int kept = 1;
+        |}
+        |""".stripMargin,
+      "Writer" -> """
+        |package demo;
+        |
+        |class Writer {
+        |  void run(Shared shared) {
+        |    shared.count = 1;
+        |    shared.level++;
+        |    shared.open += 2;
+        |  }
+        |}
+        |""".stripMargin
+    )
+
+    val found = model.lints.filter(_.id == "can-be-final").map(_.detail).sorted
+    assertEquals(found, Vector("the field kept can be final"), model.lints.mkString("\n"))
+  }
+
+  private def finalisable(members: String, access: String): Vector[String] =
+    compile("Case" -> Constructed.source(members, access)).lints.collect {
+      case lint if lint.id == "can-be-final" && lint.detail.startsWith("the field") => lint.detail
+    }
+
+  for (name, members) <- Constructed.assigned :+ Constructed.annotated do
+    test(s"a private field that every constructor assigns once can be final: $name") {
+      assertEquals(finalisable(members, "private"), Vector("the field value can be final"))
+    }
+
+  for (name, members) <- Constructed.rejected ++ Constructed.repeated ++ Constructed.written ++ Constructed.excluded do
+    test(s"a private field that some constructor leaves open or assigns again cannot be final: $name") {
+      assertEquals(finalisable(members, "private"), Vector.empty)
+    }
 
   test("a cast a narrower variable type makes unnecessary is reported") {
     val model = compile("Casts" -> """
@@ -2277,7 +2377,10 @@ class LintSuite extends munit.FunSuite {
       |""".stripMargin)
 
     val found = model.lints.filter(_.id == "java9-collection-factory")
-    assertEquals(found.size, 1, model.lints.mkString("\n"))
+    assertEquals(
+      found.map(_.detail),
+      Vector("use List.copyOf instead of unmodifiableList of a copy: List.copyOf(values)")
+    )
   }
 
   test("a primitive array passed to a varargs method is reported") {
@@ -2318,8 +2421,15 @@ class LintSuite extends munit.FunSuite {
       |}
       |""".stripMargin)
 
-    val found = model.lints.filter(_.id == "optional-chain")
-    assertEquals(found.size, 2, model.lints.mkString("\n"))
+    val found = model.lints.filter(_.id == "none-check")
+    assertEquals(
+      found.map(_.detail),
+      Vector(
+        "use isEmpty() instead of !isPresent(): value.isEmpty()",
+        "use isPresent() instead of !isEmpty(): value.isPresent()"
+      ),
+      model.lints.mkString("\n")
+    )
   }
 
   test("a call whose result says whether it worked is reported when the result is dropped") {
@@ -2372,7 +2482,7 @@ class LintSuite extends munit.FunSuite {
       |package demo;
       |
       |public class Empties {
-      |  public void empty() {}
+      |  private void empty() {}
       |
       |  public void used() {
       |    System.out.println("used");
@@ -2382,6 +2492,59 @@ class LintSuite extends munit.FunSuite {
 
     val found = model.lints.filter(_.id == "empty-method")
     assertEquals(found.size, 1, model.lints.mkString("\n"))
+  }
+
+  test("an empty method that other code can override is not reported") {
+    val model = compile("Hooks" -> """
+      |package demo;
+      |
+      |public class Hooks {
+      |  public void open() {}
+      |
+      |  protected void hook() {}
+      |
+      |  void local() {}
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "empty-method"), Vector.empty, model.lints.mkString("\n"))
+  }
+
+  test("an empty method that nothing can override is reported") {
+    val model = compile("Closed" -> """
+      |package demo;
+      |
+      |public class Closed {
+      |  public void open() {}
+      |
+      |  private void hidden() {}
+      |
+      |  public final void sealed() {}
+      |
+      |  public static void shared() {}
+      |
+      |  private static class Inner {
+      |    void run() {}
+      |  }
+      |
+      |  static final class Done {
+      |    void run() {}
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "empty-method").map(_.method).sorted
+    assertEquals(
+      found,
+      Vector(
+        "demo.Closed.Done.run",
+        "demo.Closed.Inner.run",
+        "demo.Closed.hidden",
+        "demo.Closed.sealed",
+        "demo.Closed.shared"
+      ),
+      model.lints.mkString("\n")
+    )
   }
 
   test("a statement with an empty body is reported") {
@@ -2417,8 +2580,333 @@ class LintSuite extends munit.FunSuite {
       |}
       |""".stripMargin)
 
-    val found = model.lints.filter(_.id == "size-is-empty")
-    assertEquals(found.size, 2, model.lints.mkString("\n"))
+    assertEquals(
+      model.lints.filter(lint => lint.id.startsWith("size-to-")).map(lint => (lint.id, lint.method, lint.detail)),
+      Vector(
+        (
+          "size-to-is-empty",
+          "demo.Sizes.empty",
+          "use isEmpty() instead of a size comparison with zero: values.isEmpty()"
+        ),
+        (
+          "size-to-non-empty",
+          "demo.Sizes.present",
+          "use !isEmpty() instead of a size comparison with zero: !values.isEmpty()"
+        )
+      ),
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("a size compared with zero is reported on maps and sets, and not on a count or a size that means more") {
+    val model = compile("Sizes" -> """
+      |package demo;
+      |
+      |import java.util.Map;
+      |import java.util.Set;
+      |
+      |public class Sizes {
+      |  public boolean map(Map<String, String> values) {
+      |    return values.size() != 0;
+      |  }
+      |
+      |  public boolean set(Set<String> values) {
+      |    return 0 == values.size();
+      |  }
+      |
+      |  public boolean two(Set<String> values) {
+      |    return values.size() == 2;
+      |  }
+      |
+      |  public boolean stream(java.util.stream.Stream<String> values) {
+      |    return values.count() == 0;
+      |  }
+      |
+      |  public boolean text(String value) {
+      |    return value.length() == 0;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(lint => lint.id.startsWith("size-to-")).map(lint => (lint.id, lint.method)),
+      Vector(("size-to-non-empty", "demo.Sizes.map"), ("size-to-is-empty", "demo.Sizes.set")),
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("a size compared with zero of a collection that overrides the size is not reported") {
+    val model = compile("Sizes" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |
+      |public class Sizes {
+      |  static class Counted extends ArrayList<String> {
+      |    @Override public int size() {
+      |      return 0;
+      |    }
+      |  }
+      |
+      |  static class Plain extends ArrayList<String> {}
+      |
+      |  public boolean counted(Counted values) {
+      |    return values.size() == 0;
+      |  }
+      |
+      |  public boolean plain(Plain values) {
+      |    return values.size() == 0;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "size-to-is-empty").map(_.method), Vector("demo.Sizes.plain"))
+  }
+
+  test("a size compared with zero in the isEmpty of a collection is not reported") {
+    val model = compile("Sizes" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |
+      |public class Sizes extends ArrayList<String> {
+      |  @Override public boolean isEmpty() {
+      |    return super.size() == 0;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "size-to-is-empty"), Vector.empty)
+  }
+
+  test("a size compared with zero in generated code is not reported") {
+    val model = compile("Sizes" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |
+      |@javax.annotation.processing.Generated("tool")
+      |public class Sizes {
+      |  public boolean empty(List<String> values) {
+      |    return values.size() == 0;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "size-to-is-empty"), Vector.empty)
+  }
+
+  test("the laws of a chain are suppressed by their ids") {
+    val model = compile("Sizes" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |
+      |public class Sizes {
+      |  @SuppressWarnings("bonsai:size-to-is-empty")
+      |  public boolean empty(List<String> values) {
+      |    return values.size() == 0;
+      |  }
+      |
+      |  @SuppressWarnings("SizeReplaceableByIsEmpty")
+      |  public boolean named(List<String> values) {
+      |    return values.size() == 0;
+      |  }
+      |
+      |  public boolean loud(List<String> values) {
+      |    return values.size() == 0;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "size-to-is-empty").map(_.method), Vector("demo.Sizes.loud"))
+  }
+
+  test("the first match of a stream checked for presence is reported as a match") {
+    val model = compile("Matches" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |
+      |public class Matches {
+      |  public boolean has(List<String> values) {
+      |    return values.stream().filter(v -> v.isEmpty()).findFirst().isPresent();
+      |  }
+      |
+      |  public boolean lacks(List<String> values) {
+      |    return values.stream().filter(v -> v.isEmpty()).findAny().isEmpty();
+      |  }
+      |
+      |  public boolean kept(List<String> values) {
+      |    return values.stream().filter(v -> v.isEmpty()).findFirst().isPresent() && values.isEmpty();
+      |  }
+      |
+      |  public String first(List<String> values) {
+      |    return values.stream().filter(v -> v.isEmpty()).findFirst().orElse("");
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(_.id == "find-to-exists").map(lint => lint.method -> lint.detail),
+      Vector(
+        "demo.Matches.has" ->
+          "use anyMatch for filter, findFirst and isPresent: values.stream().anyMatch((v)->v.isEmpty())",
+        "demo.Matches.lacks" ->
+          "use noneMatch for filter, findFirst and isEmpty: values.stream().noneMatch((v)->v.isEmpty())",
+        "demo.Matches.kept" ->
+          "use anyMatch for filter, findFirst and isPresent: values.stream().anyMatch((v)->v.isEmpty())"
+      ),
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("a filtered count compared with zero is reported unless the predicate has an effect") {
+    val model = compile("Counts" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |
+      |public class Counts {
+      |  private int seen;
+      |
+      |  public boolean none(List<String> values) {
+      |    return values.stream().filter(v -> v.length() > 3).count() == 0;
+      |  }
+      |
+      |  public boolean pure(List<Integer> values) {
+      |    return values.stream().filter(v -> v > 3).count() == 0;
+      |  }
+      |
+      |  public boolean any(List<Integer> values) {
+      |    return values.stream().filter(v -> v > 3).count() > 0;
+      |  }
+      |
+      |  public boolean effect(List<Integer> values) {
+      |    return values.stream().filter(v -> seen++ > 3).count() == 0;
+      |  }
+      |
+      |  public boolean impure(List<String> values) {
+      |    return values.stream().filter(v -> check(v)).count() == 0;
+      |  }
+      |
+      |  private boolean check(String value) {
+      |    return true;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(lint => lint.id.startsWith("size-to-")).map(lint => (lint.id, lint.method)),
+      Vector(
+        ("size-to-is-empty", "demo.Counts.pure"),
+        ("size-to-non-empty", "demo.Counts.any")
+      ),
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("a sort followed by the first element is reported as a minimum") {
+    val model = compile("Minimums" -> """
+      |package demo;
+      |
+      |import java.util.Comparator;
+      |import java.util.List;
+      |import java.util.Optional;
+      |
+      |public class Minimums {
+      |  public Optional<String> ordered(List<String> values, Comparator<String> order) {
+      |    return values.stream().sorted(order).findFirst();
+      |  }
+      |
+      |  public Optional<String> natural(List<String> values) {
+      |    return values.stream().sorted().findFirst();
+      |  }
+      |
+      |  public List<String> all(List<String> values) {
+      |    return values.stream().sorted().toList();
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(_.id == "sorted-min-max").map(lint => lint.method -> lint.detail),
+      Vector(
+        "demo.Minimums.ordered" ->
+          "sorted then findFirst sorts every element; min compares in one pass: values.stream().min(order)",
+        "demo.Minimums.natural" ->
+          "sorted then findFirst sorts every element; min compares in one pass: values.stream().min(Comparator.naturalOrder())"
+      ),
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("the chains of types that only share the names of a collection are not reported") {
+    val model = compile("Mine" -> """
+      |package demo;
+      |
+      |import java.util.function.Predicate;
+      |
+      |public class Mine {
+      |  static class Things {
+      |    Things filter(Predicate<String> predicate) { return this; }
+      |    long count() { return 0; }
+      |    int size() { return 0; }
+      |    boolean isPresent() { return true; }
+      |    Things findFirst() { return this; }
+      |  }
+      |
+      |  public boolean run(Things things) {
+      |    return things.filter(v -> true).count() == 0 || things.size() == 0 || things.filter(v -> true).findFirst().isPresent();
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(lint => lint.id.startsWith("size-to-") || lint.id == "find-to-exists"),
+      Vector.empty
+    )
+  }
+
+  test("the ids the chain lint reports are the laws that have a Java form") {
+    val model = compile("Many" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |import java.util.Arrays;
+      |import java.util.Collections;
+      |import java.util.List;
+      |import java.util.Optional;
+      |import java.util.stream.Collectors;
+      |
+      |public class Many {
+      |  public Object run(List<String> values, Optional<String> value) {
+      |    return List.of(
+      |        values.size() == 0,
+      |        Arrays.asList("a").stream().count(),
+      |        values.stream().collect(Collectors.joining(",")),
+      |        Collections.unmodifiableList(new ArrayList<>(values)),
+      |        !value.isPresent(),
+      |        values.stream().sorted().findFirst(),
+      |        values.stream().filter(v -> v.isEmpty()).findFirst().isPresent());
+      |  }
+      |}
+      |""".stripMargin)
+
+    val ids = model.lints.map(_.id).toSet - "optional-signature"
+    assertEquals(
+      ids,
+      Set(
+        "size-to-is-empty",
+        "stream-of",
+        "stream-join",
+        "java9-collection-factory",
+        "none-check",
+        "sorted-min-max",
+        "find-to-exists"
+      )
+    )
+    assert(ids.subsetOf(JavaLint.chains.toSet), ids.mkString(", "))
   }
 
   test("an unnecessary unboxing is reported") {
@@ -2476,7 +2964,7 @@ class LintSuite extends munit.FunSuite {
       |package demo;
       |
       |public class Returns {
-      |  public boolean always() {
+      |  private boolean always() {
       |    return false;
       |  }
       |
@@ -2488,6 +2976,73 @@ class LintSuite extends munit.FunSuite {
 
     val found = model.lints.filter(_.id == "same-return-value")
     assertEquals(found.size, 1, model.lints.mkString("\n"))
+  }
+
+  test("a method that returns the same literal and other code can override is not reported") {
+    val model = compile("Defaults" -> """
+      |package demo;
+      |
+      |public class Defaults {
+      |  public int open() {
+      |    return 1;
+      |  }
+      |
+      |  protected boolean hook() {
+      |    return false;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "same-return-value"), Vector.empty, model.lints.mkString("\n"))
+  }
+
+  test("a method that returns the same literal and nothing can override is reported") {
+    val model = compile("Fixed" -> """
+      |package demo;
+      |
+      |public class Fixed {
+      |  public int open() {
+      |    return 1;
+      |  }
+      |
+      |  private int hidden() {
+      |    return 1;
+      |  }
+      |
+      |  public final int sealed() {
+      |    return 1;
+      |  }
+      |
+      |  public static int shared() {
+      |    return 1;
+      |  }
+      |
+      |  private static class Inner {
+      |    int run() {
+      |      return 1;
+      |    }
+      |  }
+      |
+      |  static final class Done {
+      |    int run() {
+      |      return 1;
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "same-return-value").map(_.method).sorted
+    assertEquals(
+      found,
+      Vector(
+        "demo.Fixed.Done.run",
+        "demo.Fixed.Inner.run",
+        "demo.Fixed.hidden",
+        "demo.Fixed.sealed",
+        "demo.Fixed.shared"
+      ),
+      model.lints.mkString("\n")
+    )
   }
 
   test("a stream collected by joining is reported") {
@@ -2505,7 +3060,11 @@ class LintSuite extends munit.FunSuite {
       |""".stripMargin)
 
     val found = model.lints.filter(_.id == "stream-join")
-    assertEquals(found.size, 1, model.lints.mkString("\n"))
+    assertEquals(
+      found.map(_.detail),
+      Vector("use String.join instead of collecting a stream with joining: String.join(\" | \", values)"),
+      model.lints.mkString("\n")
+    )
   }
 
   test("a Unicode escape that the source can hold is reported") {
@@ -2870,7 +3429,11 @@ class LintSuite extends munit.FunSuite {
       |}
       |""".stripMargin)
 
-    assertEquals(model.lints.count(_.id == "stream-of"), 1, model.lints.mkString("\\n"))
+    assertEquals(
+      model.lints.filter(_.id == "stream-of").map(_.detail),
+      Vector("use Stream.of instead of List.of(...).stream(): Stream.of(\"a\")"),
+      model.lints.mkString("\\n")
+    )
   }
 
   test("Optional in a field or parameter is reported by default") {
@@ -4053,11 +4616,11 @@ class LintSuite extends munit.FunSuite {
         """package demo;
           |
           |public class Sizes {
-          |  interface Sized {
+          |  private interface Sized {
           |    int size();
           |  }
           |
-          |  abstract static class Base {
+          |  private abstract static class Base {
           |    int encoded() {
           |      return 8;
           |    }
@@ -4069,7 +4632,7 @@ class LintSuite extends munit.FunSuite {
           |    abstract int width();
           |  }
           |
-          |  static class Leaf extends Base {
+          |  private static class Leaf extends Base {
           |    @Override
           |    int encoded() {
           |      return 8;
@@ -4086,14 +4649,14 @@ class LintSuite extends munit.FunSuite {
           |    }
           |  }
           |
-          |  static class Other extends Base {
+          |  private static class Other extends Base {
           |    @Override
           |    int width() {
           |      return 2;
           |    }
           |  }
           |
-          |  static class Fixed implements Sized {
+          |  private static class Fixed implements Sized {
           |    public int size() {
           |      return 4;
           |    }
@@ -4204,8 +4767,8 @@ class LintSuite extends munit.FunSuite {
     assertEquals(lines("8", "java9-collection-factory"), Vector.empty)
     assertEquals(lines("9", "java9-collection-factory"), Vector.empty)
     assertEquals(lines("11", "java9-collection-factory"), Vector(10))
-    assertEquals(lines("8", "optional-chain"), Vector.empty)
-    assertEquals(lines("11", "optional-chain"), Vector(14))
+    assertEquals(lines("8", "none-check"), Vector.empty)
+    assertEquals(lines("11", "none-check"), Vector(14))
     assertEquals(lines("8", "convert-2-diamond"), Vector.empty)
     assertEquals(lines("17", "convert-2-diamond"), Vector(21))
   }
@@ -4296,24 +4859,24 @@ class LintSuite extends munit.FunSuite {
         """package demo;
           |
           |public class Handlers {
-          |  interface Handler {
+          |  private interface Handler {
           |    default void onStart() {}
           |    default void onStop() {}
           |  }
           |
-          |  static class Quiet implements Handler {
+          |  private static class Quiet implements Handler {
           |    @Override
           |    public void onStop() {}
           |  }
           |
-          |  static class Loud implements Handler {
+          |  private static class Loud implements Handler {
           |    @Override
           |    public void onStop() {
           |      System.out.println("stop");
           |    }
           |  }
           |
-          |  void helper() {}
+          |  private void helper() {}
           |}
           |""".stripMargin
     )
@@ -4570,7 +5133,7 @@ class LintSuite extends munit.FunSuite {
           |public class Throws {
           |  static void load() throws Exception { throw new Exception("x"); }
           |  void test() throws Exception { load(); }
-          |  void bad() throws Exception { int x = 1; }
+          |  private void bad() throws Exception { int x = 1; }
           |}
           |""".stripMargin
     )
@@ -4654,7 +5217,7 @@ class LintSuite extends munit.FunSuite {
         |
         |  boolean same(String value) { return value != null; }
         |
-        |  void nothing() {}
+        |  private void nothing() {}
         |}
         |""".stripMargin
     val plain = source.replace("@Generated(\"tool\") ", "")
@@ -5088,7 +5651,7 @@ class LintSuite extends munit.FunSuite {
       |    return value.orElseThrow(() -> new IOException("none"));
       |  }
       |
-      |  String unthrown(Optional<String> value) throws IOException {
+      |  private String unthrown(Optional<String> value) throws IOException {
       |    return value.orElse("none");
       |  }
       |}
@@ -5343,16 +5906,16 @@ class LintSuite extends munit.FunSuite {
       |
       |public class SuppressedMethods {
       |  @SuppressWarnings("EmptyMethod")
-      |  public void quietEmpty() {}
+      |  private void quietEmpty() {}
       |
-      |  public void noisyEmpty() {}
+      |  private void noisyEmpty() {}
       |
       |  @SuppressWarnings("SameReturnValue")
-      |  public int quietSame() {
+      |  private int quietSame() {
       |    return 42;
       |  }
       |
-      |  public int noisySame() {
+      |  private int noisySame() {
       |    return 42;
       |  }
       |
@@ -5389,15 +5952,81 @@ class LintSuite extends munit.FunSuite {
     assertEquals(optionalGets.map(_.method), Vector("demo.SuppressedMethods.noisyGet"))
   }
 
+  private def catches(suppression: String) = compile("Catches" -> s"""
+      |package demo;
+      |
+      |public class Catches {
+      |  $suppression
+      |  public void run() {
+      |    try {
+      |      work();
+      |    } catch (Exception e) {
+      |    }
+      |    try {
+      |      work();
+      |    } catch (Exception ignored) {
+      |      System.out.println(ignored);
+      |    }
+      |  }
+      |
+      |  private void work() throws Exception {
+      |    throw new Exception("failure");
+      |  }
+      |}
+      |""".stripMargin).lints.collect { case lint if Caught(lint.id) => lint.id }
+
+  test("the EmptyCatchBlock inspection names the swallowed exception and not the ignored one that is read") {
+    assertEquals(catches("@SuppressWarnings(\"EmptyCatchBlock\")"), Vector("catch-may-ignore-exception"))
+  }
+
+  test("the CatchMayIgnoreException inspection names the ignored exception that is read and not the swallowed one") {
+    assertEquals(catches("@SuppressWarnings(\"CatchMayIgnoreException\")"), Vector("swallowed-exception"))
+  }
+
+  test("an unsuppressed method reports both the swallowed and the ignored exception") {
+    assertEquals(catches("").sorted, Vector("catch-may-ignore-exception", "swallowed-exception"))
+  }
+
+  private val Caught      = Set("swallowed-exception", "catch-may-ignore-exception")
+  private val Conditional = Set("simplifiable-conditional", "trivial-if")
+
+  private def conditionals(suppression: String) = compile("Conditionals" -> s"""
+      |package demo;
+      |
+      |public class Conditionals {
+      |  $suppression
+      |  public boolean run(boolean value, int count) {
+      |    String text = value ? "true" : "false";
+      |    if (count > 1) {
+      |      return true;
+      |    } else {
+      |      return false;
+      |    }
+      |  }
+      |}
+      |""".stripMargin).lints.collect { case lint if Conditional(lint.id) => lint.id }
+
+  test("the SimplifiableConditionalExpression inspection names the conditional and not the trivial if") {
+    assertEquals(conditionals("@SuppressWarnings(\"SimplifiableConditionalExpression\")"), Vector("trivial-if"))
+  }
+
+  test("the TrivialIf inspection names the trivial if and not the conditional") {
+    assertEquals(conditionals("@SuppressWarnings(\"TrivialIf\")"), Vector("simplifiable-conditional"))
+  }
+
+  test("an unsuppressed method reports both the conditional and the trivial if") {
+    assertEquals(conditionals("").sorted, Vector("simplifiable-conditional", "trivial-if"))
+  }
+
   test("a method with //noinspection stays silent while an unsuppressed sibling fires") {
     val model = compile("NoInspectionMethods" -> """
       |package demo;
       |
       |public class NoInspectionMethods {
       |  //noinspection EmptyMethod
-      |  public void quiet() {}
+      |  private void quiet() {}
       |
-      |  public void noisy() {}
+      |  private void noisy() {}
       |
       |  //noinspection PointlessBooleanExpression
       |  public boolean quietBool(boolean x) {
@@ -5424,15 +6053,15 @@ class LintSuite extends munit.FunSuite {
         |
         |@SuppressWarnings("EmptyMethod")
         |public class ClassLevel {
-        |  public void first() {}
-        |  public void second() {}
+        |  private void first() {}
+        |  private void second() {}
         |}
         |""".stripMargin,
       "SiblingClass" -> """
         |package demo;
         |
         |public class SiblingClass {
-        |  public void unsuppressed() {}
+        |  private void unsuppressed() {}
         |}
         |""".stripMargin,
       "StatementLevel" -> """
@@ -6071,5 +6700,1380 @@ class LintSuite extends munit.FunSuite {
       Vector(6 -> "demo.Holder.typed", 8 -> "demo.Holder.marked"),
       found.mkString("\n")
     )
+  }
+
+  test("a comparison or a connective with a boolean literal is simplified to the other operand") {
+    val model = compile("Literals" -> """
+      |package demo;
+      |
+      |public class Literals {
+      |  public boolean a(boolean v) { return v == true; }
+      |  public boolean b(boolean v) { return true == v; }
+      |  public boolean c(boolean v) { return v == false; }
+      |  public boolean d(boolean v) { return false == v; }
+      |  public boolean e(boolean v) { return v != true; }
+      |  public boolean f(boolean v) { return true != v; }
+      |  public boolean g(boolean v) { return false != v; }
+      |  public boolean h(boolean v) { return v && true; }
+      |  public boolean i(boolean v) { return false || v; }
+      |  public boolean j(boolean v, boolean w) { return v && w; }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "pointless-boolean").map(lint => lint.method.split('.').last -> lint.detail)
+    assertEquals(
+      found.toSet,
+      Set(
+        "a" -> "v == true can be simplified to v",
+        "b" -> "true == v can be simplified to v",
+        "c" -> "v == false can be simplified to !v",
+        "d" -> "false == v can be simplified to !v",
+        "e" -> "v != true can be simplified to !v",
+        "f" -> "true != v can be simplified to !v",
+        "g" -> "false != v can be simplified to v",
+        "h" -> "v && true can be simplified to v",
+        "i" -> "false || v can be simplified to v"
+      ),
+      found.mkString("\n")
+    )
+  }
+
+  test("a //noinspection reaches the types of a file that the compiler attributes one after another") {
+    val model = compile("Pair" -> """
+      |package demo;
+      |
+      |public class Pair {
+      |  public boolean first(boolean x) {
+      |    return x && true;
+      |  }
+      |}
+      |
+      |class Second {
+      |  //noinspection PointlessBooleanExpression
+      |  public boolean quiet(boolean x) {
+      |    return x && true;
+      |  }
+      |
+      |  public boolean noisy(boolean x) {
+      |    return x && true;
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "pointless-boolean").map(_.method)
+    assertEquals(found.toSet, Set("demo.Pair.first", "demo.Second.noisy"), found.mkString("\n"))
+  }
+
+  test("a doc comment that another doc comment follows documents nothing") {
+    val found = flow(
+      "dangling-doc-comment",
+      "Stacked" ->
+        """package demo;
+          |
+          |public class Stacked {
+          |  /** Orphaned by the next one. */
+          |  /** Documents the field. */
+          |  int field;
+          |
+          |  /** First of three. */
+          |  /** Second of three. */
+          |  /**
+          |   * Documents the method.
+          |   */
+          |  void method() {}
+          |}
+          |""".stripMargin
+    )
+    assertEquals(found.map(_.line), Vector(4, 8, 9), found.mkString("\n"))
+  }
+
+  test("a doc comment that a closing brace or the end of the file follows documents nothing") {
+    val found = flow(
+      "dangling-doc-comment",
+      "Closed" ->
+        """package demo;
+          |
+          |public class Closed {
+          |  int field;
+          |
+          |  /** Orphaned by the brace. */
+          |}
+          |
+          |class Other {
+          |  // a note
+          |  /** Orphaned across a note. */
+          |  /* another note */
+          |}
+          |
+          |/** Orphaned by the end of the file. */
+          |""".stripMargin
+    )
+    assertEquals(found.map(_.line), Vector(6, 11, 15), found.mkString("\n"))
+  }
+
+  test("a doc comment that a declaration follows documents it") {
+    val found = flow(
+      "dangling-doc-comment",
+      "Documented" ->
+        """/** Documents the package. */
+          |package demo;
+          |
+          |/** Documents the class. */
+          |public class Documented {
+          |  /** Documents the field. */
+          |  @Deprecated
+          |  int field;
+          |
+          |  /** Documents the method across a note. */
+          |  // a note
+          |  /* another note */
+          |  void method() {}
+          |
+          |  /** Documents the constructor. */ // a trailing note
+          |  Documented() {}
+          |
+          |  /**/
+          |  int empty;
+          |
+          |  // a note
+          |  /* another note */
+          |}
+          |""".stripMargin
+    )
+    assertEquals(found, Vector.empty, found.mkString("\n"))
+  }
+
+  test("a doc comment marker inside a literal or another comment is no doc comment") {
+    val found = flow(
+      "dangling-doc-comment",
+      "Literals" ->
+        """package demo;
+          |
+          |public class Literals {
+          |  String url = "http://x\"y"; /** Orphaned after a string. */
+          |  /** Documents the field. */
+          |  int a;
+          |  char quote = '"'; /** Orphaned after a character. */
+          |  /** Documents the field. */
+          |  int b;
+          |  String text = "/** in a string */";
+          |  // /** in a line comment */
+          |  /* /** in a block comment */
+          |}
+          |""".stripMargin
+    )
+    assertEquals(found.map(_.line), Vector(4, 7), found.mkString("\n"))
+  }
+
+  test("a loop that returns on the first match is reported for a stream match") {
+    val model = compile("Matches" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |
+      |public class Matches {
+      |  private boolean analyses(Object project) {
+      |    return project != null;
+      |  }
+      |
+      |  public boolean lastOfTheReactor(List<Object> projects, Object project) {
+      |    int index = projects.indexOf(project);
+      |    for (int later = index + 1; later < projects.size(); later++) {
+      |      if (analyses(projects.get(later))) {
+      |        return false;
+      |      }
+      |    }
+      |    return true;
+      |  }
+      |
+      |  public boolean anyEmpty(List<String> values) {
+      |    for (String value : values) {
+      |      if (value.isEmpty()) return true;
+      |    }
+      |    return false;
+      |  }
+      |
+      |  public boolean allShort(List<String> values, int limit) {
+      |    for (String value : values) {
+      |      if (value.length() > limit) {
+      |        return false;
+      |      }
+      |    }
+      |    return true;
+      |  }
+      |
+      |  public boolean allFilled(String[] values) {
+      |    for (String value : values)
+      |      if (!value.isEmpty()) return false;
+      |    return true;
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "loop-to-match")
+    assertEquals(
+      found.map(lint => lint.method -> lint.detail.takeWhile(_ != ' ')),
+      Vector(
+        "demo.Matches.lastOfTheReactor" -> "use",
+        "demo.Matches.anyEmpty"         -> "use",
+        "demo.Matches.allShort"         -> "use",
+        "demo.Matches.allFilled"        -> "use"
+      ),
+      model.lints.mkString("\n")
+    )
+    assertEquals(
+      found.map(_.detail.split(' ')(1)),
+      Vector("noneMatch", "anyMatch", "noneMatch", "allMatch"),
+      found.mkString("\n")
+    )
+  }
+
+  test("a loop that captures a pattern binding is reported only while the binding is not reassigned") {
+    val model = compile("Captures" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |
+      |public class Captures {
+      |  public boolean unassignedCapture(List<String> values, Object other) {
+      |    if (!(other instanceof String text)) return false;
+      |    for (String value : values) {
+      |      if (value.equals(text)) return true;
+      |    }
+      |    return false;
+      |  }
+      |
+      |  public boolean reassignedCapture(List<String> values, Object other) {
+      |    if (!(other instanceof String text)) return false;
+      |    text = text.trim();
+      |    for (String value : values) {
+      |      if (value.equals(text)) return true;
+      |    }
+      |    return false;
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "loop-to-match")
+    assertEquals(found.map(_.method), Vector("demo.Captures.unassignedCapture"), model.lints.mkString("\n"))
+  }
+
+  test("a loop that does more than return on the first match is not reported for a stream match") {
+    val model = compile("Matches" -> """
+      |package demo;
+      |
+      |import java.io.IOException;
+      |import java.util.List;
+      |
+      |public class Matches {
+      |  private int count;
+      |
+      |  private boolean read(String value) throws IOException {
+      |    return value.isEmpty();
+      |  }
+      |
+      |  public boolean counting(List<String> values) {
+      |    for (String value : values) {
+      |      if (value.isEmpty()) {
+      |        count++;
+      |        return false;
+      |      }
+      |    }
+      |    return true;
+      |  }
+      |
+      |  public boolean beforehand(List<String> values) {
+      |    for (String value : values) {
+      |      count++;
+      |      if (value.isEmpty()) return false;
+      |    }
+      |    return true;
+      |  }
+      |
+      |  public boolean otherwise(List<String> values) {
+      |    for (String value : values) {
+      |      if (value.isEmpty()) return false;
+      |      else count++;
+      |    }
+      |    return true;
+      |  }
+      |
+      |  public boolean same(List<String> values) {
+      |    for (String value : values) {
+      |      if (value.isEmpty()) return false;
+      |    }
+      |    return false;
+      |  }
+      |
+      |  public boolean computed(List<String> values) {
+      |    for (String value : values) {
+      |      if (value.isEmpty()) return false;
+      |    }
+      |    return values.isEmpty();
+      |  }
+      |
+      |  public boolean separated(List<String> values) {
+      |    for (String value : values) {
+      |      if (value.isEmpty()) return true;
+      |    }
+      |    count++;
+      |    return false;
+      |  }
+      |
+      |  public boolean checked(List<String> values) throws IOException {
+      |    for (String value : values) {
+      |      if (read(value)) return true;
+      |    }
+      |    return false;
+      |  }
+      |
+      |  public boolean assigning(List<String> values) {
+      |    String last = "";
+      |    for (String value : values) {
+      |      if (value.equals(last = value)) return true;
+      |    }
+      |    return false;
+      |  }
+      |
+      |  public boolean changing(List<String> values) {
+      |    int limit = 3;
+      |    limit++;
+      |    for (String value : values) {
+      |      if (value.length() > limit) return true;
+      |    }
+      |    return false;
+      |  }
+      |
+      |  public boolean indexed(List<Integer> values) {
+      |    for (int i = 0; i < values.size(); i++) {
+      |      if (values.get(i) > i) return true;
+      |    }
+      |    return false;
+      |  }
+      |
+      |  public boolean crossed(List<Integer> values, List<Integer> others) {
+      |    for (int i = 0; i < others.size(); i++) {
+      |      if (values.get(i) > 0) return true;
+      |    }
+      |    return false;
+      |  }
+      |
+      |  public boolean iterable(Iterable<String> values) {
+      |    for (String value : values) {
+      |      if (value.isEmpty()) return true;
+      |    }
+      |    return false;
+      |  }
+      |
+      |  public boolean primitives(int[] values, int target) {
+      |    for (int value : values) {
+      |      if (value == target) return true;
+      |    }
+      |    return false;
+      |  }
+      |
+      |  public boolean bytes(byte[] values) {
+      |    for (byte value : values) {
+      |      if (value != 0) return false;
+      |    }
+      |    return true;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "loop-to-match"), Vector.empty)
+  }
+
+  test("a null check that picks a default is reported for requireNonNullElse") {
+    val model = compile("Defaults" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |import java.util.Collections;
+      |import java.util.List;
+      |import java.util.Map;
+      |import java.util.Set;
+      |
+      |public class Defaults {
+      |  static final class Settings {
+      |    Set<String> hot;
+      |    String name;
+      |  }
+      |
+      |  private final Set<String> hot;
+      |  private final Set<String> checked;
+      |
+      |  Defaults(Settings settings) {
+      |    this.hot = settings.hot != null ? settings.hot : Set.of();
+      |    this.checked = settings.hot == null ? Collections.emptySet() : settings.hot;
+      |  }
+      |
+      |  String name(Settings settings) {
+      |    return settings.name != null ? settings.name : "unnamed";
+      |  }
+      |
+      |  List<String> fresh(List<String> given) {
+      |    return given != null ? given : new ArrayList<>();
+      |  }
+      |
+      |  String lookup(Map<String, String> map, String key) {
+      |    return map.get(key) != null ? map.get(key) : "none";
+      |  }
+      |
+      |  String guard(String value) {
+      |    if (value != null) {
+      |      return value;
+      |    }
+      |    return "";
+      |  }
+      |
+      |  String invert(String value) {
+      |    if (value == null) return "none";
+      |    return value;
+      |  }
+      |
+      |  String otherwise(String value) {
+      |    if (value != null) return value;
+      |    else return "";
+      |  }
+      |
+      |  private static final String NONE = "none";
+      |
+      |  String constant(String value) {
+      |    return value == null ? NONE : value;
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "null-default")
+    assertEquals(
+      found.map(lint => lint.method -> lint.detail),
+      Vector(
+        "demo.Defaults.Defaults" -> "use Objects.requireNonNullElse(settings.hot, Set.of()) instead of the null check",
+        "demo.Defaults.Defaults" ->
+          "use Objects.requireNonNullElse(settings.hot, Collections.emptySet()) instead of the null check",
+        "demo.Defaults.name" ->
+          "use Objects.requireNonNullElse(settings.name, \"unnamed\") instead of the null check",
+        "demo.Defaults.fresh" ->
+          "use Objects.requireNonNullElseGet(given, () -> new ArrayList<>()) instead of the null check",
+        "demo.Defaults.lookup" ->
+          "use Objects.requireNonNullElse(map.get(key), \"none\") instead of the null check",
+        "demo.Defaults.guard"     -> "use Objects.requireNonNullElse(value, \"\") instead of the null check",
+        "demo.Defaults.invert"    -> "use Objects.requireNonNullElse(value, \"none\") instead of the null check",
+        "demo.Defaults.otherwise" -> "use Objects.requireNonNullElse(value, \"\") instead of the null check",
+        "demo.Defaults.constant"  -> "use Objects.requireNonNullElse(value, NONE) instead of the null check"
+      ),
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("a null check that does not pick a default of the value is not reported") {
+    val model = compile("Defaults" -> """
+      |package demo;
+      |
+      |import java.util.Iterator;
+      |
+      |public class Defaults {
+      |  private String compute() {
+      |    return "computed";
+      |  }
+      |
+      |  private void log(String value) {
+      |  }
+      |
+      |  String effect(Iterator<String> it) {
+      |    return it.next() != null ? it.next() : "x";
+      |  }
+      |
+      |  String unknown(String value, String other) {
+      |    return value != null ? value : other;
+      |  }
+      |
+      |  String nothing(String value) {
+      |    return value != null ? value : null;
+      |  }
+      |
+      |  String different(String a, String b) {
+      |    return a != null ? b : "x";
+      |  }
+      |
+      |  String transformed(String a) {
+      |    return a != null ? a.trim() : "";
+      |  }
+      |
+      |  String called(String a) {
+      |    return a != null ? a : compute();
+      |  }
+      |
+      |  String logged(String a) {
+      |    if (a != null) {
+      |      log(a);
+      |      return a;
+      |    }
+      |    return "";
+      |  }
+      |
+      |  String compound(String a, boolean flag) {
+      |    return a != null && flag ? a : "";
+      |  }
+      |
+      |  long widened(Integer count) {
+      |    return count != null ? count : 0L;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "null-default"), Vector.empty)
+  }
+
+  test("a null check is not reported for requireNonNullElse where the release has none") {
+    val model = compileEnabled(
+      Vector("release=8"),
+      "Defaults" -> """
+      |package demo;
+      |
+      |public class Defaults {
+      |  String name(String value) {
+      |    return value != null ? value : "unnamed";
+      |  }
+      |}
+      |""".stripMargin
+    )
+
+    assertEquals(model.lints.filter(_.id == "null-default"), Vector.empty)
+  }
+
+  test("a stream reduced by concatenation is reported for String.join") {
+    val model = compile("Reductions" -> """
+      |package demo;
+      |
+      |import java.io.File;
+      |import java.util.List;
+      |
+      |public class Reductions {
+      |  String path(List<File> files) {
+      |    return files.stream().map(File::getAbsolutePath).reduce((a, b) -> a + File.pathSeparator + b).orElse("");
+      |  }
+      |
+      |  String strict(List<File> files) {
+      |    return files.stream().map(File::getAbsolutePath).reduce((a, b) -> a + java.io.File.pathSeparator + b).orElseThrow();
+      |  }
+      |
+      |  String literal(List<String> values) {
+      |    return values.stream().reduce((first, second) -> first + ", " + second).orElse("");
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "stream-join")
+    assertEquals(
+      found.map(lint => lint.method -> lint.detail),
+      Vector(
+        "demo.Reductions.path"   -> "use String.join instead of reducing a stream by concatenation",
+        "demo.Reductions.strict" ->
+          "use String.join instead of reducing a stream by concatenation, which returns an empty text where orElseThrow fails",
+        "demo.Reductions.literal" -> "use String.join instead of reducing a stream by concatenation"
+      ),
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("a stream reduced by something other than a separated concatenation is not reported for String.join") {
+    val model = compile("Reductions" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |
+      |public class Reductions {
+      |  int total(List<Integer> values) {
+      |    return values.stream().reduce((a, b) -> a + b).orElse(0);
+      |  }
+      |
+      |  int shifted(List<Integer> values) {
+      |    return values.stream().reduce((a, b) -> a + 1 + b).orElse(0);
+      |  }
+      |
+      |  String longest(List<String> values) {
+      |    return values.stream().reduce((a, b) -> a.length() >= b.length() ? a : b).orElse("");
+      |  }
+      |
+      |  String doubled(List<String> values) {
+      |    return values.stream().reduce((a, b) -> a + a + b).orElse("");
+      |  }
+      |
+      |  String flat(List<String> values) {
+      |    return values.stream().reduce((a, b) -> a + b).orElse("");
+      |  }
+      |
+      |  String defaulted(List<String> values) {
+      |    return values.stream().reduce((a, b) -> a + "," + b).orElse("none");
+      |  }
+      |
+      |  String seeded(List<String> values) {
+      |    return values.stream().reduce("", (a, b) -> a + "," + b);
+      |  }
+      |
+      |  String reversed(List<String> values) {
+      |    return values.stream().reduce((a, b) -> b + "," + a).orElse("");
+      |  }
+      |
+      |  String hidden(List<String> values) {
+      |    return values.stream().reduce((a, b) -> a + "," + b).map(String::trim).orElse("");
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "stream-join"), Vector.empty)
+  }
+
+  test("adjacent loops with the same body over different sources are reported") {
+    val model = compile("Loops" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |import java.util.List;
+      |
+      |public class Loops {
+      |  private final List<String> files = new ArrayList<>();
+      |
+      |  private static List<String> sources(List<String> roots) {
+      |    return roots;
+      |  }
+      |
+      |  void add(List<String> compile, List<String> test) {
+      |    for (String source : sources(compile)) files.add(source.trim());
+      |    for (String source : sources(test)) files.add(source.trim());
+      |  }
+      |
+      |  void renamed(List<String> first, List<String> second, List<String> out) {
+      |    for (String x : first) {
+      |      out.add(x);
+      |    }
+      |    for (String y : second) {
+      |      out.add(y);
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "consecutive-identical-loops")
+    assertEquals(found.map(_.method), Vector("demo.Loops.add", "demo.Loops.renamed"), model.lints.mkString("\n"))
+    assertEquals(found.map(_.line), Vector(16, 23))
+  }
+
+  test("adjacent loops that cannot be merged are not reported") {
+    val model = compile("Loops" -> """
+      |package demo;
+      |
+      |import java.util.HashMap;
+      |import java.util.List;
+      |import java.util.Map;
+      |
+      |public class Loops {
+      |  private int count;
+      |
+      |  void bodies(List<String> a, List<String> b, List<String> out) {
+      |    for (String x : a) out.add(x);
+      |    for (String x : b) out.add(x.trim());
+      |  }
+      |
+      |  void sources(List<String> a, List<String> out) {
+      |    for (String x : a) out.add(x);
+      |    for (String x : a) out.add(x);
+      |  }
+      |
+      |  void separated(List<String> a, List<String> b, List<String> out) {
+      |    for (String x : a) out.add(x);
+      |    count++;
+      |    for (String x : b) out.add(x);
+      |  }
+      |
+      |  void breaking(List<String> a, List<String> b, List<String> out) {
+      |    for (String x : a) {
+      |      if (x.isEmpty()) break;
+      |      out.add(x);
+      |    }
+      |    for (String x : b) {
+      |      if (x.isEmpty()) break;
+      |      out.add(x);
+      |    }
+      |  }
+      |
+      |  void feeding(List<String> a, Map<String, Integer> counts) {
+      |    for (String x : a) counts.merge(x, 1, Integer::sum);
+      |    for (String x : counts.keySet()) counts.merge(x, 1, Integer::sum);
+      |  }
+      |
+      |  void types(List<String> a, List<Object> b, List<Object> out) {
+      |    for (String x : a) out.add(x);
+      |    for (Object x : b) out.add(x);
+      |  }
+      |
+      |  void nested(List<String> a, List<String> b, List<String> out) {
+      |    for (String x : a) {
+      |      out.add(x);
+      |      for (String y : b) out.add(y);
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "consecutive-identical-loops"), Vector.empty)
+  }
+
+  test("a list that one loop fills and another iterates once is reported") {
+    val model = compile("Temporaries" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |import java.util.List;
+      |import java.util.Set;
+      |import java.util.TreeSet;
+      |
+      |public class Temporaries {
+      |  String render(Set<String> ids, Set<String> disabled) {
+      |    List<String> rules = new ArrayList<>();
+      |    for (String rule : new TreeSet<>(ids)) {
+      |      if (!disabled.contains(rule)) {
+      |        rules.add(rule);
+      |      }
+      |    }
+      |    StringBuilder scalafix = new StringBuilder("rules = [\n");
+      |    for (String rule : rules) {
+      |      scalafix.append("  \"").append(rule).append("\"\n");
+      |    }
+      |    return scalafix.toString();
+      |  }
+      |
+      |  void print(List<String> names) {
+      |    List<String> kept = new ArrayList<>();
+      |    for (String name : names) kept.add(name.trim());
+      |    for (String name : kept) System.out.println(name);
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "temporary-list-iterated-once")
+    assertEquals(
+      found.map(_.method),
+      Vector("demo.Temporaries.render", "demo.Temporaries.print"),
+      model.lints.mkString("\n")
+    )
+    assertEquals(found.map(_.line), Vector(11, 25))
+  }
+
+  test("a list that one loop fills from a pattern binding and another iterates once is reported") {
+    val model = compile("Prefixes" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |import java.util.List;
+      |
+      |public class Prefixes {
+      |  void print(List<String> names, Object prefix) {
+      |    if (!(prefix instanceof String text)) return;
+      |    List<String> kept = new ArrayList<>();
+      |    for (String name : names) kept.add(text + name);
+      |    for (String name : kept) System.out.println(name);
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "temporary-list-iterated-once")
+    assertEquals(found.map(_.method), Vector("demo.Prefixes.print"), model.lints.mkString("\n"))
+  }
+
+  test("a list that is used beyond a fill and one iteration is not reported") {
+    val model = compile("Temporaries" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |import java.util.Collections;
+      |import java.util.List;
+      |import java.util.Map;
+      |
+      |public class Temporaries {
+      |  private int count;
+      |
+      |  int sized(List<String> names) {
+      |    List<String> kept = new ArrayList<>();
+      |    for (String name : names) kept.add(name.trim());
+      |    for (String name : kept) count++;
+      |    return kept.size();
+      |  }
+      |
+      |  void twice(List<String> names) {
+      |    List<String> kept = new ArrayList<>();
+      |    for (String name : names) kept.add(name.trim());
+      |    for (String name : kept) count++;
+      |    for (String name : kept) count--;
+      |  }
+      |
+      |  void sorted(List<String> names) {
+      |    List<String> kept = new ArrayList<>();
+      |    for (String name : names) kept.add(name.trim());
+      |    Collections.sort(kept);
+      |    for (String name : kept) count++;
+      |  }
+      |
+      |  void snapshot(Map<String, String> map) {
+      |    List<String> dead = new ArrayList<>();
+      |    for (String key : map.keySet()) {
+      |      if (map.get(key).isEmpty()) dead.add(key);
+      |    }
+      |    for (String key : dead) map.remove(key);
+      |  }
+      |
+      |  void seeded(List<String> names) {
+      |    List<String> kept = new ArrayList<>(names);
+      |    for (String name : names) kept.add(name.trim());
+      |    for (String name : kept) count++;
+      |  }
+      |
+      |  void unfilled(List<String> names) {
+      |    List<String> kept = new ArrayList<>();
+      |    kept.add("a");
+      |    for (String name : kept) count++;
+      |  }
+      |
+      |  void counted(List<String> names) {
+      |    List<String> kept = new ArrayList<>();
+      |    int seen = 0;
+      |    for (String name : names) {
+      |      seen++;
+      |      kept.add(name.trim());
+      |    }
+      |    for (String name : kept) count += seen;
+      |  }
+      |
+      |  List<String> passed(List<String> names) {
+      |    List<String> kept = new ArrayList<>();
+      |    for (String name : names) kept.add(name.trim());
+      |    for (String name : kept) count++;
+      |    return kept;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "temporary-list-iterated-once"), Vector.empty)
+  }
+
+  test("a condition inside a loop that the loop never changes is reported") {
+    val model = compile(
+      "Configuration" -> """
+        |package demo;
+        |
+        |import java.util.Set;
+        |
+        |public final class Configuration {
+        |  private final Set<String> disabled;
+        |
+        |  public Configuration(Set<String> disabled) {
+        |    this.disabled = disabled;
+        |  }
+        |
+        |  public Set<String> disabled() {
+        |    return disabled;
+        |  }
+        |}
+        |""".stripMargin,
+      "Scalafix" -> """
+        |package demo;
+        |
+        |import java.util.List;
+        |
+        |public class Scalafix {
+        |  static String render(Configuration configuration, List<String> bans) {
+        |    StringBuilder scalafix = new StringBuilder();
+        |    for (String ban : bans) {
+        |      if (!configuration.disabled().contains("DisableSyntax")) {
+        |        scalafix.append(ban).append(" = ").append(!configuration.disabled().contains(ban)).append("\n");
+        |      }
+        |    }
+        |    return scalafix.toString();
+        |  }
+        |
+        |  static int flagged(List<String> values, boolean verbose) {
+        |    int total = 0;
+        |    for (String value : values) {
+        |      if (verbose) {
+        |        total += value.length();
+        |      }
+        |    }
+        |    return total;
+        |  }
+        |
+        |  static int counted(List<String> allowed, String user) {
+        |    int total = 0;
+        |    for (int i = 0; i < 10; i++) {
+        |      if (allowed.contains(user)) {
+        |        total += 2;
+        |      }
+        |    }
+        |    return total;
+        |  }
+        |}
+        |""".stripMargin
+    )
+
+    val found = model.lints.filter(_.id == "loop-invariant-condition")
+    assertEquals(
+      found.map(_.method),
+      Vector("demo.Scalafix.render", "demo.Scalafix.flagged", "demo.Scalafix.counted"),
+      model.lints.mkString("\n")
+    )
+    assertEquals(found.map(_.line), Vector(10, 20, 30))
+  }
+
+  test("a condition inside a loop that the loop can change is not reported") {
+    val model = compile("Invariants" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |import java.util.Iterator;
+      |import java.util.List;
+      |import java.util.Set;
+      |
+      |public class Invariants {
+      |  private static final boolean DEBUG = false;
+      |  private boolean strict;
+      |  private int total;
+      |
+      |  void element(List<String> values) {
+      |    for (String value : values) {
+      |      if (value.isEmpty()) total++;
+      |    }
+      |  }
+      |
+      |  void counted(List<String> values) {
+      |    for (int i = 0; i < values.size(); i++) {
+      |      if (i > 2) total++;
+      |    }
+      |  }
+      |
+      |  void assigned(List<String> values) {
+      |    boolean first = true;
+      |    for (String value : values) {
+      |      if (first) {
+      |        total++;
+      |        first = false;
+      |      }
+      |    }
+      |  }
+      |
+      |  void grown(List<String> values) {
+      |    Set<String> seen = new java.util.HashSet<>();
+      |    for (String value : values) {
+      |      if (seen.contains("a")) total++;
+      |      seen.add(value);
+      |    }
+      |  }
+      |
+      |  void escaped(List<String> values) {
+      |    List<String> seen = new ArrayList<>();
+      |    for (String value : values) {
+      |      if (seen.isEmpty()) total++;
+      |      remember(seen);
+      |    }
+      |  }
+      |
+      |  private void remember(List<String> seen) {
+      |    seen.add("a");
+      |  }
+      |
+      |  void called(List<String> values, Iterator<String> it) {
+      |    for (String value : values) {
+      |      if (it.hasNext()) total++;
+      |    }
+      |  }
+      |
+      |  void field(List<String> values) {
+      |    for (String value : values) {
+      |      if (strict) total++;
+      |    }
+      |  }
+      |
+      |  void constant(List<String> values) {
+      |    for (String value : values) {
+      |      if (DEBUG) total++;
+      |    }
+      |  }
+      |
+      |  void declared(List<String> values) {
+      |    for (String value : values) {
+      |      boolean empty = value.isEmpty();
+      |      if (empty) total++;
+      |    }
+      |  }
+      |
+      |  void lambda(List<String> values, boolean verbose) {
+      |    values.forEach(value -> {
+      |      if (verbose) total++;
+      |    });
+      |  }
+      |
+      |  void outside(List<String> values, boolean verbose) {
+      |    if (verbose) total++;
+      |    for (String value : values) {
+      |      total += value.length();
+      |    }
+      |  }
+      |
+      |  void mixed(List<String> values) {
+      |    for (String value : values) {
+      |      if (values.isEmpty() && value == null) total++;
+      |    }
+      |  }
+      |
+      |  void among(List<String> values, boolean verbose) {
+      |    for (String value : values) {
+      |      total += value.length();
+      |      if (verbose) total++;
+      |    }
+      |  }
+      |
+      |  void branching(List<String> values, boolean verbose) {
+      |    for (String value : values) {
+      |      if (verbose) total++;
+      |      else total--;
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "loop-invariant-condition")
+    assertEquals(found.map(lint => lint.method -> lint.line), Vector.empty, model.lints.mkString("\n"))
+  }
+
+  test("a condition read through the accessor of a record is invariant and through a getter that can change is not") {
+    val model = compile(
+      "Open" -> """
+        |package demo;
+        |
+        |import java.util.Set;
+        |
+        |public class Open {
+        |  private final Set<String> disabled = Set.of();
+        |
+        |  public Set<String> disabled() {
+        |    return disabled;
+        |  }
+        |}
+        |""".stripMargin,
+      "Loose" -> """
+        |package demo;
+        |
+        |import java.util.Set;
+        |
+        |public final class Loose {
+        |  private Set<String> disabled = Set.of();
+        |
+        |  public Set<String> disabled() {
+        |    return disabled;
+        |  }
+        |}
+        |""".stripMargin,
+      "Named" -> """
+        |package demo;
+        |
+        |import java.util.Set;
+        |
+        |public record Named(Set<String> disabled) {
+        |}
+        |""".stripMargin,
+      "Users" -> """
+        |package demo;
+        |
+        |import java.util.List;
+        |
+        |public class Users {
+        |  static int open(Open open, List<String> values) {
+        |    int total = 0;
+        |    for (String value : values) {
+        |      if (open.disabled().contains("a")) total++;
+        |    }
+        |    return total;
+        |  }
+        |
+        |  static int loose(Loose loose, List<String> values) {
+        |    int total = 0;
+        |    for (String value : values) {
+        |      if (loose.disabled().contains("a")) total++;
+        |    }
+        |    return total;
+        |  }
+        |
+        |  static int named(Named named, List<String> values) {
+        |    int total = 0;
+        |    for (String value : values) {
+        |      if (named.disabled().contains("a")) total++;
+        |    }
+        |    return total;
+        |  }
+        |}
+        |""".stripMargin
+    )
+
+    val found = model.lints.filter(_.id == "loop-invariant-condition")
+    assertEquals(found.map(_.method), Vector("demo.Users.named"), model.lints.mkString("\n"))
+  }
+
+  test("a match of an equality test with a constant is reported as a contains") {
+    val model = compile("Matches" -> """
+      |package demo;
+      |
+      |import java.util.HashSet;
+      |import java.util.List;
+      |import java.util.Objects;
+      |import java.util.Set;
+      |
+      |public class Matches {
+      |  public boolean lambda(List<String> values, String c) {
+      |    return values.stream().anyMatch(x -> x.equals(c));
+      |  }
+      |
+      |  public boolean reversed(List<String> values, String c) {
+      |    return values.stream().anyMatch(x -> c.equals(x));
+      |  }
+      |
+      |  public boolean reference(Set<String> values, String c) {
+      |    return values.stream().anyMatch(c::equals);
+      |  }
+      |
+      |  public boolean objects(HashSet<String> values, String c) {
+      |    return values.stream().anyMatch(x -> Objects.equals(x, c));
+      |  }
+      |
+      |  public boolean none(List<String> values, String c) {
+      |    return values.stream().noneMatch(x -> x.equals(c));
+      |  }
+      |
+      |  public boolean all(List<String> values, String c) {
+      |    return values.stream().allMatch(x -> !x.equals(c));
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(lint => lint.id == "exists-to-contains" || lint.id == "forall-to-not-contains")
+        .map(lint => (lint.id, lint.method, lint.detail)),
+      Vector(
+        (
+          "exists-to-contains",
+          "demo.Matches.lambda",
+          "use contains instead of stream and anyMatch of an equality test: values.contains(c)"
+        ),
+        (
+          "exists-to-contains",
+          "demo.Matches.reversed",
+          "use contains instead of stream and anyMatch of an equality test: values.contains(c)"
+        ),
+        (
+          "exists-to-contains",
+          "demo.Matches.reference",
+          "use contains instead of stream and anyMatch of an equality test: values.contains(c)"
+        ),
+        (
+          "exists-to-contains",
+          "demo.Matches.objects",
+          "use contains instead of stream and anyMatch of an equality test: values.contains(c)"
+        ),
+        (
+          "forall-to-not-contains",
+          "demo.Matches.none",
+          "use !contains instead of stream and noneMatch of an equality test: !values.contains(c)"
+        ),
+        (
+          "forall-to-not-contains",
+          "demo.Matches.all",
+          "use !contains instead of stream and allMatch of an inequality test: !values.contains(c)"
+        )
+      ),
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("a match that is not an equality test of a java.util collection with a constant is not reported") {
+    val model = compile("Matches" -> """
+      |package demo;
+      |
+      |import java.util.Arrays;
+      |import java.util.Comparator;
+      |import java.util.List;
+      |import java.util.Objects;
+      |import java.util.TreeSet;
+      |import java.util.stream.Stream;
+      |
+      |public class Matches {
+      |  static class Mine {
+      |    Stream<String> stream() { return Stream.empty(); }
+      |  }
+      |
+      |  public boolean array(String[] values, String c) {
+      |    return Arrays.stream(values).anyMatch(x -> x.equals(c));
+      |  }
+      |
+      |  public boolean varargs(String[] values, String c) {
+      |    return Stream.of(values).anyMatch(x -> x.equals(c));
+      |  }
+      |
+      |  public boolean sorted(TreeSet<String> values, String c) {
+      |    return values.stream().anyMatch(x -> x.equals(c));
+      |  }
+      |
+      |  public boolean mine(Mine values, String c) {
+      |    return values.stream().anyMatch(x -> x.equals(c));
+      |  }
+      |
+      |  public boolean mapped(List<String> values, String c) {
+      |    return values.stream().map(String::trim).anyMatch(x -> x.equals(c));
+      |  }
+      |
+      |  public boolean effect(List<String> values) {
+      |    return values.stream().anyMatch(x -> x.equals(next()));
+      |  }
+      |
+      |  public boolean self(List<String> values) {
+      |    return values.stream().anyMatch(x -> x.equals(x.trim()));
+      |  }
+      |
+      |  public boolean arrays(List<String[]> values, String[] c) {
+      |    return values.stream().anyMatch(x -> x.equals(c));
+      |  }
+      |
+      |  public boolean other(List<String> values, String c) {
+      |    return values.stream().anyMatch(x -> x.equalsIgnoreCase(c));
+      |  }
+      |
+      |  public boolean mixed(List<String> values, String c) {
+      |    return values.stream().allMatch(x -> x.equals(c));
+      |  }
+      |
+      |  private String next() {
+      |    return "";
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(lint => lint.id == "exists-to-contains" || lint.id == "forall-to-not-contains"),
+      Vector.empty,
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("a filtered count of an array stream compared with zero is reported") {
+    val model = compile("Counts" -> """
+      |package demo;
+      |
+      |import java.util.Arrays;
+      |
+      |public class Counts {
+      |  public boolean none(String[] values) {
+      |    return Arrays.stream(values).filter(v -> v == null).count() == 0;
+      |  }
+      |
+      |  public boolean any(int[] values) {
+      |    return Arrays.stream(values).filter(v -> v > 3).count() > 0;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(_.id.startsWith("size-to-")).map(lint => (lint.id, lint.method, lint.detail)),
+      Vector(
+        (
+          "size-to-is-empty",
+          "demo.Counts.none",
+          "use noneMatch instead of filter and a count compared with zero: " +
+            "Arrays.stream(values).noneMatch((v)->v == null)"
+        ),
+        (
+          "size-to-non-empty",
+          "demo.Counts.any",
+          "use anyMatch instead of filter and a count compared with zero: " +
+            "Arrays.stream(values).anyMatch((v)->v > 3)"
+        )
+      ),
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("a size compared with zero on this in a subtype of a collection is reported") {
+    val model = compile("Sizes" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |
+      |public class Sizes extends ArrayList<String> {
+      |  public boolean empty() {
+      |    return size() == 0;
+      |  }
+      |
+      |  public boolean present() {
+      |    return size() > 0;
+      |  }
+      |
+      |  public boolean viaThis() {
+      |    return this.size() == 0;
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(_.id.startsWith("size-to-")).map(lint => (lint.id, lint.method, lint.detail)),
+      Vector(
+        ("size-to-is-empty", "demo.Sizes.empty", "use isEmpty() instead of a size comparison with zero: isEmpty()"),
+        (
+          "size-to-non-empty",
+          "demo.Sizes.present",
+          "use !isEmpty() instead of a size comparison with zero: !isEmpty()"
+        ),
+        (
+          "size-to-is-empty",
+          "demo.Sizes.viaThis",
+          "use isEmpty() instead of a size comparison with zero: this.isEmpty()"
+        )
+      ),
+      model.lints.mkString("\n")
+    )
+  }
+
+  test("a size compared with zero on this where the type overrides the size, or in an isEmpty, is not reported") {
+    val model = compile("Sizes" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |
+      |public class Sizes {
+      |  static class Counted extends ArrayList<String> {
+      |    @Override public int size() {
+      |      return 0;
+      |    }
+      |
+      |    boolean empty() {
+      |      return size() == 0;
+      |    }
+      |  }
+      |
+      |  static class Own extends ArrayList<String> {
+      |    @Override public boolean isEmpty() {
+      |      return size() == 0;
+      |    }
+      |  }
+      |
+      |  static class Unrelated {
+      |    int size() {
+      |      return 0;
+      |    }
+      |
+      |    boolean empty() {
+      |      return size() == 0;
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id.startsWith("size-to-")), Vector.empty, model.lints.mkString("\n"))
   }
 }

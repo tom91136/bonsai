@@ -30,17 +30,6 @@ private[java] object Lifecycle {
 
   def isTeardown(method: Element): Boolean = teardown.exists(Nullness.hasAnnotation(method, _))
 
-  /** The class declaration of the outermost local or anonymous class that holds the path, if any. */
-  def enclosingLocalClass(path: TreePath): Option[TreePath] =
-    Iterator
-      .iterate(path)(_.getParentPath)
-      .takeWhile(_ != null)
-      .filter(candidate => candidate.getLeaf.isInstanceOf[ClassTree])
-      .filter(candidate => !Option(candidate.getParentPath).exists(_.getLeaf.isInstanceOf[ClassTree]))
-      .filter(candidate => Option(candidate.getParentPath).exists(!_.getLeaf.isInstanceOf[CompilationUnitTree]))
-      .toVector
-      .lastOption
-
   /** Whether the code at the point, a lambda or a local class, is created where the setup has not yet filled the field:
     * in an initialiser or a constructor, or in a setup method before it assigns the field.
     */

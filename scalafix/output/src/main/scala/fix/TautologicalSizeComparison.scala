@@ -20,7 +20,7 @@ object TautologicalSizeComparison {
   val leadingSingle = list.size == 1 && other.nonEmpty
   val trailing = other.nonEmpty || list.size == 1 || list.size == 2
   val wrapped = (list.size == 1 || list.size == 2) && other.nonEmpty
-  val zero = list.isEmpty
+  val zero = list.size == 0
   val arrays = array.length == 2
   val reversed = 0 <= list.size
   val reversedNever = 0 > list.size

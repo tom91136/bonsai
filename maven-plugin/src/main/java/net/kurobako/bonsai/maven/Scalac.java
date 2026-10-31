@@ -3,8 +3,6 @@ package net.kurobako.bonsai.maven;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
-import java.util.TreeSet;
 
 /**
  * The options the compiler plugin reads, which the scalac of the build takes from a response file.
@@ -39,7 +37,7 @@ public final class Scalac {
     options.add("-P:bonsai:wildcards=" + configuration.wildcards());
     options.add("-Wconf:msg=" + FINDING + ":" + (mode.equals("ci") ? "e" : "i"));
     if (mode.equals("ci")) {
-      for (String id : sorted(configuration.warnings())) {
+      for (String id : configuration.warnings()) {
         if (ids.checks().contains(id)) {
           // The filter holds no colon, because the compiler splits the option on them, and the check's name is
           // anchored to the end of the tag so that one check's name does not match another's.
@@ -47,31 +45,27 @@ public final class Scalac {
         }
       }
     }
-    for (String id : sorted(configuration.disabled())) {
+    for (String id : configuration.disabled()) {
       if (ids.checks().contains(id)) {
         options.add("-P:bonsai:disable=" + id);
       }
     }
-    for (String id : sorted(configuration.errors())) {
+    for (String id : configuration.errors()) {
       if (ids.checks().contains(id)) {
         options.add("-P:bonsai:error=" + id);
       }
     }
-    for (String id : sorted(configuration.warnings())) {
+    for (String id : configuration.warnings()) {
       if (ids.checks().contains(id)) {
         options.add("-P:bonsai:warn=" + id);
       }
     }
-    for (String glob : sorted(configuration.hot())) {
+    for (String glob : configuration.hot()) {
       options.add("-P:bonsai:hot=" + glob);
     }
-    for (String type : sorted(configuration.checked())) {
+    for (String type : configuration.checked()) {
       options.add("-P:bonsai:checked=" + type);
     }
     return options;
-  }
-
-  private static List<String> sorted(Set<String> values) {
-    return new ArrayList<>(new TreeSet<>(values));
   }
 }

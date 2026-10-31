@@ -19,10 +19,8 @@ class ScalacTest {
   @TempDir
   Path root;
 
-  private Configuration configuration(String contents) throws IOException {
-    Path file = root.resolve(".bonsai.conf");
-    Files.writeString(file, contents);
-    return Configuration.read(file, "demo");
+  private Configuration configuration(String... lines) throws IOException {
+    return Configuration.parse(List.of(lines));
   }
 
   private Ids ids() throws IOException {
@@ -37,15 +35,9 @@ class ScalacTest {
 
   @Test
   void writesTheOptionsTheCompilerPluginReads() throws IOException {
-    Configuration configuration = configuration("""
-        disabled = [acyclic]
-        errors = [broad-catch]
-        warnings = [identity-token]
-        wildcards = 3
-        generated = ["**/generated/**"]
-        hot = ["demo.kernel.**"]
-        checked = [demo.where]
-        """);
+    Configuration configuration = configuration(
+      "disabled\tacyclic", "errors\tbroad-catch", "warnings\tidentity-token", "wildcards\t3",
+      "hot\tdemo.kernel.**", "checked\tdemo.where");
 
     List<String> options = Scalac.options(configuration, ids(), "dev");
 
@@ -77,7 +69,7 @@ class ScalacTest {
 
   @Test
   void aCheckOfAnotherToolIsNotPassedToTheCompilerPlugin() throws IOException {
-    Configuration configuration = configuration("disabled = [duplicate-code, acyclic]\n");
+    Configuration configuration = configuration("disabled\tduplicate-code", "disabled\tacyclic");
 
     List<String> options = Scalac.options(configuration, ids(), "dev");
 
@@ -87,7 +79,7 @@ class ScalacTest {
 
   @Test
   void theFindingsDoNotFailTheBuildWhileDeveloping() throws IOException {
-    Configuration configuration = configuration("disabled = [acyclic]\n");
+    Configuration configuration = configuration("disabled\tacyclic");
 
     List<String> options = Scalac.options(configuration, ids(), "dev");
 
@@ -96,7 +88,7 @@ class ScalacTest {
 
   @Test
   void theFindingsFailTheBuildOnACiServer() throws IOException {
-    Configuration configuration = configuration("disabled = [acyclic]\n");
+    Configuration configuration = configuration("disabled\tacyclic");
 
     List<String> options = Scalac.options(configuration, ids(), "ci");
 
@@ -105,7 +97,7 @@ class ScalacTest {
 
   @Test
   void aCheckKeptAsAWarningDoesNotFailTheBuildOnACiServer() throws IOException {
-    Configuration configuration = configuration("warnings = [acyclic]\n");
+    Configuration configuration = configuration("warnings\tacyclic");
 
     List<String> options = Scalac.options(configuration, ids(), "ci");
 

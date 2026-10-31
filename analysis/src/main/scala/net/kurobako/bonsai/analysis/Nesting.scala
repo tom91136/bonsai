@@ -63,7 +63,9 @@ object Nesting {
   /** The place of every declaration in the target, and the declarations that are not there. `reported` is `moves` with
     * the contents of a unit that holds nothing else, and that all move to one owner, joined into the move of the unit.
     */
-  case class Plan(places: Map[String, Place], moves: Vector[Move], reported: Vector[Move])
+  class Plan(val moves: Vector[Move], join: Vector[Move] => Vector[Move]) {
+    lazy val reported: Vector[Move] = join(moves)
+  }
 
   def plan(model: Model, config: Config): Plan = Planner(model, config).plan()
 
@@ -80,17 +82,16 @@ object Nesting {
       )
     }
 
-  private def last(name: String): String = Finding.short(name).split('.').last
-
   private def describe(declaration: Declaration, from: Place, to: Place): String = {
-    val name = last(declaration.name)
+    val name = Finding.simple(declaration.name)
     (from.owner, to.owner) match {
       case (_, Some(owner)) if from.owner.contains(owner) =>
-        s"$name needs no instance of ${last(owner)}; move it to the companion object of ${last(owner)}"
+        val parent = Finding.simple(owner)
+        s"$name needs no instance of $parent; move it to the companion object of $parent"
       case (_, Some(owner)) if declaration.unit =>
-        s"$name is reached only through ${last(owner)}; nest it in ${last(owner)}"
-      case (_, Some(owner))    => s"$name is used only by ${last(owner)}; move it into ${last(owner)}"
-      case (Some(owner), None) => s"$name uses nothing of ${last(owner)}; move it out to the top level"
+        s"$name is reached only through ${Finding.simple(owner)}; nest it in ${Finding.simple(owner)}"
+      case (_, Some(owner)) => s"$name is used only by ${Finding.simple(owner)}; move it into ${Finding.simple(owner)}"
+      case (Some(owner), None) => s"$name uses nothing of ${Finding.simple(owner)}; move it out to the top level"
       case (None, None)        => s"$name stays at the top level"
     }
   }
@@ -120,12 +121,12 @@ object Nesting {
       else meet(left, dominator(right))
     @tailrec
     def settle(): Unit = {
-      val changed = order.tail.map { node =>
+      var changed = false
+      order.tail.foreach { node =>
         val candidate = predecessors(node).filter(dominator(_) >= 0).reduce(meet)
-        val moved     = dominator(node) != candidate
+        if (dominator(node) != candidate) changed = true
         dominator(node) = candidate
-        moved
-      }.contains(true)
+      }
       if (changed) settle()
     }
     settle()
@@ -143,6 +144,8 @@ object Nesting {
     private val names: Vector[String]                  = declarations.keys.toVector.sorted
     private val units: Vector[String]                  = names.filter(declarations(_).unit)
     private val members: Vector[String]                = names.filterNot(declarations(_).unit)
+
+    private val children: Map[String, Vector[String]] = names.groupBy(outer(_).getOrElse(""))
 
     private val edges: Map[String, Vector[String]] = model.edges.collect {
       case (from, targets) if declarations.contains(from) =>
@@ -218,7 +221,7 @@ object Nesting {
       val following = links.groupMap(_._1)(_._2)
       val reached   = links.map(_._2).toSet
       // a top-level unit nothing uses is the API of its build
-      val standing   = units.filter(unit => outer(unit).isEmpty && !reached(index(unit))).map(index)
+      val standing   = units.collect { case unit if outer(unit).isEmpty && !reached(index(unit)) => index(unit) }
       val entered    = (crossed.toVector ++ names.filter(declarations(_).entry)).flatMap(host(_)).map(index) ++ standing
       val successors = Array.tabulate(units.size + 1) { node =>
         (if (node == root) entered.distinct else following.getOrElse(node, Vector.empty)).sorted.toArray
@@ -257,14 +260,18 @@ object Nesting {
 
       private def owner(name: String): Option[String] = placed(name).owner
 
-      def chain(name: String): Vector[String] = {
-        @tailrec
-        def climb(current: Option[String], found: Vector[String]): Vector[String] = current match {
-          case Some(next) if found.size <= names.size => climb(owner(next), found :+ next)
-          case _                                      => found
+      private val chains = mutable.Map.empty[String, Vector[String]]
+
+      private def chain(name: String): Vector[String] = chains.getOrElseUpdate(
+        name, {
+          @tailrec
+          def climb(current: Option[String], found: Vector[String]): Vector[String] = current match {
+            case Some(next) if found.size <= names.size => climb(owner(next), found :+ next)
+            case _                                      => found
+          }
+          climb(owner(name), Vector.empty)
         }
-        climb(owner(name), Vector.empty)
-      }
+      )
 
       lazy val cyclic: Set[String] = names.filter(chain(_).size > names.size).toSet
 
@@ -330,18 +337,20 @@ object Nesting {
       ).flatten.toSet
     }
 
+    private def deepCrossing(crossing: Boolean, landing: Int): Boolean = crossing && landing > (config.depth - 1).max(1)
+
     private def violates(tree: Tree, placed: Map[String, Place], moved: Set[String], name: String): Boolean = {
       val declaration = declarations(name)
       val from        = outer(name)
       val to          = placed(name).owner
       val bundle      = tree.bundle(name).toSet
-      val outside     = bundle.toVector.flatMap(usersOf(_)).filterNot(bundle).distinct
-      val reached     = bundle.toVector.flatMap(uses(_)).filterNot(bundle).distinct
+      val members     = bundle.toVector.view
+      val outside     = members.flatMap(usersOf(_)).filterNot(bundle).toVector.distinct
+      val reached     = members.flatMap(uses(_)).filterNot(bundle).toVector.distinct
       val landing     = to.fold(0)(parent => tree.depth(parent) + 1)
       val oldFile     = from.fold(name)(tree.top)
       val crossing    = to.exists(parent => tree.top(parent) != oldFile)
-      val tooDeep     = landing + tree.height(name, moved) > config.depth ||
-        (crossing && landing > (config.depth - 1).max(1))
+      val tooDeep     = landing + tree.height(name, moved) > config.depth || deepCrossing(crossing, landing)
       // moving up out of a unit that is already inside the owner would only flatten it
       val lifting = (from, to) match {
         case (Some(parent), Some(owner)) => parent != owner && tree.within(parent, owner)
@@ -370,10 +379,10 @@ object Nesting {
         if (vetoed.isEmpty) placed else settle(accepted -- vetoed)
       }
       val placed = settle(names.filter(name => wanted(name) != declarations(name).place).toSet)
-      val all    = names.filter(name => placed(name) != declarations(name).place).map(name =>
-        Move(declarations(name), placed(name))
-      )
-      Plan(placed, all, joined(Tree(placed), all))
+      val all    = names.view.collect {
+        case name if placed(name) != declarations(name).place => Move(declarations(name), placed(name))
+      }.toVector
+      Plan(all, joined(Tree(placed), _))
     }
 
     // A unit that holds only what leaves it for one owner is better said to move to that owner as it is.
@@ -381,7 +390,6 @@ object Nesting {
     private def joined(tree: Tree, moves: Vector[Move]): Vector[Move] = {
       val moving   = moves.map(move => move.declaration.name -> move).toMap
       val going    = moving.keySet
-      val children = names.groupBy(outer(_).getOrElse(""))
       val joinable = units.flatMap { unit =>
         val declaration = declarations(unit)
         val kids        = children.getOrElse(unit, Vector.empty).flatMap(moving.get)
@@ -417,7 +425,7 @@ object Nesting {
       val landing  = tree.depth(owner) + 1
       val below    = kids.map(kid => 1 + tree.height(kid, going)).max
       val crossing = tree.top(owner) != tree.top(shell.name)
-      landing + below <= config.depth && !(crossing && landing > (config.depth - 1).max(1))
+      landing + below <= config.depth && !deepCrossing(crossing, landing)
     }
   }
 }

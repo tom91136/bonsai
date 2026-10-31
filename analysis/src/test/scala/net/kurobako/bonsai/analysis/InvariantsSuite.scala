@@ -104,7 +104,7 @@ class InvariantsSuite extends AnalysisSuite {
   test("method preconditions over parameters describe sums like class invariants") {
     assertFinding(
       findings(
-        "Fixture.scala" -> """object Fixture {
+        "Harness.scala" -> """object Harness {
                              |  def run(name: String, toolkit: Option[String], image: Option[String]): Unit = {
                              |    require(toolkit.isEmpty || image.isEmpty, "set either toolkit or image")
                              |    println(name)
@@ -112,7 +112,7 @@ class InvariantsSuite extends AnalysisSuite {
                              |}""".stripMargin
       ),
       "invariant-sum",
-      "Fixture.run(name, toolkit, image): the precondition rejects 1 of 4 states of (toolkit, image)"
+      "Harness.run(name, toolkit, image): the precondition rejects 1 of 4 states of (toolkit, image)"
     )
   }
 

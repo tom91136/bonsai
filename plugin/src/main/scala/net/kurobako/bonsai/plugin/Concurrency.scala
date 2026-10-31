@@ -7,6 +7,7 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.ClassSymbol
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.requiredClass
+import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
 /** Reports blocking work handed to a shared pool sized for computation, waits with no limit, threads nothing stops, and
@@ -38,11 +39,25 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
     "scala.concurrent.Await.ready",
     "scala.io.StdIn.readLine"
   )
+  private val BlockingMembers: List[(List[ClassSymbol], String => Boolean)] = List(
+    List(InputStream, Reader) -> (name => name.startsWith("read") || name == "transferTo" || name == "skip"),
+    List(Latch, Barrier)      -> (_ == "await"),
+    List(Semaphore)           -> (_.startsWith("acquire")),
+    List(BlockingQueue)       -> Set("take", "put")
+  )
+  private val Waiters: List[(ClassSymbol, Set[String])] = List(
+    Process     -> Set("waitFor"),
+    Thread      -> Set("join"),
+    Future      -> Set("get"),
+    Completable -> Set("join")
+  )
   private val Pooled =
     Set("java.util.concurrent.CompletableFuture.supplyAsync", "java.util.concurrent.CompletableFuture.runAsync")
   private val Globals =
     Set("scala.concurrent.ExecutionContext.global", "scala.concurrent.ExecutionContext.Implicits.global")
-  private val Stops = Set("join", "interrupt")
+  private val Stops    = Set("join", "interrupt")
+  private val Blockers = Waiters.flatMap(_._2).toSet ++ Set("await", "wait")
+  private val Awaits   = Set("scala.concurrent.Await.result", "scala.concurrent.Await.ready")
 
   // What the enclosing methods finish before waiting on it, so the wait is short: futures checked for completion, run
   // on this thread or given a timeout, and processes killed. A method named for waiting leaves the limit to its callers, and is
@@ -80,7 +95,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
         executing.pop(): Unit
       }
     case tpd.If(condition, thenp, elsep) =>
-      if (Trees.selected(condition).exists(_.name.toString == "compareAndSet")) onced ++= guarded(thenp, elsep)
+      if (Calls.selected(condition).exists(_.name.toString == "compareAndSet")) onced ++= guarded(thenp, elsep)
       traverseChildren(tree)
     case application: tpd.Apply =>
       pooled(application)
@@ -102,7 +117,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
     ) 0
     else
       definition.rhs.filterSubTrees {
-        case application: tpd.Apply => Trees.selected(application).exists(select =>
+        case application: tpd.Apply => Calls.selected(application).exists(select =>
             select.name.toString == "close" && application.args.isEmpty && {
               val closed = select.qualifier.tpe.widen
               closed.derivesFrom(Channel) || closed.derivesFrom(ServerSocket) || closed.derivesFrom(Socket)
@@ -136,13 +151,9 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
     val name                       = symbol.name.toString
     def member(owner: ClassSymbol) = symbol.owner.derivesFrom(owner)
     Option.when(
-      (member(InputStream) || member(Reader)) &&
-        (name.startsWith("read") || name == "transferTo" || name == "skip") ||
-        member(Process) && name == "waitFor" || member(Thread) && name == "join" ||
-        member(Future) && name == "get" || member(Completable) && name == "join" ||
-        (member(Latch) || member(Barrier)) && name == "await" || member(Semaphore) && name.startsWith("acquire") ||
-        member(BlockingQueue) &&
-        (name == "take" || name == "put") || Blocking(Trees.qualified(symbol))
+      BlockingMembers.exists((owners, blocks) => owners.exists(member) && blocks(name)) ||
+        Waiters.exists((owner, methods) => member(owner) && methods(name)) ||
+        Blocking(Calls.qualified(symbol))
     )(name)
   }
 
@@ -155,7 +166,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
 
   private class BlockingCalls(found: mutable.ListBuffer[String]) extends tpd.TreeTraverser {
     override def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
-      case application: tpd.Apply if Trees.qualified(application.fun.symbol) == "scala.concurrent.package.blocking" =>
+      case application: tpd.Apply if Calls.qualified(application.fun.symbol) == "scala.concurrent.package.blocking" =>
         ()
       case application: tpd.Apply =>
         found ++= blocking(application)
@@ -165,7 +176,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   }
 
   private def pooled(application: tpd.Apply): Unit = application match {
-    case tpd.Apply(function, List(task)) if Pooled(Trees.qualified(function.symbol)) =>
+    case tpd.Apply(function, List(task)) if Pooled(Calls.qualified(function.symbol)) =>
       blockingCalls(task).headOption.foreach(call =>
         checks(
           Check.BlockingCommonPool,
@@ -175,8 +186,8 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
         )
       )
     case tpd.Apply(tpd.Apply(function, List(body)), List(context))
-        if Trees.qualified(function.symbol) == "scala.concurrent.Future.apply" &&
-          Globals(Trees.qualified(Trees.unwrap(context).symbol)) =>
+        if Calls.qualified(function.symbol) == "scala.concurrent.Future.apply" &&
+          Globals(Calls.qualified(Calls.peelInlined(context).symbol)) =>
       blockingCalls(body).headOption.foreach(call =>
         checks(
           Check.BlockingCommonPool,
@@ -193,11 +204,11 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
     val name    = symbol.name.toString
     val untimed = application.args.isEmpty && !synchronous(application) &&
       !(name == "join" && application.span.start >= stopping.top) && !onced(application.span.start) &&
-      !waiting.top && !Trees.selected(application.fun).exists(select => bounded(select.qualifier)) &&
-      blocking(application).exists(Set("get", "join", "waitFor", "await", "wait"))
-    val unlimited = Set("scala.concurrent.Await.result", "scala.concurrent.Await.ready")(Trees.qualified(symbol)) &&
+      !waiting.top && !Calls.selected(application.fun).exists(select => bounded(select.qualifier)) &&
+      blocking(application).exists(Blockers)
+    val unlimited = Awaits(Calls.qualified(symbol)) &&
       application.args.lift(1).exists(limit =>
-        Trees.qualified(Trees.unwrap(limit).symbol) == "scala.concurrent.duration.Duration.Inf"
+        Calls.qualified(Calls.peelInlined(limit).symbol) == "scala.concurrent.duration.Duration.Inf"
       )
     if (untimed || unlimited)
       checks(
@@ -209,7 +220,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
 
   // A future finished before the wait, or given a timeout by the call it comes from.
   private def bounded(future: tpd.Tree): Boolean = done.top(future.symbol) ||
-    (Trees.unwrap(future) match {
+    (Calls.peelInlined(future) match {
       case application: tpd.Apply => Set("orTimeout", "completeOnTimeout")(application.fun.symbol.name.toString)
       case _                      => false
     })
@@ -219,13 +230,13 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
     name.startsWith(word) && name.lift(word.length).forall(_.isUpper)
 
   // Joining a thread the method holds locally waits only for work the method itself runs, as a call would.
-  private def synchronous(application: tpd.Apply): Boolean = Trees.selected(application.fun).exists { select =>
+  private def synchronous(application: tpd.Apply): Boolean = Calls.selected(application.fun).exists { select =>
     val receiver = select.qualifier.symbol
     select.qualifier.tpe.widen.derivesFrom(Thread) && receiver.isTerm && !receiver.owner.isClass &&
     !receiver.is(Flags.Param)
   }
 
-  private def constructed(tree: tpd.Tree): Boolean = Trees.unwrap(tree) match {
+  private def constructed(tree: tpd.Tree): Boolean = Calls.peelInlined(tree) match {
     case application: tpd.Apply => application.fun.symbol.isConstructor
     case _                      => false
   }
@@ -253,19 +264,19 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   }.foldLeft(Set.empty[Symbol]) {
     case (complete, value: tpd.ValDef) if completed(value.rhs, complete) => complete + value.symbol
     case (complete, application: tpd.Apply)
-        if Trees.selected(application.fun).exists(select => completed(select.qualifier, complete)) =>
-      complete ++ application.args.flatMap(Trees.lambda(_)).flatMap(_.termParamss.flatten.headOption.map(_.symbol))
+        if Calls.selected(application.fun).exists(select => completed(select.qualifier, complete)) =>
+      complete ++ application.args.flatMap(Calls.lambda(_).flatMap(_.termParamss.flatten.headOption.map(_.symbol)))
     case (complete, _) => complete
   }
 
   // Conversions and collection operations keep the futures of an invokeAll result.
-  private def completed(tree: tpd.Tree, complete: Set[Symbol]): Boolean = Trees.unwrap(tree) match {
+  private def completed(tree: tpd.Tree, complete: Set[Symbol]): Boolean = Calls.peelInlined(tree) match {
     case application: tpd.Apply
         if application.fun.symbol.name.toString == "invokeAll" && application.fun.symbol.owner.derivesFrom(Service) =>
       true
     case tpd.Apply(function, List(argument)) if function.symbol.is(Flags.Implicit) => completed(argument, complete)
     case application: tpd.Apply                                                    =>
-      Trees.selected(application.fun).exists(select => completed(select.qualifier, complete))
+      Calls.selected(application.fun).exists(select => completed(select.qualifier, complete))
     case tpd.Select(qualifier, _) => completed(qualifier, complete)
     case reference: tpd.Ident     => complete(reference.symbol)
     case _                        => false
@@ -307,7 +318,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
       case _                 => false
     }
     val restored = definition.rhs.existsSubTree {
-      case application: tpd.Apply => Trees.qualified(application.fun.symbol) == "java.lang.Thread.interrupt"
+      case application: tpd.Apply => Calls.qualified(application.fun.symbol) == "java.lang.Thread.interrupt"
       case _                      => false
     }
     if (retried && restored)

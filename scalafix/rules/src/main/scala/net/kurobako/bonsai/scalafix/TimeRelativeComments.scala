@@ -1,6 +1,5 @@
 package net.kurobako.bonsai.scalafix
 
-import java.util.regex.Pattern
 import scala.meta.*
 import scala.meta.tokens.Token
 import scalafix.lint.LintSeverity
@@ -14,8 +13,6 @@ import scalafix.v1.*
   * time as often as a change of the code. Reports at warning severity.
   */
 class TimeRelativeComments extends SyntacticRule("TimeRelativeComments") {
-  private def compile(pattern: String): Pattern = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE)
-
   private val Patterns = List(
     "\\b(?:not|n't)\\b[^.;:!?]{0,40}\\byet\\b",
     "\\bfor\\s+now\\b",
@@ -24,13 +21,12 @@ class TimeRelativeComments extends SyntacticRule("TimeRelativeComments") {
     "(?:^|[.!?]\\s+|//\\s*|/\\*+\\s*)currently\\b",
     "\\bcurrently\\s+(?:unsupported|unused|disabled|ignored|only|not|no)\\b",
     "\\bthese\\s+days\\b"
-  ).map(compile(_))
-  private val Marked    = compile("\\b(?:TODO|FIXME|XXX)\\b")
-  private val Directive = "(?:scalafix|scalafmt|bonsai):\\s*[a-z{]".r
+  ).map(ToolingComments.compile(_))
+  private val Marked = ToolingComments.compile("\\b(?:TODO|FIXME|XXX)\\b")
 
   override def fix(using document: SyntacticDocument): Patch = document.tokens.collect {
     case comment: Token.Comment
-        if Directive.findFirstIn(comment.syntax).isEmpty && !Marked.matcher(comment.syntax).find() &&
+        if ToolingComments.Directive.findFirstIn(comment.syntax).isEmpty && !Marked.matcher(comment.syntax).find() &&
           Patterns.exists(_.matcher(comment.syntax).find()) =>
       Patch.lint(
         Diagnostic(

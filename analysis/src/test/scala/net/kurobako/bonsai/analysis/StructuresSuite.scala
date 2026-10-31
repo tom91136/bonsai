@@ -4,14 +4,32 @@ class StructuresSuite extends AnalysisSuite {
   private def findings(
       main: Seq[(String, String)],
       test: Seq[(String, String)] = Nil,
-      twins: Seq[Seq[(String, String)]] = Nil
+      twins: Seq[Seq[(String, String)]] = Nil,
+      generated: Vector[String] = Vector.empty
   ): Vector[Finding] = {
-    val result = extract(main, test, twins = twins)
+    val result = extract(main, test, twins = twins, generated = generated)
     Structures.findings(result.structures, result.graph)
   }
 
   private def of(found: Vector[Finding], rule: Finding.Rule): Vector[String] =
-    found.filter(_.rule == rule).map(_.detail.takeWhile(_ != ';')).sorted
+    found.view.collect { case finding if finding.rule == rule => finding.detail.takeWhile(_ != ';') }.toVector.sorted
+
+  test("a string naming a member the type spells as a string itself is a name the type reports, not a stale member") {
+    val found = findings(
+      Seq(
+        "Linter.scala" ->
+          """object Linter {
+            |  def report: String = diagnostic("unqualified")
+            |  private def diagnostic(id: String): String = id
+            |}""".stripMargin
+      ),
+      Seq("LinterTest.scala" -> """object LinterTest { val ids = Vector("Linter.unqualified", "Linter.missing") }""")
+    )
+    assertEquals(
+      of(found, Finding.Rule.StaleNameString),
+      Vector("\"Linter.missing\" names Linter.missing, which no Linter of the build has")
+    )
+  }
 
   test("a field named like its class reads twice wherever a value is named for the type") {
     val found = findings(Seq(
@@ -58,6 +76,21 @@ class StructuresSuite extends AnalysisSuite {
     assertFinding(found, "stale-name-string", "Tools.original")
   }
 
+  test("a string elsewhere does not name a type nested in another type, which only that type names simply") {
+    val found = findings(
+      Seq(
+        "Trips.scala" ->
+          """object Trips {
+            |  private case class Render(parts: Vector[String])
+            |  private def size(render: Render): Int = render.parts.size
+            |  val count: Int = size(Render(Vector.empty))
+            |}""".stripMargin
+      ),
+      Seq("RenderTest.scala" -> """object RenderTest { val name = "Render.render(text, width)" }""")
+    )
+    assertEquals(of(found, Finding.Rule.StaleNameString), Vector.empty)
+  }
+
   test("a literal completing a name that the splice before it begins is not a stale name") {
     val found = findings(Seq(
       "Images.scala" ->
@@ -94,17 +127,19 @@ class StructuresSuite extends AnalysisSuite {
     )
   }
 
+  private val core = Seq(
+    "A.scala" -> "package app\nclass A { def b: B = B() }",
+    "B.scala" -> "package app\nclass B { def c: C = C() }",
+    "C.scala" -> "package app\nclass C { def a: A = A() }"
+  )
+
+  private val ui = Seq(
+    "X.scala" -> "package app\nclass X { def y: Y = Y(); def a: A = A() }",
+    "Y.scala" -> "package app\nclass Y { def z: Z = Z() }",
+    "Z.scala" -> "package app\nclass Z { def x: X = X() }"
+  )
+
   test("files of a package that depend on the rest, never the other way, can be a subpackage") {
-    val core = Seq(
-      "A.scala" -> "package app\nclass A { def b: B = B() }",
-      "B.scala" -> "package app\nclass B { def c: C = C() }",
-      "C.scala" -> "package app\nclass C { def a: A = A() }"
-    )
-    val ui = Seq(
-      "X.scala" -> "package app\nclass X { def y: Y = Y(); def a: A = A() }",
-      "Y.scala" -> "package app\nclass Y { def z: Z = Z() }",
-      "Z.scala" -> "package app\nclass Z { def x: X = X() }"
-    )
     assertEquals(
       of(findings(core ++ ui), Finding.Rule.PackageSplitCandidate),
       Vector(
@@ -115,6 +150,15 @@ class StructuresSuite extends AnalysisSuite {
     assertEquals(of(findings(tangled ++ ui), Finding.Rule.PackageSplitCandidate), Vector.empty)
     val leaning = ui.map((name, source) => name -> source.replace(" }", "; def all = (A(), B(), C()) }"))
     assertEquals(of(findings(core ++ leaning), Finding.Rule.PackageSplitCandidate), Vector.empty)
+  }
+
+  test("files of a package that hold an entry point are not offered a subpackage") {
+    val launched = ui.updated(
+      0,
+      "X.scala" ->
+        "package app\nclass X { def y: Y = Y(); def a: A = A() }\nobject Launch { def main(args: Array[String]): Unit = () }"
+    )
+    assertEquals(of(findings(core ++ launched), Finding.Rule.PackageSplitCandidate), Vector.empty)
   }
 
   test("a concrete class only its one subclass extends and nothing constructs is that subclass") {
@@ -192,6 +236,19 @@ class StructuresSuite extends AnalysisSuite {
       of(found, Finding.Rule.SatelliteType),
       Vector("Small is 1 line in a file of its own, used only by Big")
     )
+  }
+
+  test("generated types are neither reported nor counted as satellites") {
+    val found = findings(
+      Seq(
+        "src/generated/Tags.scala"  -> "object Tags { val all: Int = 1 }",
+        "src/generated/Nodes.scala" -> "class Nodes(val nodes: Vector[Int])",
+        "Big.scala"                 -> "class Big { def tags: Int = Tags.all; def nodes: Nodes = Nodes(Vector(1)) }"
+      ),
+      generated = GeneratedSources
+    )
+    assertEquals(of(found, Finding.Rule.SatelliteType), Vector.empty)
+    assertEquals(of(found, Finding.Rule.FieldStutter), Vector.empty)
   }
 
   test("functions matching over an enum beside it are methods of the enum") {

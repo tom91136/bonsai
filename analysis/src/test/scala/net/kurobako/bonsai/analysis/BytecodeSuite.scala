@@ -1,8 +1,7 @@
 package net.kurobako.bonsai.analysis
 
 import java.nio.file.Files
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
+import net.kurobako.bonsai.testing.Scratch
 
 class BytecodeSuite extends AnalysisSuite {
   // The fixture is a method of thousands of statements and a class of thousands of enum cases; on a loaded machine the
@@ -71,15 +70,14 @@ class BytecodeSuite extends AnalysisSuite {
   }
 
   test("a malformed class file fails the read rather than being skipped") {
-    val directory = Files.createTempDirectory("bonsai-bytecode-")
-    try {
+    Scratch.using("bonsai-bytecode-") { directory =>
       Files.write(
         directory.resolve("Junk.class"),
         Array[Byte](0xca.toByte, 0xfe.toByte, 0xba.toByte, 0xbe.toByte, 0, 0, 0, 61, 0, 2, 99)
       ): Unit
       val error = intercept[IllegalArgumentException](Bytecode.read(Vector(directory)))
       assert(error.getMessage.contains("unknown constant pool tag"), error.getMessage)
-    } finally Using.resource(Files.walk(directory))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+    }
   }
 
   test("initialisers that run once are left alone") {

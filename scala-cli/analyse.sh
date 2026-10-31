@@ -12,7 +12,9 @@ if [[ "${1:-}" == "--library" ]]; then
 fi
 name=$(basename "$project")
 classpath=$(cd "$project" && scala-cli compile . --test --platform jvm --server=false --print-class-path)
-scala=$(tr ':' '\n' <<<"$classpath" | grep -o 'scala3-library_3/[^/]*' | head -1 | cut -d/ -f2)
+# The analysis runs on the Scala version it is built with, whatever the project is built with.
+analysis=${IVY_HOME:-$HOME/.ivy2/local}/net.kurobako/bonsai-analysis_3/0.1.0-SNAPSHOT/jars/bonsai-analysis_3.jar
+scala=$(unzip -p "$analysis" META-INF/bonsai/scala.id)
 manifest="$project/.scala-build/bonsai/manifest.tsv"
 mkdir -p "$(dirname "$manifest")"
 {
@@ -31,5 +33,5 @@ runner=$(mktemp -d)
 trap 'rm -rf "$runner"' EXIT
 cd "$runner"
 scala-cli run --server=false --platform jvm -S "$scala" \
-  --dep "net.kurobako:bonsai-analysis_$scala:0.1.0-SNAPSHOT" --java-opt -Xss1g --java-opt -Xmx4g \
+  --dep "net.kurobako:bonsai-analysis_3:0.1.0-SNAPSHOT" --java-opt -Xss1g --java-opt -Xmx4g \
   -M net.kurobako.bonsai.analysis.CLI -- --manifest "$manifest" "$@"

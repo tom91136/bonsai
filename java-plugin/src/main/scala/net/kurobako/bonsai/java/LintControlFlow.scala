@@ -9,6 +9,7 @@ import javax.lang.model.element.ElementKind
 import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.Modifier
 import javax.lang.model.element.TypeElement
+import javax.lang.model.element.VariableElement
 import scala.jdk.CollectionConverters.*
 
 /** The lints of the control flow of the Java code, which the code of a type holds.
@@ -34,11 +35,12 @@ object LintControlFlow {
       PointlessBoolean,
       EmptyMethod,
       EmptyStatementBody,
-      SimplifiableConditional
+      SimplifiableConditional,
+      NullDefault
     )
 
   /** A switch of an enumeration that does not handle every case of it. */
-  object MissingDefaultInSwitch extends Lint {
+  private object MissingDefaultInSwitch extends Lint {
     val id    = JavaLint.MissingDefaultInSwitch.id
     val kinds = Set(Tree.Kind.SWITCH)
 
@@ -62,7 +64,7 @@ object LintControlFlow {
           }
         case _ => None
       }
-      val handled = cases
+      val handled = cases.view
         .flatMap(_.getLabels.asScala)
         .flatMap {
           // The label of a case wraps the constant it names, which the older compilers gave as the label itself.
@@ -88,7 +90,7 @@ object LintControlFlow {
   }
 
   /** A case of a switch that falls through to the case after it. */
-  object FallthroughInSwitch extends Lint {
+  private object FallthroughInSwitch extends Lint {
     val id    = JavaLint.FallthroughInSwitch.id
     val kinds = Set(Tree.Kind.SWITCH)
 
@@ -96,8 +98,10 @@ object LintControlFlow {
       val cases = tree.asInstanceOf[SwitchTree].getCases.asScala.toVector
       // The last case falls through to nothing, so only the others are cases that fall through.
       val falling = cases.init.filter { case_ =>
-        val statements = case_.getStatements.asScala.toVector
-        statements.nonEmpty && !endsTheCase(statements.last)
+        case_.getCaseKind == CaseTree.CaseKind.STATEMENT && {
+          val statements = case_.getStatements.asScala.toVector
+          statements.nonEmpty && !endsTheCase(statements.last)
+        }
       }
       if falling.isEmpty then Vector.empty
       else Vector(context.found(s"${falling.size} case(s) of the switch fall through to the case after them"))
@@ -115,7 +119,7 @@ object LintControlFlow {
   }
 
   /** An if chain that compares one value with constants, which a switch states more directly. */
-  object IfCanBeSwitch extends Lint {
+  private object IfCanBeSwitch extends Lint {
     val id    = JavaLint.IfCanBeSwitch.id
     val kinds = Set(Tree.Kind.IF)
 
@@ -202,10 +206,8 @@ object LintControlFlow {
       case select: MemberSelectTree                                          =>
         val element = context.elementOf(select)
         if element == null then None
-        else if element.getKind == ElementKind.ENUM_CONSTANT then Some(select.toString)
-        else if element.getKind == ElementKind.FIELD &&
-          element.getModifiers.contains(Modifier.STATIC) &&
-          element.getModifiers.contains(Modifier.FINAL)
+        else if element.getKind == ElementKind.ENUM_CONSTANT ||
+          (element.getKind == ElementKind.FIELD && Lints.constant(element))
         then Some(select.toString)
         else None
       case _ => None
@@ -231,7 +233,7 @@ object LintControlFlow {
   }
 
   /** The branches of an if that hold the same code, or end or start with it. */
-  object IdenticalBranches extends Lint {
+  private object IdenticalBranches extends Lint {
     val id    = JavaLint.IdenticalBranches.id
     val kinds = Set(Tree.Kind.IF)
 
@@ -258,10 +260,8 @@ object LintControlFlow {
         if ids1.size != ids2.size then false
         else
           ids1.zip(ids2).forall { (id1, id2) =>
-            val p1 = context.trees.getPath(context.unit, id1)
-            val p2 = context.trees.getPath(context.unit, id2)
-            val e1 = if p1 == null then null else context.trees.getElement(p1)
-            val e2 = if p2 == null then null else context.trees.getElement(p2)
+            val e1 = context.elementOf(id1)
+            val e2 = context.elementOf(id2)
             (e1, e2) match {
               case (v1: javax.lang.model.element.VariableElement, v2: javax.lang.model.element.VariableElement)
                   if v1.getKind == ElementKind.LOCAL_VARIABLE || v2.getKind == ElementKind.LOCAL_VARIABLE =>
@@ -293,49 +293,30 @@ object LintControlFlow {
   }
 
   /** An if that returns two boolean literals, which a return of the condition says in one statement. */
-  object TrivialIf extends Lint {
+  private object TrivialIf extends Lint {
     val id    = JavaLint.TrivialIf.id
     val kinds = Set(Tree.Kind.IF)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val ifTree     = tree.asInstanceOf[IfTree]
-      val thenReturn = booleanReturn(ifTree.getThenStatement)
-      Option(ifTree.getElseStatement).flatMap(booleanReturn) match {
+      val thenReturn = Lint.booleanReturn(ifTree.getThenStatement)
+      Option(ifTree.getElseStatement).flatMap(Lint.booleanReturn) match {
         case Some(other) =>
           if thenReturn.exists(_ != other) then Vector(context.found("the if statement can be simplified"))
           else Vector.empty
         case None =>
           // The if returns one literal, and the code after it returns the other.
           thenReturn match {
-            case Some(value) if next(context).flatMap(booleanReturn).contains(!value) =>
+            case Some(value) if context.sibling(1).flatMap(Lint.booleanReturn).contains(!value) =>
               Vector(context.found("the if statement can be simplified"))
             case _ => Vector.empty
           }
       }
     }
-
-    private def booleanReturn(statement: StatementTree): Option[Boolean] = statement match {
-      case ret: ReturnTree =>
-        Option(ret.getExpression).collect {
-          case literal: LiteralTree if literal.getKind == Tree.Kind.BOOLEAN_LITERAL =>
-            literal.getValue == java.lang.Boolean.TRUE
-        }
-      case block: BlockTree if block.getStatements.size == 1 => booleanReturn(block.getStatements.get(0))
-      case _                                                 => None
-    }
-
-    private def next(context: Context): Option[StatementTree] = context.ancestors.headOption
-      .collect {
-        case block: BlockTree =>
-          val statements = block.getStatements.asScala.toVector
-          val index      = statements.indexOf(context.tree)
-          if index >= 0 then statements.lift(index + 1) else None
-      }
-      .flatten
   }
 
   /** A return that is unnecessary as the last statement of a void method. */
-  object UnnecessaryReturn extends Lint {
+  private object UnnecessaryReturn extends Lint {
     val id    = JavaLint.UnnecessaryReturn.id
     val kinds = Set(Tree.Kind.RETURN)
 
@@ -362,7 +343,7 @@ object LintControlFlow {
   }
 
   /** An arithmetic expression with the identity of its operator, which the other operand alone says. */
-  object PointlessArithmetic extends Lint {
+  private object PointlessArithmetic extends Lint {
     val id    = JavaLint.PointlessArithmetic.id
     val kinds = Set(
       Tree.Kind.PLUS,
@@ -441,7 +422,7 @@ object LintControlFlow {
   }
 
   /** A boolean expression with the identity of its operator, which the other operand alone says. */
-  object PointlessBoolean extends Lint {
+  private object PointlessBoolean extends Lint {
     val id    = JavaLint.PointlessBoolean.id
     val kinds = Set(
       Tree.Kind.METHOD_INVOCATION,
@@ -504,23 +485,20 @@ object LintControlFlow {
           else if right.contains(false) then Some(binary.getLeftOperand)
           else None
         case Tree.Kind.EQUAL_TO =>
-          if left.contains(true) then Some(binary.getRightOperand)
-          else if left.contains(false) then Some(binary.getRightOperand)
-          else if right.contains(true) then Some(binary.getLeftOperand)
-          else if right.contains(false) then Some(binary.getLeftOperand)
+          if left.isDefined then Some(binary.getRightOperand)
+          else if right.isDefined then Some(binary.getLeftOperand)
           else None
         case Tree.Kind.NOT_EQUAL_TO =>
-          if left.contains(true) then Some(binary.getRightOperand)
-          else if left.contains(false) then Some(binary.getRightOperand)
+          if left.isDefined then Some(binary.getRightOperand)
           else if right.contains(true) then Some(binary.getLeftOperand)
-          else if right.contains(false) then None
           else None
         case _ => None
       }
       replacement.filter(other => boolean(other).isEmpty).map { other =>
         val negated = binary.getKind match {
           case Tree.Kind.NOT_EQUAL_TO => left.contains(true) || right.contains(true)
-          case _                      => left.contains(false) && binary.getKind == Tree.Kind.EQUAL_TO
+          case Tree.Kind.EQUAL_TO     => left.contains(false) || right.contains(false)
+          case _                      => false
         }
         context.found(s"$binary can be simplified to ${if negated then "!" else ""}$other")
       }.toVector
@@ -538,16 +516,12 @@ object LintControlFlow {
       }
     }
 
-    private def boolean(tree: ExpressionTree): Option[Boolean] = tree match {
-      case literal: LiteralTree if literal.getKind == Tree.Kind.BOOLEAN_LITERAL =>
-        Some(literal.getValue == java.lang.Boolean.TRUE)
-      case parenthesized: ParenthesizedTree => boolean(parenthesized.getExpression)
-      case _                                => None
-    }
+    private def boolean(tree: ExpressionTree): Option[Boolean] =
+      value(tree).collect { case flag: java.lang.Boolean => flag.booleanValue }
   }
 
   /** A method whose body is empty, and so is that of every method that overrides it. */
-  object EmptyMethod extends Lint {
+  private object EmptyMethod extends Lint {
     val id    = JavaLint.EmptyMethod.id
     val kinds = Set(Tree.Kind.METHOD)
 
@@ -558,7 +532,7 @@ object LintControlFlow {
             val empty  = Option.when(method.getBody != null && method.getBody.getStatements.isEmpty)(Registry.Empty)
             val parent = Hierarchy.overridden(context, element)
             if parent.nonEmpty then context.registry.overrides(Registry.Empty, parent, empty)
-            else if empty.isDefined || method.getBody == null then
+            else if Hierarchy.closed(element) && (empty.isDefined || method.getBody == null) then
               context.registry.declares(
                 Registry.Empty,
                 element,
@@ -574,7 +548,7 @@ object LintControlFlow {
   }
 
   /** A loop or conditional whose body is the empty statement. */
-  object EmptyStatementBody extends Lint {
+  private object EmptyStatementBody extends Lint {
     val id    = JavaLint.EmptyStatementBody.id
     val kinds = Set(
       Tree.Kind.IF,
@@ -605,15 +579,15 @@ object LintControlFlow {
   }
 
   /** A conditional expression that a call or a boolean states more directly. */
-  object SimplifiableConditional extends Lint {
+  private object SimplifiableConditional extends Lint {
     val id    = JavaLint.SimplifiableConditional.id
     val kinds = Set(Tree.Kind.CONDITIONAL_EXPRESSION)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
       case conditional: ConditionalExpressionTree =>
         (
-          LintControlFlow.text(conditional.getTrueExpression),
-          LintControlFlow.text(conditional.getFalseExpression)
+          Lints.literalText(conditional.getTrueExpression),
+          Lints.literalText(conditional.getFalseExpression)
         ) match {
           case (Some("true"), Some("false")) =>
             Vector(context.found(s"use Boolean.toString(${conditional.getCondition}) instead of the conditional"))
@@ -625,13 +599,128 @@ object LintControlFlow {
     }
   }
 
-  private def text(tree: ExpressionTree): Option[String] = tree match {
-    case literal: LiteralTree => Option(literal.getValue).collect { case value: String => value }
-    case _                    => None
+  /** A check for null that picks a default, which `Objects.requireNonNullElse` states in one call. */
+  private object NullDefault extends Lint {
+    val id    = JavaLint.NullDefault.id
+    val kinds = Set(Tree.Kind.CONDITIONAL_EXPRESSION, Tree.Kind.IF)
+
+    private val Factories =
+      Set("java.util.List", "java.util.Set", "java.util.Map", "java.util.Collections", "java.util.Optional")
+    private val Empties = Set("of", "empty", "emptyList", "emptySet", "emptyMap")
+
+    def check(context: Context, tree: Tree): Vector[Found] =
+      if !Release.atLeast(context, 9) then Vector.empty
+      else
+        (tree match {
+          case conditional: ConditionalExpressionTree =>
+            choice(conditional.getCondition, conditional.getTrueExpression, conditional.getFalseExpression)
+          case ifTree: IfTree =>
+            for {
+              whenTrue  <- returned(ifTree.getThenStatement)
+              otherwise <- Option(ifTree.getElseStatement).orElse(context.sibling(1))
+              whenFalse <- returned(otherwise)
+              chosen    <- choice(ifTree.getCondition, whenTrue, whenFalse)
+            } yield chosen
+          case _ => None
+        }).flatMap((kept, fallback) => suggestion(context, kept, fallback)).map(context.found(_)).toVector
+
+    private def returned(statement: StatementTree): Option[ExpressionTree] = Lint.single(statement) match {
+      case ret: ReturnTree => Option(ret.getExpression)
+      case _               => None
+    }
+
+    /** The value that is checked and the default that stands for it, when the branches return the value or a default by
+      * the check.
+      */
+    private def choice(
+        condition: ExpressionTree,
+        whenTrue: ExpressionTree,
+        whenFalse: ExpressionTree
+    ): Option[(ExpressionTree, ExpressionTree)] =
+      Lints.unparenthesised(condition) match {
+        case binary: BinaryTree if binary.getKind == Tree.Kind.NOT_EQUAL_TO || binary.getKind == Tree.Kind.EQUAL_TO =>
+          val value = (nulled(binary.getLeftOperand), nulled(binary.getRightOperand)) match {
+            case (true, false) => Some(binary.getRightOperand)
+            case (false, true) => Some(binary.getLeftOperand)
+            case _             => None
+          }
+          val present = binary.getKind == Tree.Kind.NOT_EQUAL_TO
+          value.flatMap { value =>
+            val (kept, fallback) = if present then (whenTrue, whenFalse) else (whenFalse, whenTrue)
+            Option.when(Lints.unparenthesised(kept).toString == Lints.unparenthesised(value).toString)(
+              (value, fallback)
+            )
+          }
+        case _ => None
+      }
+
+    private def nulled(expression: ExpressionTree): Boolean =
+      Lints.unparenthesised(expression).getKind == Tree.Kind.NULL_LITERAL
+
+    private def suggestion(context: Context, value: ExpressionTree, fallback: ExpressionTree): Option[String] = {
+      val unchanged = Effects.reads(context, value).isDefined && !context.typeOf(value).getKind.isPrimitive
+      if !unchanged || !related(context, value, fallback) then None
+      else
+        eager(context, fallback).map { lazily =>
+          if lazily then
+            s"use Objects.requireNonNullElseGet($value, () -> $fallback) instead of the null check"
+          else s"use Objects.requireNonNullElse($value, $fallback) instead of the null check"
+        }
+    }
+
+    /** Whether the default is built only when the value is null, and nothing when it may be null itself or may fail. */
+    private def eager(context: Context, fallback: ExpressionTree): Option[Boolean] =
+      Lints.unparenthesised(fallback) match {
+        case literal: LiteralTree => Option.when(literal.getKind != Tree.Kind.NULL_LITERAL)(false)
+        case created: NewClassTree
+            if created.getClassBody == null && jdk(context.typeOf(created)) &&
+              Lints.arguments(created).forall(Effects.reads(context, _).isDefined) =>
+          Some(true)
+        case call: MethodInvocationTree if call.getArguments.isEmpty && factory(context, call) => Some(false)
+        case expression if Effects.reads(context, expression).isDefined && LintFlow.nonNull(context, expression) =>
+          Some(!cheap(context, expression))
+        case _ => None
+      }
+
+    /** Whether the default has the type of the value, or one it converts to without the arithmetic of a conditional. */
+    private def related(context: Context, value: ExpressionTree, fallback: ExpressionTree): Boolean = {
+      val types                               = context.types
+      def erased(tpe: TypeMirror): TypeMirror =
+        types.erasure(if tpe.getKind.isPrimitive then types.boxedClass(types.getPrimitiveType(tpe.getKind)).asType
+        else tpe)
+      val (left, right) = (erased(context.typeOf(value)), erased(context.typeOf(fallback)))
+      Lints.subtype(context, left, right) || Lints.subtype(context, right, left)
+    }
+
+    /** Whether the expression names a variable, which reading cannot fail. */
+    private def cheap(context: Context, expression: ExpressionTree): Boolean = expression match {
+      case _: IdentifierTree        => true
+      case select: MemberSelectTree =>
+        context.elementOf(select) match {
+          case field: VariableElement => field.getModifiers.contains(Modifier.STATIC)
+          case _                      => false
+        }
+      case _ => false
+    }
+
+    private def jdk(tpe: TypeMirror): Boolean = tpe match {
+      case declared: DeclaredType =>
+        val name = declared.asElement.toString
+        name.startsWith("java.util.") || name.startsWith("java.lang.")
+      case _ => false
+    }
+
+    private def factory(context: Context, call: MethodInvocationTree): Boolean =
+      context.elementOf(call) match {
+        case method: ExecutableElement =>
+          method.getModifiers.contains(Modifier.STATIC) && Empties(method.getSimpleName.toString) &&
+          Option(method.getEnclosingElement).exists(owner => Factories(owner.toString))
+        case _ => false
+      }
   }
 
   /** A condition that is always the same. */
-  object ConstantCondition extends Lint {
+  private object ConstantCondition extends Lint {
     val id    = JavaLint.ConstantCondition.id
     val kinds = Set(Tree.Kind.IF, Tree.Kind.WHILE_LOOP, Tree.Kind.DO_WHILE_LOOP)
 
@@ -660,13 +749,13 @@ object LintControlFlow {
   }
 
   /** A method that returns from its `finally` block, which hides the exception the method was to report. */
-  object ReturnInFinally extends Lint {
+  private object ReturnInFinally extends Lint {
     val id    = JavaLint.ReturnInFinally.id
     val kinds = Set(Tree.Kind.RETURN)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       // The blocks the code of the return is in, the finally block of a try being one of them when it holds the code.
-      val blocks    = context.ancestors.collect { case block: BlockTree => block }
+      val blocks    = context.ancestors.collect { case block: BlockTree => block }.toSet
       val inFinally = context.ancestors.exists {
         case tryTree: TryTree => tryTree.getFinallyBlock != null && blocks.contains(tryTree.getFinallyBlock)
         case _                => false
@@ -678,7 +767,7 @@ object LintControlFlow {
   }
 
   /** A resource that the finally block closes, which the try statement can close instead. */
-  object CloseInFinally extends Lint {
+  private object CloseInFinally extends Lint {
     val id    = JavaLint.CloseInFinally.id
     val kinds = Set(Tree.Kind.TRY)
 
@@ -712,21 +801,20 @@ object LintControlFlow {
     /** The name of the resource the code closes, when it is a closeable variable that the code does not give a value.
       */
     private def resource(context: Context, tryTree: TryTree, expression: ExpressionTree): Option[String] = {
-      val path    = context.trees.getPath(context.unit, expression)
-      val element = if path == null then null else context.trees.getElement(path)
+      val element = context.elementOf(expression)
       if element == null then None
       else
         element.getKind match {
           // a variable the try declared elsewhere is a resource of the try from Java 9 on
           case ElementKind.LOCAL_VARIABLE | ElementKind.PARAMETER
               if element.getKind == ElementKind.LOCAL_VARIABLE || Release.atLeast(context, 9) =>
-            if closeable(context.trees.getTypeMirror(path)) && !assigned(context, tryTree, element) then
+            if closeable(context.typeOf(expression)) && !assigned(context, tryTree, element) then
               Some(expression.toString)
             else None
           // try-with-resources names only final fields, from Java 9 on
           case ElementKind.FIELD
               if Release.atLeast(context, 9) && element.getModifiers.contains(Modifier.FINAL) &&
-                closeable(context.trees.getTypeMirror(path)) =>
+                closeable(context.typeOf(expression)) =>
             Some(expression.toString)
           case _ => None
         }

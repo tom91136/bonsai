@@ -66,6 +66,15 @@ object Smells {
   /** Calls that pass a parameter its own default value explicitly. */
   case class Default(owner: String, node: String, parameter: String, value: String, sites: Vector[Algebra.Site])
 
+  /** A parameter of a method that no caller leaves out, so its default is never used. */
+  case class Spare(
+      owner: String,
+      node: String,
+      parameter: String,
+      sites: Vector[Algebra.Site],
+      suppressed: Set[String]
+  )
+
   case class Model(
       methods: Vector[Method],
       sites: Map[String, Vector[Algebra.Site]],
@@ -73,7 +82,8 @@ object Smells {
       abstractions: Vector[Abstraction],
       instantiations: Vector[Instantiation],
       defaults: Vector[Default],
-      moduleUses: Vector[Modules.Use] = Vector.empty
+      moduleUses: Vector[Modules.Use] = Vector.empty,
+      spares: Vector[Spare] = Vector.empty
   )
 
   private val MinimumCalls          = 2
@@ -82,6 +92,8 @@ object Smells {
   private val MaximumClumpSignature = 10
   private val MinimumClumpMethods   = 3
   private val Shown                 = 6
+  private val MinimumNulls          = 3
+  private val Negations             = Set("not", "non", "no", "without", "never", "missing")
   private val FixedShown            = 8
 
   /** `hot` holds the nodes of the classes the build marks hot, when it marks any. */
@@ -92,17 +104,18 @@ object Smells {
       hot: Option[Set[String]] = None,
       edges: Map[String, Set[String]] = Map.empty
   ): Vector[Finding] = {
-    lazy val files = fileEdges(nodes, edges)
-    val reviewed   = model.methods.filterNot(_.overriding)
+    lazy val files     = fileEdges(nodes, edges)
+    lazy val referrers = edges.toVector.flatMap((from, targets) => targets.map(_ -> from)).groupMap(_._1)(_._2)
+    val reviewed       = model.methods.filterNot(_.overriding)
     // The callers in this build do not settle the API of a library, which other builds call.
-    val arguments = reviewed.filterNot(_.exported).flatMap { method =>
+    val arguments = reviewed.view.filterNot(_.exported).flatMap { method =>
       // Parameters of recursive methods carry state, so callers fixing their initial value is the usual idiom.
       model.sites.get(method.name).filter(sites => !sites.exists(_.own) && sites.size >= MinimumCalls).toVector.flatMap {
         sites =>
           parameters(method, sites).flatMap(Finding.at(nodes, method.node, _, _, onlyTests = Algebra.onlyTests(sites)))
       }
-    }
-    val results = model.usages.filter(usage =>
+    }.toVector
+    val results = model.usages.view.filter(usage =>
       !usage.method.overriding && !usage.method.exported && usage.calls >= MinimumCalls &&
         usage.discarded == usage.calls
     ).flatMap { usage =>
@@ -114,10 +127,10 @@ object Smells {
         detail,
         onlyTests = usage.testCalls == usage.calls
       )
-    }
-    val inverted = model.usages.filter(usage =>
+    }.toVector
+    val inverted = model.usages.view.filter(usage =>
       usage.result.equalsIgnoreCase("boolean") &&
-        !usage.method.overriding &&
+        !usage.method.overriding && !negated(usage.method) &&
         usage.calls >= MinimumCalls && usage.negated == usage.calls && usage.discarded == 0
     ).flatMap { usage =>
       val detail = s"${usage.method.short}: its ${usage.result} result is inverted at all ${usage.calls} calls"
@@ -128,17 +141,14 @@ object Smells {
         detail,
         onlyTests = usage.testCalls == usage.calls
       )
-    }
-    val unused = model.usages.filter(usage =>
+    }.toVector
+    val unused = model.usages.view.filter(usage =>
       !usage.method.overriding && usage.calls >= 1 &&
         usage.discarded == usage.calls &&
         // The rule of the ignored result reads the calls of methods called more than once; this one reads the single
         // call, and the API of a library, which the calls in this build do not settle.
         (usage.calls < MinimumCalls || usage.method.exported) &&
-        !usage.method.suppressed.exists(s =>
-          s == "*" || s == Finding.Rule.UnusedReturnValue.id ||
-            net.kurobako.bonsai.java.JavaLint.IntelliJ.get(s).exists(_(Finding.Rule.UnusedReturnValue.id))
-        )
+        !Finding.Rule.UnusedReturnValue.suppressedBy(usage.method.suppressed)
     ).flatMap { usage =>
       val detail = s"${usage.method.short}: its ${usage.result} result is never used"
       Finding.at(
@@ -148,7 +158,7 @@ object Smells {
         detail,
         onlyTests = usage.testCalls == usage.calls
       )
-    }
+    }.toVector
     val modules = model.moduleUses.flatMap { use =>
       Finding.at(
         nodes,
@@ -158,9 +168,9 @@ object Smells {
       ).map(finding => finding.copy(node = finding.node.copy(source = use.source, line = use.line)))
     }
     val implementations =
-      model.abstractions.filter(abstraction =>
+      model.abstractions.view.filter(abstraction =>
         abstraction.implementations.size == 1 && !abstraction.functional && !abstraction.specialised &&
-          !closesCycle(abstraction, abstraction.implementations.head._1, nodes, edges, files)
+          !closesCycle(abstraction, abstraction.implementations.head._1, nodes, referrers, files)
       ).flatMap {
         abstraction =>
           val (implementation, module) = abstraction.implementations.head
@@ -173,7 +183,7 @@ object Smells {
             s"${abstraction.name} has a single implementation, $implementation",
             level
           )
-      }
+      }.toVector
     val fixed = model.instantiations.filter(instantiation =>
       !instantiation.varied && instantiation.arguments.size == 1 && instantiation.arguments.values.sum >= MinimumCalls
     ).groupBy(_.node).toVector.sortBy(_._1).flatMap((node, group) => fixedParameters(node, group, nodes))
@@ -188,10 +198,28 @@ object Smells {
         onlyTests = Algebra.onlyTests(default.sites)
       )
     }
-    arguments ++ results ++ unused ++ inverted ++ modules ++ implementations ++ fixed ++ redundant ++
+    val spare = model.spares.flatMap { spare =>
+      val detail = s"${spare.owner}.${spare.parameter} has a default that none of its ${spare.sites.size} calls " +
+        "relies on; remove the default"
+      Finding.at(
+        nodes,
+        spare.node,
+        Finding.Rule.UnusedDefault,
+        detail,
+        onlyTests = Algebra.onlyTests(spare.sites),
+        suppressed = spare.suppressed
+      )
+    }
+    arguments ++ results ++ unused ++ inverted ++ modules ++ implementations ++ fixed ++ redundant ++ spare ++
       clumps(reviewed.filterNot(_.test), products, hot.getOrElse(Set.empty), model.sites).flatMap((key, detail) =>
         Finding.at(nodes, key, Finding.Rule.DataClump, detail)
       )
+  }
+
+  // A method named as the opposite of what it tests has no positive form to suggest.
+  private def negated(method: Method): Boolean = {
+    val bare = Finding.simple(method.name.takeWhile(_ != '(')).replaceFirst("^(is|has|does|can|should)(?=[A-Z])", "")
+    bare.nonEmpty && Negations(s"${bare.head.toLower}${bare.tail.takeWhile(!_.isUpper)}")
   }
 
   // Naming the implementation in a file that uses the abstraction adds a file edge back, which closes a cycle when the
@@ -200,13 +228,12 @@ object Smells {
       abstraction: Abstraction,
       implementation: String,
       nodes: Map[String, Node],
-      edges: Map[String, Set[String]],
+      referrers: Map[String, Vector[String]],
       files: Map[String, Set[String]]
   ): Boolean =
     nodes.get(implementation).exists { node =>
-      val users = edges.collect {
-        case (from, targets) if from != implementation && targets(abstraction.node) => nodes.get(from).map(_.source)
-      }.flatten
+      val users = referrers.getOrElse(abstraction.node, Vector.empty).view.filter(_ != implementation)
+        .flatMap(nodes.get(_).map(_.source)).toVector
       val reached = Liveness.reachable(files, Set(node.source))
       users.exists(user => user != node.source && reached(user))
     }
@@ -214,10 +241,9 @@ object Smells {
   private def fileEdges(nodes: Map[String, Node], edges: Map[String, Set[String]]): Map[String, Set[String]] =
     edges.toVector.flatMap { (from, targets) =>
       val reached = targets.toVector.flatMap(id => nodes.get(id).map(_.source))
-      for {
-        source <- nodes.get(from).map(_.source).toVector
-        target <- reached if target != source
-      } yield source -> target
+      nodes.get(from).map(_.source).toVector.flatMap(source =>
+        reached.collect { case target if target != source => source -> target }
+      )
     }.groupMapReduce(_._1)(pair => Set(pair._2))(_ ++ _)
 
   /** The type parameters of the definitions of one type that every use gives the same type, in one finding that names
@@ -241,22 +267,48 @@ object Smells {
           val tag = if (own.isEmpty) instantiation.parameter else s"$own[${instantiation.parameter}]"
           s"$tag is ${instantiation.arguments.keys.head}"
         }
-        val detail = s"${group.size} type parameters of ${node.split('.').last} are always given one type each " +
+        val detail = s"${group.size} type parameters of ${Finding.simple(node)} are always given one type each " +
           s"(${Finding.listed(entries, FixedShown)})"
         Finding.at(nodes, node, Finding.Rule.FixedTypeParameter, detail, onlyTests = onlyTests)
     }
   }
 
-  /** Parameters every caller passes the same value for, and flags every caller passes a literal for. */
+  /** Parameters every caller passes the same value for, flags every caller passes a literal for, flags that together
+    * take three of their four combinations, and references most callers leave null.
+    */
   private def parameters(method: Method, sites: Vector[Algebra.Site]): Vector[(Finding.Rule, String)] = {
     // A call to an overload of the method passes the arguments of that one, which are not the parameters of this one.
     val calls = sites.filter(_.arguments.size == method.fields.size)
     if calls.isEmpty then Vector.empty
-    else
-      method.fields.zipWithIndex.filter((field, _) => field.kind != Kind.Other).flatMap { (field, index) =>
-        val values = calls.map(_.arguments(index))
+    else {
+      val columns = calls.map(_.arguments).transpose
+      // A flag the method only stores is data of the value it builds, which no branch splits, and an inline method is
+      // specialised on its literal at every expansion already.
+      val literal = method.fields.indices.filter { index =>
+        method.fields(index).kind == Kind.Flag && !method.stored(index) && !method.inline &&
+        columns(index).forall(value => value == Argument.True || value == Argument.False)
+      }.toVector
+      val encoded = encoding(literal, columns)
+      val states  = encoded.map { (first, second) =>
+        Finding.Rule.FlagArgument ->
+          (s"${method.short}: ${method.fields(first).name} and ${method.fields(second).name} take only 3 of their " +
+            s"4 combinations across ${calls.size} calls; they encode three states, which an enum names")
+      }
+      val paired = encoded.flatMap((first, second) => Vector(first, second)).toSet
+      states ++ method.fields.zipWithIndex.view.flatMap { (field, index) =>
+        val values = columns(index)
+        val absent = values.count(_ == Argument.Absent)
+        if (
+          (field.kind == Kind.Other || field.kind == Kind.Text) && !untyped(field.shape) && !method.shared &&
+          absent >= MinimumNulls && absent < values.size
+        )
+          Some(
+            Finding.Rule.ConstantArgument ->
+              s"${method.short}.${field.name} is null at $absent of ${values.size} calls and given a value at the others"
+          )
+        else if (field.kind == Kind.Other) None
         // A value the model does not know is not a constant one, and the rule says nothing of it.
-        if values.exists(value => value == Argument.Unknown || value == Argument.Present) then None
+        else if (values.exists(value => value == Argument.Unknown || value == Argument.Present)) None
         // the constant of an abstract method with several implementations picks a layout they share
         else if (values.distinct.size == 1)
           Option.when(!method.shared) {
@@ -265,16 +317,26 @@ object Smells {
               s"${method.short}.${field.name} is always ${values.head.shown} across ${calls.size} $plural"
           }
         else
-          // A flag the method only stores is data of the value it builds, which no branch splits, and an inline method
-          // is specialised on its literal at every expansion already.
-          Option.when(field.kind == Kind.Flag && !method.stored(index) && !method.inline) {
+          Option.when(field.kind == Kind.Flag && !method.stored(index) && !method.inline && !paired(index)) {
             val enabled = values.count(_ == Argument.True)
             val detail  = s"${method.short}.${field.name} is a literal at all ${calls.size} calls " +
               s"($enabled true, ${calls.size - enabled} false); each value selects a different method"
             Finding.Rule.FlagArgument -> detail
           }
-      }
+      }.toVector
+    }
   }
+
+  // Flags that between them take three of their four combinations are three states, which an enum names; each flag
+  // belongs to at most one pair.
+  private def encoding(flags: Vector[Int], columns: Vector[Vector[Argument]]): Vector[(Int, Int)] =
+    flags.combinations(2).foldLeft(Vector.empty[(Int, Int)]) {
+      case (taken, Vector(first, second))
+          if !taken.exists((a, b) => a == first || b == first || a == second || b == second) &&
+            columns(first).zip(columns(second)).distinct.size == 3 =>
+        taken :+ (first -> second)
+      case (taken, _) => taken
+    }
 
   private val untyped =
     Set(Polynomial.atom("scala.Any"), Polynomial.atom("scala.AnyRef"), Polynomial.atom("java.lang.Object"))
@@ -284,7 +346,10 @@ object Smells {
     sites.get(method.name).exists(calls =>
       calls.nonEmpty && calls.forall(call =>
         call.arguments.size == method.fields.size && call.arguments.forall {
-          case Algebra.Argument.Text(_) | Algebra.Argument.Number(_) | Algebra.Argument.True | Algebra.Argument.False =>
+          case Algebra.Argument.Word(
+                Algebra.Wording.Text,
+                _
+              ) | Algebra.Argument.Number(_) | Algebra.Argument.True | Algebra.Argument.False =>
             true
           case _ => false
         }
@@ -300,22 +365,24 @@ object Smells {
   ): Vector[(String, String)] = {
     // An inline method is specialised at every expansion, which a parameter object would undo, and in hot code an
     // object of primitives allocates on every call.
-    val signatures = methods.filterNot(method => method.inline || literalCalls(method, sites)).map(method =>
-      method -> (method.fields ++ method.rest).zipWithIndex.collect {
-        case (field, index)
-            if !method.inlined(index) && !field.contextual && !(field.primitive && hot(method.node)) &&
-              !untyped(field.shape) =>
-          s"${field.name}: ${field.shape}"
-      }.distinct.sorted
-    ).filter((_, items) => items.size >= MinimumClumpFields)
+    val signatures = methods.view.collect {
+      case method if !method.inline && !literalCalls(method, sites) =>
+        method -> (method.fields ++ method.rest).zipWithIndex.collect {
+          case (field, index)
+              if !method.inlined(index) && !field.contextual && !(field.primitive && hot(method.node)) &&
+                !untyped(field.shape) =>
+            s"${field.name}: ${field.shape}"
+        }.distinct.sorted
+    }.filter((_, items) => items.size >= MinimumClumpFields).toVector
     val support = signatures.flatMap { (method, items) =>
       val sizes =
         if (items.size > MaximumClumpSignature) Vector(MinimumClumpFields) else MinimumClumpFields to MaximumClumpFields
       sizes.flatMap(items.combinations(_).map(_.toSet -> method))
     }.groupMap(_._1)(_._2)
-    val frequent = support.filter((_, methods) =>
-      methods.size >= MinimumClumpMethods && methods.map(_.owner).distinct.size > 1
-    ).map((items, methods) => items -> methods.toSet)
+    val frequent = support.view.collect {
+      case (items, methods) if methods.size >= MinimumClumpMethods && methods.map(_.owner).distinct.size > 1 =>
+        items -> methods.toSet
+    }.toMap
     val maximal = frequent.groupMap(_._2)(_._1).toVector.flatMap { (methods, candidates) =>
       candidates.collect { case items if Itemsets.maximal(items, candidates) => items -> methods }
     }.sortBy((items, methods) => (-items.size * methods.size, items.toVector.sorted.mkString))
@@ -331,7 +398,7 @@ object Smells {
     chosen.map { (items, methods) =>
       val owners   = methods.map(_.owner).size
       val modelled = shapes.collectFirst { case (product, fields) if items.subsetOf(fields) => product }
-        .fold("")(product => s"; already the fields of ${product.name.split('.').last}")
+        .fold("")(product => s"; already the fields of ${Finding.simple(product.name)}")
       val first = methods.minBy(_.name)
       first.node ->
         (s"(${items.toVector.sorted.mkString(", ")}) recur in ${methods.size} methods across $owners types: " +

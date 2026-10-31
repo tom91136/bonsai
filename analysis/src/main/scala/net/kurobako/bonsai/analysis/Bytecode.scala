@@ -19,10 +19,11 @@ object Bytecode {
   private val Limit      = 65535
   private val NearLimit  = 0.8
 
-  def read(directories: Vector[Path]): Vector[Method] = directories.filter(Files.isDirectory(_)).flatMap { directory =>
-    Using.resource(Files.walk(directory))(_.toList.asScala.toVector.filter(_.toString.endsWith(".class")))
-      .flatMap(file => methods(Files.readAllBytes(file)))
-  }
+  def read(directories: Vector[Path]): Vector[Method] = directories.view.filter(Files.isDirectory(_)).flatMap {
+    directory =>
+      Using.resource(Files.walk(directory))(_.toList.asScala.toVector.filter(_.toString.endsWith(".class")))
+        .flatMap(file => methods(Files.readAllBytes(file)))
+  }.toVector
 
   /** Methods near the 64 KB limit, and those HotSpot only interprets, which matter in the `hot` nodes when the build
     * marks any.
@@ -30,46 +31,37 @@ object Bytecode {
   def findings(methods: Vector[Method], nodes: Map[String, Node], hot: Option[Set[String]]): Vector[Finding] = {
     // The compiler writes fromOrdinal on the companion of every enum with singleton cases, and valueOf only when none
     // of them passes arguments to the enum's constructor.
-    val enumerations = methods.filter(_.name == "fromOrdinal").map(_.owner).toSet
-    methods.filter(method => method.size > HugeMethod && !once(method)).flatMap { method =>
+    val enumerations = methods.view.collect { case method if method.name == "fromOrdinal" => method.owner }.toSet
+    methods.view.filter(method => method.size > HugeMethod && !once(method)).flatMap { method =>
       val (node, shown) = describe(method, nodes)
       val detail        = s"$shown has ${method.size} bytes of bytecode"
       val written       = enumerations(method.owner) && (method.name == "valueOf" || method.name == "fromOrdinal")
-      node.flatMap(key =>
+      node.flatMap { key =>
+        def at(rule: Finding.Rule, text: String, level: Finding.Level = Finding.Level.Warning) =
+          Finding.at(nodes, key, rule, text, level)
         if (method.size > Limit * NearLimit)
-          Finding.at(
-            nodes,
-            key,
-            Finding.Rule.MethodLimit,
-            s"$detail, ${method.size * 100 / Limit}% of the 64 KB method limit"
-          )
+          at(Finding.Rule.MethodLimit, s"$detail, ${method.size * 100 / Limit}% of the 64 KB method limit")
         else if (written)
-          Finding.at(
-            nodes,
-            key,
+          at(
             Finding.Rule.HugeMethod,
             s"$detail, which the compiler writes for an enum this large; HotSpot interprets it, and only splitting the " +
               "enum shrinks it",
             Finding.Level.Info
           )
         else if (hot.forall(_(key)))
-          Finding.at(
-            nodes,
-            key,
+          at(
             Finding.Rule.HugeMethod,
             s"$detail; HotSpot interprets methods over $HugeMethod bytes instead of compiling them"
           )
         else
-          Finding.at(
-            nodes,
-            key,
+          at(
             Finding.Rule.HugeMethod,
             s"$detail; HotSpot interprets methods over $HugeMethod bytes, which costs little outside the classes the " +
               "build marks hot",
             Finding.Level.Info
           )
-      )
-    }
+      }
+    }.toVector
   }
 
   // Static and object initialisers and lazy value initialisers run once, so interpreting them costs nothing lasting.
@@ -94,7 +86,7 @@ object Bytecode {
     val owner = if (topLevel) (name.split('.').dropRight(2) :+ plain).mkString(".") else name
     val node  =
       Iterator.iterate(owner)(_.split('.').dropRight(1).mkString(".")).takeWhile(_.nonEmpty).find(nodes.contains)
-    val label = node.fold(shown)(key => if (topLevel) shown else s"${key.split('.').last}.$shown")
+    val label = node.fold(shown)(key => if (topLevel) shown else s"${Finding.simple(key)}.$shown")
     (node, label)
   }
 

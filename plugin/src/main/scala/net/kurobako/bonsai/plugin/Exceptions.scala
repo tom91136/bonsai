@@ -12,68 +12,11 @@ import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
+import net.kurobako.bonsai.effects.Partials
+import net.kurobako.bonsai.effects.Throwing
+import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 import scala.util.matching.Regex
-
-private object Exceptions {
-
-  /** A call that throws where a total alternative returns the failure; `optional` when the alternative, called the same
-    * way, returns an Option.
-    */
-  case class Partial(alternative: String, optional: Boolean)
-
-  val Partials: Map[String, Partial] = Map(
-    "scala.collection.MapOps.apply"           -> Partial("get", optional = true),
-    "scala.collection.SeqOps.apply"           -> Partial("lift", optional = true),
-    "scala.collection.IterableOps.head"       -> Partial("headOption", optional = true),
-    "scala.collection.IterableOps.last"       -> Partial("lastOption", optional = true),
-    "scala.collection.IterableOnceOps.reduce" -> Partial("reduceOption", optional = true),
-    "scala.collection.IterableOnceOps.max"    -> Partial("maxOption", optional = true),
-    "scala.collection.IterableOnceOps.min"    -> Partial("minOption", optional = true),
-    "scala.Option.get"                        -> Partial("getOrElse or fold", optional = false),
-    "scala.collection.StringOps.toInt"        -> Partial("toIntOption", optional = true),
-    "scala.collection.StringOps.toLong"       -> Partial("toLongOption", optional = true),
-    "scala.collection.StringOps.toDouble"     -> Partial("toDoubleOption", optional = true),
-    "scala.collection.StringOps.toFloat"      -> Partial("toFloatOption", optional = true),
-    "scala.collection.StringOps.toShort"      -> Partial("toShortOption", optional = true),
-    "scala.collection.StringOps.toByte"       -> Partial("toByteOption", optional = true),
-    "scala.collection.StringOps.toBoolean"    -> Partial("toBooleanOption", optional = true),
-    "java.lang.Integer.parseInt"              -> Partial("toIntOption", optional = false),
-    "java.lang.Long.parseLong"                -> Partial("toLongOption", optional = false),
-    "ujson.Value.obj"                         -> Partial("objOpt", optional = true),
-    "ujson.Value.str"                         -> Partial("strOpt", optional = true),
-    "ujson.Value.num"                         -> Partial("numOpt", optional = true),
-    "ujson.Value.arr"                         -> Partial("arrOpt", optional = true),
-    "ujson.Value.bool"                        -> Partial("boolOpt", optional = true),
-    "ujson.Value.apply"                       -> Partial("objOpt and arrOpt lookups", optional = false)
-  )
-
-  enum Platform {
-    case JVM, JS, Native
-  }
-
-  /** Calls matching each pattern throw the listed exceptions for a failure their callers are expected to handle. */
-  val Throws: Map[String, List[String]] = Map(
-    """java\.time\..*\.parse"""                          -> List("java.time.format.DateTimeParseException"),
-    """java\.lang\.(Integer|Long|Short|Byte)\.parse.*""" -> List("java.lang.NumberFormatException"),
-    """java\.lang\.(Double|Float)\.parse.*"""            -> List("java.lang.NumberFormatException"),
-    """java\.util\.UUID\.fromString"""                   -> List("java.lang.IllegalArgumentException"),
-    """java\.util\.Base64\.Decoder\.decode"""            -> List("java.lang.IllegalArgumentException"),
-    // Parse errors arrive wrapped in a TraceException unless read is called with trace = false.
-    """ujson(\.package)?\.read""" -> List("upickle.core.TraceVisitor.TraceException", "ujson.ParsingFailedException")
-  )
-
-  /** Calls whose exceptions depend on the platform, such as HTTP clients over each platform's own transport. */
-  val Varying: Map[String, Map[Platform, List[String]]] = Map(
-    """sttp\.client4\..*\.send""" -> Map(
-      Platform.JVM    -> List("sttp.client4.SttpClientException"),
-      Platform.JS     -> List("sttp.client4.SttpClientException", "scala.scalajs.js.JavaScriptException"),
-      Platform.Native -> List("sttp.client4.SttpClientException", "java.lang.RuntimeException")
-    )
-  )
-
-  def throws(platform: Platform): Map[String, List[String]] = Throws ++ Varying.view.mapValues(_(platform))
-}
 
 /** Exceptions used for control flow where a result type can carry the failure: throws a surrounding handler turns into
   * a result, throws standing in for an Option or Either's absent value, helpers that throw only for their callers'
@@ -82,7 +25,7 @@ private object Exceptions {
   */
 private class Exceptions(
     checks: Checks,
-    partials: Map[String, Exceptions.Partial],
+    partials: Map[String, Partials.Partial],
     throwing: List[(Regex, List[String])]
 )(using Context)
     extends tpd.TreeTraverser {
@@ -143,7 +86,7 @@ private class Exceptions(
       cases.foreach(traverse(_))
       traverse(finalizer)
     case application @ tpd.Apply(function, List(argument))
-        if Trees.qualified(function.symbol) == "scala.util.Try.apply" =>
+        if Calls.qualified(function.symbol) == "scala.util.Try.apply" =>
       val handler = Handler(Nil, tried = true)
       region(handler)(traverse(argument))
       finish(handler, application)
@@ -171,10 +114,10 @@ private class Exceptions(
       traverse(function)
       val parameters = Trees.parameters(application)
       arguments.zipWithIndex.foreach { (argument, index) =>
-        if (Trees.lambda(argument).isDefined || parameters.lift(index).exists(Trees.byName(_))) {
+        if (Calls.lambda(argument).isDefined || parameters.lift(index).exists(Trees.byName(_))) {
           if (Trees.eager(function))
-            Trees.lambda(argument).fold(traverse(argument))(definition => traverse(definition.rhs))
-          else within(Trees.lambda(argument).map(_.tpt.tpe))(traverse(argument))
+            Calls.lambda(argument).fold(traverse(argument))(definition => traverse(definition.rhs))
+          else within(Calls.lambda(argument).map(_.tpt.tpe))(traverse(argument))
         } else traverse(argument)
       }
     case select: tpd.Select =>
@@ -207,7 +150,7 @@ private class Exceptions(
 
   // A handler argument: a function of a Throwable, written as cases.
   private def handling(argument: tpd.Tree)(using Context): Option[List[tpd.CaseDef]] =
-    Trees.lambda(argument).filter(definition =>
+    Calls.lambda(argument).filter(definition =>
       argument.tpe.widen.derivesFrom(PartialClass) ||
         definition.termParamss.flatten.headOption.exists(_.tpt.tpe.widen =:= defn.ThrowableType)
     ).flatMap(_.rhs match {
@@ -290,7 +233,7 @@ private class Exceptions(
           if name.toString == "fold" && receiver.tpe.widen.derivesFrom(defn.OptionClass) => Some(argument)
       case _ => None
     }
-    thrown.map(Trees.unwrap(_)).collect {
+    thrown.map(Calls.peelInlined(_)).collect {
       case raised @ tpd.Apply(function, _) if function.symbol == defn.throwMethod => raised
     }.filter(_ => results.top.exists(channel(_))).foreach { raised =>
       reported += raised
@@ -303,24 +246,24 @@ private class Exceptions(
     }
   }
 
-  private def partial(symbol: Symbol)(using Context): Option[Exceptions.Partial] =
+  private def partial(symbol: Symbol)(using Context): Option[Partials.Partial] =
     if (!symbol.exists) None
     else (symbol :: symbol.allOverriddenSymbols.toList).view.flatMap(candidate =>
-      partials.get(Trees.qualified(candidate))
+      partials.get(Calls.qualified(candidate))
     ).headOption
 
   private def partialCall(select: tpd.Select)(using Context): Unit =
     if (partial(select.symbol).isDefined) handlers.top.headOption.foreach(_.partial += select)
 
   private def throwsCall(tree: tpd.Tree)(using Context): Unit = if (tree.symbol.exists) {
-    val name    = Trees.qualified(tree.symbol)
+    val name    = Calls.qualified(tree.symbol)
     val matched = throwing.filter((pattern, _) => pattern.matches(name))
     if (matched.nonEmpty)
       handlers.top.headOption.foreach(_.boundary +=
         ((
           tree,
           matched.flatMap(_._2),
-          matched.exists((pattern, _) => Exceptions.Varying.contains(pattern.regex))
+          matched.exists((pattern, _) => Throwing.varies(pattern.regex))
         )))
   }
 
@@ -353,73 +296,52 @@ private class Exceptions(
 
   // A Try around one partial call whose failure is then discarded, where the call has an Option alternative.
   private def redundant(tree: tpd.Tree)(using Context): Unit = {
-    def tried(candidate: tpd.Tree): Option[(tpd.Tree, tpd.Tree)] = Trees.unwrap(candidate) match {
+    def tried(candidate: tpd.Tree): Option[(tpd.Tree, tpd.Tree)] = Calls.peelInlined(candidate) match {
       case application @ tpd.Apply(function, List(argument))
-          if Trees.qualified(function.symbol) == "scala.util.Try.apply" => Some(application -> Trees.unwrap(argument))
+          if Calls.qualified(function.symbol) == "scala.util.Try.apply" =>
+        Some(application -> Calls.peelInlined(argument))
       case _ => None
     }
-    val shape = tree match {
+    val shape: Option[(tpd.Tree, String => String)] = tree match {
       case tpd.Select(qualifier, name) if name.toString == "toOption" || name.toString == "isSuccess" =>
-        tried(qualifier).map((call, argument) =>
-          (
-            call,
-            argument,
-            (alternative: String) =>
-              if (name.toString == "toOption") alternative else s"$alternative.isDefined"
-          )
-        )
+        Some(qualifier -> (alternative => if (name.toString == "toOption") alternative else s"$alternative.isDefined"))
       case tpd.Apply(tpd.TypeApply(tpd.Select(qualifier, name), _), List(fallback)) if name.toString == "getOrElse" =>
-        tried(qualifier).map((call, argument) =>
-          (
-            call,
-            argument,
-            (alternative: String) =>
-              s"$alternative.getOrElse(${Trees.text(fallback)})"
-          )
-        )
+        Some(qualifier -> (alternative => s"$alternative.getOrElse(${Trees.text(fallback)})"))
       case tpd.Apply(tpd.TypeApply(tpd.Select(tpd.Select(tpd.Select(qualifier, either), left), map), _), List(function))
           if either.toString == "toEither" && left.toString == "left" && map.toString == "map" =>
-        Trees.lambda(function).filter(definition =>
+        Calls.lambda(function).filter(definition =>
           definition.termParamss.flatten.forall(parameter =>
             !definition.rhs.existsSubTree(_.symbol == parameter.symbol)
           )
-        ).flatMap(definition =>
-          tried(qualifier).map((call, argument) =>
-            (
-              call,
-              argument,
-              (alternative: String) =>
-                s"$alternative.toRight(${Trees.text(definition.rhs)})"
-            )
-          )
-        )
+        ).map(definition => qualifier -> (alternative => s"$alternative.toRight(${Trees.text(definition.rhs)})"))
       case _ => None
     }
-    shape.foreach { (call, argument, replace) =>
-      val (converted, member, arguments) = argument match {
-        case tpd.Apply(select @ tpd.Select(receiver, _), arguments) => (receiver, select, arguments)
-        case select @ tpd.Select(receiver, _)                       => (receiver, select, Nil)
-        case other                                                  => (other, other, Nil)
-      }
-      // Methods such as StringOps.toInt reach their receiver through an implicit conversion.
-      val receiver = converted match {
-        case tpd.Apply(function, List(inner)) if function.symbol.is(Flags.Implicit) => inner
-        case other                                                                  => other
-      }
-      partial(member.symbol).filter(_.optional).filterNot(_ =>
-        receiver.existsSubTree(inner => partial(inner.symbol).isDefined)
-      ).foreach { alternative =>
-        quiet += call
-        val stable = (receiver :: arguments).forall(stableTree(_))
-        val text   = s"${Trees.text(receiver)}.${alternative.alternative}" +
-          (if (arguments.isEmpty) "" else arguments.map(Trees.text(_)).mkString("(", ", ", ")"))
-        checks(
-          Check.RedundantTry,
-          s"Try around ${member.symbol.name} only discards its failure; use ${alternative.alternative}",
-          tree.srcPos,
-          if (stable) List(ActionPatch(tree.sourcePos, replace(text))) else Nil
-        )
-      }
+    shape.flatMap((qualifier, replace) => tried(qualifier).map((call, argument) => (call, argument, replace))).foreach {
+      (call, argument, replace) =>
+        val (converted, member, arguments) = argument match {
+          case tpd.Apply(select @ tpd.Select(receiver, _), arguments) => (receiver, select, arguments)
+          case select @ tpd.Select(receiver, _)                       => (receiver, select, Nil)
+          case other                                                  => (other, other, Nil)
+        }
+        // Methods such as StringOps.toInt reach their receiver through an implicit conversion.
+        val receiver = converted match {
+          case tpd.Apply(function, List(inner)) if function.symbol.is(Flags.Implicit) => inner
+          case other                                                                  => other
+        }
+        partial(member.symbol).filter(_.optional).filterNot(_ =>
+          receiver.existsSubTree(inner => partial(inner.symbol).isDefined)
+        ).foreach { alternative =>
+          quiet += call
+          val stable = (receiver :: arguments).forall(stableTree(_))
+          val text   = s"${Trees.text(receiver)}.${alternative.alternative}" +
+            (if (arguments.isEmpty) "" else arguments.map(Trees.text(_)).mkString("(", ", ", ")"))
+          checks(
+            Check.RedundantTry,
+            s"Try around ${member.symbol.name} only discards its failure; use ${alternative.alternative}",
+            tree.srcPos,
+            if (stable) List(ActionPatch(tree.sourcePos, replace(text))) else Nil
+          )
+        }
     }
   }
 
@@ -438,7 +360,7 @@ private class Exceptions(
     ) {
       val ordered      = handler.partial.sortBy(_.span.end)
       val names        = ordered.map(_.symbol.name.toString).distinct
-      val alternatives = ordered.flatMap(select => partial(select.symbol)).map(_.alternative).distinct
+      val alternatives = ordered.flatMap(select => partial(select.symbol).map(_.alternative)).distinct
       checks(
         Check.PartialInTry,
         s"${names.mkString(", ")} throw for missing or malformed values inside a handler; use " +
@@ -446,21 +368,19 @@ private class Exceptions(
         ordered.head.srcPos
       )
     }
-    if (handler.boundary.nonEmpty)
-      handler.cases.filter(clause => catchAll(clause) && value(clause.body)).foreach { clause =>
-        val exceptions = handler.boundary.flatMap(_._2).distinct.map(_.split('.').last)
-        val callees    = handler.boundary.map(_._1.symbol.name.toString).distinct
-        val platforms  =
-          if (handler.boundary.exists(_._3))
-            " on this platform; other platforms throw differently, so cross-built code classifies them in one place"
-          else ""
-        checks(
-          Check.BroadCatch,
-          s"catching everything here also turns defects into results; catch ${exceptions.mkString(" | ")}, which " +
-            s"${callees.mkString(", ")} throw$platforms",
-          clause.pat.srcPos
-        )
-      }
+    if (handler.boundary.nonEmpty) {
+      val exceptions = handler.boundary.flatMap(_._2).distinct.map(_.split('.').last)
+      val callees    = handler.boundary.map(_._1.symbol.name.toString).distinct
+      val platforms  =
+        if (handler.boundary.exists(_._3))
+          " on this platform; other platforms throw differently, so cross-built code classifies them in one place"
+        else ""
+      val message = s"catching everything here also turns defects into results; catch ${exceptions.mkString(" | ")}, " +
+        s"which ${callees.mkString(", ")} throw$platforms"
+      handler.cases.filter(clause => catchAll(clause) && value(clause.body)).foreach(clause =>
+        checks(Check.BroadCatch, message, clause.pat.srcPos)
+      )
+    }
     handler.cases.foreach(discarded(_))
   }
 
@@ -490,7 +410,7 @@ private class Exceptions(
 
   private def constructs(application: tpd.Apply)(using Context): Boolean = {
     val callee = application.fun.symbol
-    (callee.isConstructor || callee.name == nme.apply && callee.is(Flags.Synthetic)) &&
+    Trees.constructs(callee) &&
     Trees.parameters(application).zip(application.args).exists((parameter, argument) =>
       cause(parameter.info) && dropped(argument)
     )
@@ -516,15 +436,16 @@ private class Exceptions(
         !symbol.isAnonymousFunction && !symbol.is(Flags.Synthetic) && (symbol.is(Flags.Private) || symbol.owner.isTerm)
       case _ => false
     }.collect { case definition: tpd.DefDef => definition }
+    val declared = candidates.toSet
     // An exception the unit declares for itself and throws unhandled from visible methods is its failure channel,
     // which helpers may share.
     val channel = tree.filterSubTrees {
       case definition: tpd.DefDef =>
         !definition.symbol.isAnonymousFunction && !definition.symbol.is(Flags.Synthetic) &&
-        !candidates.contains(definition)
+        !declared(definition)
       case _ => false
-    }.collect { case definition: tpd.DefDef => definition }.flatMap(definition => Thrown().of(definition.rhs))
-      .filter(_.classSymbol.source == tree.source).toSet
+    }.view.collect { case definition: tpd.DefDef => definition }
+      .flatMap(definition => Thrown().of(definition.rhs).filter(_.classSymbol.source == tree.source)).toSet
     candidates.foreach(definition =>
       Thrown().of(definition.rhs) match {
         case types if types.nonEmpty && !types.forall(tpe => channel.exists(tpe <:< _)) =>

@@ -5,6 +5,9 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.NoSymbol
 import dotty.tools.dotc.core.Symbols.Symbol
+import dotty.tools.dotc.core.Types.NamedType
+import dotty.tools.dotc.core.Types.Type
+import dotty.tools.dotc.core.Types.TypeTraverser
 import scala.collection.mutable
 
 /** Records the build files a unit references, marking references made inside the splices of macro implementations. */
@@ -38,10 +41,6 @@ private class Edges(path: String, valid: Symbol => Boolean, analysis: Analysis) 
       }
       traverse(template.self)
       template.body.foreach(traverse(_))
-    case select: tpd.Select =>
-      add(select.symbol, tree)
-      addType(tree)
-      traverse(select.qualifier)
     case _ =>
       add(tree.symbol, tree)
       addType(tree)
@@ -53,5 +52,19 @@ private class Edges(path: String, valid: Symbol => Boolean, analysis: Analysis) 
       analysis.reference(path, symbol.source.path, scopes.top._2, tree.sourcePos)
 
   private def addType(tree: tpd.Tree)(using Context): Unit =
-    if (tree.hasType) TypeEdges(add(_, tree)).traverse(tree.tpe)
+    if (tree.hasType) Edges.TypeEdges(add(_, tree)).traverse(tree.tpe)
+}
+
+private object Edges {
+
+  /** Reports the type symbol of a type and of every type it is built from. */
+  private class TypeEdges(add: Symbol => Unit)(using Context) extends TypeTraverser {
+    def traverse(tpe: Type): Unit = {
+      add(tpe.typeSymbol)
+      tpe match {
+        case named: NamedType => traverse(named.prefix)
+        case _                => traverseChildren(tpe)
+      }
+    }
+  }
 }

@@ -1,5 +1,8 @@
 package net.kurobako.bonsai.analysis
 
+import Polynomial.Factor.Named
+import Polynomial.Naming
+
 /** The atoms of a bound: sizes of collections by access path, logarithms of those, and the unknown `?`.
   *
   * A path is rooted at a parameter (`name#id`), at `this`, or at a module's qualified name, and continues with the
@@ -24,16 +27,16 @@ private object Atoms {
   private def single(size: Polynomial): Option[String] = size.terms.toVector match {
     case Vector((monomial, count)) if count == 1 =>
       monomial.toVector match {
-        case Vector((Polynomial.Factor.Atom(atom), 1)) if atom.startsWith(SizePrefix) => Some(atom.drop(2))
-        case _                                                                        => None
+        case Vector((Named(Naming.Atom, atom), 1)) if atom.startsWith(SizePrefix) => Some(atom.drop(2))
+        case _                                                                    => None
       }
     case _ => None
   }
 
-  def display(path: String): String = Ids.replaceAllIn(path, "").split('.').takeRight(3).mkString(".")
+  private def display(path: String): String = Ids.replaceAllIn(path, "").split('.').takeRight(3).mkString(".")
 
   def show(size: Polynomial): String = {
-    val shown = terms(size).filter(_.sizes.nonEmpty).map(_.show).sorted
+    val shown = terms(size).view.collect { case term if term.sizes.nonEmpty => term.show }.toVector.sorted
     if (shown.nonEmpty) shown.mkString(" + ") else if (terms(size).nonEmpty) "1" else "?"
   }
 
@@ -42,9 +45,9 @@ private object Atoms {
   /** The terms of a bound made of sizes alone, without unknown or collapsed atoms. */
   def terms(bound: Polynomial): Vector[Complexity.Term] = bound.terms.keys.toVector.flatMap { monomial =>
     val parts = monomial.toVector.map {
-      case (Polynomial.Factor.Atom(atom), power) if atom.startsWith(SizePrefix) =>
+      case (Named(Naming.Atom, atom), power) if atom.startsWith(SizePrefix) =>
         Some(Part(size = true, display(atom.drop(2)), power))
-      case (Polynomial.Factor.Atom(atom), power) if atom.startsWith(LogPrefix) =>
+      case (Named(Naming.Atom, atom), power) if atom.startsWith(LogPrefix) =>
         Some(Part(size = false, display(atom.drop(2)), power))
       case _ => None
     }
@@ -59,7 +62,7 @@ private object Atoms {
   def degree(bound: Polynomial): Int = bound.terms.keys.map(degreeOf(_)).maxOption.getOrElse(0)
 
   def degreeOf(monomial: Polynomial.Monomial): Int = monomial.collect {
-    case (Polynomial.Factor.Atom(atom), power) if !atom.startsWith(LogPrefix) => power
+    case (Named(Naming.Atom, atom), power) if !atom.startsWith(LogPrefix) => power
   }.sum
 
   /** The bound with every path rooted at a bound name replaced by what the binding gives. */
@@ -67,8 +70,8 @@ private object Atoms {
     Polynomial.sum(bound.terms.map { (monomial, count) =>
       Polynomial.constant(count) * Polynomial.product(monomial.toVector.map { (factor, power) =>
         Polynomial.product(Vector.fill(power)(factor match {
-          case Polynomial.Factor.Atom(atom) => rebound(atom, bindings)
-          case _                            => Unknown
+          case Named(Naming.Atom, atom) => rebound(atom, bindings)
+          case _                        => Unknown
         }))
       })
     })

@@ -39,7 +39,7 @@ class PatternShadow extends SyntacticRule("PatternShadow") {
         case body: Template.Body                => values(body.stats)
         case body: Pkg.Body                     => values(body.stats)
         case source: Source                     => values(source.stats)
-        case owner: Defn.Class                  => owner.ctor.paramClauses.flatMap(_.values).map(_.name.value)
+        case owner: Defn.Class                  => owner.ctor.paramClauses.flatMap(_.values.map(_.name.value))
         case method: Defn.Def                   => definitions.parameters(method).map(_.name.value)
         case function: Term.Function            => function.paramClause.values.map(_.name.value)
         case outer: Case if outer.body eq child => outer.pat.collect { case variable: Pat.Var => variable.name.value }
@@ -52,15 +52,18 @@ class PatternShadow extends SyntacticRule("PatternShadow") {
   }
 
   // Generators and value definitions of a for comprehension bind names for the enumerators after them and its body.
-  private def bound(enumerators: List[Enumerator]): List[String] = enumerators.collect {
-    case generator: Enumerator.Generator     => generator.pat
-    case generator: Enumerator.CaseGenerator => generator.pat
-    case definition: Enumerator.Val          => definition.pat
-  }.flatMap(_.collect { case variable: Pat.Var => variable.name.value })
+  private def bound(enumerators: List[Enumerator]): List[String] = enumerators.flatMap {
+    case generator: Enumerator.Generator     => variables(generator.pat)
+    case generator: Enumerator.CaseGenerator => variables(generator.pat)
+    case definition: Enumerator.Val          => variables(definition.pat)
+    case _                                   => Nil
+  }
+
+  private def variables(pattern: Pat): List[String] = pattern.collect { case variable: Pat.Var => variable.name.value }
 
   private def values(stats: List[Stat]): List[String] = stats.flatMap {
-    case value: Defn.Val    => value.pats.flatMap(_.collect { case variable: Pat.Var => variable.name.value })
-    case variable: Defn.Var => variable.pats.flatMap(_.collect { case name: Pat.Var => name.name.value })
+    case value: Defn.Val    => value.pats.flatMap(variables)
+    case variable: Defn.Var => variable.pats.flatMap(variables)
     case owner: Defn.Object => List(owner.name.value)
     case _                  => Nil
   }

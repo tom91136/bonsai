@@ -14,9 +14,9 @@ import scala.jdk.CollectionConverters.*
   */
 object LintOptionals {
 
-  val lints: Vector[Lint] = Vector(Get, IsPresent, OptionalChain)
+  val lints: Vector[Lint] = Vector(Get, IsPresent)
 
-  private val Optionals = Set(
+  private[java] val Optionals = Set(
     "java.util.Optional",
     "java.util.OptionalInt",
     "java.util.OptionalLong",
@@ -26,7 +26,7 @@ object LintOptionals {
   private val Getters = Set("get", "getAsInt", "getAsLong", "getAsDouble")
 
   /** A call of `Optional.get()` that the code does not guard with a check that the value is present. */
-  object Get extends Lint {
+  private object Get extends Lint {
     val id    = JavaLint.OptionalGet.id
     val kinds = Set(Tree.Kind.METHOD_INVOCATION)
 
@@ -42,7 +42,7 @@ object LintOptionals {
   }
 
   /** An `isPresent` check whose branch calls `get`, which a functional expression states in one step. */
-  object IsPresent extends Lint {
+  private object IsPresent extends Lint {
     val id    = JavaLint.OptionalIsPresent.id
     val kinds = Set(Tree.Kind.METHOD_INVOCATION)
 
@@ -69,33 +69,6 @@ object LintOptionals {
     }
   }
 
-  /** An optional presence check that its own methods state more directly. */
-  object OptionalChain extends Lint {
-    val id    = JavaLint.OptionalChain.id
-    val kinds = Set(Tree.Kind.LOGICAL_COMPLEMENT)
-
-    def check(context: Context, tree: Tree): Vector[Found] = {
-      val unary = tree.asInstanceOf[UnaryTree]
-      if unary.getKind != Tree.Kind.LOGICAL_COMPLEMENT then Vector.empty
-      else
-        unary.getExpression match {
-          case invocation: MethodInvocationTree =>
-            invocation.getMethodSelect match {
-              case select: MemberSelectTree
-                  if invocation.getArguments.isEmpty && optional(context, select.getExpression) =>
-                select.getIdentifier.toString match {
-                  case "isPresent" if Release.atLeast(context, 11) =>
-                    Vector(context.found("use isEmpty() instead of !isPresent()"))
-                  case "isEmpty" => Vector(context.found("use isPresent() instead of !isEmpty()"))
-                  case _         => Vector.empty
-                }
-              case _ => Vector.empty
-            }
-          case _ => Vector.empty
-        }
-    }
-  }
-
   /** The receiver of a call of one of the methods, when it is an optional. */
   private def receiver(context: Context, invocation: MethodInvocationTree, methods: Set[String]): Option[Tree] =
     invocation.getMethodSelect match {
@@ -108,8 +81,7 @@ object LintOptionals {
 
   /** Whether the type of the tree is one of the optionals of the standard library. */
   private def optional(context: Context, tree: Tree): Boolean =
-    Option(context.trees.getPath(context.unit, tree))
-      .flatMap(path => Option(context.trees.getTypeMirror(path)))
+    context.mirrorOf(tree)
       .flatMap {
         case declared: DeclaredType if declared.getKind == TypeKind.DECLARED =>
           declared.asElement match {

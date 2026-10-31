@@ -105,7 +105,7 @@ class ClonesSuite extends AnalysisSuite {
         """object Factors {
                            |  def maximal(frequent: Vector[(Set[String], Set[Int])]): Vector[(Set[String], Set[Int])] =
                            |    frequent.groupMap(_._2)(_._1).toVector.flatMap { (cases, candidates) =>
-                           |      candidates.filterNot(fields => candidates.exists(other => other.size > fields.size && fields.subsetOf(other)))
+                           |      candidates.filterNot(fields => candidates.exists(other => other.size > fields.size && fields.subsetOf(other) && other.nonEmpty && fields.nonEmpty && other.size < 100))
                            |        .map(_ -> cases)
                            |    }
                            |}""".stripMargin,
@@ -113,7 +113,7 @@ class ClonesSuite extends AnalysisSuite {
         """object Clumps {
                           |  def clumps(frequent: Vector[(Set[String], Set[Int])]): Vector[(Set[String], Int)] =
                           |    frequent.groupMap(_._2)(_._1).toVector.flatMap { (methods, candidates) =>
-                          |      candidates.filterNot(items => candidates.exists(other => other.size > items.size && items.subsetOf(other)))
+                          |      candidates.filterNot(items => candidates.exists(other => other.size > items.size && items.subsetOf(other) && other.nonEmpty && items.nonEmpty && other.size < 100))
                           |        .map(items => items -> methods.size)
                           |    }
                           |}""".stripMargin
@@ -257,7 +257,9 @@ class ClonesSuite extends AnalysisSuite {
       mask: String,
       sign: String,
       infinite: Int = 9,
-      shifting: String = ">>>"
+      shifting: String = ">>>",
+      low: Int = 3,
+      last: String = "<<"
   ) =
     s"""object $owner {
        |  def classMask(bits: Long): Long = {
@@ -266,8 +268,8 @@ class ClonesSuite extends AnalysisSuite {
        |    val classBit =
        |      if (exponent == $mask) if (negative) 2 else $infinite
        |      else if (exponent == 0) if (negative) 4 else 7
-       |      else if (negative) 3 else 8
-       |    1L << classBit
+       |      else if (negative) $low else 8
+       |    1L $last classBit
        |  }
        |}""".stripMargin
 
@@ -302,10 +304,18 @@ class ClonesSuite extends AnalysisSuite {
     assertFinding(found, "near-duplicate-code", "3 copies of", "{23, 10}", "Third.scala")
   }
 
+  test("many copies that differ only in literals are a table of rows, not near duplicates") {
+    def rows(count: Int) = (1 to count).map(row =>
+      s"Row$row.scala" -> classMask(s"Row$row", row + 100, "0xff", "0x80000000L")
+    )
+    assertEquals(near(findings(rows(32))).size, 1)
+    assertEquals(near(findings(rows(33))), Vector.empty)
+  }
+
   test("copies that differ in more literals than their size carries are not near duplicates") {
     val found = findings(Seq(
       "Half.scala"   -> classMask("Half", 10, "0x1f", "0x8000L"),
-      "Single.scala" -> classMask("Single", 23, "0xff", "0x80000000L", infinite = 1)
+      "Single.scala" -> classMask("Single", 23, "0xff", "0x80000000L", infinite = 1, low = 5)
     ))
     assertEquals(found, Vector.empty)
   }
@@ -316,6 +326,7 @@ class ClonesSuite extends AnalysisSuite {
        |    val exponent = (bits >>> $shift) & $exponent
        |    val fraction = bits & $fraction
        |    val negative = (bits & $sign) != 0L
+       |    val spread = (exponent + fraction) * (exponent - fraction) + exponent * fraction
        |    val classBit =
        |      if (exponent == $exponent && fraction != 0) if ((fraction & $quiet) == 0) 0 else 1
        |      else if (exponent == $exponent) if (negative) 2 else 9
@@ -442,7 +453,7 @@ class ClonesSuite extends AnalysisSuite {
     assertEquals(
       findings(Seq(
         "Half.scala"   -> classMask("Half", 10, "0x1f", "0x8000L"),
-        "Single.scala" -> classMask("Single", 23, "0xff", "0x80000000L", shifting = ">>")
+        "Single.scala" -> classMask("Single", 23, "0xff", "0x80000000L", shifting = ">>", last = ">>")
       )),
       Vector.empty
     )
@@ -483,7 +494,9 @@ class ClonesSuite extends AnalysisSuite {
          |      "extra1" -> ($a + 1),
          |      "extra2" -> ($b + 2),
          |      "extra3" -> ($c + 3),
-         |      "extra4" -> ($d + 4)
+         |      "extra4" -> ($d + 4),
+         |      "extra5" -> ($a + $b),
+         |      "extra6" -> ($c + $d)
          |    )
          |    map
          |  }
@@ -666,4 +679,21 @@ class ClonesSuite extends AnalysisSuite {
     assertEquals(found.size, 1, found.mkString("\n"))
   }
 
+  test("a literal is rendered when a finding names it, not when it is built") {
+    var renderings = 0
+    val literal    = Clones.Literal("a", string = true) { renderings += 1; "\"a\"" }
+    assertEquals(renderings, 0)
+    assertEquals(literal.shown, "\"a\"")
+    assertEquals(literal.shown, "\"a\"")
+    assertEquals(renderings, 1)
+  }
+
+  test("a deferred value is computed once, when first used") {
+    var computations = 0
+    val deferred     = Clones.Deferred { computations += 1; Vector(1) }
+    assertEquals(computations, 0)
+    assertEquals(deferred.value, Vector(1))
+    assertEquals(deferred.value, Vector(1))
+    assertEquals(computations, 1)
+  }
 }

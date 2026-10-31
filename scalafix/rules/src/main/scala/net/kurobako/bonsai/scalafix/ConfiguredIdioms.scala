@@ -58,14 +58,14 @@ class ConfiguredIdioms(idioms: List[ConfiguredIdioms.Idiom]) extends SemanticRul
     }.asPatch
 
   private def helperBody(term: Term, idiom: ConfiguredIdioms.Idiom)(using SemanticDocument): Boolean =
-    definitions.ancestors(term).exists {
+    ancestry.ancestors(term).exists {
       case definition: Defn.Def => idiom.definition.matches(definition.name)
       case _                    => false
     }
 
   // An inline method is expanded where it is called, so a helper called from it would be expanded at every such site.
-  private def inlined(term: Term): Boolean = definitions.ancestors(term).exists {
-    case definition: Defn.Def => definition.mods.exists { case _: Mod.Inline => true; case _ => false }
+  private def inlined(term: Term): Boolean = ancestry.ancestors(term).exists {
+    case definition: Defn.Def => definitions.has[Mod.Inline](definition.mods)
     case _                    => false
   }
 

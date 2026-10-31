@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.analysis
 
+import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.core.Symbols.Symbol
 
 private object Scope {
@@ -29,12 +30,12 @@ private case class Scope(
     counts: Map[Symbol, Polynomial] = Map.empty,
     variables: Map[Symbol, Scope.Variable] = Map.empty,
     smaller: Map[Symbol, Symbol] = Map.empty,
+    built: Map[Symbol, tpd.Apply] = Map.empty,
     levels: Map[Symbol, Int] = Map.empty,
     resets: Set[Symbol] = Set.empty,
     loops: Vector[Scope.Loop] = Vector.empty,
     callback: Boolean = false,
     terminal: Boolean = false,
-    enclosingResults: List[dotty.tools.dotc.ast.tpd.Tree] = Nil,
     inFallback: Boolean = false,
     amortized: Option[Int] = None
 ) {
@@ -42,6 +43,8 @@ private case class Scope(
     Polynomial.product(loops.foldLeft(Vector.empty[Polynomial])((turns, loop) =>
       turns.dropRight(loop.absorbs) :+ loop.trips
     ))
+
+  def tracking(symbol: Symbol, variable: Scope.Variable): Scope = copy(variables = variables.updated(symbol, variable))
 
   def pushed(loop: Scope.Loop): Scope =
     copy(loops = loops :+ (if amortized.contains(loops.size) then loop.copy(trips = Polynomial.One) else loop))

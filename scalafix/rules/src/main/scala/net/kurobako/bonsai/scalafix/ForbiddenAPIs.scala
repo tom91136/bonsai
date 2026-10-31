@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.scalafix
 
+import metaconfig.Conf
 import metaconfig.Configured
 import scala.meta.*
 import scalafix.v1.*
@@ -14,28 +15,32 @@ class ForbiddenAPIs(banned: Map[String, String]) extends SemanticRule("Forbidden
   def this() = this(Map.empty)
 
   override def withConfiguration(config: Configuration): Configured[Rule] =
-    Configured.Ok(ForbiddenAPIs(settings.table(settings.section(config.conf, "ForbiddenAPIs"), "symbols")))
+    Configured.Ok(ForbiddenAPIs(table(settings.section(config.conf, "ForbiddenAPIs"), "symbols")))
+
+  private def table(fields: Map[String, Conf], key: String): Map[String, String] = fields.get(key).toList.flatMap {
+    case Conf.Obj(entries) => entries.collect { case (name, Conf.Str(value)) => name -> value }
+    case _                 => Nil
+  }.toMap
 
   private val (types, members) = banned.partition((symbol, _) => symbol.endsWith("#") || symbol.endsWith("."))
 
   override def fix(using document: SemanticDocument): Patch =
     if (banned.isEmpty) Patch.empty
     else document.tree.collect {
-      case reference: Term.Ref => diagnostic(reference, reference.symbol.value)
-      case reference: Type.Ref => diagnostic(reference, reference.symbol.value)
+      case reference: (Term.Ref | Type.Ref) => diagnostic(reference, reference.symbol.value)
     }.flatten.asPatch
 
   private def diagnostic(tree: Tree, symbol: String)(using SemanticDocument): Option[Patch] =
     types.get(symbol)
       .orElse(
         members.collectFirst {
-          case (prefix, message) if symbol.startsWith(prefix) && !references.isSelectionName(tree) => message
+          case (prefix, message) if symbol.startsWith(prefix) && references.notSelectionName(tree) => message
         }
       )
       .orElse(
         types.collectFirst {
           case (owner, message)
-              if owner.endsWith("#") && symbol.startsWith(owner) && static(tree) && !references.isSelectionName(tree) =>
+              if owner.endsWith("#") && symbol.startsWith(owner) && static(tree) && references.notSelectionName(tree) =>
             message
         }
       )

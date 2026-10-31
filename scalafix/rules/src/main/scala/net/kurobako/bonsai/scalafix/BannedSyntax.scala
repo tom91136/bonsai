@@ -32,7 +32,7 @@ class BannedSyntax extends SyntacticRule("BannedSyntax") {
       case _                       => None
     }
     created.exists(name =>
-      definitions.ancestors(term).exists {
+      ancestry.ancestors(term).exists {
         case owner: Defn.Object => owner.name.value == name && definitions.members(owner.templ).exists {
             case method: Defn.Def => method.name.value == "apply"
             case _                => false

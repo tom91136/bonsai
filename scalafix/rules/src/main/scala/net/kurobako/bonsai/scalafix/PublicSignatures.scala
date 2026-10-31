@@ -24,7 +24,7 @@ class PublicSignatures extends SemanticRule("PublicSignatures") {
 
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
     case method: Defn.Def
-        if definitions.public(method.mods) && definitions.reachable(method, method.mods) &&
+        if definitions.public(method.mods) && ancestry.reachable(method, method.mods) &&
           !definitions.has[Mod.Override](method.mods) =>
       val parameters = definitions.parameters(method)
       val types      = parameters.flatMap(_.decltpe) ++ method.decltpe

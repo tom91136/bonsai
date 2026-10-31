@@ -22,17 +22,22 @@ class PackageNaming extends SyntacticRule("PackageNaming") {
           )
       }
       val prefix = segments.filterNot(Versioned.matches(_)).lastOption.toList.flatMap { last =>
-        pkg.body.stats.collect {
-          case declared: Defn.Class if repeats(declared.name.value, last)  => declared.name
-          case declared: Defn.Trait if repeats(declared.name.value, last)  => declared.name
-          case declared: Defn.Object if repeats(declared.name.value, last) => declared.name
-          case declared: Defn.Enum if repeats(declared.name.value, last)   => declared.name
-        }.map(declared =>
-          lint("redundant-prefix", s"${declared.value} repeats its package name $last", declared.pos)
+        pkg.body.stats.flatMap(stat =>
+          declaredName(stat).filter(declared => repeats(declared.value, last)).map(declared =>
+            lint("redundant-prefix", s"${declared.value} repeats its package name $last", declared.pos)
+          )
         )
       }
       (versions ++ prefix).asPatch
   }.asPatch
+
+  private def declaredName(stat: Stat): Option[Name] = stat match {
+    case declared: Defn.Class  => Some(declared.name)
+    case declared: Defn.Trait  => Some(declared.name)
+    case declared: Defn.Object => Some(declared.name)
+    case declared: Defn.Enum   => Some(declared.name)
+    case _                     => None
+  }
 
   private def name(reference: Term.Ref): List[String] = reference match {
     case Term.Name(value)                           => List(value)
