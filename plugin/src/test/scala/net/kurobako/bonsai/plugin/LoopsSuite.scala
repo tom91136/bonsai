@@ -308,6 +308,54 @@ class LoopsSuite extends FunSuite {
     assertEquals(tagged(found, "invariant-in-loop"), Nil, found.mkString("\n"))
   }
 
+  test("a field that a method called by a recursion mutates through another method is not invariant in it") {
+    val found = warnings(
+      """object Lints {
+        |  class Pass(names: Vector[String]) {
+        |    private val uses = scala.collection.mutable.Map.empty[String, Int]
+        |    private def store(index: Int): Unit = uses(names(index)) = index
+        |    private def record(index: Int): Unit = store(index)
+        |    def settle(rounds: Int): Int = {
+        |      @scala.annotation.tailrec
+        |      def loop(index: Int, acc: Int): Int = {
+        |        record(index)
+        |        val snapshot = uses.toMap
+        |        if (index == 0) acc + snapshot.size else loop(index - 1, acc + snapshot.size)
+        |      }
+        |      loop(rounds, 0)
+        |    }
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(tagged(found, "invariant-in-loop"), Nil, found.mkString("\n"))
+  }
+
+  test("a field that no method called by a recursion mutates is invariant in it") {
+    val found = warnings(
+      """object Lints {
+        |  class Pass(names: Vector[String]) {
+        |    private val uses = scala.collection.mutable.Map.empty[String, Int]
+        |    private val seen = scala.collection.mutable.Set.empty[String]
+        |    private def store(index: Int): Unit = seen += names(index)
+        |    private def record(index: Int): Unit = store(index)
+        |    def settle(rounds: Int): Int = {
+        |      @scala.annotation.tailrec
+        |      def loop(index: Int, acc: Int): Int = {
+        |        record(index)
+        |        val snapshot = uses.toMap
+        |        if (index == 0) acc + snapshot.size else loop(index - 1, acc + snapshot.size)
+        |      }
+        |      loop(rounds, 0)
+        |    }
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "invariant-in-loop"),
+      List("uses.toMap does not depend on what the recursion of loop changes")
+    )
+  }
+
   test("work derived from the elements of an immutable field alone is recomputed on every call") {
     val found = warnings(
       """class Namespaces(packages: Vector[Vector[String]], names: Set[String]) {

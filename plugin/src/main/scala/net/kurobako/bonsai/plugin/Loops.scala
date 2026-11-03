@@ -112,6 +112,8 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
 
   // The private and local methods of a unit, with the method each call sits in, or none for an initialiser.
   private val callers = mutable.Map.empty[Symbol, mutable.ListBuffer[Option[Symbol]]]
+  // The methods of the unit with a body, so the writes of a call can follow the methods it reaches.
+  private val definitions = mutable.Map.empty[Symbol, tpd.DefDef]
   // The methods that call themselves, with their definitions, and what the loop of their calls changes.
   private val recursive  = mutable.Map.empty[Symbol, tpd.DefDef]
   private val recursions = mutable.Map.empty[Symbol, Option[(Set[Symbol], List[Span])]]
@@ -132,8 +134,10 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
           if (symbol.is(Flags.Method) && confined(symbol))
             callers.getOrElseUpdate(symbol, mutable.ListBuffer.empty) += enclosing
           open.get(symbol).foreach(recursive(symbol) = _)
-        case definition: tpd.DefDef if !definition.rhs.isEmpty => bodies.put(definition.rhs, definition): Unit
-        case _                                                 => ()
+        case definition: tpd.DefDef if !definition.rhs.isEmpty =>
+          definitions(definition.symbol) = definition
+          bodies.put(definition.rhs, definition): Unit
+        case _ => ()
       }
       traverseChildren(tree)
       entered.foreach(body => open -= body.symbol)
@@ -151,6 +155,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     case definition: tpd.DefDef if definition.symbol.is(Flags.Synthetic) && !definition.symbol.isAnonymousFunction =>
       ()
     case definition: tpd.DefDef if recursive.contains(definition.symbol) =>
+      written ++= writes(definition.rhs)
       recursion(definition) match {
         case Some((variants, branches)) =>
           leaves ++= branches
@@ -596,8 +601,29 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     case _ => ()
   }
 
-  /** The variables a tree assigns and the receivers of the updates it makes. */
-  private def writes(tree: tpd.Tree)(using Context): List[Symbol] = tree.filterSubTrees {
+  /** The variables a tree assigns, and the receivers of the updates it makes, through the methods it reaches. */
+  private def writes(tree: tpd.Tree)(using Context): List[Symbol] = {
+    val reached                            = mutable.Set.empty[Symbol]
+    def reach(methods: List[Symbol]): Unit =
+      methods.foreach(method => if (reached.add(method)) reach(calls(method)))
+    reach(called(tree))
+    val found = mutable.ListBuffer.from(direct(tree))
+    reached.foreach(method => found ++= ownWrites.getOrElseUpdate(method, direct(definitions(method).rhs)))
+    found.toList
+  }
+
+  private val ownWrites = mutable.Map.empty[Symbol, List[Symbol]]
+  private val ownCalls  = mutable.Map.empty[Symbol, List[Symbol]]
+
+  private def calls(method: Symbol)(using Context): List[Symbol] =
+    ownCalls.getOrElseUpdate(method, called(definitions(method).rhs))
+
+  private def called(tree: tpd.Tree)(using Context): List[Symbol] = tree.filterSubTrees {
+    case reference @ (_: tpd.Ident | _: tpd.Select) => definitions.contains(reference.symbol)
+    case _                                          => false
+  }.map(_.symbol).distinct
+
+  private def direct(tree: tpd.Tree)(using Context): List[Symbol] = tree.filterSubTrees {
     case _: tpd.Assign          => true
     case tpd.Apply(function, _) => Calls.selected(function).exists(select => Axioms.mutates(select.name.toString))
     case _                      => false
