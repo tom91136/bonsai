@@ -154,7 +154,7 @@ private[analysis] final class Symbols(
 
   /** The line `symbol` is declared at, or 0 when unknown. */
   def lineOf(symbol: Symbol)(using Context): Int =
-    if (symbol.source.exists && symbol.span.exists) symbol.sourcePos.line + 1 else 0
+    if (symbol.source.exists && symbol.span.exists) Lines.at(symbol.source, symbol.span.point) + 1 else 0
 
   /** The key of an analysed node, recording the node on first sight. */
   def register(symbol: Symbol)(using Context): Option[String] =

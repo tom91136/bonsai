@@ -97,9 +97,10 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
         })
         if (info.outer.isEmpty && info.name == qualifiedName(cls) && definition.span.exists) {
           // A companion spans its own lines, and a synthetic one those of its class.
-          val position     = definition.sourcePos
-          val (start, end) = extents.getOrElse(info.name, (position.startLine, position.endLine))
-          extents(info.name) = (start.min(position.startLine), end.max(position.endLine))
+          val first        = Lines.at(definition.source, definition.span.start)
+          val last         = Lines.at(definition.source, definition.span.end)
+          val (start, end) = extents.getOrElse(info.name, (first, last))
+          extents(info.name) = (start.min(first), end.max(last))
         }
         if (!cls.is(Flags.ModuleClass))
           cls.asClass.paramAccessors.filter(field =>

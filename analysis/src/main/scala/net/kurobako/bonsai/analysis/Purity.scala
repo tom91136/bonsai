@@ -544,9 +544,10 @@ object Purity {
 
     private val summaries     = mutable.Map.empty[Key, Summary]
     private val views         = mutable.Map.empty[Key, (Summary, Summary)]
-    private val keys          = mutable.LinkedHashSet.empty[Key]
-    private val stale         = mutable.LinkedHashSet.empty[Key]
-    private val readers       = mutable.LinkedHashMap.empty[Key, mutable.LinkedHashSet[Key]]
+    private val states        = mutable.HashMap.empty[Key, State]
+    private val open          = mutable.ArrayBuffer.empty[Key]
+    private val dirtied       = mutable.ArrayBuffer.empty[Key]
+    private val readers       = mutable.HashMap.empty[Key, mutable.ArrayBuffer[Key]]
     private val computing     = mutable.Stack.empty[Key]
     private val Silent        = Summary(Ids.Empty, Set.empty, Set.empty)
     private val locals        = mutable.Map.empty[Symbol, tpd.Tree]
@@ -638,37 +639,90 @@ object Purity {
               Facts(Vector(plain(Kind.Unknown, s"could not be read: $error")), Set.empty, Vector.empty)
           }
       }
-      keys ++= facts.keys.map(Key(_, None))
-      stale ++= keys
-      settle()
+      facts.keys.toVector.foreach(method => solve(Key(method, None)))
     }
 
-    // New keys only appear when a summary refers to them, and every summary only grows, so a key is computed again only
-    // when a summary it read has grown, and this settles.
-    @annotation.tailrec
-    private def settle(): Unit = stale.headOption match {
-      case Some(key) =>
-        stale -= key
-        computing.push(key)
-        val next =
-          try compute(key)
-          finally computing.pop(): Unit
-        if (summaries.get(key).fold(next != Silent)(_ != next)) {
-          summaries(key) = next
-          stale ++= readers.getOrElse(key, Nil)
+    /** Where a key stands in the search for strongly connected components of the keys that read each other: `index` is
+      * the order it was reached in, `low` the earliest key still unsettled that it reaches, and `position` its place
+      * among the unsettled keys.
+      */
+    private final class State(val index: Int, val position: Int) {
+      var low: Int         = index
+      var settled: Boolean = false
+      var dirty: Boolean   = false
+    }
+
+    // A key is computed once its callees have settled, and computed again only while it is in a cycle with a callee
+    // that has grown since, so the keys settle one component at a time, callees first. Summaries only grow, so each
+    // component stops at its least fixpoint.
+    private def solve(key: Key): State = states.getOrElse(key, null) match {
+      case null  => visit(key)
+      case state => state
+    }
+
+    private def visit(key: Key): State = {
+      val state = State(states.size, open.size)
+      val mark  = dirtied.size
+      states(key) = state
+      open += key
+      isolated {
+        evaluate(key)
+        if (state.low == state.index) {
+          var next = mark
+          while (next < dirtied.size) {
+            val stale = dirtied(next)
+            next += 1
+            states(stale).dirty = false
+            evaluate(stale)
+          }
         }
-        settle()
-      case None => ()
+      }
+      if (state.low == state.index) {
+        dirtied.remove(mark, dirtied.size - mark)
+        open.view.drop(state.position).foreach { member =>
+          states(member).settled = true
+          readers -= member
+        }
+        open.dropRightInPlace(open.size - state.position)
+      }
+      state
     }
 
-    // Resolving a site after the fixpoint may reach keys no summary read, which settle before the answer stands.
-    @annotation.tailrec
-    private def settled[A](resolution: => A): A = {
-      val result = resolution
-      if (stale.isEmpty) result
-      else {
-        settle()
-        settled(resolution)
+    // A key is computed as if it were the first, whichever key's computation reached it.
+    private def isolated(body: => Unit): Unit = {
+      val (resolved, ran, returned, valued) =
+        (resolving.toVector, running.toVector, evaluating.toVector, pendingValues.toVector)
+      resolving.clear()
+      running.clear()
+      evaluating.clear()
+      pendingValues.clear()
+      try body
+      finally {
+        resolving.clear()
+        running.clear()
+        evaluating.clear()
+        pendingValues.clear()
+        resolving ++= resolved
+        running ++= ran
+        evaluating ++= returned
+        pendingValues ++= valued
+      }
+    }
+
+    private def evaluate(key: Key): Unit = {
+      computing.push(key)
+      val next =
+        try compute(key)
+        finally computing.pop(): Unit
+      if (summaries.get(key).fold(next != Silent)(_ != next)) {
+        summaries(key) = next
+        readers.getOrElse(key, Nil).foreach { reader =>
+          val state = states(reader)
+          if (!state.dirty) {
+            state.dirty = true
+            dirtied += reader
+          }
+        }
       }
     }
 
@@ -706,13 +760,13 @@ object Purity {
     )
 
     private def summary(key: Key): Summary = {
-      computing.headOption.foreach(reader => readers.getOrElseUpdate(key, mutable.LinkedHashSet.empty) += reader)
-      summaries.getOrElse(
-        key, {
-          if (keys.add(key)) stale += key
-          Silent
-        }
-      )
+      val state = solve(key)
+      if (!state.settled) computing.headOption.foreach { reader =>
+        val own = states(reader)
+        own.low = math.min(own.low, state.low)
+        readers.getOrElseUpdate(key, mutable.ArrayBuffer.empty) += reader
+      }
+      summaries.getOrElse(key, Silent)
     }
 
     /** Dropped calls with no effects at all, or that only read as far as is known, by enclosing method, with the
@@ -721,7 +775,7 @@ object Purity {
     def pointless: Vector[(Symbol, String, tpd.Tree)] = discards.toVector.collect {
       case site
           if {
-            val summary = settled(resolve(site.facts, frame(site.method, None), None, keepFresh = true))
+            val summary = resolve(site.facts, frame(site.method, None), None, keepFresh = true)
             !runsUnknown(summary) && summary.effects.forall(id =>
               effectTable(id).kind == Kind.Reads && !effectTable(id).assumed
             )
@@ -738,7 +792,7 @@ object Purity {
       val once = consumed.get(site.tree.span).filter(_ => site.view)
       if (once.contains(true)) None
       else
-        decoded(settled(resolve(site.lambda, frame(site.method, None), None)).effects).filter(effect =>
+        decoded(resolve(site.lambda, frame(site.method, None), None).effects).filter(effect =>
           Observable(effect.kind) && effect.via.isEmpty
         ).minOption.map(effect => (site.method, site.operation, effect.shown, site.tree, site.view && once.isEmpty))
     }
@@ -747,7 +801,7 @@ object Purity {
       * unknown.
       */
     def silent(method: Symbol, lambda: tpd.DefDef): Boolean =
-      lambdas.get(lambda.symbol).exists(facts => quiet(settled(resolve(facts, frame(method, None), None))))
+      lambdas.get(lambda.symbol).exists(facts => quiet(resolve(facts, frame(method, None), None)))
 
     /** Whether calling `method` has no effect at all, not even throwing, and runs nothing that is unknown. */
     def silent(method: Symbol): Boolean = summaries.get(Key(method, None)).exists(quiet)
@@ -1388,10 +1442,9 @@ object Purity {
 
     private def short(symbol: Symbol): String = shortNames.getOrElseUpdate(symbol, Finding.short(qualified(symbol)))
 
-    private val qualifiedNames = mutable.HashMap.empty[Symbol, String]
-    private val pureOwners     = mutable.HashMap.empty[Symbol, Boolean]
+    private val pureOwners = mutable.HashMap.empty[Symbol, Boolean]
 
-    private def qualified(symbol: Symbol): String = qualifiedNames.getOrElseUpdate(symbol, Calls.qualified(symbol))
+    private def qualified(symbol: Symbol): String = Calls.qualified(symbol)
 
     private def pure(owner: Symbol): Boolean =
       pureOwners.getOrElseUpdate(owner, Axioms.Pure.exists(qualified(owner).startsWith(_)))
@@ -1658,7 +1711,7 @@ object Purity {
       private def modelledEffects(method: Symbol, qualifier: Option[tpd.Tree], parameters: List[Symbol]): Summary = {
         val runs =
           parameters.zipWithIndex.collect { case (parameter, index) if callable(parameter.info) => index }.toSet
-        val modelled = Axioms.summary(axioms.of(method, qualifier, qualified), runs)
+        val modelled = Axioms.summary(axioms.of(method, qualifier), runs)
         Summary(modelled.effects.toSet, modelled.invokes)
       }
 

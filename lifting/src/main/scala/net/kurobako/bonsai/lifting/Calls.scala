@@ -21,22 +21,19 @@ final class Calls(using Context) {
   private def named(name: String): Symbol = classes.getOrElseUpdate(name, getClassIfDefined(name))
 
   /** `method` called on `qualifier`, if it has one. */
-  def of(method: Symbol, qualifier: Option[tpd.Tree]): Axioms.Call = of(method, qualifier, Calls.qualified(_))
-
-  /** As above, with `qualified` naming the symbols, for callers that remember the names. */
-  def of(method: Symbol, qualifier: Option[tpd.Tree], qualified: Symbol => String): Axioms.Call = {
+  def of(method: Symbol, qualifier: Option[tpd.Tree]): Axioms.Call = {
     val operand = qualifier.map { tree =>
       val tpe = Calls.unconverted(tree).tpe.widen
       Axioms.Operand(name => named(name).exists && tpe.derivesFrom(named(name)), tree.symbol.is(Flags.Module))
     }
     Axioms.Call(
-      qualified(Calls.owner(method)),
+      Calls.qualified(Calls.owner(method)),
       method.name.toString,
       method.isConstructor,
       operand,
       method.is(Flags.Synthetic) || method.name.is(DefaultGetterName),
       method.is(Flags.JavaDefined),
-      qualified(method.info.finalResultType.dealias.typeSymbol)
+      Calls.qualified(method.info.finalResultType.dealias.typeSymbol)
     )
   }
 }

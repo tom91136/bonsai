@@ -5,8 +5,6 @@ import java.io.DataInputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import scala.collection.mutable
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
 
 /** Method sizes read from compiled class files, against the limits HotSpot and the class file format impose. */
 object Bytecode {
@@ -21,8 +19,7 @@ object Bytecode {
 
   def read(directories: Vector[Path]): Vector[Method] = directories.view.filter(Files.isDirectory(_)).flatMap {
     directory =>
-      Using.resource(Files.walk(directory))(_.toList.asScala.toVector.filter(_.toString.endsWith(".class")))
-        .flatMap(file => methods(Files.readAllBytes(file)))
+      Outputs.files(directory).filter(_.toString.endsWith(".class")).flatMap(file => methods(Files.readAllBytes(file)))
   }.toVector
 
   /** Methods near the 64 KB limit, and those HotSpot only interprets, which matter in the `hot` nodes when the build

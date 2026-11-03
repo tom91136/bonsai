@@ -60,8 +60,10 @@ object LintScopes {
 
   /** Whether the local is passed, returned, captured or stored, or is closed by hand. */
   private def resourceUse(context: Context, element: Element): ResourceUse = {
-    val method     = context.ancestors.collectFirst { case method: MethodTree => method }
-    val root       = method.flatMap(method => Option(context.trees.getPath(context.unit, method)))
+    val root =
+      Iterator.iterate(
+        context.path.getParentPath
+      )(_.getParentPath).takeWhile(_ != null).find(_.getLeaf.isInstanceOf[MethodTree])
     val declaredIn = context.ancestors.collect {
       case declared: (LambdaExpressionTree | ClassTree) => declared
     }.toSet

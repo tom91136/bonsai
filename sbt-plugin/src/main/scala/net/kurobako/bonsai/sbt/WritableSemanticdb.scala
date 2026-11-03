@@ -1,11 +1,12 @@
 package net.kurobako.bonsai.sbt
 
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import sbt.*
 import sbt.Keys.*
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
 
 /** sbt restores cached outputs as links into its read-only cache, and the compiler rewrites the semanticdb of a changed
   * source in place, through such a link; each link becomes a file of its own before compiling, so the write lands. A
@@ -23,9 +24,24 @@ object WritableSemanticdb extends AutoPlugin {
     )
   )
 
+  /** The links under the root, which the walk reads from the attributes it already holds of each entry. */
+  private def links(root: Path): Vector[Path] = {
+    val found = Vector.newBuilder[Path]
+    val _     = Files.walkFileTree(
+      root,
+      new SimpleFileVisitor[Path] {
+        override def visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult = {
+          if attributes.isSymbolicLink then found += file
+          FileVisitResult.CONTINUE
+        }
+      }
+    )
+    found.result()
+  }
+
   private def copyLinks(root: Path): Unit =
     if (Files.isDirectory(root))
-      Using.resource(Files.walk(root))(_.iterator.asScala.filter(Files.isSymbolicLink).toVector).foreach { link =>
+      links(root).foreach { link =>
         val bytes = Option.when(Files.exists(link))(Files.readAllBytes(link))
         Files.delete(link)
         bytes.foreach(Files.write(link, _))

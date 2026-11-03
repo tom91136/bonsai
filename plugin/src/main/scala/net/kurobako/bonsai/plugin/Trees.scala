@@ -32,25 +32,8 @@ private object Trees {
   }
 
   /** The term parameter lists of a method. */
-  def termParameters(method: Symbol)(using Context): List[List[Symbol]] = {
-    val known = parameterLists.get()
-    if (known.run != ctx.runId) {
-      known.run = ctx.runId
-      known.lists.clear()
-    }
-    val found = known.lists.get(method)
-    if (found != null) found
-    else {
-      val computed = method.paramSymss.filter(_.headOption.exists(_.isTerm))
-      known.lists.put(method, computed)
-      computed
-    }
-  }
-
-  // The lists of one compilation run: symbols outlive no run, so the next one starts afresh.
-  private final class Lists(var run: Int, val lists: java.util.IdentityHashMap[Symbol, List[List[Symbol]]])
-
-  private val parameterLists = ThreadLocal.withInitial(() => Lists(-1, java.util.IdentityHashMap()))
+  def termParameters(method: Symbol)(using Context): List[List[Symbol]] =
+    method.paramSymss.filter(_.headOption.exists(_.isTerm))
 
   /** The elements of a collection built in place by the apply of a companion, as `Set(a, b)` or `Vector(a, b)`. */
   def built(tree: tpd.Tree)(using Context): Option[List[tpd.Tree]] = {

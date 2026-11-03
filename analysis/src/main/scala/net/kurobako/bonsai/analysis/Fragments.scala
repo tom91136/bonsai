@@ -647,8 +647,8 @@ class Fragments(using Context) {
       val fragment = Clones.Fragment(
         piece.origin.node,
         first.source.path,
-        first.sourcePos.startLine + 1,
-        last.sourcePos.endLine + 1,
+        Lines.at(first.source, first.span.start) + 1,
+        Lines.at(last.source, last.span.end) + 1,
         piece.origin.test,
         piece.origin.family,
         piece.origin.specialised,

@@ -36,6 +36,26 @@ class ComplexitySuite extends AnalysisSuite {
 
   private given Finding.Level = Finding.Level.Warning
 
+  test("a super-linear site is located at its own line in its own file") {
+    val padding = (1 to 20).map(index => s"  val padded$index = $index").mkString("\n")
+    val result  = extract(Seq(
+      "First.scala" ->
+        s"object First {\n$padding\n  def pairs(xs: List[Int]): Int = xs.map(x => xs.count(_ == x)).sum\n}",
+      "Second.scala" -> "object Second {\n  def pairs(ys: List[Int]): Int = ys.map(y => ys.count(_ == y)).sum\n}"
+    ))
+    val located = Complexity.findings(result.complexities, result.graph.nodes, result.hot)
+    assertFinding(
+      located,
+      "complexity",
+      "First.pairs is O(|xs|^2) in time: count over |xs| (line 22) inside map over |xs| (line 22)"
+    )
+    assertFinding(
+      located,
+      "complexity",
+      "Second.pairs is O(|ys|^2) in time: count over |ys| (line 2) inside map over |ys| (line 2)"
+    )
+  }
+
   test("nested traversals and linear operations in loops are super-linear in the sizes they traverse") {
     assertFinding(found, "complexity", "Search.pairs is O(|facts| * |rules|)")
     assertFinding(found, "complexity", "Search.squares is O(|values|^2)")

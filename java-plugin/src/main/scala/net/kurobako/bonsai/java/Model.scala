@@ -916,18 +916,40 @@ object Model {
     * escape itself, and the surrogates that have no pair, which UTF-8 cannot encode.
     */
   private def escape(value: String): String = {
-    val text = new StringBuilder
-    value.codePoints.toArray.foreach {
-      case '\\'                                                                       => text ++= "\\\\"
-      case ','                                                                        => text ++= "\\c"
-      case '|'                                                                        => text ++= "\\p"
-      case '\t'                                                                       => text ++= "\\t"
-      case '\n'                                                                       => text ++= "\\n"
-      case '\r'                                                                       => text ++= "\\r"
-      case lone if lone >= Character.MIN_SURROGATE && lone <= Character.MAX_SURROGATE => text ++= f"\\u$lone%04x"
-      case other => text.underlying.appendCodePoint(other)
+    var index = 0
+    while index < value.length && !needsEscape(value.charAt(index)) do index += 1
+    if index == value.length then value
+    else {
+      val text = new StringBuilder(value.length + 16)
+      text.underlying.append(value, 0, index)
+      while index < value.length do {
+        val char = value.charAt(index)
+        char match {
+          case '\\' => text ++= "\\\\"
+          case ','  => text ++= "\\c"
+          case '|'  => text ++= "\\p"
+          case '\t' => text ++= "\\t"
+          case '\n' => text ++= "\\n"
+          case '\r' => text ++= "\\r"
+          case high
+              if Character.isHighSurrogate(high) && index + 1 < value.length &&
+                Character.isLowSurrogate(value.charAt(index + 1)) =>
+            text += high
+            index += 1
+            text += value.charAt(index)
+          case lone if lone >= Character.MIN_SURROGATE && lone <= Character.MAX_SURROGATE =>
+            text ++= f"\\u${lone.toInt}%04x"
+          case other => text += other
+        }
+        index += 1
+      }
+      text.toString
     }
-    text.toString
+  }
+
+  private def needsEscape(char: Char): Boolean = char match {
+    case '\\' | ',' | '|' | '\t' | '\n' | '\r' => true
+    case _                                     => char >= Character.MIN_SURROGATE && char <= Character.MAX_SURROGATE
   }
 
   /** A text the format held whole. */
@@ -961,6 +983,12 @@ object Model {
   /** Writes the model to the file, which the analysis reads. */
   def write(model: Model, file: Path): Unit = {
     Files.createDirectories(file.getParent)
-    val _ = Files.writeString(file, model.lines.mkString("", "\n", "\n"), StandardCharsets.UTF_8)
+    val writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)
+    try
+      model.lines.foreach { line =>
+        writer.write(line)
+        writer.write('\n')
+      }
+    finally writer.close()
   }
 }

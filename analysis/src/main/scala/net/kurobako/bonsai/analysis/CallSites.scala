@@ -252,8 +252,10 @@ private[analysis] class CallSites(symbols: Symbols) {
           )
         ) {
           val position = application.sourcePos
-          val location = if (position.exists) s"${position.source.path}:${position.line + 1}" else "unknown"
-          val own      = if (constructed.exists) owner.isDefined && owner == key(callee) else enclosing(callee)
+          val location = if (position.exists)
+            s"${position.source.path}:${Lines.at(position.source, position.point) + 1}"
+          else "unknown"
+          val own = if (constructed.exists) owner.isDefined && owner == key(callee) else enclosing(callee)
           pending += Pending(callee, method, application.args, test, own, location)
         }
     }

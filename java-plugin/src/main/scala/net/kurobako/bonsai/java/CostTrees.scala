@@ -21,6 +21,10 @@ import scala.jdk.CollectionConverters.*
 object CostTrees {
   import Model.Cost.*
 
+  private val lineages = java.util.Collections.synchronizedMap(new java.util.WeakHashMap[TypeElement, Set[String]])
+
+  private val fixedFields = java.util.Collections.synchronizedMap(new java.util.WeakHashMap[Element, java.lang.Boolean])
+
   private val Standard = Vector("java.", "javax.", "jdk.", "sun.", "com.sun.", "scala.")
 
   private val Views        = Set("keySet", "values", "entrySet", "iterator", "listIterator", "descendingIterator")
@@ -152,15 +156,13 @@ object CostTrees {
     private var depth      = 0
     private var floor      = 0
 
-    private val lineages = mutable.Map.empty[TypeElement, Set[String]]
-
     private def lineage(element: TypeElement): Set[String] =
-      lineages.getOrElseUpdate(
-        element, {
-          val supers = (element.getSuperclass +: element.getInterfaces.asScala.toVector).flatMap(typeElement)
-          supers.foldLeft(Set(element.getQualifiedName.toString))(_ ++ lineage(_))
-        }
-      )
+      Option(lineages.get(element)).getOrElse {
+        val supers = (element.getSuperclass +: element.getInterfaces.asScala.toVector).flatMap(typeElement)
+        val found  = supers.foldLeft(Set(element.getQualifiedName.toString))(_ ++ lineage(_))
+        lineages.put(element, found)
+        found
+      }
 
     private def typeElement(tpe: TypeMirror): Option[TypeElement] = tpe match {
       case declared: DeclaredType =>
@@ -383,9 +385,17 @@ object CostTrees {
       case _: (IdentifierTree | MemberSelectTree) =>
         Option(elementOf(tree)).filter(_.getKind.isField).exists { found =>
           Lints.constant(found) &&
-          (found.asType.getKind == TypeKind.ARRAY || Option(trees.getTree(found)).exists {
-            case field: VariableTree => Option(field.getInitializer).exists(factory)
-            case _                   => false
+          (found.asType.getKind == TypeKind.ARRAY || {
+            val known = fixedFields.get(found)
+            if known != null then known.booleanValue
+            else {
+              val fixed = Option(trees.getTree(found)).exists {
+                case field: VariableTree => Option(field.getInitializer).exists(factory)
+                case _                   => false
+              }
+              fixedFields.put(found, fixed)
+              fixed
+            }
           })
         }
       case _ => false

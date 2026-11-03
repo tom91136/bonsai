@@ -12,9 +12,11 @@ private[analysis] object Outputs {
   def isGenerated(generated: Vector[PathMatcher], path: String): Boolean =
     generated.exists(_.matches(Path.of(path)))
 
+  /** The regular files under `directory` in path order, as the file system's own order depends on how it was written.
+    */
   def files(directory: Path): Vector[Path] =
     if (!Files.isDirectory(directory)) Vector.empty
-    else Using.resource(Files.walk(directory))(_.toList.asScala.toVector.filter(Files.isRegularFile(_)))
+    else Using.resource(Files.walk(directory))(_.toList.asScala.toVector.filter(Files.isRegularFile(_)).sorted)
 
   // Classes instantiated reflectively by ServiceLoader, the compiler plugin loader or sbt plugin discovery.
   def entryPoints(directory: Path): Vector[String] = {

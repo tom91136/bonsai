@@ -14,7 +14,12 @@ private[java] object Nullness {
   private val Boundary     = "NullableBoundary"
 
   def hasAnnotation(target: AnnotatedConstruct, name: String): Boolean =
-    target.getAnnotationMirrors.asScala.exists(annotation => annotationName(annotation) == name)
+    target.getAnnotationMirrors.asScala.exists(annotation =>
+      annotation.getAnnotationType.asElement match {
+        case owner: TypeElement => owner.getQualifiedName.contentEquals(name)
+        case _                  => name.isEmpty
+      }
+    )
 
   def hasSimpleName(target: AnnotatedConstruct, name: String): Boolean =
     target.getAnnotationMirrors.asScala.exists { annotation =>
@@ -22,12 +27,6 @@ private[java] object Nullness {
         case owner: TypeElement => owner.getSimpleName.contentEquals(name)
         case _                  => false
       }
-    }
-
-  private def annotationName(annotation: AnnotationMirror): String =
-    annotation.getAnnotationType.asElement match {
-      case owner: TypeElement => owner.getQualifiedName.toString
-      case _                  => ""
     }
 
   /** Whether a value of the type may be null: the type is annotated, or is a variable or a wildcard bounded by one. */
@@ -62,15 +61,35 @@ private[java] object Nullness {
   /** Whether the nearest annotation of the scope of the element marks it null-marked. A package marks its own types
     * only, not those of its subpackages, and a module marks all of its packages, which the enclosing elements reach.
     */
-  def marked(element: Element): Boolean = {
-    var current = element
-    while current != null do {
-      if hasSimpleName(current, Boundary) then return false
-      if hasAnnotation(current, NullMarked) then return true
-      if hasAnnotation(current, NullUnmarked) then return false
-      current = current.getEnclosingElement
+  def marked(element: Element): Boolean =
+    element != null && {
+      val known = markings.get(element)
+      if known != null then known.booleanValue
+      else {
+        val found = scope(element).getOrElse(marked(element.getEnclosingElement))
+        markings.put(element, found)
+        found
+      }
     }
-    false
+
+  private val markings = java.util.Collections.synchronizedMap(new java.util.WeakHashMap[Element, java.lang.Boolean])
+
+  /** Whether the element settles the marking of its code itself: a boundary and an unmarked scope do not mark it. */
+  private def scope(element: Element): Option[Boolean] = {
+    var boundary = false
+    var marked   = false
+    var unmarked = false
+    element.getAnnotationMirrors.forEach { annotation =>
+      annotation.getAnnotationType.asElement match {
+        case owner: TypeElement =>
+          if owner.getSimpleName.contentEquals(Boundary) then boundary = true
+          val name = owner.getQualifiedName
+          if name.contentEquals(NullMarked) then marked = true
+          if name.contentEquals(NullUnmarked) then unmarked = true
+        case _ => ()
+      }
+    }
+    if boundary then Some(false) else if marked then Some(true) else if unmarked then Some(false) else None
   }
 
   def hasBoundary(element: Element): Boolean = {

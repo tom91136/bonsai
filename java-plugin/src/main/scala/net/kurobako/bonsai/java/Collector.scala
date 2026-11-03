@@ -818,7 +818,9 @@ object Collector {
 
   /** The path of the file the node is defined in. */
   def source(compilation: CompilationUnitTree): String =
-    Option(compilation.getSourceFile).map(_.toUri.getPath).getOrElse("")
+    sources.computeIfAbsent(compilation, _ => Option(compilation.getSourceFile).map(_.toUri.getPath).getOrElse(""))
+
+  private val sources = java.util.Collections.synchronizedMap(new java.util.WeakHashMap[CompilationUnitTree, String])
 
   /** The line the node is defined on. */
   private def line(trees: Trees, compilation: CompilationUnitTree, node: Tree): Int = {

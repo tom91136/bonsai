@@ -494,6 +494,18 @@ class MembersSuite extends AnalysisSuite {
     )
   }
 
+  test("a grouped test-only finding sits at the first of the members whichever order they arrive in") {
+    val tests = Set("check.Suite")
+    val items = Vector("lib.Tools.c" -> 30, "lib.Tools.a" -> 10, "lib.Tools.b" -> 20).map((name, line) =>
+      member(name, tests).copy(line = line)
+    )
+    val lines = items.permutations.map { order =>
+      Members.findings(Members.Model(order, Vector.empty, Vector.empty), nodes, _ => true)
+        .collect { case finding if finding.rule == Finding.Rule.TestOnlyMember => finding.node.line }
+    }.toSet
+    assertEquals(lines, Set(Vector(10)))
+  }
+
   test("members used only by tests are test-only") {
     assertFinding(
       findings(

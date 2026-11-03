@@ -92,7 +92,7 @@ object Members {
       case (owner, several)    =>
         val members = several.map(_.detail.stripSuffix(" is referenced only from tests")).sorted
         Vector(
-          several.head.copy(detail =
+          several.minBy(finding => (finding.node.line, finding.detail)).copy(detail =
             s"${members.size} members of ${Finding.simple(owner)} are referenced only from tests: " +
               Finding.listed(members, Shown)
           )

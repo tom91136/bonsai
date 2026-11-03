@@ -248,7 +248,9 @@ private[analysis] class Collector(
       key(method).map {
         node =>
           val position = tree.sourcePos
-          node -> (if (position.exists) s"${position.source.path}:${position.line + 1}" else "unknown")
+          node ->
+            (if (position.exists) s"${position.source.path}:${Lines.at(position.source, position.point) + 1}"
+             else "unknown")
       }
     Purity.Model(
       effects.pointless.flatMap((method, callee, tree) =>

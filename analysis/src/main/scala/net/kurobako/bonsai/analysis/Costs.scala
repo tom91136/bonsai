@@ -127,7 +127,7 @@ private class Costs(
 
   private def line(tree: tpd.Tree): Int = {
     val position = tree.sourcePos
-    if (position.exists) position.line + 1 else 0
+    if (position.exists) Lines.at(position.source, position.point) + 1 else 0
   }
 
   private def argumentLists(application: tpd.Apply): List[tpd.Tree] = application.fun match {

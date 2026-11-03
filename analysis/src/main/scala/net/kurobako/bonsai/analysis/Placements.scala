@@ -175,7 +175,9 @@ private class Placements(resolver: Symbols)(using Context) extends tpd.TreeTrave
       symbol.paramSymss.flatten.find(_.isTerm).exists(_.info.typeSymbol.is(Flags.Opaque))
 
   private def extent(definition: tpd.MemberDef)(using Context): Int =
-    if (definition.span.exists) definition.sourcePos.endLine - definition.sourcePos.startLine + 1 else 0
+    if (definition.span.exists) Lines.at(definition.source, definition.span.end) -
+      Lines.at(definition.source, definition.span.start) + 1
+    else 0
 
   private def holds(name: String, symbol: Symbol, definition: tpd.MemberDef)(using Context): Unit = {
     current.foreach(from =>

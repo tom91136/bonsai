@@ -204,11 +204,13 @@ private[java] final class DataFlow(context: Context) {
 
   private def marked(element: Element): Boolean = Nullness.marked(element)
 
+  /** Whether the parameter is one of a lambda, which the method that holds the lambda does not list among its own. */
   private def lambdaParameter(element: Element): Boolean =
     element.getKind == ElementKind.PARAMETER &&
-      Option(context.trees.getPath(element)).exists(path =>
-        path.getParentPath != null && path.getParentPath.getLeaf.isInstanceOf[LambdaExpressionTree]
-      )
+      (element.getEnclosingElement match {
+        case method: ExecutableElement => !method.getParameters.asScala.exists(_ eq element)
+        case _                         => true
+      })
 
   /** The value a variable or member has by its declaration alone. */
   private def declared(element: Element): Value =

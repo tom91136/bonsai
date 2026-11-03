@@ -21,6 +21,7 @@ class Linter(trees: Trees, elements: Elements, types: Types, enabled: Set[String
   private val read          = mutable.Set.empty[CompilationUnitTree]
   private val registry      = new Registry(Linter.release(enabled))
   private val noinspections = mutable.Map.empty[CompilationUnitTree, Map[Int, Set[String]]]
+  private val active = Linter.byKind.view.mapValues(_.filter(lint => lint.enabledByDefault || enabled(lint.id))).toMap
 
   private def suppressed(compilation: CompilationUnitTree): Map[Int, Set[String]] =
     noinspections.getOrElseUpdate(compilation, Linter.noinspections(compilation))
@@ -39,7 +40,7 @@ class Linter(trees: Trees, elements: Elements, types: Types, enabled: Set[String
           trees,
           elements,
           types,
-          enabled,
+          active,
           compilation,
           new TreePath(compilation),
           declaration,
@@ -115,7 +116,7 @@ object Linter {
       try sf.getCharContent(true).toString
       catch { case _: Exception => "" }
     }.getOrElse("")
-    if (charContent.isEmpty) Map.empty
+    if (!charContent.contains("noinspection")) Map.empty
     else {
       val lineMap = compilation.getLineMap
       val result  = mutable.Map.empty[Int, mutable.Set[String]]
@@ -151,7 +152,7 @@ object Linter {
       trees: Trees,
       elements: Elements,
       types: Types,
-      enabled: Set[String],
+      lints: Map[Tree.Kind, Vector[Lint]],
       compilation: CompilationUnitTree,
       root: TreePath,
       declaration: ClassTree,
@@ -184,12 +185,16 @@ object Linter {
             if noinspections.isEmpty then Set.empty[String]
             else noinspections.getOrElse(Linter.line(trees, compilation, tree), Set.empty[String])
           val currentScope     = suppressions.headOption.getOrElse(Set.empty[String])
-          val activeSuppressed = currentScope ++ elementSuppressed ++ lineSuppressed
+          val activeSuppressed =
+            if elementSuppressed.isEmpty && lineSuppressed.isEmpty then currentScope
+            else currentScope ++ elementSuppressed ++ lineSuppressed
           suppressions.push(activeSuppressed)
 
-          val applicable = byKind.getOrElse(kind, Vector.empty).filter(lint =>
-            (lint.enabledByDefault || enabled(lint.id)) && !activeSuppressed("*") && !activeSuppressed(lint.id)
-          )
+          val candidates = lints.getOrElse(kind, Vector.empty)
+          val applicable =
+            if activeSuppressed.isEmpty then candidates
+            else if activeSuppressed("*") then Vector.empty
+            else candidates.filterNot(lint => activeSuppressed(lint.id))
           if applicable.nonEmpty then {
             val context = new Context(
               trees,
