@@ -36,7 +36,7 @@ class JavaCostsSuite extends AnalysisSuite {
       val outputs  = if (others.nonEmpty) Vector(Output("m", Output.Scope.Main, scalaOut)) else Vector.empty
       val manifest = Manifest(
         outputs,
-        javaOut +: classpath,
+        Map("m" -> (javaOut +: classpath)),
         Set.empty,
         sources = scalaFiles.map(Output("m", Output.Scope.Main, _)).toVector,
         models = Vector(Output("j", Output.Scope.Main, model))

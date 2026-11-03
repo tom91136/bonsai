@@ -52,19 +52,15 @@ class ScalacTest {
   }
 
   @Test
-  void semanticdbIsWrittenUnderTheOutputWithPathsRelativeToTheRoot() {
+  void semanticdbIsWrittenUnderTheOutput() {
     File output = root.resolve("target/classes").toFile();
 
-    assertEquals(
-      List.of(
-        "-Xsemanticdb",
-        "-sourceroot",
-        root.toFile().getAbsolutePath(),
-        "-semanticdb-target",
-        output.getAbsolutePath()
-      ),
-      Scalac.semanticdb(root.toFile(), output)
-    );
+    assertEquals(List.of("-Xsemanticdb", "-semanticdb-target", output.getAbsolutePath()), Scalac.semanticdb(output));
+  }
+
+  @Test
+  void sourcesArePathedFromTheRootOfTheBuild() {
+    assertEquals(List.of("-sourceroot", root.toFile().getAbsolutePath()), Scalac.sourceroot(root.toFile()));
   }
 
   @Test

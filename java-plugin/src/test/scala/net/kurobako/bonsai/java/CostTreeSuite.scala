@@ -203,6 +203,7 @@ class CostTreeSuite extends munit.FunSuite {
       |  void library(List<String> names) { names.stream().map(String::length).count(); names.forEach(System.out::println); }
       |  void stored(List<String> names) { java.util.function.Consumer<String> c = this::visit; c.accept(names.get(0)); }
       |  void supplied(List<String> names) { names.forEach(Objects.requireNonNull(items)::add); }
+      |  void arrays(List<String> names) { Object[] all = names.stream().toArray(List<?>[]::new); }
       |  static class Holder { Holder(String name) { } }
       |""".stripMargin))
     assertEquals(
@@ -224,6 +225,7 @@ class CostTreeSuite extends munit.FunSuite {
     assertEquals(found("demo.Service.library(Ljava/util/List;)V"), "{each $0} {each $0}")
     assertEquals(found("demo.Service.stored(Ljava/util/List;)V"), "")
     assertEquals(found("demo.Service.supplied(Ljava/util/List;)V"), "{each $0}")
+    assertEquals(found("demo.Service.arrays(Ljava/util/List;)V"), "{each $0}")
   }
 
   test("loops nest as they are written") {

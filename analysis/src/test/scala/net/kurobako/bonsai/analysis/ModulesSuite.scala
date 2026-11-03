@@ -27,7 +27,7 @@ class ModulesSuite extends munit.FunSuite {
     Files.writeString(application, s"module app.module { $requires }")
     val manifest = Manifest(
       Vector(Output("lib", Output.Scope.Main, libClasses), Output("app", Output.Scope.Main, appClasses)),
-      Vector.empty,
+      Map.empty,
       Set.empty,
       sources = Vector(
         Output("lib", Output.Scope.Main, library),
@@ -114,7 +114,7 @@ class ModulesSuite extends munit.FunSuite {
           Output("bridge", Output.Scope.Main, bridgeClasses),
           Output("app", Output.Scope.Main, appClasses)
         ),
-        Vector.empty,
+        Map.empty,
         Set.empty,
         sources = Vector(
           Output("lib", Output.Scope.Main, source("lib.module", "module lib.module { exports lib; }")),

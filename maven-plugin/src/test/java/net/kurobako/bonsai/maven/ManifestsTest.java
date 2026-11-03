@@ -25,15 +25,15 @@ class ManifestsTest {
 
   @Test
   void theManifestOfTheBuildIsTheFragmentsOfEveryModule() throws IOException {
-    fragment("a.tsv", "root\t/build", "output\ta\tmain\t/a/classes", "classpath\t/a/library.jar");
-    fragment("b.tsv", "root\t/build", "output\tb\tmain\t/b/classes", "classpath\t/b/library.jar");
+    fragment("a.tsv", "root\t/build", "output\ta\tmain\t/a/classes", "classpath\ta\t/a/library.jar");
+    fragment("b.tsv", "root\t/build", "output\tb\tmain\t/b/classes", "classpath\tb\t/b/library.jar");
 
     List<String> manifest = Analysis.merge(root, "/build");
 
     assertTrue(manifest.contains("output\ta\tmain\t/a/classes"), manifest.toString());
     assertTrue(manifest.contains("output\tb\tmain\t/b/classes"), manifest.toString());
-    assertTrue(manifest.contains("classpath\t/a/library.jar"), manifest.toString());
-    assertTrue(manifest.contains("classpath\t/b/library.jar"), manifest.toString());
+    assertTrue(manifest.contains("classpath\ta\t/a/library.jar"), manifest.toString());
+    assertTrue(manifest.contains("classpath\tb\t/b/library.jar"), manifest.toString());
   }
 
   @Test

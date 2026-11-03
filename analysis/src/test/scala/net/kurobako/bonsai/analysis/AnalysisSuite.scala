@@ -24,6 +24,8 @@ trait AnalysisSuite extends FunSuite {
   protected val classpath: Vector[Path] =
     sys.props("bonsai.analysis.classpath").split(File.pathSeparator).toVector.map(Path.of(_))
 
+  protected val classpaths: Map[String, Vector[Path]] = Map("m" -> classpath)
+
   /** Sources and resources are named by relative path; test sources see the main output. A module of `libraries`
     * publishes its main output for other builds to use, `dependencies` are compiled onto the classpath outside the
     * build, `absent` are compiled against but left off the analysed classpath, as a dependency a manifest misses is,
@@ -42,7 +44,8 @@ trait AnalysisSuite extends FunSuite {
       reflective: Vector[String] = Vector.empty,
       twins: Seq[Seq[(String, String)]] = Nil,
       hot: Vector[String] = Vector.empty,
-      bounded: Vector[Complexity.Bounded] = Vector.empty
+      bounded: Vector[Complexity.Bounded] = Vector.empty,
+      removed: Seq[String] = Nil
   ): Extraction.Result =
     Scratch.using("bonsai-") { directory =>
       val external =
@@ -51,6 +54,7 @@ trait AnalysisSuite extends FunSuite {
       val mainClasses = compile(directory.resolve("main"), main, external.toVector ++ missing)
       write(mainClasses, resources)
       val testClasses = compile(directory.resolve("test"), test, mainClasses +: (external.toVector ++ missing))
+      removed.foreach(name => Files.delete(directory.resolve("main").resolve(name)))
       def located(module: String, scope: Output.Scope, root: String, sources: Seq[(String, String)]) =
         sources.map((name, _) => Output(module, scope, directory.resolve(root).resolve(name))).toVector
       // A twin source named like a main one replaces it, as a source for one platform does.
@@ -68,9 +72,10 @@ trait AnalysisSuite extends FunSuite {
       // The twins come first, as a build may list them, so the analysis must not depend on the order.
       val outputs = platforms.map(_._1) ++
         Vector(Output("m", Output.Scope.Main, mainClasses), Output("m", Output.Scope.Test, testClasses))
+      val analysed = external.toVector ++ classpath
       val manifest = Manifest(
         outputs,
-        external.toVector ++ classpath,
+        outputs.map(_.module).distinct.map(_ -> analysed).toMap,
         libraries,
         sources = located("m", Output.Scope.Main, "main", main) ++ located("m", Output.Scope.Test, "test", test) ++
           platforms.flatMap(_._2),
@@ -95,7 +100,7 @@ trait AnalysisSuite extends FunSuite {
       val model   = directory.resolve("java-model.tsv")
       JavaModel.write(javac(files, classes, classpath), model)
       val manifest =
-        Manifest(Vector.empty, classpath, libraries, models = Vector(Output("j", Output.Scope.Main, model)))
+        Manifest(Vector.empty, classpaths, libraries, models = Vector(Output("j", Output.Scope.Main, model)))
       Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
     }
 
@@ -108,7 +113,7 @@ trait AnalysisSuite extends FunSuite {
     Scratch.using("bonsai-") { directory =>
       val file = directory.resolve("java-model.tsv")
       Files.writeString(file, model.mkString("", "\n", "\n")): Unit
-      val manifest = Manifest(Vector.empty, classpath, Set.empty, models = Vector(Output("j", scope, file)))
+      val manifest = Manifest(Vector.empty, classpaths, Set.empty, models = Vector(Output("j", scope, file)))
       Extraction.read(manifest, generated).fold(errors => fail(errors.mkString("\n")), identity)
     }
 
@@ -171,7 +176,7 @@ trait AnalysisSuite extends FunSuite {
     Files.writeString(path, content): Unit
   }
 
-  private def compile(directory: Path, sources: Seq[(String, String)], extra: Vector[Path]): Path = {
+  protected def compile(directory: Path, sources: Seq[(String, String)], extra: Vector[Path]): Path = {
     val output = Files.createDirectories(directory.resolve("classes"))
     write(directory, sources)
     val files     = sources.map((name, _) => directory.resolve(name).toString)

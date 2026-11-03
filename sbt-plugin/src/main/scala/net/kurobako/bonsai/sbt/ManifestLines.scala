@@ -14,7 +14,8 @@ object ManifestLines {
   def sources(project: String, scope: String, files: Seq[String]): Seq[String] =
     files.map(file => s"source\t$project\t$scope\t$file")
 
-  def classpath(entries: Seq[String]): Seq[String] = entries.map(entry => s"classpath\t$entry")
+  def classpath(project: String, entries: Seq[String]): Seq[String] =
+    entries.map(entry => s"classpath\t$project\t$entry")
 
   def options(project: String, flags: Seq[String]): Seq[String] = flags.map(flag => s"option\t$project\t$flag")
 

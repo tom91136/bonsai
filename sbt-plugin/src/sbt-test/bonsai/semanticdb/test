@@ -5,3 +5,7 @@
 # a changed source rewrites its semanticdb, through such a link
 $ copy-file changes/Main.scala src/main/scala/demo/Main.scala
 > compile
+# a link into the cache that the cache has since dropped is removed rather than read
+> danglingLink
+> compile
+> checkGone

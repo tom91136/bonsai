@@ -42,22 +42,27 @@ object Pipelines {
       case _                      => true
     }
 
-    /** The chains of collection calls in the body of `method`, each lifted with its lines in the source. */
+    /** The chains of collection calls in the body of `method`, each lifted with its lines in the source, which a source
+      * the reader cannot find has none of.
+      */
     def lifted(
         method: Symbol,
         name: String,
         node: String,
         suppressed: Set[String],
         body: tpd.Tree
-    ): Vector[Pipelines.Lifted] = lifter.chains(body, method, descend).map { found =>
-      Pipelines.Lifted(
-        name,
-        node,
-        found.chain,
-        found.ends.map(extent => found.file.offsetToLine(extent.start) + 1),
-        suppressed
-      )
-    }
+    ): Vector[Pipelines.Lifted] =
+      if (body.source.content().isEmpty) Vector.empty
+      else
+        lifter.chains(body, method, descend).map { found =>
+          Pipelines.Lifted(
+            name,
+            node,
+            found.chain,
+            found.ends.map(extent => found.file.offsetToLine(extent.start) + 1),
+            suppressed
+          )
+        }
   }
 
   private class Inferred(effects: Purity.Inference) extends lifting.Purity {

@@ -52,6 +52,7 @@ object Report {
   def apply(findings: Vector[Finding], nodes: Map[String, Node], options: Options): Vector[Line] = {
     // numbered over every finding, so hiding some does not renumber the others
     val sorted    = findings.sorted
+    val baselined = options.baseline.map(Finding.unnumbered)
     val numbering = sorted.foldLeft((Map.empty[String, Int], Vector.empty[(Finding, Int)])) {
       case ((seen, numbered), finding) =>
         val repeat = seen.getOrElse(finding.id, 0)
@@ -63,7 +64,7 @@ object Report {
             !suppressed(finding, nodes, Some(finding.node.name)) &&
             (options.info || finding.level != Finding.Level.Info) =>
         val id        = finding.rule.id
-        val escalated = !options.baseline(finding.key) &&
+        val escalated = !baselined(Finding.unnumbered(finding.key)) &&
           (finding.level match {
             case Finding.Level.Error   => !options.lenient(id)
             case Finding.Level.Warning => options.failing(id)

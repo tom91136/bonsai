@@ -667,6 +667,8 @@ object CostTrees {
 
     private def referenced(reference: MemberReferenceTree): Unit =
       elementOf(reference) match {
+        // `T[]::new` allocates an array, as `new T[n]` does, through a constructor javac makes up for it
+        case _ if reference.getQualifierExpression.isInstanceOf[ArrayTypeTree] =>
         case callee: ExecutableElement if !standard(callee) =>
           val qualifier = reference.getQualifierExpression
           val receiver  =

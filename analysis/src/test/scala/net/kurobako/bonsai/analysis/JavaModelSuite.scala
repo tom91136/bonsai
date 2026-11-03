@@ -26,7 +26,7 @@ class JavaModelSuite extends AnalysisSuite {
       Files.writeString(file, text): Unit
       val manifest = Manifest(
         Vector.empty,
-        classpath,
+        classpaths,
         libraries,
         models = Vector(Output("j", Output.Scope.Main, file))
       )
@@ -48,7 +48,7 @@ class JavaModelSuite extends AnalysisSuite {
       Files.writeString(file, model): Unit
       val manifest = Manifest(
         Vector(Output("m", Output.Scope.Main, classes)),
-        classpath,
+        classpaths,
         Set.empty,
         models = Vector(Output("j", Output.Scope.Main, file))
       )
@@ -175,7 +175,7 @@ class JavaModelSuite extends AnalysisSuite {
       outputs.zip(models).foreach((output, model) =>
         Files.writeString(output.path, (nodes ++ model._2).mkString("\n") + "\n")
       )
-      val manifest = Manifest(Vector.empty, classpath, Set.empty, models = outputs.toVector)
+      val manifest = Manifest(Vector.empty, classpaths, Set.empty, models = outputs.toVector)
       val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       Clones.findings(result.clones, result.graph.nodes)
     }
@@ -308,7 +308,7 @@ class JavaModelSuite extends AnalysisSuite {
       Files.writeString(file, "node\tonly-one-field\n"): Unit
       val manifest = Manifest(
         Vector.empty,
-        classpath,
+        classpaths,
         Set.empty,
         models = Vector(Output("j", Output.Scope.Main, file))
       )
@@ -528,7 +528,7 @@ class JavaModelSuite extends AnalysisSuite {
       outputs.zip(rows).foreach { case (output, (name, row)) =>
         Files.writeString(output.path, s"node\tdemo.$name\tdemo/$name.java\t4\ttrue\n$row\n"): Unit
       }
-      val manifest = Manifest(Vector.empty, classpath, Set.empty, models = outputs.toVector)
+      val manifest = Manifest(Vector.empty, classpaths, Set.empty, models = outputs.toVector)
       val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       val found    = Clones.findings(result.clones, result.graph.nodes)
       assert(found.isEmpty, found.mkString("\n"))

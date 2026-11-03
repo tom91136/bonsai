@@ -19,15 +19,17 @@ public final class Scalac {
   private Scalac() {
   }
 
-  /** The options that write the SemanticDB of the build under its output directory, with paths relative to the root. */
-  public static List<String> semanticdb(File root, File output) {
-    List<String> options = new ArrayList<>();
-    options.add("-Xsemanticdb");
-    options.add("-sourceroot");
-    options.add(root.getAbsolutePath());
-    options.add("-semanticdb-target");
-    options.add(output.getAbsolutePath());
-    return options;
+  /**
+   * The option that records the path of every source from the root of the build, as an sbt build does, so the paths of
+   * two modules stay apart and the tools that run from the root find the sources.
+   */
+  public static List<String> sourceroot(File root) {
+    return List.of("-sourceroot", root.getAbsolutePath());
+  }
+
+  /** The options that write the SemanticDB of the module under its output directory. */
+  public static List<String> semanticdb(File output) {
+    return List.of("-Xsemanticdb", "-semanticdb-target", output.getAbsolutePath());
   }
 
   /** The options the compiler plugin reads, for the mode. */

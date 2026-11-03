@@ -61,9 +61,10 @@ public class PrepareMojo extends BonsaiMojo {
     List<String> options = new ArrayList<>();
     options.add("-Xplugin:" + plugin.getAbsolutePath());
     options.addAll(Scalac.options(configuration, ids, mode));
+    options.addAll(Scalac.sourceroot(new File(session.getExecutionRootDirectory())));
     if (semanticdb) {
       // The rules read the SemanticDB the compiler writes, which the build keeps out of its published artifacts.
-      options.addAll(Scalac.semanticdb(project.getBasedir(), new File(project.getBuild().getOutputDirectory())));
+      options.addAll(Scalac.semanticdb(new File(project.getBuild().getOutputDirectory())));
     }
 
     Path work = work();

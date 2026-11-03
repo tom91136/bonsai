@@ -158,6 +158,12 @@ object Finding {
     if (values.size > limit) s"$shown, ${values.size - limit} more" else shown
   }
 
+  /** A key with the numbers of its detail left out, so a moved line or a changed count still matches the baseline. */
+  def unnumbered(key: String): String = key.split("\t", 3) match {
+    case Array(rule, name, detail) => s"$rule\t$name\t${Numbers.replaceAllIn(detail, "#")}"
+    case _                         => key
+  }
+
   /** The characters of a text the lines of the report and of the baseline cannot hold as they are, which are written as
     * their code.
     */
@@ -190,7 +196,7 @@ case class Finding(
       .map(byte => f"$byte%02x").mkString
   }
 
-  /** Identifies the finding across runs, independent of line numbers. */
+  /** Records the finding in a baseline, which matches it by `Finding.unnumbered`. */
   def key: String = s"${rule.id}\t${node.name}\t${Finding.escaped(detail)}"
 
   /** Whether suppressed rule ids, with `*` for every rule, cover this finding. */

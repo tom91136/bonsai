@@ -9,13 +9,13 @@ object Manifest {
   private def scopeOf(path: Path, index: Int, scope: String): Either[String, Output.Scope] =
     Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope")
 
-  /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <entry>`, `library <module>`,
+  /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <module> <entry>`, `library <module>`,
     * `platform <module>`, `option <module> <compiler option>`, `source <module> <scope> <file>`, `model <module>
     * <scope> <file>`, `root <directory>`, `text-exclude <glob>` and `text <rule index> <field> <value>` lines.
     */
   def read(path: Path): Either[String, Manifest] =
     Files.readAllLines(path).asScala.toVector.zipWithIndex.filter(_._1.nonEmpty)
-      .foldLeft[Either[String, Manifest]](Right(Manifest(Vector.empty, Vector.empty, Set.empty))) {
+      .foldLeft[Either[String, Manifest]](Right(Manifest(Vector.empty, Map.empty, Set.empty))) {
         case (manifest, (line, index)) =>
           manifest.flatMap { current =>
             line.split('\t').toList match {
@@ -23,8 +23,13 @@ object Manifest {
                 scopeOf(path, index, scope).map {
                   parsed => current.copy(outputs = current.outputs :+ Output(module, parsed, Path.of(location)))
                 }
-              case List("classpath", location) =>
-                Right(current.copy(classpath = current.classpath :+ Path.of(location)))
+              case List("classpath", module, location) =>
+                Right(current.copy(classpath =
+                  current.classpath.updated(
+                    module,
+                    current.classpath.getOrElse(module, Vector.empty) :+ Path.of(location)
+                  )
+                ))
               case List("library", module)        => Right(current.copy(libraries = current.libraries + module))
               case List("platform", module)       => Right(current.copy(platforms = current.platforms + module))
               case List("option", module, option) =>
@@ -55,16 +60,16 @@ object Manifest {
       }
 }
 
-/** Compiled outputs of a build and the external classpath needed to read them; the public API of `libraries`, modules
-  * other builds depend on, is used by those builds. `options` holds the compiler options of each module, `sources` the
-  * source files written by hand, and `root` the directory of the build, which reported paths are relative to.
-  * `platforms` are the Scala.js and Scala Native twins of JVM modules, which compile the shared sources again. `texts`
-  * holds the fields of each repository text rule by its index, and `textExclusions` the files no text rule reads.
-  * `models` holds the files the javac plugin collected the model of the Java code of each module in.
+/** Compiled outputs of a build and the external classpath of each module needed to read them; the public API of
+  * `libraries`, modules other builds depend on, is used by those builds. `options` holds the compiler options of each
+  * module, `sources` the source files written by hand, and `root` the directory of the build, which reported paths are
+  * relative to. `platforms` are the Scala.js and Scala Native twins of JVM modules, which compile the shared sources
+  * again. `texts` holds the fields of each repository text rule by its index, and `textExclusions` the files no text
+  * rule reads. `models` holds the files the javac plugin collected the model of the Java code of each module in.
   */
 case class Manifest(
     outputs: Vector[Output],
-    classpath: Vector[Path],
+    classpath: Map[String, Vector[Path]],
     libraries: Set[String],
     options: Map[String, Vector[String]] = Map.empty,
     sources: Vector[Output] = Vector.empty,
@@ -73,4 +78,9 @@ case class Manifest(
     texts: Map[Int, Map[String, Vector[String]]] = Map.empty,
     textExclusions: Vector[String] = Vector.empty,
     models: Vector[Output] = Vector.empty
-)
+) {
+
+  /** The entries of the classpaths of `modules`, in their order, each once. */
+  def classpathOf(modules: Seq[String]): Vector[Path] =
+    modules.flatMap(classpath.getOrElse(_, Vector.empty)).distinct.toVector
+}

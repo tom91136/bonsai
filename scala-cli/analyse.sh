@@ -23,7 +23,7 @@ mkdir -p "$(dirname "$manifest")"
     case "$entry" in
       */classes/main) printf 'output\t%s\tmain\t%s\n' "$name" "$entry" ;;
       */classes/test) printf 'output\t%s\ttest\t%s\n' "$name" "$entry" ;;
-      *) printf 'classpath\t%s\n' "$entry" ;;
+      *) printf 'classpath\t%s\t%s\n' "$name" "$entry" ;;
     esac
   done < <(tr ':' '\n' <<<"$classpath")
   if $library; then printf 'library\t%s\n' "$name"; fi

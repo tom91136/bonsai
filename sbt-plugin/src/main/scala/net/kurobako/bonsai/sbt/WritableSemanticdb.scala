@@ -8,7 +8,8 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 /** sbt restores cached outputs as links into its read-only cache, and the compiler rewrites the semanticdb of a changed
-  * source in place, through such a link; each link becomes a file of its own before compiling, so the write lands.
+  * source in place, through such a link; each link becomes a file of its own before compiling, so the write lands. A
+  * link whose entry the cache no longer holds is removed, as its source is gone or recompiles.
   */
 object WritableSemanticdb extends AutoPlugin {
   override def requires: Plugins      = plugins.JvmPlugin
@@ -25,8 +26,8 @@ object WritableSemanticdb extends AutoPlugin {
   private def copyLinks(root: Path): Unit =
     if (Files.isDirectory(root))
       Using.resource(Files.walk(root))(_.iterator.asScala.filter(Files.isSymbolicLink).toVector).foreach { link =>
-        val bytes = Files.readAllBytes(link)
+        val bytes = Option.when(Files.exists(link))(Files.readAllBytes(link))
         Files.delete(link)
-        Files.write(link, bytes)
+        bytes.foreach(Files.write(link, _))
       }
 }

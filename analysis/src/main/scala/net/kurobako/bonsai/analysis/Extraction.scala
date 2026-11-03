@@ -11,6 +11,8 @@ import dotty.tools.dotc.fromtasty.ReadTasty
 import dotty.tools.dotc.fromtasty.TASTYCompiler
 import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
@@ -73,7 +75,14 @@ object Extraction {
     thread.start()
     thread.join()
     result.future.value.fold(Left(Vector("extraction terminated abnormally")))(
-      _.fold(error => Left(Vector(s"extraction failed: $error")), identity)
+      _.fold(
+        error => {
+          val trace = StringWriter()
+          error.printStackTrace(PrintWriter(trace))
+          Left(Vector(s"extraction failed: $trace"))
+        },
+        identity
+      )
     )
   }
 
@@ -148,19 +157,23 @@ object Extraction {
           "-pagewidth",
           Int.MaxValue.toString,
           "-classpath",
-          Classpath.evicted(classpath).mkString(File.pathSeparator)
+          classpath.mkString(File.pathSeparator)
         ) ++ files.map(_.toString),
         StoreReporter()
       ).allErrors.map(_.message).distinct
-      val phase  = collector(java.costs)
-      val errors = reading(phase, tasty, manifest.classpath)
+      // The compiler resolves a class once per run, so the run reads the classpaths of the modules in turn, the JVM
+      // modules' first, and a class several platforms' copies of a library hold resolves to the first copy.
+      val modules = (primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted
+      val merged  = manifest.classpathOf(modules)
+      val phase   = collector(java.costs)
+      val errors  = reading(phase, tasty, merged)
       // The replaced copies resolve against their own twin first, and the rest of the build behind it.
-      val behind   = primary.map(_.path) ++ manifest.classpath
+      val behind   = primary.map(_.path) ++ merged
       val outputs  = manifest.outputs.groupMap(_.module)(_.path)
       val absorbed = replacements.flatMap { (module, files) =>
         val twin  = collector(Vector.empty)
         val own   = outputs.getOrElse(module, Vector.empty)
-        val found = reading(twin, files, own ++ behind)
+        val found = reading(twin, files, own ++ manifest.classpathOf(Seq(module)) ++ behind)
         phase.absorb(twin)
         found
       }

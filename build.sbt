@@ -437,14 +437,16 @@ lazy val root = project.in(file("."))
       }
       val classpath = Def.task {
         val converter = fileConverter.value
-        externalDependencyClasspath.value.map(entry => converter.toPath(entry.data).toString)
-      }.all(analysedOutputs).value.flatten.distinct
+        thisProject.value.id -> externalDependencyClasspath.value.map(entry => converter.toPath(entry.data).toString)
+      }.all(analysedOutputs).value.groupMap(_._1)(_._2).toSeq.flatMap((id, entries) =>
+        ManifestLines.classpath(id, entries.flatten.distinct)
+      )
       val options = Def.task((thisProject.value.id, scalacOptions.value)).all(analysedOutputs).value
         .flatMap((id, flags) => ManifestLines.options(id, flags)).distinct
       val manifest = target.value / "bonsai" / "manifest.tsv"
       IO.write(
         manifest,
-        ManifestLines.render(outputs ++ ManifestLines.classpath(classpath) ++ options ++ configured.text, base)
+        ManifestLines.render(outputs ++ classpath ++ options ++ configured.text, base)
       )
       manifest
     },

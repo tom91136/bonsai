@@ -46,7 +46,7 @@ class AnalysisTest {
     assertTrue(manifest.contains("source\tdemo\tmain\t" + source), manifest.toString());
     assertTrue(manifest.contains("source\tdemo\ttest\t" + testSource), manifest.toString());
     assertTrue(manifest.contains("option\tdemo\t-Werror"), manifest.toString());
-    assertTrue(manifest.contains("classpath\t/repo/library.jar"), manifest.toString());
+    assertTrue(manifest.contains("classpath\tdemo\t/repo/library.jar"), manifest.toString());
   }
 
   @Test

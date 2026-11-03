@@ -36,7 +36,7 @@ Criteria by step:
 
 ## Current state
 
-- `Extraction` wires the phases: it reads the TASTy of every build output through `TASTYCompiler` and merges the model the javac plugin collects for Java code into one `Graph`. Its `Collector` composes `Symbols` (the node registry), `CallSites`, `Reads`, `Dispatch` and `StructureObserver` (the structure rules' state); the `References` traversal feeds those components directly and the rest of `Collector` through `Recorder`. `JavaConversion` turns the javac model into graph facts, and `Classpath` evicts older copies of a library from the analysis classpath by jar manifest identity.
+- `Extraction` wires the phases: it reads the TASTy of every build output through `TASTYCompiler` and merges the model the javac plugin collects for Java code into one `Graph`. Its `Collector` composes `Symbols` (the node registry), `CallSites`, `Reads`, `Dispatch` and `StructureObserver` (the structure rules' state); the `References` traversal feeds those components directly and the rest of `Collector` through `Recorder`. `JavaConversion` turns the javac model into graph facts.
 - The manifest is the analysis's only input. sbt writes it through `ManifestLines` (sbt-plugin), which the whole-build manifest in `build.sbt` shares; Maven writes it in `Analysis.manifest`. Both read `.bonsai.conf` through the `configuration` module, Maven by forking the analysis jar's `Configure` entry point. A new manifest line, such as `jdk <home>`, is added in those two writers and in `analysis/Manifest.scala`.
 - Roots are main methods, natives, `META-INF/services`, `plugin.properties`, sbt autoplugins and the exported API of library modules.
 - A string literal naming a build type makes it a reflective root (`qualifiedUses`), as do `--reflective` globs. The javac plugin records `Class.forName` with a constant argument (`Collector.forName`).
@@ -62,7 +62,7 @@ All of these pass on JDK 25 with sbt 2.0.10 and Maven 3.9; the Maven plugin buil
 
 1. Every result assumes an open world. `implementations` returns `None` when an override lies outside the build. With the whole classpath known, that set is finite.
 2. `Graph` nodes are types with their companions merged, so liveness is per type. `Members` records the users of a member but not whether those users are reachable, so a method called only from a dead method of a live type counts as used.
-3. Dependencies are opaque. `manifest.classpath` only resolves symbols.
+3. Dependencies are opaque. The classpaths of `manifest.classpath`, one per module, only resolve symbols.
 4. Dynamic sites are recorded but not classified by whether their targets can be known.
 5. `Megamorphic` cannot see effect code. A site counts only inside `while` or a collection traversal lambda, and only build classes count as implementations, so lambdas and library classes do not.
 6. `Purity` reads TASTy only. A Java-only build gets `Purity.Model.empty`, and a call into Java library code is unknown unless an axiom covers it, which is never taken for pure.

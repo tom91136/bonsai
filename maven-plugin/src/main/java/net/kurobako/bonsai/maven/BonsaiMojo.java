@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.IntPredicate;
 
 /**
  * The settings the bonsai tools take, which the goals of this plugin share.
@@ -313,6 +314,12 @@ public abstract class BonsaiMojo extends AbstractMojo {
 
   /** Runs the command, and fails the build when it does. */
   protected void run(String tool, List<String> command, File directory) throws MojoExecutionException {
+    run(tool, command, directory, code -> false);
+  }
+
+  /** Runs the command, and fails the build when it fails with a code other than the ones that only report findings. */
+  protected void run(String tool, List<String> command, File directory, IntPredicate findings)
+    throws MojoExecutionException {
     getLog().info("bonsai: " + String.join(" ", command));
     ProcessBuilder builder = new ProcessBuilder(command);
     if (directory != null) {
@@ -326,7 +333,9 @@ public abstract class BonsaiMojo extends AbstractMojo {
       for (String line : output.split("\n")) {
         getLog().info(line);
       }
-      if (code != 0) {
+      if (code != 0 && findings.test(code)) {
+        getLog().warn("bonsai: " + tool + " report findings");
+      } else if (code != 0) {
         throw new MojoExecutionException("bonsai: " + tool + " failed with " + code);
       }
     } catch (IOException error) {

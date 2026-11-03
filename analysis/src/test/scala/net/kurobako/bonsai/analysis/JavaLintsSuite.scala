@@ -161,7 +161,7 @@ class JavaLintsSuite extends AnalysisSuite {
       ): Unit
       val manifest = Manifest(
         Vector(Output("m", Output.Scope.Main, classes)),
-        classpath,
+        classpaths,
         Set.empty,
         models = Vector(Output("j", Output.Scope.Main, file))
       )

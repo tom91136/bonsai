@@ -13,8 +13,8 @@ import java.util.List;
 /**
  * Runs the scalafix rules, which read the SemanticDB the compiler writes.
  *
- * <p>The rules read the SemanticDB of a source at the path the source has from the directory of the module, which is
- * where the compiler writes it ({@link Scalac}), so the rules run from that directory too.
+ * <p>The rules read the SemanticDB of a source at the path the source has from the root of the build, which is where
+ * the compiler writes it ({@link Scalac}), so the rules run from the root too.
  */
 @Mojo(
   name = "scalafix",
@@ -23,6 +23,10 @@ import java.util.List;
   requiresDependencyResolution = ResolutionScope.TEST
 )
 public class ScalafixMojo extends BonsaiMojo {
+
+  /** The exit codes of scalafix for a source that breaks a rule, and for one that differs from the fix of a rule. */
+  private static final int LINTER_ERROR = 64;
+  private static final int TEST_ERROR = 32;
 
   @Override
   public void execute() throws MojoExecutionException {
@@ -36,7 +40,7 @@ public class ScalafixMojo extends BonsaiMojo {
     Path file = work.resolve("scalafix.conf");
     write(file, List.of(Scalafix.configuration(configuration, ids(tools, plugin, rules))));
 
-    Path root = project.getBasedir().toPath();
+    Path root = Path.of(session.getExecutionRootDirectory());
     List<Path> sources = sources(project.getCompileSourceRoots());
     sources.addAll(sources(project.getTestCompileSourceRoots()));
     List<String> files = new ArrayList<>();
@@ -66,6 +70,7 @@ public class ScalafixMojo extends BonsaiMojo {
     command.add(String.join(java.io.File.pathSeparator, classpath));
     // `--files` takes a single path, so repeating it would leave all but one source of the module unchecked
     command.addAll(files);
-    run("the scalafix rules", command, root.toFile());
+    boolean dev = mode().equals("dev");
+    run("the scalafix rules", command, root.toFile(), code -> dev && (code & ~(LINTER_ERROR | TEST_ERROR)) == 0);
   }
 }

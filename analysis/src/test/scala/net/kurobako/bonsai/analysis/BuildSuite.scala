@@ -40,10 +40,10 @@ class BuildSuite extends FunSuite {
         root,
         "complete.tsv",
         s"output\tcore\tmain\t${root.resolve("classes")}\n" +
-          s"classpath\t${root.resolve("lib.jar")}\nlibrary\tcore\nroot\t$root\n"
+          s"classpath\tcore\t${root.resolve("lib.jar")}\nlibrary\tcore\nroot\t$root\n"
       )
       val read = Manifest.read(complete)
-      assertEquals(read.map(_.classpath), Right(Vector(root.resolve("lib.jar"))))
+      assertEquals(read.map(_.classpath), Right(Map("core" -> Vector(root.resolve("lib.jar")))))
       assertEquals(read.map(_.libraries), Right(Set("core")))
       assertEquals(read.map(_.root), Right(Some(root)))
       val scoped  = write(root, "scoped.tsv", "output\tcore\tclasses\t/x\n")
@@ -55,7 +55,7 @@ class BuildSuite extends FunSuite {
   test("modules without fatal warnings are reported") {
     val manifest = Manifest(
       Vector.empty,
-      Vector.empty,
+      Map.empty,
       Set.empty,
       options = Map(
         "core"   -> Vector("-Werror"),
@@ -83,7 +83,7 @@ class BuildSuite extends FunSuite {
       val testCopy = write(root, "api/src/test/scalajs/Mixed.scala", "object Mixed")
       val manifest = Manifest(
         Vector.empty,
-        Vector.empty,
+        Map.empty,
         Set.empty,
         sources = Vector(jvm, native, js, shared).flatMap(path =>
           Vector(Output("api", Output.Scope.Main, path), Output("api-native", Output.Scope.Main, path))

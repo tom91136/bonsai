@@ -381,14 +381,11 @@ object BonsaiPlugin extends AutoPlugin {
     val testNames      = tests.map(_.name).toSet + Test.name
     val configurations = Compile +: Test +: tests
     val analysed       = ScopeFilter(inProjects(enabled*), inConfigurations(configurations*))
-    // The JVM projects' libraries come first, so they decide where a platform's library has the same classes.
-    val jvmLibraries      = ScopeFilter(inProjects(jvm*), inConfigurations(configurations*))
-    val platformLibraries = ScopeFilter(inProjects(twins*), inConfigurations(configurations*))
-    val fixtures          = Fixtures.fixtures(buildStructure.value)
+    val fixtures       = Fixtures.fixtures(buildStructure.value)
     // The projects an analysed project depends on, analysed or not, are read from the classpath.
     val external = Def.task {
       val converter = fileConverter.value
-      (externalDependencyClasspath.value ++ internalDependencyClasspath.value).map(entry =>
+      thisProject.value.id -> (externalDependencyClasspath.value ++ internalDependencyClasspath.value).map(entry =>
         converter.toPath(entry.data).toString
       )
     }
@@ -412,11 +409,13 @@ object BonsaiPlugin extends AutoPlugin {
         ManifestLines.outputs(entry.project, entry.scope, entry.classes, entry.library)
       )
       val analysedOutputs = kept.map(_.classes).toSet
-      val libraries       = (external.all(jvmLibraries).value ++ external.all(platformLibraries).value).flatten.distinct
-        .filterNot(analysedOutputs)
-      val log       = streams.value.log
-      val classpath = ManifestLines.classpath(
-        libraries ++ javalibInterface(libraries, dependencyResolution.value, target.value, log)
+      val libraries       = external.all(analysed).value.groupMap(_._1)(_._2).toSeq.sortBy(_._1).map {
+        (id, entries) => id -> entries.flatten.distinct.filterNot(analysedOutputs)
+      }
+      val log        = streams.value.log
+      val resolution = dependencyResolution.value
+      val classpath  = libraries.flatMap((id, entries) =>
+        ManifestLines.classpath(id, entries ++ javalibInterface(entries, resolution, target.value, log))
       )
       val platform        = platforms.toSeq.sorted.map(id => s"platform\t$id")
       val compilerOptions = Def.task {

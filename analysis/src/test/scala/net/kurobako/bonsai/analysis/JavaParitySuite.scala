@@ -135,7 +135,7 @@ class JavaParitySuite extends AnalysisSuite {
       Files.writeString(file, service().mkString("", "\n", "\n")): Unit
       val manifest = Manifest(
         Vector(Output("m", Output.Scope.Main, classes)),
-        classpath,
+        classpaths,
         Set.empty,
         models = Vector(Output("j", Output.Scope.Main, file))
       )

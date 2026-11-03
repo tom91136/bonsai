@@ -1,7 +1,5 @@
 package net.kurobako.bonsai.analysis
 
-import java.nio.file.Path
-
 class LivenessSuite extends AnalysisSuite {
   private def findings(
       main: Seq[(String, String)],
@@ -228,15 +226,5 @@ class LivenessSuite extends AnalysisSuite {
       Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
     assertEquals(found.filter(_.node.generated), Vector.empty)
     assertFinding(found, "unused", "Helper is unreachable from every entry point")
-  }
-
-  test("the newest version of each repository artifact wins on the merged classpath") {
-    val old    = Path.of("/cache/org/scala-lang/scala-library/2.13.16/scala-library-2.13.16.jar")
-    val newest = Path.of("/cache/org/scala-lang/scala-library/3.9.0/scala-library-3.9.0.jar")
-    val other  = Path.of("/cache/org/scalameta/munit_3/1.3.6/munit_3-1.3.6.jar")
-    val output = Path.of("/build/core/classes")
-    assertEquals(Classpath.evicted(Vector(old, other, newest, output)), Vector(other, newest, output))
-    val stamped = Path.of("/cache/org/example/tool/202508271544/tool-202508271544.jar")
-    assertEquals(Classpath.evicted(Vector(stamped)), Vector(stamped))
   }
 }

@@ -5,9 +5,11 @@ import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
 import java.util.jar.Manifest as JarManifest
 import net.kurobako.bonsai.testing.Scratch
+import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 class ExtractionSuite extends AnalysisSuite {
@@ -26,7 +28,7 @@ class ExtractionSuite extends AnalysisSuite {
       val bytes = Files.readAllBytes(tasty)
       Files.write(tasty, bytes.patch(bytes.length - 24, Array.fill(12)(Byte.MaxValue), 12)): Unit
       def brief(lines: Vector[String]) = lines.map(_.takeWhile(_ != ':'))
-      Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, classes)), classpath, Set.empty)).fold(
+      Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, classes)), classpaths, Set.empty)).fold(
         problems => Left(brief(problems)),
         result => Right(result.graph.nodes.keySet.toVector.sorted ++ brief(result.problems))
       )
@@ -40,32 +42,42 @@ class ExtractionSuite extends AnalysisSuite {
     )
   }
 
-  test("repository artifact versions compare numerically, part by part") {
-    val older = Path.of("/cache/org/example/tool/1.9.0/tool-1.9.0.jar")
-    val newer = Path.of("/cache/org/example/tool/1.10.0/tool-1.10.0.jar")
-    assertEquals(Classpath.evicted(Vector(newer, older)), Vector(newer))
-  }
-
-  test("eviction identifies a jar outside a repository layout by its manifest") {
-    val directory                          = Scratch.directory("bonsai-")
-    def jar(path: String, version: String) = {
-      val manifest = JarManifest()
-      Seq(
-        "Manifest-Version"         -> "1.0",
-        "Implementation-Vendor-Id" -> "org.scala-lang",
-        "Implementation-Title"     -> "scala-library-bootstrapped",
-        "Implementation-Version"   -> version
-      ).foreach(manifest.getMainAttributes.putValue(_, _))
-      val file = directory.resolve(path)
-      Files.createDirectories(file.getParent)
-      Using.resource(JarOutputStream(Files.newOutputStream(file), manifest))(_ => ())
-      file
+  test("modules whose classpaths hold different jars of one artifact each resolve their own") {
+    Scratch.using("bonsai-") { directory =>
+      def library(platform: String, name: String): Path = {
+        val classes = compile(
+          directory.resolve(platform),
+          Seq(s"$name.scala" -> s"package lib\nobject $name { def apply(): Int = 1 }"),
+          Vector.empty
+        )
+        val manifest = JarManifest()
+        Seq(
+          "Manifest-Version"         -> "1.0",
+          "Implementation-Vendor-Id" -> "org.example",
+          "Implementation-Title"     -> "lib",
+          "Implementation-Version"   -> "1.0"
+        ).foreach(manifest.getMainAttributes.putValue(_, _))
+        val jar = directory.resolve(platform).resolve(s"lib_${platform}_3-1.0.jar")
+        Using.resource(JarOutputStream(Files.newOutputStream(jar), manifest)) { out =>
+          Using.resource(Files.walk(classes))(_.iterator.asScala.filter(Files.isRegularFile(_)).foreach { entry =>
+            out.putNextEntry(JarEntry(classes.relativize(entry).toString))
+            out.write(Files.readAllBytes(entry))
+            out.closeEntry()
+          })
+        }
+        jar
+      }
+      val libraries = Map("jvm" -> library("jvm", "Jvm"), "native" -> library("native", "Native"))
+      val outputs   = libraries.toVector.map { (module, jar) =>
+        val name    = module.capitalize
+        val sources = Seq("Use.scala" -> s"object Use$name { val value = lib.$name() }")
+        Output(module, Output.Scope.Main, compile(directory.resolve(s"$module-use"), sources, Vector(jar)))
+      }
+      val manifest = Manifest(outputs, libraries.view.mapValues(_ +: classpath).toMap, Set.empty)
+      val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      assertEquals(result.problems, Vector.empty)
+      assertEquals(result.graph.nodes.keySet.count(node => node.contains("UseJvm") || node.contains("UseNative")), 2)
     }
-    val boot  = jar("boot/scala-3.8.4/lib/scala-library.jar", "3.8.4")
-    val rules = jar("cache/org/scala-lang/scala-library/3.9.0/scala-library-3.9.0.jar", "3.9.0")
-    val rest  = jar("cache/org/scala-lang/scala-library/3.10.0/scala-library-3.10.0.jar", "3.10.0")
-    for order <- Seq(Vector(boot, rules, rest), Vector(rest, boot, rules), Vector(rules, rest, boot))
-    do assertEquals(Classpath.evicted(order), Vector(rest))
   }
 
   test("megamorphic sites list implementations by simple name unless two collide, count vals, and skip universals") {
@@ -409,7 +421,7 @@ class ExtractionSuite extends AnalysisSuite {
 
   test("an output directory with no TASTy is an empty build rather than a failure") {
     Scratch.using("bonsai-") { directory =>
-      val result = Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, directory)), classpath, Set.empty))
+      val result = Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, directory)), classpaths, Set.empty))
       assertEquals(result.map(_.graph.nodes.isEmpty), Right(true))
       assertEquals(result.map(_.problems), Right(Vector.empty[String]))
     }
@@ -418,7 +430,7 @@ class ExtractionSuite extends AnalysisSuite {
   test("an output holding a file that is not TASTy fails the read rather than throwing") {
     Scratch.using("bonsai-") { directory =>
       Files.writeString(directory.resolve("Junk.tasty"), "not tasty"): Unit
-      assert(Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, directory)), classpath, Set.empty)).isLeft)
+      assert(Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, directory)), classpaths, Set.empty)).isLeft)
     }
   }
 }

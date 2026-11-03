@@ -148,6 +148,26 @@ class ReportSuite extends AnalysisSuite {
     assertEquals(first.id, other.id)
   }
 
+  test("a baseline keeps a finding whose lines moved or whose counts changed, and not one with other words") {
+    val node = Node(
+      "lib.Tools",
+      "core",
+      Output.Scope.Main,
+      "src/Tools.scala",
+      12,
+      generated = false,
+      exported = false,
+      outer = None
+    )
+    val recorded = Finding(Finding.Rule.DuplicateCode, node, "2 copies of 5 lines (84 nodes): A.scala:10-14, B.scala:3-7")
+    val moved    = recorded.copy(detail = "2 copies of 5 lines (68 nodes): A.scala:30-34, B.scala:23-27")
+    val other    = recorded.copy(detail = "2 copies of 5 lines (68 nodes): A.scala:30-34, C.scala:23-27")
+    val options  = defaults.copy(failing = Set("duplicate-code"), baseline = Set(recorded.key))
+    def levels(finding: Finding) = Report(Vector(finding), Map(node.name -> node), options).map(_.level)
+    assertEquals(levels(moved), Vector("warning"))
+    assertEquals(levels(other), Vector("error"))
+  }
+
   test("baselines round trip through their text form") {
     val found = lines(defaults)
     assertEquals(Report.keys(Report.write(found)), found.map(_.finding.key).toSet)
