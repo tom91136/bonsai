@@ -1,5 +1,8 @@
 package net.kurobako.bonsai.lifting
 
+import dotty.tools.dotc.ast.tpd
+import dotty.tools.dotc.core.Contexts.Context
+import dotty.tools.dotc.core.Symbols.Symbol
 import munit.FunSuite
 import net.kurobako.bonsai.collections.*
 import scala.io.Source
@@ -7,6 +10,11 @@ import scala.io.Source
 class LifterSuite extends FunSuite {
   private val compiled = Compiled(Source.fromResource("ChainLifting.txt").mkString)
   import compiled.given
+
+  private object Always extends Purity {
+    def lambda(owner: Symbol, definition: tpd.DefDef)(using Context): Boolean = true
+    def method(symbol: Symbol)(using Context): Boolean                        = true
+  }
 
   private def steps(name: String) = compiled.lifted(name).chain.steps
 
@@ -446,14 +454,7 @@ class LifterSuite extends FunSuite {
 
   test("purity is a parameter of the lifter") {
     val owner  = compiled.definitionTree("parallel").symbol
-    val always = new Purity {
-      def lambda(owner: dotty.tools.dotc.core.Symbols.Symbol, definition: dotty.tools.dotc.ast.tpd.DefDef)(using
-          dotty.tools.dotc.core.Contexts.Context
-      ): Boolean = true
-      def method(symbol: dotty.tools.dotc.core.Symbols.Symbol)(using dotty.tools.dotc.core.Contexts.Context): Boolean =
-        true
-    }
-    val lifted = compiled.lifter(always).chains(compiled.definition("impureCalls"), owner).head
+    val lifted = compiled.lifter(Always).chains(compiled.definition("impureCalls"), owner).head
     assert(lifted.chain.steps.flatMap(_.args).forall(_.pure))
   }
 

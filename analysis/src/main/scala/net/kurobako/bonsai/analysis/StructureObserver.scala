@@ -70,7 +70,8 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
   private val extents    = mutable.Map.empty[String, (Int, Int)]
   private val named      = mutable.ArrayBuffer.empty[(String, String, String, String, Node)]
   private val typed      = mutable.ArrayBuffer.empty[(String, Node)]
-  private var model      = Structures.Model.empty
+  // Built once every class is declared, when the phase finishes.
+  private var model = Structures.Model.empty // scalafix:ok DisableSyntax.var
 
   /** The strings naming `Owner.member`, as text, package path, owner, member and the node holding the string. */
   def literals: Iterable[(String, String, String, String, Node)] = named

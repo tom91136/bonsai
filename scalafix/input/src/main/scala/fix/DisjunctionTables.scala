@@ -11,6 +11,7 @@ object DisjunctionTables {
   def pair(left: Int, right: String): Boolean = left > right.length
   def holds(flag: Boolean): Boolean = flag
   def check(value: String): Boolean = value.nonEmpty
+  def wrap(value: Int): String = value.toString
 
   object Kind { val A = 1; val B = 2; val C = 3; val D = 4; val E = 5; val F = 6 }
 
@@ -101,4 +102,8 @@ object DisjunctionTables {
   def interrupted(other: Boolean): Boolean = keyword("if") || keyword("else") || other || keyword("for")
 
   def shortCalls(): Boolean = (keyword("if") || keyword("else")) && keyword("for")
+
+  def nullArgument(): Boolean = keyword(null) || keyword("if") || keyword("else") || keyword("for")
+
+  def nestedArgument(): Boolean = check(wrap(1)) || check(wrap(2)) || check(wrap(3)) || check(wrap(4))// assert: DisjunctionTables.repeated-call-disjunction
 }

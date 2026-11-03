@@ -25,51 +25,13 @@ private class RoundTrips(checks: Checks)(using Context) {
   private val MinimumParts = 3
 
   def run(tree: tpd.Tree): Unit = {
-    val renders = mutable.ListBuffer.empty[Render]
-    val parses  = mutable.ListBuffer.empty[Parse]
-    val values  = mutable.Map.empty[Symbol, tpd.Tree]
-    val origins = mutable.Map.empty[Symbol, tpd.Tree]
-    val scopes  = mutable.Stack.empty[Symbol]
-    new tpd.TreeTraverser {
-      def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
-        case method: tpd.DefDef if !method.symbol.isAnonymousFunction =>
-          scopes.push(method.symbol)
-          try traverseChildren(tree)
-          finally scopes.pop(): Unit
-        case value: tpd.ValDef =>
-          if (value.symbol.exists && !value.rhs.isEmpty) values(value.symbol) = value.rhs
-          traverseChildren(tree)
-        case application @ tpd.Apply(function, arguments) =>
-          Calls.selected(function).foreach { select =>
-            arguments.foreach(argument =>
-              Calls.lambda(argument).foreach(_.termParamss.flatten.foreach(parameter =>
-                origins(parameter.symbol) = select.qualifier
-              ))
-            )
-          }
-          interpolation(application, "s").foreach(parts => renders += Render(scope, parts, application))
-          traverseChildren(tree)
-        case matched: tpd.Match =>
-          matched.cases.foreach(_.pat.foreachSubTree {
-            case pattern: tpd.UnApply =>
-              extractor(pattern).foreach(parts =>
-                parses += Parse(scope, parts, pattern, origin(matched.selector))
-              )
-            case _ => ()
-          })
-          traverseChildren(tree)
-        case _ => traverseChildren(tree)
-      }
-      private def scope: Symbol                        = scopes.headOption.getOrElse(ctx.owner)
-      private def origin(selector: tpd.Tree): tpd.Tree = selector match {
-        case reference: tpd.Ident => origins.getOrElse(reference.symbol, selector)
-        case _                    => selector
-      }
-    }.traverse(tree)
-    parses.foreach { parse =>
+    val traversal = Traversal()
+    traversal.traverse(tree)
+    traversal.parses.foreach { parse =>
       if (parse.parts.size >= MinimumParts && parse.parts.exists(_.nonEmpty))
-        renders.find(render =>
-          render.scope == parse.scope && render.parts == parse.parts && flows(render.tree, parse.source, values)
+        traversal.renders.find(render =>
+          render.scope == parse.scope && render.parts == parse.parts &&
+            flows(render.tree, parse.source, traversal.values)
         ).foreach(_ =>
           checks(
             Check.StringRoundTrip,
@@ -77,6 +39,48 @@ private class RoundTrips(checks: Checks)(using Context) {
             parse.tree.srcPos
           )
         )
+    }
+  }
+
+  private class Traversal extends tpd.TreeTraverser {
+    val renders: mutable.ListBuffer[Render]           = mutable.ListBuffer.empty[Render]
+    val parses: mutable.ListBuffer[Parse]             = mutable.ListBuffer.empty[Parse]
+    val values: mutable.Map[Symbol, tpd.Tree]         = mutable.Map.empty[Symbol, tpd.Tree]
+    private val origins                               = mutable.Map.empty[Symbol, tpd.Tree]
+    private val scopes                                = mutable.Stack.empty[Symbol]
+    def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
+      case method: tpd.DefDef if !method.symbol.isAnonymousFunction =>
+        scopes.push(method.symbol)
+        try traverseChildren(tree)
+        finally scopes.pop(): Unit
+      case value: tpd.ValDef =>
+        if (value.symbol.exists && !value.rhs.isEmpty) values(value.symbol) = value.rhs
+        traverseChildren(tree)
+      case application @ tpd.Apply(function, arguments) =>
+        Calls.selected(function).foreach { select =>
+          arguments.foreach(argument =>
+            Calls.lambda(argument).foreach(_.termParamss.flatten.foreach(parameter =>
+              origins(parameter.symbol) = select.qualifier
+            ))
+          )
+        }
+        interpolation(application, "s").foreach(parts => renders += Render(scope, parts, application))
+        traverseChildren(tree)
+      case matched: tpd.Match =>
+        matched.cases.foreach(_.pat.foreachSubTree {
+          case pattern: tpd.UnApply =>
+            extractor(pattern).foreach(parts =>
+              parses += Parse(scope, parts, pattern, origin(matched.selector))
+            )
+          case _ => ()
+        })
+        traverseChildren(tree)
+      case _ => traverseChildren(tree)
+    }
+    private def scope: Symbol                        = scopes.headOption.getOrElse(ctx.owner)
+    private def origin(selector: tpd.Tree): tpd.Tree = selector match {
+      case reference: tpd.Ident => origins.getOrElse(reference.symbol, selector)
+      case _                    => selector
     }
   }
 

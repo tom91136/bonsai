@@ -29,8 +29,9 @@ private[analysis] class References(components: Components, fragments: Fragments)
   private val imports   = mutable.Stack(mutable.Set.empty[String])
   private val methodsOf = mutable.HashMap.empty[Symbol, Map[String, List[Symbol]]]
   private val parents   = mutable.Set.empty[tpd.Tree]
-  private var parent    = false
-  private val types     = TypeReferences { symbol =>
+  // Read by the callback of `types` while it traverses the type of one tree.
+  private var parent = false // scalafix:ok DisableSyntax.var
+  private val types  = TypeReferences { symbol =>
     symbols.refer(owner, symbol)
     read(symbol)
     if (!parent) dispatching.asType(symbol)

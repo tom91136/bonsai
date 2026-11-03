@@ -2,6 +2,7 @@ package net.kurobako.bonsai.analysis
 
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import munit.FunSuite
 
 class ParallelSuite extends FunSuite {
@@ -14,14 +15,14 @@ class ParallelSuite extends FunSuite {
   test("a single thread runs the work on the calling thread, when the result is joined") {
     using(1) { parallel =>
       val caller = Thread.currentThread
-      var ran    = false
+      val ran    = AtomicBoolean()
       val joined = parallel.spawn { () =>
-        ran = true
+        ran.set(true)
         Thread.currentThread
       }
-      assert(!ran)
+      assert(!ran.get)
       assertEquals(joined(), caller)
-      assert(ran)
+      assert(ran.get)
     }
   }
 

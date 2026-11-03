@@ -1,7 +1,7 @@
 package net.kurobako.bonsai.plugin
 
 import dotty.tools.dotc.ast.tpd
-import dotty.tools.dotc.core.Constants.Constant
+import dotty.tools.dotc.core.Constants.NullTag
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
@@ -47,8 +47,11 @@ private class Implied(checks: Checks)(using Context) {
     }
   }
 
-  def run(tree: tpd.Tree): Unit = new tpd.TreeTraverser {
-    private var known = Map.empty[String, Boolean]
+  def run(tree: tpd.Tree): Unit = Traversal().traverse(tree)
+
+  private class Traversal extends tpd.TreeTraverser {
+    // The facts in force at the tree being visited, replaced for the span of a branch.
+    private var known = Map.empty[String, Boolean] // scalafix:ok DisableSyntax.var
 
     def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
       case definition: tpd.DefDef if !definition.symbol.isAnonymousFunction =>
@@ -92,7 +95,7 @@ private class Implied(checks: Checks)(using Context) {
         case (Some(_), Some(_))                                    => Some(!operator.stops)
         case _                                                     => None
       }
-  }.traverse(tree)
+  }
 
   private def assumed(condition: tpd.Tree, value: Boolean)(using Context): Map[String, Boolean] =
     Calls.peelInlined(condition) match {
@@ -132,8 +135,8 @@ private class Implied(checks: Checks)(using Context) {
   }
 
   private def nothing(tree: tpd.Tree)(using Context): Boolean = Calls.peelInlined(tree) match {
-    case tpd.Literal(Constant(null)) => true
-    case _                           => false
+    case tpd.Literal(constant) => constant.tag == NullTag
+    case _                     => false
   }
 
   private def key(tree: tpd.Tree)(using Context): Option[String] = Calls.peelInlined(tree) match {

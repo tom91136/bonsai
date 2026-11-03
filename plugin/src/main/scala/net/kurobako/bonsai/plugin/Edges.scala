@@ -20,10 +20,16 @@ private class Edges(path: String, sourceOf: Symbol => Option[String], analysis: 
 
   // The files and the types already reported from the code outside and inside splices, which report them again alike.
   private val files = Array.fill(2)(mutable.HashSet.empty[String])
+  // The JDK builds an identity set only over a map to boxed booleans.
   private val types =
-    Array.fill(2)(java.util.Collections.newSetFromMap(java.util.IdentityHashMap[Type, java.lang.Boolean]()))
+    Array.fill(2)(java.util.Collections.newSetFromMap(java.util.IdentityHashMap[
+      Type,
+      java.lang.Boolean
+    ]())) // scalafix:ok NoBoxedPrimitives
 
-  private def typeEdges(from: tpd.Tree): TypeTraverser = new TypeTraverser {
+  private def typeEdges(from: tpd.Tree): TypeTraverser = TypeEdges(from)
+
+  private class TypeEdges(from: tpd.Tree) extends TypeTraverser {
     def traverse(tpe: Type): Unit = if (types(spliced).add(tpe)) {
       add(tpe.typeSymbol, from)
       tpe match {

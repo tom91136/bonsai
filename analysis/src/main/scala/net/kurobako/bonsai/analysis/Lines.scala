@@ -2,6 +2,7 @@ package net.kurobako.bonsai.analysis
 
 import dotty.tools.dotc.util.SourceFile
 import dotty.tools.dotc.util.SourcePosition
+import scala.annotation.tailrec
 import scala.collection.mutable
 
 /** Lines of offsets in sources, taken from the source's own text. The compiler's line table of a source read back from
@@ -22,21 +23,30 @@ private[analysis] class Lines {
     if (position.exists) s"${position.source.path}:${line(position)}" else "unknown"
 
   /** The zero-based line `offset` is on. */
-  def at(source: SourceFile, offset: Int): Int = {
-    var table = starts.get(source).orNull
-    if (table == null) {
+  def at(source: SourceFile, offset: Int): Int = starts.get(source) match {
+    case Some(table) => within(table, offset)
+    case None        =>
       val text = source.content()
-      if (text.isEmpty) return source.offsetToLine(offset)
-      val builder = Array.newBuilder[Int]
-      builder += 0
-      var index = 0
-      while (index < text.length) {
-        if (text(index) == '\n') builder += index + 1
-        index += 1
+      if (text.isEmpty) source.offsetToLine(offset)
+      else {
+        val table = scan(text)
+        starts(source) = table
+        within(table, offset)
       }
-      table = builder.result()
-      starts(source) = table
+  }
+
+  private def scan(text: Array[Char]): Array[Int] = {
+    val builder = Array.newBuilder[Int]
+    builder += 0
+    @tailrec def go(index: Int): Unit = if (index < text.length) {
+      if (text(index) == '\n') builder += index + 1
+      go(index + 1)
     }
+    go(0)
+    builder.result()
+  }
+
+  private def within(table: Array[Int], offset: Int): Int = {
     val found = java.util.Arrays.binarySearch(table, offset)
     if (found >= 0) found else -found - 2
   }

@@ -40,7 +40,9 @@ private class Branches(checks: Checks)(using Context) {
       parameters: Vector[Symbol]
   )
 
-  def run(tree: tpd.Tree): Unit = new tpd.TreeTraverser {
+  def run(tree: tpd.Tree): Unit = Traversal().traverse(tree)
+
+  private class Traversal extends tpd.TreeTraverser {
     private val chained = mutable.Set.empty[tpd.Tree]
 
     def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
@@ -60,7 +62,7 @@ private class Branches(checks: Checks)(using Context) {
         traverseChildren(tree)
       case _ => traverseChildren(tree)
     }
-  }.traverse(tree)
+  }
 
   private def trivial(tree: tpd.Tree): Boolean = Trees.constant(Calls.peelInlined(tree))
 
@@ -101,8 +103,8 @@ private class Branches(checks: Checks)(using Context) {
         plain(arms(to).thenp.span.end, arms(to + 1).cond.span.start)
       ) extent(from, to + 1)
       else to
-    var from = 0
-    while (from < arms.size - 1) {
+    @annotation.tailrec
+    def scan(from: Int): Unit = if (from < arms.size - 1) {
       val to = extent(from, from)
       if (to > from) {
         val run = arms.slice(from, to + 1)
@@ -113,8 +115,9 @@ private class Branches(checks: Checks)(using Context) {
           joined(run)
         )
       }
-      from = to + 1
+      scan(to + 1)
     }
+    scan(0)
   }
 
   private def joined(run: Vector[tpd.If]): List[ActionPatch] = {
@@ -239,13 +242,16 @@ private class Branches(checks: Checks)(using Context) {
 
   private def merge(cases: List[tpd.CaseDef]): Unit = {
     val arms = cases.toVector
-    var from = 0
-    while (from < arms.size - 1) {
-      var to = from
-      while (
+    @annotation.tailrec
+    def extent(from: Int, to: Int): Int =
+      if (
         to + 1 < arms.size && alike(arms(from), arms(to + 1)) &&
         plain(arms(to).span.end, arms(to + 1).span.start)
-      ) to += 1
+      ) extent(from, to + 1)
+      else to
+    @annotation.tailrec
+    def scan(from: Int): Unit = if (from < arms.size - 1) {
+      val to = extent(from, from)
       if (to > from) {
         val run = arms.slice(from, to + 1)
         checks(
@@ -255,8 +261,9 @@ private class Branches(checks: Checks)(using Context) {
           alternatives(run)
         )
       }
-      from = to + 1
+      scan(to + 1)
     }
+    scan(0)
   }
 
   private def alternatives(run: Vector[tpd.CaseDef]): List[ActionPatch] = {

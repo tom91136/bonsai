@@ -43,7 +43,7 @@ class ExtractionSuite extends AnalysisSuite {
       "Implementation-Version"   -> version
     ).foreach(manifest.getMainAttributes.putValue(_, _))
     Using.resource(JarOutputStream(Files.newOutputStream(jar), manifest)) { out =>
-      Using.resource(Files.walk(classes))(_.iterator.asScala.filter(Files.isRegularFile(_)).foreach { entry =>
+      Using.resource(Files.walk(classes))(_.toList.asScala.filter(Files.isRegularFile(_)).foreach { entry =>
         out.putNextEntry(JarEntry(classes.relativize(entry).toString))
         out.write(Files.readAllBytes(entry))
         out.closeEntry()

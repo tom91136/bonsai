@@ -1,24 +1,6 @@
 package net.kurobako.bonsai.collections
 
-/** What running steps costs: `passes` over the elements, `allocations` of collections, how many of the passes stop
-  * `early` at a deciding element, `sorts` of n log n steps and `scans`, linear searches made per element, which make
-  * the work quadratic.
-  */
-case class Cost(passes: Int = 0, allocations: Int = 0, early: Int = 0, sorts: Int = 0, scans: Int = 0) {
-  def +(that: Cost): Cost =
-    Cost(
-      passes + that.passes,
-      allocations + that.allocations,
-      early + that.early,
-      sorts + that.sorts,
-      scans + that.scans
-    )
-
-  /** The passes that always run to the end. */
-  def full: Int = passes - early
-
-  private def measures: Vector[Int] = Vector(passes, allocations, full, sorts, scans)
-}
+import scala.annotation.targetName
 
 object Cost {
 
@@ -43,4 +25,25 @@ object Cost {
 
   private def intermediates(n: Int): String =
     if (n == 1) "an intermediate collection" else s"${number(n)} intermediate collections"
+}
+
+/** What running steps costs: `passes` over the elements, `allocations` of collections, how many of the passes stop
+  * `early` at a deciding element, `sorts` of n log n steps and `scans`, linear searches made per element, which make
+  * the work quadratic.
+  */
+case class Cost(passes: Int = 0, allocations: Int = 0, early: Int = 0, sorts: Int = 0, scans: Int = 0) {
+  @targetName("plus")
+  def +(that: Cost): Cost =
+    Cost(
+      passes + that.passes,
+      allocations + that.allocations,
+      early + that.early,
+      sorts + that.sorts,
+      scans + that.scans
+    )
+
+  /** The passes that always run to the end. */
+  def full: Int = passes - early
+
+  private def measures: Vector[Int] = Vector(passes, allocations, full, sorts, scans)
 }

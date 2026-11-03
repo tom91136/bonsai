@@ -77,10 +77,7 @@ class DisjunctionTables extends SemanticRule("DisjunctionTables") {
   }
 
   private def variesInOneConstant(operands: List[Term]): Boolean = {
-    val alignments = operands.tail.map { operand =>
-      val found = mutable.Buffer.empty[(String, String)]
-      Option.when(align(operands.head, operand, false, found))(found.toList)
-    }
+    val alignments = operands.tail.map(align(operands.head, _))
     alignments.forall(_.isDefined) && {
       val varying = alignments.flatten.transpose.filter(_.exists((first, other) => first != other))
       varying match {
@@ -90,26 +87,27 @@ class DisjunctionTables extends SemanticRule("DisjunctionTables") {
     }
   }
 
-  private def align(left: Any, right: Any, argument: Boolean, found: mutable.Buffer[(String, String)]): Boolean =
-    (left, right) match {
-      case (l: Term, r: Term) if hole(l, argument) && hole(r, argument) =>
-        found += l.syntax -> r.syntax
-        true
-      case (l: Term.ArgClause, r: Term.ArgClause) =>
-        l.mod.map(_.syntax) == r.mod.map(_.syntax) && align(l.values, r.values, true, found)
-      case (l: Tree, r: Tree) =>
-        l.productPrefix == r.productPrefix && align(l.productIterator.toList, r.productIterator.toList, false, found)
-      case (l: List[?], r: List[?]) =>
-        l.size == r.size && l.zip(r).forall((a, b) => align(a, b, argument, found))
-      case (l: Option[?], r: Option[?]) =>
-        l.isDefined == r.isDefined && l.zip(r).forall((a, b) => align(a, b, argument, found))
-      case (l, r) => l == r
-    }
+  private def align(left: Term, right: Term): Option[List[(String, String)]] = {
+    val (leftShape, leftHoles)   = shape(left)
+    val (rightShape, rightHoles) = shape(right)
+    Option.when(leftShape == rightShape)(leftHoles.zip(rightHoles))
+  }
 
-  private def hole(term: Term, argument: Boolean): Boolean = term match {
+  // Literals are holes, so a placeholder in a shape always marks a hole.
+  private def shape(term: Term): (String, List[String]) = {
+    val holes    = mutable.Buffer.empty[String]
+    val skeleton = term.transform {
+      case hole: Term if isHole(hole) =>
+        holes += hole.syntax
+        Lit.Unit()
+    }
+    skeleton.structure -> holes.toList
+  }
+
+  private def isHole(term: Term): Boolean = term match {
     case Lit.Null() => false
     case _: Lit     => true
-    case _          => argument && constant(term)
+    case _          => constant(term) && term.parent.exists(_.isInstanceOf[Term.ArgClause])
   }
 
   private def test(leaf: Term): Option[Test] = leaf match {

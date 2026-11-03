@@ -9,30 +9,6 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import net.kurobako.bonsai.effects.*
 
-/** Presents the calls of typed trees to the effect axioms. */
-class Calls(using Context) {
-
-  /** `method` called on `qualifier`, if it has one. */
-  def of(method: Symbol, qualifier: Option[tpd.Tree]): Axioms.Call = {
-    val operand = qualifier.map { tree =>
-      val tpe = Calls.unconverted(tree).tpe.widen
-      Axioms.Operand(
-        name => Classes.named(name).exists && tpe.derivesFrom(Classes.named(name)),
-        tree.symbol.is(Flags.Module)
-      )
-    }
-    Axioms.Call(
-      Calls.qualified(Calls.owner(method)),
-      method.name.toString,
-      method.isConstructor,
-      operand,
-      method.is(Flags.Synthetic) || method.name.is(DefaultGetterName),
-      method.is(Flags.JavaDefined),
-      Calls.qualified(method.info.finalResultType.dealias.typeSymbol)
-    )
-  }
-}
-
 object Calls {
 
   /** The fully qualified name of a symbol, as the axioms spell it: modules' classes end in `$`, as do the owners of
@@ -109,10 +85,10 @@ object Calls {
 
   /** Whether `tree` builds a new object, mutable collection, array or iterator, which no one else holds yet. */
   def allocates(tree: tpd.Tree)(using Context): Boolean = {
-    val (function, _) = spine(peel(tree))
-    val method        = function.symbol
-    val name          = method.name.toString
-    val factory       = selected(function).map(_.qualifier.symbol).exists(module =>
+    val function = spine(peel(tree)).function
+    val method   = function.symbol
+    val name     = method.name.toString
+    val factory  = selected(function).map(_.qualifier.symbol).exists(module =>
       module.is(Flags.Module) &&
         (module == defn.ArrayModule || MutablePackages.exists(qualified(module).startsWith(_)))
     )
@@ -140,13 +116,16 @@ object Calls {
     case _                        => Some(Effect(kind, cause, onThis = true))
   }
 
-  /** The function of a chain of applications and type applications, and the nodes applied to it, innermost first. */
-  def spine(tree: tpd.Tree): (tpd.Tree, List[tpd.Tree]) = {
+  /** The `function` of a chain of applications and type applications, and the `nodes` applied to it, innermost first.
+    */
+  case class Spine(function: tpd.Tree, nodes: List[tpd.Tree])
+
+  def spine(tree: tpd.Tree): Spine = {
     @annotation.tailrec
-    def go(inner: tpd.Tree, nodes: List[tpd.Tree]): (tpd.Tree, List[tpd.Tree]) = inner match {
+    def go(inner: tpd.Tree, nodes: List[tpd.Tree]): Spine = inner match {
       case tpd.Apply(function, _)     => go(function, inner :: nodes)
       case tpd.TypeApply(function, _) => go(function, inner :: nodes)
-      case other                      => (other, nodes)
+      case other                      => Spine(other, nodes)
     }
     go(tree, Nil)
   }
@@ -158,5 +137,29 @@ object Calls {
     case tpd.TypeApply(inner, _) => selected(inner)
     case tpd.Apply(inner, _)     => selected(inner)
     case _                       => None
+  }
+}
+
+/** Presents the calls of typed trees to the effect axioms. */
+class Calls(using Context) {
+
+  /** `method` called on `qualifier`, if it has one. */
+  def of(method: Symbol, qualifier: Option[tpd.Tree]): Axioms.Call = {
+    val operand = qualifier.map { tree =>
+      val tpe = Calls.unconverted(tree).tpe.widen
+      Axioms.Operand(
+        name => Classes.named(name).exists && tpe.derivesFrom(Classes.named(name)),
+        tree.symbol.is(Flags.Module)
+      )
+    }
+    Axioms.Call(
+      Calls.qualified(Calls.owner(method)),
+      method.name.toString,
+      method.isConstructor,
+      operand,
+      method.is(Flags.Synthetic) || method.name.is(DefaultGetterName),
+      method.is(Flags.JavaDefined),
+      Calls.qualified(method.info.finalResultType.dealias.typeSymbol)
+    )
   }
 }

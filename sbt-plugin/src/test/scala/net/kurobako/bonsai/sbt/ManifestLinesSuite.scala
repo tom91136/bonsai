@@ -6,14 +6,14 @@ class ManifestLinesSuite extends munit.FunSuite {
 
   test("a library output adds its library line after the output line") {
     assertEquals(
-      ManifestLines.outputs("api", "main", "/api/classes", library = true),
+      ManifestLines.outputs("api", "main", library = true, classes = "/api/classes"),
       Seq("output\tapi\tmain\t/api/classes", "library\tapi")
     )
   }
 
   test("a test output has no library line") {
     assertEquals(
-      ManifestLines.outputs("api", "test", "/api/test-classes", library = false),
+      ManifestLines.outputs("api", "test", library = false, classes = "/api/test-classes"),
       Seq("output\tapi\ttest\t/api/test-classes")
     )
   }
@@ -26,7 +26,7 @@ class ManifestLinesSuite extends munit.FunSuite {
 
   test("a test scope output has no library line even for a library project") {
     assertEquals(
-      ManifestLines.outputs("fixture", "test", "/fixture/test-classes", library = true),
+      ManifestLines.outputs("fixture", "test", library = true, classes = "/fixture/test-classes"),
       Seq("output\tfixture\ttest\t/fixture/test-classes")
     )
   }

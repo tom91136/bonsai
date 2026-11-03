@@ -107,16 +107,3 @@ class BonsaiPlugin extends StandardPlugin {
     else if (ctx.settings.classpath.value.contains("nativelib_native")) Throwing.Platform.Native
     else Throwing.Platform.JVM
 }
-
-/** A value the first phase to ask for it computes. */
-private class Deferred[A](compute: Context ?=> A) {
-  private var computed: Option[A] = None
-
-  def value(using Context): A = synchronized {
-    computed.getOrElse {
-      val result = compute
-      computed = Some(result)
-      result
-    }
-  }
-}

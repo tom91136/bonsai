@@ -435,7 +435,7 @@ lazy val root = project.in(file("."))
         (thisProject.value.id, configuration.value.name == Test.name, classDirectory.value, unmanagedSources.value)
       }.all(analysedOutputs).value.flatMap { (id, test, classes, sources) =>
         val scope = ManifestLines.scope(fixtures, id, test)
-        ManifestLines.outputs(id, scope, classes.toString, configured.library(id).getOrElse(false)) ++
+        ManifestLines.outputs(id, scope, configured.library(id).getOrElse(false), classes.toString) ++
           ManifestLines.sources(id, scope, sources.map(_.toString))
       }
       val classpath = Def.task {

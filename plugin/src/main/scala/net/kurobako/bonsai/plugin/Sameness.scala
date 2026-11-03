@@ -38,7 +38,10 @@ private class Sameness(using Context) {
       case (a: tpd.Bind, b: tpd.Bind)           => bind(a.symbol, b.symbol) && same(a.body, b.body)
       case (_: (tpd.TypeDef | tpd.Template), _) => false
       case _                                    =>
+        // Compiler trees are case classes of many shapes, compared field by field.
+        // scalafix:off BannedSyntax.product-traversal
         left.getClass == right.getClass && values(left.productIterator.toList, right.productIterator.toList)
+      // scalafix:on BannedSyntax.product-traversal
     })
 
   private def values(left: List[Any], right: List[Any]): Boolean =

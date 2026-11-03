@@ -124,8 +124,8 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     private val bodies = java.util.IdentityHashMap[tpd.Tree, tpd.DefDef]()
 
     override def traverse(tree: tpd.Tree)(using Context): Unit = {
-      val entered = bodies.remove(tree)
-      if (entered != null) open(entered.symbol) = entered
+      val entered = Option(bodies.remove(tree))
+      entered.foreach(body => open(body.symbol) = body)
       tree match {
         case reference @ (_: tpd.Ident | _: tpd.Select) =>
           val symbol = reference.symbol
@@ -136,7 +136,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
         case _                                                 => ()
       }
       traverseChildren(tree)
-      if (entered != null) open -= entered.symbol: Unit
+      entered.foreach(body => open -= body.symbol)
     }
   }
 
@@ -1261,23 +1261,12 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     recursions.getOrElseUpdate(definition.symbol, analysed(definition))
 
   private def analysed(definition: tpd.DefDef)(using Context): Option[(Set[Symbol], List[Span])] = {
-    val method = definition.symbol
-    val calls  = mutable.ListBuffer.empty[List[tpd.Tree]]
-    var opaque = false
-    new tpd.TreeTraverser {
-      def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
-        case application: tpd.Apply =>
-          val (head, lists) = unapplied(application)
-          if (head.symbol == method && (head.isInstanceOf[tpd.Ident] || head.isInstanceOf[tpd.Select])) {
-            if (own(head, method)) calls += lists.flatten else opaque = true
-            lists.flatten.foreach(argument => traverse(argument))
-          } else traverseChildren(tree)
-        case reference @ (_: tpd.Ident | _: tpd.Select) if reference.symbol == method => opaque = true
-        case _                                                                        => traverseChildren(tree)
-      }
-    }.traverse(definition.rhs)
+    val method  = definition.symbol
+    val callers = Recursive(method)
+    callers.traverse(definition.rhs)
+    val calls      = callers.calls
     val parameters = definition.termParamss.flatten.map(_.symbol)
-    if (calls.isEmpty || opaque) None
+    if (calls.isEmpty || callers.opaque.nonEmpty) None
     else {
       val passed = (parameter: Symbol, index: Int) =>
         calls.forall(arguments =>
@@ -1286,6 +1275,22 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
       val variants =
         parameters.zipWithIndex.collect { case (parameter, index) if !passed(parameter, index) => parameter }
       Option.when(variants.nonEmpty)((variants.toSet, branches(definition.rhs, method)))
+    }
+  }
+
+  private class Recursive(method: Symbol) extends tpd.TreeTraverser {
+    val calls: mutable.ListBuffer[List[tpd.Tree]] = mutable.ListBuffer.empty[List[tpd.Tree]]
+    val opaque: mutable.ListBuffer[tpd.Tree]      = mutable.ListBuffer.empty[tpd.Tree]
+
+    def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
+      case application: tpd.Apply =>
+        val (head, lists) = unapplied(application)
+        if (head.symbol == method && (head.isInstanceOf[tpd.Ident] || head.isInstanceOf[tpd.Select])) {
+          if (own(head, method)) calls += lists.flatten else opaque += tree
+          lists.flatten.foreach(argument => traverse(argument))
+        } else traverseChildren(tree)
+      case reference @ (_: tpd.Ident | _: tpd.Select) if reference.symbol == method => opaque += tree
+      case _                                                                        => traverseChildren(tree)
     }
   }
 
@@ -1300,25 +1305,29 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
 
   /** The branches of conditionals and matches in a method body that make no call of the method. */
   private def branches(body: tpd.Tree, method: Symbol)(using Context): List[Span] = {
-    val found = mutable.ListBuffer.empty[Span]
-    new tpd.TreeTraverser {
-      private def branch(tree: tpd.Tree)(using Context): Unit =
-        if (references(tree, method)) traverse(tree) else found += tree.span
-      def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
-        case tpd.If(condition, left, right) =>
-          traverse(condition)
-          branch(left)
-          branch(right)
-        case tpd.Match(selector, cases) =>
-          traverse(selector)
-          cases.foreach { clause =>
-            traverse(clause.guard)
-            branch(clause.body)
-          }
-        case _ => traverseChildren(tree)
-      }
-    }.traverse(body)
-    found.toList
+    val silent = Silent(method)
+    silent.traverse(body)
+    silent.found.toList
+  }
+
+  private class Silent(method: Symbol) extends tpd.TreeTraverser {
+    val found: mutable.ListBuffer[Span] = mutable.ListBuffer.empty[Span]
+
+    private def branch(tree: tpd.Tree)(using Context): Unit =
+      if (references(tree, method)) traverse(tree) else found += tree.span
+    def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
+      case tpd.If(condition, left, right) =>
+        traverse(condition)
+        branch(left)
+        branch(right)
+      case tpd.Match(selector, cases) =>
+        traverse(selector)
+        cases.foreach { clause =>
+          traverse(clause.guard)
+          branch(clause.body)
+        }
+      case _ => traverseChildren(tree)
+    }
   }
 
   private val Folds   = Set("foldLeft", "foldRight", "fold", "reduce", "scanLeft")

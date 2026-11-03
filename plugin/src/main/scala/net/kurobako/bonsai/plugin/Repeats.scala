@@ -75,7 +75,9 @@ private class Repeats(checks: Checks)(using Context) {
   private val keyed       = java.util.IdentityHashMap[tpd.Tree, Option[(String, Int)]]()
   private val axioms      = Calls()
 
-  def run(tree: tpd.Tree): Unit = new tpd.TreeTraverser {
+  def run(tree: tpd.Tree): Unit = Methods().traverse(tree)
+
+  private class Methods extends tpd.TreeTraverser {
     def traverse(tree: tpd.Tree)(using Context): Unit = {
       tree match {
         case definition: tpd.DefDef
@@ -86,53 +88,59 @@ private class Repeats(checks: Checks)(using Context) {
       }
       traverseChildren(tree)
     }
-  }.traverse(tree)
+  }
 
   private def method(definition: tpd.DefDef)(using Context): Unit = {
-    val sites   = mutable.ListBuffer.empty[(String, Site)]
-    var regions = 0
-    new tpd.TreeTraverser {
-      private var path: List[Int] = Nil
+    val regions = Regions()
+    regions.traverse(definition.rhs)
+    report(definition, regions.sites.toList)
+  }
 
-      private def region(body: => Unit): Unit = {
-        regions += 1
-        val before = path
-        path = path :+ regions
-        try body
-        finally path = before
-      }
+  private class Regions extends tpd.TreeTraverser {
+    val sites: mutable.ListBuffer[(String, Site)] = mutable.ListBuffer.empty[(String, Site)]
+    // The nesting of the branches and closures around the tree being visited, numbered in the order they are entered.
+    // scalafix:off DisableSyntax.var
+    private var regions         = 0
+    private var path: List[Int] = Nil
+    // scalafix:on DisableSyntax.var
 
-      def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
-        case nested: tpd.DefDef if nested.symbol.isAnonymousFunction => region(traverse(nested.rhs))
-        case _: (tpd.DefDef | tpd.TypeDef)                           => ()
-        case tpd.If(condition, left, right)                          =>
-          traverse(condition)
-          region(traverse(left))
-          region(traverse(right))
-        case tpd.Match(selector, cases) =>
-          traverse(selector)
-          cases.foreach(clause =>
-            region {
-              traverse(clause.guard)
-              traverse(clause.body)
-            }
-          )
-        case tpd.Apply(tpd.Select(left, name), List(right)) if name.toString == "&&" || name.toString == "||" =>
-          traverse(left)
-          region(traverse(right))
-        case _: tpd.WhileDo => region(traverseChildren(tree))
-        case _: tpd.Try     => region(traverseChildren(tree))
-        case _              =>
-          tree match {
-            case _: (tpd.Apply | tpd.TypeApply | tpd.Select)
-                if tree.span.exists && !tree.tpe.widen.isInstanceOf[MethodicType] =>
-              key(tree, Map.empty).filter(_._2 >= MinimumWork).foreach((text, _) => sites += text -> Site(tree, path))
-            case _ => ()
+    private def region(body: => Unit): Unit = {
+      regions += 1
+      val before = path
+      path = path :+ regions
+      try body
+      finally path = before
+    }
+
+    def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
+      case nested: tpd.DefDef if nested.symbol.isAnonymousFunction => region(traverse(nested.rhs))
+      case _: (tpd.DefDef | tpd.TypeDef)                           => ()
+      case tpd.If(condition, left, right)                          =>
+        traverse(condition)
+        region(traverse(left))
+        region(traverse(right))
+      case tpd.Match(selector, cases) =>
+        traverse(selector)
+        cases.foreach(clause =>
+          region {
+            traverse(clause.guard)
+            traverse(clause.body)
           }
-          traverseChildren(tree)
-      }
-    }.traverse(definition.rhs)
-    report(definition, sites.toList)
+        )
+      case tpd.Apply(tpd.Select(left, name), List(right)) if name.toString == "&&" || name.toString == "||" =>
+        traverse(left)
+        region(traverse(right))
+      case _: tpd.WhileDo => region(traverseChildren(tree))
+      case _: tpd.Try     => region(traverseChildren(tree))
+      case _              =>
+        tree match {
+          case _: (tpd.Apply | tpd.TypeApply | tpd.Select)
+              if tree.span.exists && !tree.tpe.widen.isInstanceOf[MethodicType] =>
+            key(tree, Map.empty).filter(_._2 >= MinimumWork).foreach((text, _) => sites += text -> Site(tree, path))
+          case _ => ()
+        }
+        traverseChildren(tree)
+    }
   }
 
   private def report(definition: tpd.DefDef, sites: List[(String, Site)]): Unit = {
@@ -167,15 +175,12 @@ private class Repeats(checks: Checks)(using Context) {
     */
   private def key(tree: tpd.Tree, binders: Map[Symbol, Int]): Option[(String, Int)] =
     if (binders.nonEmpty) read(tree, binders)
-    else {
-      val known = keyed.get(tree)
-      if (known != null) known
-      else {
+    else
+      Option(keyed.get(tree)).getOrElse {
         val found = read(tree, binders)
         keyed.put(tree, found)
         found
       }
-    }
 
   private def read(tree: tpd.Tree, binders: Map[Symbol, Int]): Option[(String, Int)] =
     if (!sound(tree.tpe)) None

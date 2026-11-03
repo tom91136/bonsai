@@ -132,7 +132,7 @@ private class Effects(checks: Checks)(using Context) {
     private def effects(application: tpd.Apply, symbol: Symbol, receiver: Option[tpd.Tree]): Option[Kind] = {
       val unseen  = Calls.receiver(receiver, allocated) == Receiver.Fresh
       val dropped = application.tpe.widen.isRef(defn.UnitClass)
-      Axioms.effects(axioms.of(symbol, receiver)).iterator.filterNot(effect => unseen && silent(effect)).map(_.kind)
+      Axioms.effects(axioms.of(symbol, receiver)).view.filterNot(effect => unseen && silent(effect)).map(_.kind)
         .find(kind => Eager(kind) || dropped && Dropped(kind))
     }
 

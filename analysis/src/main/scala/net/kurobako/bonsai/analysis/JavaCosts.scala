@@ -1,13 +1,7 @@
 package net.kurobako.bonsai.analysis
 
-import net.kurobako.bonsai.collections.Sink
-import net.kurobako.bonsai.java.Model.Cost
-import net.kurobako.bonsai.java.Model.Cost.Fixed
-import net.kurobako.bonsai.java.Model.Cost.Kind
-import net.kurobako.bonsai.java.Model.Cost.Node
-import net.kurobako.bonsai.java.Model.Cost.Static
-import net.kurobako.bonsai.java.Model.Cost.Step
-import net.kurobako.bonsai.java.Model.Cost.Unknown
+import net.kurobako.bonsai.collections.{Kind as _, Step as _, *}
+import net.kurobako.bonsai.java.Model.Cost.*
 import net.kurobako.bonsai.java.Model as JavaModel
 import scala.collection.mutable
 
@@ -29,10 +23,10 @@ private object JavaCosts {
   */
 private class JavaCosts(costs: Iterable[JavaModel.Cost], declared: Complexity.Declared) {
   import Charges.*
-  import JavaCosts.Resolver
+  import JavaCosts.*
 
   private val facts = costs.map(cost => cost.key -> cost).toMap
-  private val memo  = new Memo[String]
+  private val memo  = Memo[String]()
 
   def nonEmpty: Boolean = facts.nonEmpty
 
@@ -121,7 +115,7 @@ private class JavaCosts(costs: Iterable[JavaModel.Cost], declared: Complexity.De
       else
         callee(key, resolve).orElse(resolve(key)).foreach { found =>
           val inherited = inherit(found.bound)
-          val bindings  = found.roots.zip(arguments.map(binding)).toMap + ("this" -> binding(receiver))
+          val bindings  = found.roots.zip(arguments.map(binding(_))).toMap + ("this" -> binding(receiver))
           val time      = Atoms.rebind(inherited.time, bindings)
           val space     = Atoms.rebind(inherited.space, bindings)
           val what      = s"call of ${key.takeWhile(_ != '(').split('.').last} (line ${site.line})"
@@ -132,7 +126,8 @@ private class JavaCosts(costs: Iterable[JavaModel.Cost], declared: Complexity.De
       case Vector()                           => Recursion.Absent
       case Vector(SelfCall(arguments, false)) =>
         arguments.zipWithIndex.collectFirst {
-          case (argument, index) if argument == Cost.smaller(index) || argument == Cost.stepped(index) =>
+          case (argument, index)
+              if argument == JavaModel.Cost.smaller(index) || argument == JavaModel.Cost.stepped(index) =>
             Recursion.Bounded(Atoms.size(named(s"$$$index")))
         }.getOrElse(Recursion.Unbounded)
       case _ => Recursion.Unbounded

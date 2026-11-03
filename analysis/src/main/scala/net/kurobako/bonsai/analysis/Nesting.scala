@@ -50,11 +50,11 @@ object Nesting {
     def place: Place = Place(node.outer, inside)
   }
 
-  case class Model(declarations: Vector[Declaration], edges: Map[String, Set[String]])
-
   object Model {
     val empty: Model = Model(Vector.empty, Map.empty)
   }
+
+  case class Model(declarations: Vector[Declaration], edges: Map[String, Set[String]])
 
   case class Move(declaration: Declaration, to: Place) {
     def from: Place = declaration.place
@@ -121,11 +121,11 @@ object Nesting {
       else meet(left, dominator(right))
     @tailrec
     def settle(): Unit = {
-      var changed = false
-      order.tail.foreach { node =>
+      val changed = order.tail.foldLeft(false) { (changed, node) =>
         val candidate = predecessors(node).filter(dominator(_) >= 0).reduce(meet(_, _))
-        if (dominator(node) != candidate) changed = true
+        val differs   = dominator(node) != candidate
         dominator(node) = candidate
+        changed || differs
       }
       if (changed) settle()
     }

@@ -377,8 +377,8 @@ object Smells {
       sizes.flatMap(items.combinations(_).map(_.toSet -> method))
     }.groupMap(_._1)(_._2)
     val frequent = support.view.collect {
-      case (items, methods) if methods.size >= MinimumClumpMethods && methods.map(_.owner).distinct.size > 1 =>
-        items -> methods.toSet
+      case (items, users) if users.size >= MinimumClumpMethods && users.map(_.owner).distinct.size > 1 =>
+        items -> users.toSet
     }.toMap
     val maximal = frequent.groupMap(_._2)(_._1).toVector.flatMap { (methods, candidates) =>
       candidates.collect { case items if Itemsets.maximal(items, candidates) => items -> methods }

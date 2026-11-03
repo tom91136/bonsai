@@ -49,16 +49,16 @@ object Algebra {
     lazy val shape: Polynomial = Polynomial.product(fields.map(_.shape))
   }
 
+  object Origin {
+    def of(exported: Boolean): Origin = if (exported) Exported else Written
+  }
+
   /** Why a product has the shape it has: `Written` by the author for this build alone, `Exported` as the API of a
     * library that other builds construct, or `Derived` when generic derivation builds and reads it field by field.
     * Derived wins where both hold, as twins of a derived shape are exempt from the duplicate rule.
     */
   enum Origin {
     case Written, Exported, Derived
-  }
-
-  object Origin {
-    def of(exported: Boolean): Origin = if (exported) Exported else Written
   }
 
   /** A case class, or a method whose parameters stand in for fields when it has a precondition. */

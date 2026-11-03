@@ -3,6 +3,7 @@ package net.kurobako.bonsai.plugin
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.ast.tpd.TreeOps
 import dotty.tools.dotc.core.Constants.Constant
+import dotty.tools.dotc.core.Constants.NullTag
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Contexts.ctx
 import dotty.tools.dotc.core.Flags
@@ -88,8 +89,9 @@ private class Lazies(checks: Checks)(using Context) {
                   set.head.rhs.asInstanceOf[tpd.Literal].const == Constant(true)
               )(Fill(Some(guard), cache, stored.head.rhs))
             }
-          case (tpd.Apply(tpd.Select(checked, name), List(tpd.Literal(Constant(null)))), Some(cache))
-              if (name.toString == "==" || name.toString == "eq") && reference(checked).contains(cache) =>
+          case (tpd.Apply(tpd.Select(checked, name), List(tpd.Literal(nulled))), Some(cache))
+              if nulled.tag == NullTag && (name.toString == "==" || name.toString == "eq") &&
+                reference(checked).contains(cache) =>
             Option.when(writes.size == 1 && reference(writes.head.lhs).contains(cache))(
               Fill(None, cache, writes.head.rhs)
             )
@@ -99,12 +101,12 @@ private class Lazies(checks: Checks)(using Context) {
   }
 
   private def initial(found: Fill, variables: collection.Map[Symbol, tpd.ValDef]): Boolean = {
-    def literal(variable: Symbol, constant: Constant): Boolean =
+    def literal(variable: Symbol, expected: Constant => Boolean): Boolean =
       variables.get(variable).exists(_.rhs match {
-        case tpd.Literal(value) => value == constant
+        case tpd.Literal(value) => expected(value)
         case _                  => false
       })
-    found.flag.fold(literal(found.cache, Constant(null)))(literal(_, Constant(false)))
+    found.flag.fold(literal(found.cache, _.tag == NullTag))(literal(_, _ == Constant(false)))
   }
 
   private def mentions(tree: tpd.Tree, variables: List[Symbol]): Boolean =

@@ -121,7 +121,7 @@ private class Placements(resolver: Symbols, lines: Lines)(using Context) extends
   // Marks the types inside `cls` as needing an instance of it.
   private def reach(cls: Symbol)(using Context): Unit =
     if (cls.isClass && !cls.is(Flags.ModuleClass) && classes.exists(_._1 == cls))
-      classes.iterator.takeWhile(_._1 != cls).flatMap(_._2).foreach(pinned += _)
+      classes.view.takeWhile(_._1 != cls).flatMap(_._2).foreach(pinned += _)
 
   private def reference(symbol: Symbol)(using Context): Unit = {
     if (symbol.is(Flags.TypeParam) && symbol.owner.isClass) reach(symbol.owner)

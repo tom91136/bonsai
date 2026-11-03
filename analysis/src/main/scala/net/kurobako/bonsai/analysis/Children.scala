@@ -7,7 +7,7 @@ import dotty.tools.dotc.core.Contexts.ctx
 /** The immediate subtrees of a tree, in source order. */
 private class Children(using Context) extends tpd.TreeAccumulator[List[tpd.Tree]] {
   // The compiler looks up the context of a tree's source on every visit that arrives from another source's context.
-  private var sourced = ctx
+  private var sourced = ctx // scalafix:ok DisableSyntax.var
 
   def apply(children: List[tpd.Tree], tree: tpd.Tree)(using Context): List[tpd.Tree] = tree :: children
 

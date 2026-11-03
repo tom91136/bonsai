@@ -414,7 +414,7 @@ object BonsaiPlugin extends AutoPlugin {
       }.all(analysed).value
       val kept    = entries.filterNot(redundant(entries).toSet)
       val outputs = kept.flatMap(entry =>
-        ManifestLines.outputs(entry.project, entry.scope, entry.classes, entry.library)
+        ManifestLines.outputs(entry.project, entry.scope, entry.library, entry.classes)
       )
       val analysedOutputs = kept.map(_.classes).toSet
       val libraries       = external.all(analysed).value.groupMap(_._1)(_._2).toSeq.sortBy(_._1).map { (id, entries) =>

@@ -10,7 +10,7 @@ class LintIdsSuite extends FunSuite {
   private val lintIds: Set[String] = JavaLint.ids
 
   /** The ids of the rules of the analysis. */
-  private val ruleIds: Array[String] = Finding.Rule.values.map(_.id)
+  private val ruleIds: Vector[String] = Finding.Rule.values.map(_.id)
 
   test("every lint of the Java code is reported as a finding of the analysis") {
     val missing = lintIds -- ruleIds
@@ -18,7 +18,7 @@ class LintIdsSuite extends FunSuite {
   }
 
   test("the ids of the rules are distinct, so that the id of a lint is the id of no other rule") {
-    assertEquals(ruleIds.distinct.length, ruleIds.length)
+    assertEquals(ruleIds.distinct.size, ruleIds.size)
   }
 
   test("every rule of a lint has a lint of its own") {

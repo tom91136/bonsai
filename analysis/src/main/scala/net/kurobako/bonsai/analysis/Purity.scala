@@ -14,11 +14,8 @@ import dotty.tools.dotc.core.Types.TermRef
 import dotty.tools.dotc.core.Types.ThisType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.util.Spans.Span
-import net.kurobako.bonsai.effects.Axioms
-import net.kurobako.bonsai.effects.Effect
-import net.kurobako.bonsai.effects.Kind
-import net.kurobako.bonsai.effects.Receiver
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.effects.{Effect as Generic, *}
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 import scala.runtime.ScalaRunTime
 import scala.util.control.NonFatal
@@ -244,8 +241,98 @@ object Purity {
         )
     }.toVector
 
+  // Sorted arrays of ids are merged and scanned by index, so sets of effects allocate only their result.
+  // scalafix:off DisableSyntax.var
+  private object Ids {
+    val Empty: Ids = Ids(Array.emptyIntArray)
+
+    private def union(left: Array[Int], right: Array[Int]): Ids = {
+      val merged    = Array.ofDim[Int](left.length + right.length)
+      var (i, j, n) = (0, 0, 0)
+      while (i < left.length || j < right.length) {
+        val next =
+          if (j == right.length || i < left.length && left(i) <= right(j)) {
+            val value = left(i)
+            i += 1
+            if (j < right.length && right(j) == value) j += 1
+            value
+          } else {
+            val value = right(j)
+            j += 1
+            value
+          }
+        merged(n) = next
+        n += 1
+      }
+      Ids(if (n == merged.length) merged else java.util.Arrays.copyOf(merged, n))
+    }
+
+    /** The members of `now` that `before` lacks, when `now` holds all of `before`. */
+    def gained(before: Ids, now: Ids): Option[Ids] = {
+      val (old, current) = (before.values, now.values)
+      val added          = Array.ofDim[Int]((current.length - old.length).max(0))
+      var (i, j, k)      = (0, 0, 0)
+      var contained      = old.length <= current.length
+      while (contained && j < current.length)
+        if (i < old.length && old(i) == current(j)) {
+          i += 1
+          j += 1
+        } else if (i < old.length && old(i) < current(j)) contained = false
+        else if (k < added.length) {
+          added(k) = current(j)
+          k += 1
+          j += 1
+        } else contained = false
+      Option.when(contained && i == old.length && k == added.length)(Ids(added))
+    }
+
+    /** Collects members in any order, with repeats. */
+    class Builder {
+      private var members = Array.ofDim[Int](16)
+      private var count   = 0
+
+      def add(id: Int): this.type = {
+        if (count == members.length) members = java.util.Arrays.copyOf(members, count * 2)
+        members(count) = id
+        count += 1
+        this
+      }
+
+      def clear(): this.type = {
+        count = 0
+        this
+      }
+
+      def addAll(ids: Ids): this.type = {
+        val size = ids.values.length
+        if (count + size > members.length)
+          members = java.util.Arrays.copyOf(members, math.max(count + size, members.length * 2))
+        Array.copy(ids.values, 0, members, count, size)
+        count += size
+        this
+      }
+
+      def result(): Ids =
+        if (count == 0) Empty
+        else {
+          val sorted = java.util.Arrays.copyOf(members, count)
+          java.util.Arrays.sort(sorted)
+          var distinct = 1
+          var i        = 1
+          while (i < count) {
+            if (sorted(i) != sorted(distinct - 1)) {
+              sorted(distinct) = sorted(i)
+              distinct += 1
+            }
+            i += 1
+          }
+          Ids(if (distinct == count) sorted else java.util.Arrays.copyOf(sorted, distinct))
+        }
+    }
+  }
+
   /** A set of small non-negative integers, sorted. */
-  private final class Ids(val values: Array[Int]) {
+  private class Ids(val values: Array[Int]) {
     def isEmpty: Boolean              = values.isEmpty
     def foreach(f: Int => Unit): Unit = {
       var i = 0
@@ -259,8 +346,8 @@ object Purity {
       while (i < values.length && f(values(i))) i += 1
       if (i == values.length) this
       else {
-        val kept = new Array[Int](values.length - 1)
-        System.arraycopy(values, 0, kept, 0, i)
+        val kept = Array.ofDim[Int](values.length - 1)
+        Array.copy(values, 0, kept, 0, i)
         var n = i
         i += 1
         while (i < values.length) {
@@ -286,94 +373,7 @@ object Purity {
 
     override def hashCode: Int = java.util.Arrays.hashCode(values)
   }
-
-  private object Ids {
-    val Empty: Ids = Ids(Array.emptyIntArray)
-
-    private def union(left: Array[Int], right: Array[Int]): Ids = {
-      val merged    = new Array[Int](left.length + right.length)
-      var (i, j, n) = (0, 0, 0)
-      while (i < left.length || j < right.length) {
-        val next =
-          if (j == right.length || i < left.length && left(i) <= right(j)) {
-            val value = left(i)
-            i += 1
-            if (j < right.length && right(j) == value) j += 1
-            value
-          } else {
-            val value = right(j)
-            j += 1
-            value
-          }
-        merged(n) = next
-        n += 1
-      }
-      Ids(if (n == merged.length) merged else java.util.Arrays.copyOf(merged, n))
-    }
-
-    /** The members of `now` that `before` lacks, when `now` holds all of `before`. */
-    def gained(before: Ids, now: Ids): Option[Ids] = {
-      val (old, current) = (before.values, now.values)
-      val added          = new Array[Int]((current.length - old.length).max(0))
-      var (i, j, k)      = (0, 0, 0)
-      var contained      = old.length <= current.length
-      while (contained && j < current.length)
-        if (i < old.length && old(i) == current(j)) {
-          i += 1
-          j += 1
-        } else if (i < old.length && old(i) < current(j)) contained = false
-        else if (k < added.length) {
-          added(k) = current(j)
-          k += 1
-          j += 1
-        } else contained = false
-      Option.when(contained && i == old.length && k == added.length)(Ids(added))
-    }
-
-    /** Collects members in any order, with repeats. */
-    final class Builder {
-      private var members = new Array[Int](16)
-      private var count   = 0
-
-      def add(id: Int): this.type = {
-        if (count == members.length) members = java.util.Arrays.copyOf(members, count * 2)
-        members(count) = id
-        count += 1
-        this
-      }
-
-      def clear(): this.type = {
-        count = 0
-        this
-      }
-
-      def addAll(ids: Ids): this.type = {
-        val size = ids.values.length
-        if (count + size > members.length)
-          members = java.util.Arrays.copyOf(members, math.max(count + size, members.length * 2))
-        System.arraycopy(ids.values, 0, members, count, size)
-        count += size
-        this
-      }
-
-      def result(): Ids =
-        if (count == 0) Empty
-        else {
-          val sorted = java.util.Arrays.copyOf(members, count)
-          java.util.Arrays.sort(sorted)
-          var distinct = 1
-          var i        = 1
-          while (i < count) {
-            if (sorted(i) != sorted(distinct - 1)) {
-              sorted(distinct) = sorted(i)
-              distinct += 1
-            }
-            i += 1
-          }
-          Ids(if (distinct == count) sorted else java.util.Arrays.copyOf(sorted, distinct))
-        }
-    }
-  }
+  // scalafix:on DisableSyntax.var
 
   /** Effect inference over the bodies of the build's methods and class templates. `implementations` gives the bodies a
     * virtual call can reach, or nothing when one lies outside the build, and `concurrent` names, beside the standard
@@ -387,10 +387,10 @@ object Purity {
       knowledge: Library
   )(using Context) {
 
-    private type Effect = net.kurobako.bonsai.effects.Effect[Symbol]
+    private type Effect = Generic[Symbol]
 
     private def plain(kind: Kind, cause: String, target: Option[Symbol] = None): Effect =
-      Effect(kind, cause, target = target)
+      Generic(kind, cause, target = target)
 
     private def rank(effect: Effect): (Int, String, Boolean, Boolean, String) =
       (Priority.indexOf(effect.kind), effect.shown, effect.onThis, effect.library, effect.cause)
@@ -429,7 +429,7 @@ object Purity {
       target.isDefined && local(target.get, owner)
     }
 
-    private def decoded(ids: Ids): Vector[Effect] = ids.values.iterator.map(effectTable(_)).toVector
+    private def decoded(ids: Ids): Vector[Effect] = ids.values.view.map(effectTable(_)).toVector
 
     private def retarget(id: Int, target: Option[Symbol]): Int =
       retargets.getOrElseUpdate(
@@ -494,10 +494,10 @@ object Purity {
 
       // How many objects and functions deep the value goes.
       lazy val levels: Int = this match {
-        case Object(_, bindings)                   => 1 + bindings.valuesIterator.map(_.levels).maxOption.getOrElse(0)
+        case Object(_, bindings)                   => 1 + bindings.values.view.map(_.levels).maxOption.getOrElse(0)
         case Function(_, Frame(_, self, bindings)) =>
-          1 + (self.iterator ++ bindings.valuesIterator).map(_.levels).maxOption.getOrElse(0)
-        case Several(values) => values.iterator.map(_.levels).maxOption.getOrElse(0)
+          1 + (self.toList ++ bindings.values).view.map(_.levels).maxOption.getOrElse(0)
+        case Several(values) => values.view.map(_.levels).maxOption.getOrElse(0)
         case _               => 0
       }
     }
@@ -517,14 +517,14 @@ object Purity {
       override val hashCode: Int = scala.util.hashing.MurmurHash3.caseClassHash(this)
     }
 
+    private object Summary {
+      def apply(effects: Set[Effect], invokes: Set[Int]): Summary = Summary(interned(effects), invokes, Set.empty)
+    }
+
     /** A method's effects, the indices of its function and by-name parameters it runs, and the parameters of methods
       * enclosing it it runs.
       */
     private case class Summary(effects: Ids, invokes: Set[Int], captures: Set[Symbol] = Set.empty)
-
-    private object Summary {
-      def apply(effects: Set[Effect], invokes: Set[Int]): Summary = Summary(interned(effects), invokes, Set.empty)
-    }
 
     // The keys of lookups that hash far more often than they are built.
     private case class Evaluation(tree: tpd.Tree, frame: Frame) {
@@ -543,19 +543,20 @@ object Purity {
     private case class WriteSite(method: Symbol, variable: Symbol, entry: String, tree: tpd.Tree)
     private case class DiscardSite(method: Symbol, name: String, facts: Facts, tree: tpd.Tree)
 
-    private val summaries  = mutable.Map.empty[Key, Summary]
-    private val views      = mutable.Map.empty[Key, (Summary, Summary)]
-    private val states     = mutable.HashMap.empty[Key, State]
-    private val open       = mutable.ArrayBuffer.empty[Key]
-    private val dirtied    = mutable.ArrayBuffer.empty[Key]
-    private val readers    = mutable.HashMap.empty[Key, mutable.ArrayBuffer[Key]]
-    private val computing  = mutable.Stack.empty[Key]
-    private val Silent     = Summary(Ids.Empty, Set.empty, Set.empty)
-    private val locals     = mutable.Map.empty[Symbol, tpd.Tree]
-    private val lambdas    = mutable.Map.empty[Symbol, Facts]
-    private val evaluated  = mutable.Map.empty[Evaluation, Value]
-    private val returning  = mutable.Map.empty[Returned, Value]
-    private var scratch    = Scratch()
+    private val summaries = mutable.Map.empty[Key, Summary]
+    private val views     = mutable.Map.empty[Key, (Summary, Summary)]
+    private val states    = mutable.HashMap.empty[Key, State]
+    private val open      = mutable.ArrayBuffer.empty[Key]
+    private val dirtied   = mutable.ArrayBuffer.empty[Key]
+    private val readers   = mutable.HashMap.empty[Key, mutable.ArrayBuffer[Key]]
+    private val computing = mutable.Stack.empty[Key]
+    private val Silent    = Summary(Ids.Empty, Set.empty, Set.empty)
+    private val locals    = mutable.Map.empty[Symbol, tpd.Tree]
+    private val lambdas   = mutable.Map.empty[Symbol, Facts]
+    private val evaluated = mutable.Map.empty[Evaluation, Value]
+    private val returning = mutable.Map.empty[Returned, Value]
+    // Swapped by `isolated` and read by every evaluation, so it is a field rather than a parameter.
+    private var scratch    = Scratch() // scalafix:ok DisableSyntax.var
     private val sites      = mutable.Map.empty[Symbol, mutable.ArrayBuffer[(Symbol, Vector[Argument])]]
     private val tracing    = mutable.Set.empty[Symbol]
     private val pending    = mutable.Queue.empty[(Symbol, Int)]
@@ -643,10 +644,12 @@ object Purity {
       * the order it was reached in, `low` the earliest key still unsettled that it reaches, and `position` its place
       * among the unsettled keys.
       */
-    private final class State(val index: Int, val position: Int) {
+    private class State(val index: Int, val position: Int) {
+      // scalafix:off DisableSyntax.var
       var low: Int         = index
       var settled: Boolean = false
       var dirty: Boolean   = false
+      // scalafix:on DisableSyntax.var
     }
 
     // A key is computed once its callees have settled, and computed again only while it is in a cycle with a callee
@@ -662,13 +665,14 @@ object Purity {
       isolated {
         evaluate(key)
         if (state.low == state.index) {
-          var next = mark
-          while (next < dirtied.size) {
+          @annotation.tailrec
+          def reevaluate(next: Int): Unit = if (next < dirtied.size) {
             val stale = dirtied(next)
-            next += 1
             states(stale).dirty = false
             evaluate(stale)
+            reevaluate(next + 1)
           }
+          reevaluate(mark)
         }
       }
       if (state.low == state.index) {
@@ -682,11 +686,11 @@ object Purity {
       state
     }
 
-    private final class Scratch {
-      val evaluating    = mutable.Set.empty[Returned]
-      val pendingValues = mutable.Set.empty[Evaluation]
-      val running       = mutable.Set.empty[Symbol]
-      val resolving     = mutable.Set.empty[Resolving]
+    private class Scratch {
+      val evaluating: mutable.Set[Returned]      = mutable.Set.empty[Returned]
+      val pendingValues: mutable.Set[Evaluation] = mutable.Set.empty[Evaluation]
+      val running: mutable.Set[Symbol]           = mutable.Set.empty[Symbol]
+      val resolving: mutable.Set[Resolving]      = mutable.Set.empty[Resolving]
     }
 
     // A key is computed as if it were the first, whichever key's computation reached it.
@@ -792,7 +796,7 @@ object Purity {
       lambdas.get(lambda.symbol).exists(facts => quiet(resolve(facts, frame(method, None), None)))
 
     /** Whether calling `method` has no effect at all, not even throwing, and runs nothing that is unknown. */
-    def silent(method: Symbol): Boolean = summaries.get(Key(method, None)).exists(quiet)
+    def silent(method: Symbol): Boolean = summaries.get(Key(method, None)).exists(quiet(_))
 
     private def runsOnlyKnown(summary: Summary): Boolean = summary.invokes.isEmpty && summary.captures.isEmpty
 
@@ -808,7 +812,7 @@ object Purity {
       Vector(Kind.Output, Kind.Input, Kind.Random, Kind.Writes, Kind.Reads, Kind.Unknown, Kind.Throws)
     private val Observable = Set(Kind.Writes, Kind.Output, Kind.Random)
 
-    private given Ordering[Effect] = Ordering.by(rank)
+    private given Ordering[Effect] = Ordering.by(rank(_))
 
     private val ranked = mutable.Map.empty[Symbol, Vector[Effect]]
 
@@ -1018,24 +1022,23 @@ object Purity {
       * from the methods enclosing it, which decide what its own calls on them run.
       */
     private def bound(target: Symbol, method: Symbol, arguments: Vector[Argument], frame: Frame): Map[Symbol, Value] = {
-      var bound = Map.empty[Symbol, Value]
-      if (arguments.exists(_.isInstanceOf[Argument.Expression])) {
-        val declared = terms(method)
-        val own      = terms(target)
-        arguments.zipWithIndex.foreach {
-          case (Argument.Expression(tree, Form.Plain), index)
-              if own.isDefinedAt(index) && declared.lift(index).exists(_.isOneOf(Flags.Given | Flags.Implicit)) =>
-            val value = evaluate(tree, frame)
-            if (exact(value)) bound = bound.updated(own(index), value)
-          case _ => ()
-        }
-      }
-      if (target.exists && !target.owner.isClass)
-        frame.bindings.foreach { (symbol, value) =>
-          if (symbol.owner != target && ownedBy(target.owner, symbol.owner) && exact(value))
-            bound = bound.updated(symbol, value)
-        }
-      bound
+      val explicit =
+        if (arguments.exists(_.isInstanceOf[Argument.Expression])) {
+          val declared = terms(method)
+          val own      = terms(target)
+          arguments.zipWithIndex.collect {
+            case (Argument.Expression(tree, Form.Plain), index)
+                if own.isDefinedAt(index) && declared.lift(index).exists(_.isOneOf(Flags.Given | Flags.Implicit)) =>
+              own(index) -> evaluate(tree, frame)
+          }.filter((_, value) => exact(value)).toMap
+        } else Map.empty[Symbol, Value]
+      val captured =
+        if (target.exists && !target.owner.isClass)
+          frame.bindings.filter((symbol, value) =>
+            symbol.owner != target && ownedBy(target.owner, symbol.owner) && exact(value)
+          )
+        else Map.empty[Symbol, Value]
+      explicit ++ captured
     }
 
     // Whether `ancestor` is `symbol` or one of the symbols enclosing it.
@@ -1081,7 +1084,7 @@ object Purity {
 
     private def exact(value: Value): Boolean = value match {
       case Value.Object(_, _)    => true
-      case Value.Several(values) => values.forall(exact)
+      case Value.Several(values) => values.forall(exact(_))
       case _                     => false
     }
 
@@ -1506,11 +1509,11 @@ object Purity {
         if (!symbol.owner.isClass)
           Option.unless(within(symbol, scope))(plain(kind, cause, Some(symbol)))
         else
-          Calls.field(target, kind, cause, allocated)
+          Calls.field(target, kind, cause, allocated(_))
       }
 
       private def receiver(qualifier: Option[tpd.Tree]): Receiver[Symbol] =
-        Calls.receiver(qualifier, allocated)
+        Calls.receiver(qualifier, allocated(_))
 
       private def allocated(symbol: Symbol): Boolean = fresh(symbol) && within(symbol, scope)
 

@@ -10,25 +10,28 @@ import dotty.tools.dotc.core.Phases.Phase
 import dotty.tools.dotc.reporting.StoreReporter
 import java.nio.file.Files
 import net.kurobako.bonsai.testing.*
+import scala.collection.mutable
 
 /** A source compiled up to the typed trees the plugin sees, with the context that holds them. */
 class Compiled(val source: String) {
-  private var captured: Option[(tpd.Tree, Context)] = None
+  private val captured = mutable.ArrayBuffer.empty[(tpd.Tree, Context)]
 
   private object Capture extends Phase {
     val phaseName = "capture"
 
-    def run(using Context): Unit = captured = Some((ctx.compilationUnit.tpdTree, ctx))
+    def run(using Context): Unit = captured += ((ctx.compilationUnit.tpdTree, ctx)): Unit
+  }
+
+  private class Capturing extends Compiler {
+    override def phases: List[List[Phase]] = {
+      val all = super.phases
+      val at  = all.indexWhere(_.exists(_.phaseName == "posttyper"))
+      all.patch(at + 1, List(List(Capture)), 0)
+    }
   }
 
   private object Fixture extends Driver {
-    override protected def newCompiler(using Context): Compiler = new Compiler {
-      override def phases: List[List[Phase]] = {
-        val all = super.phases
-        val at  = all.indexWhere(_.exists(_.phaseName == "posttyper"))
-        all.patch(at + 1, List(List(Capture)), 0)
-      }
-    }
+    override protected def newCompiler(using Context): Compiler = Capturing()
   }
 
   private val reporter = StoreReporter()
@@ -50,9 +53,9 @@ class Compiled(val source: String) {
 
   val errors: List[String] = reporter.allErrors.map(_.message).toList
 
-  given Context = captured.map(_._2).getOrElse(throw AssertionError(s"does not compile: $errors"))
+  given Context = captured.headOption.map(_._2).getOrElse(throw AssertionError(s"does not compile: $errors"))
 
-  val tree: tpd.Tree = captured.map(_._1).getOrElse(throw AssertionError(s"does not compile: $errors"))
+  val tree: tpd.Tree = captured.headOption.map(_._1).getOrElse(throw AssertionError(s"does not compile: $errors"))
 
   /** The right-hand side of the value or method named `name`. */
   def definition(name: String): tpd.Tree = tree.filterSubTrees {

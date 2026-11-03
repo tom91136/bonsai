@@ -4,7 +4,7 @@ import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 /** Methods that answer from a map held by their object, and compute and store the answer on a miss. A recursive search

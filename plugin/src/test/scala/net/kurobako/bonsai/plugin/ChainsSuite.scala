@@ -16,7 +16,7 @@ class ChainsSuite extends FunSuite {
   private val directory = Path.of(sys.props("bonsai.chains"))
 
   private val fixtures: List[String] = Using.resource(Files.list(directory))(
-    _.iterator.asScala.map(_.getFileName.toString).collect {
+    _.toList.asScala.map(_.getFileName.toString).collect {
       case name if name.endsWith(".input.scala") =>
         name.stripSuffix(".input.scala")
     }.toList.sorted

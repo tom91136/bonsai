@@ -25,6 +25,7 @@ private class Library(using Context) {
   private val MutableIter    = requiredClass("scala.collection.mutable.Iterable")
   private val JavaCollection = requiredClass("java.util.Collection")
   private val JavaMap        = requiredClass("java.util.Map")
+  private val Traversals     = Set(IterableOnce, defn.ArrayClass, ArrayOps, StringOps)
 
   private def derives(tpe: Type, cls: Symbol): Boolean = tpe.widen.derivesFrom(cls)
 
@@ -36,9 +37,7 @@ private class Library(using Context) {
 
   /** Whether values of a type can be traversed: collections and arrays, but not options. */
   def traversal(tpe: Type): Boolean =
-    !derives(tpe, defn.OptionClass) &&
-      (derives(tpe, IterableOnce) || derives(tpe, defn.ArrayClass) ||
-        derives(tpe, ArrayOps) || derives(tpe, StringOps))
+    !derives(tpe, defn.OptionClass) && Traversals.exists(derives(tpe, _))
 
   def linked(tpe: Type): Boolean = derives(tpe, LinearSeq)
 

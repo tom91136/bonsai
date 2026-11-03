@@ -24,7 +24,8 @@ private[analysis] object JavaConversion {
       clones: Vector[Clones.Group],
       lints: Vector[JavaLints.Found],
       reflections: Vector[JavaModel.Reflection],
-      costs: Vector[JavaModel.Cost]
+      costs: Vector[JavaModel.Cost],
+      problems: Vector[String]
   )
 
   private case class Tally(total: Int = 0, dropped: Int = 0, tests: Int = 0, inverted: Int = 0)
@@ -32,7 +33,7 @@ private[analysis] object JavaConversion {
   /** The graph of the Java code the javac plugin collected, which holds the nodes it found and the references between
     * them, and the methods, the fields and the calls it found.
     */
-  def collected(manifest: Manifest, generated: Vector[PathMatcher], parallel: Parallel): (Collected, Vector[String]) = {
+  def collected(manifest: Manifest, generated: Vector[PathMatcher], parallel: Parallel): Collected = {
     val nodes       = mutable.LinkedHashMap.empty[String, Node]
     val edges       = mutable.LinkedHashMap.empty[String, mutable.LinkedHashSet[String]]
     val roots       = mutable.LinkedHashSet.empty[String]
@@ -250,30 +251,28 @@ private[analysis] object JavaConversion {
         sum.variants.map(variant => variant.copy(fields = built.get(variant.name).fold(variant.fields)(_.fields)))
       )
     )
-    (
-      Collected(
-        nodes.toMap,
-        edges.view.mapValues(_.toSet).toMap,
-        roots.toSet,
-        methods.toVector,
-        sites.view.filterKeys(!built.contains(_)).mapValues(_.toVector).toMap,
-        sites.view.filterKeys(built.contains).map((callee, found) =>
-          callee -> named(found.toVector, built(callee))
-        ).toMap ++ required.flatMap { (callee, product) =>
-          val calls = sites.getOrElse(callee, mutable.ArrayBuffer.empty).filter(_.arguments.size == product.fields.size)
-          Option.when(calls.nonEmpty)(callee -> calls.toVector)
-        },
-        usages,
-        products.toVector,
-        required.toMap,
-        resolved,
-        // The copies of the code of the Java code are of the whole build, as the same block of code written in two
-        // modules of it is as much a copy as one written twice in one.
-        JavaFragments.groups(fragments),
-        lints.toVector,
-        reflections.toVector,
-        costs.values.toVector
-      ),
+    Collected(
+      nodes.toMap,
+      edges.view.mapValues(_.toSet).toMap,
+      roots.toSet,
+      methods.toVector,
+      sites.view.filterKeys(!built.contains(_)).mapValues(_.toVector).toMap,
+      sites.view.filterKeys(built.contains).map((callee, found) =>
+        callee -> named(found.toVector, built(callee))
+      ).toMap ++ required.flatMap { (callee, product) =>
+        val calls = sites.getOrElse(callee, mutable.ArrayBuffer.empty).filter(_.arguments.size == product.fields.size)
+        Option.when(calls.nonEmpty)(callee -> calls.toVector)
+      },
+      usages,
+      products.toVector,
+      required.toMap,
+      resolved,
+      // The copies of the code of the Java code are of the whole build, as the same block of code written in two
+      // modules of it is as much a copy as one written twice in one.
+      JavaFragments.groups(fragments),
+      lints.toVector,
+      reflections.toVector,
+      costs.values.toVector,
       problems.result()
     )
   }

@@ -7,30 +7,10 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Symbols.requiredModule
-import dotty.tools.dotc.util.SourceFile
 import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.collections.*
 import scala.annotation.tailrec
 import scala.collection.mutable
-
-/** A chain of calls as the laws see it, with where its steps are written: `ends(i)` is the extent of the expression
-  * that runs the steps up to and including `i`, so a rewrite of steps `from` until `until` replaces `span(until)` and
-  * builds from the receiver before `from`. `standalone` when the chain is a statement, a definition or an argument,
-  * where a receiver needs no parentheses once nothing follows it.
-  */
-case class Lifted(chain: Chain, file: SourceFile, source: Span, ends: Vector[Span], standalone: Boolean) {
-
-  /** The extent a rewrite of the steps up to `until` replaces. */
-  def span(until: Int): Span = ends(until - 1)
-
-  /** The extent of the expression that runs the steps before `from`. */
-  def bare(from: Int): Span = if (from == 0) source else ends(from - 1)
-
-  def text(span: Span): String = String(file.content(), span.start, span.end - span.start)
-
-  /** The source text of the receiver of step `from`, written so a call can follow it. */
-  def receiver(from: Int): String = Text.operand(text(bare(from)))
-}
 
 /** Reads chains of collection calls from typed trees, with the purity of their functions from `purity`. */
 class Lifter(purity: Purity)(using Context) {
@@ -68,35 +48,41 @@ class Lifter(purity: Purity)(using Context) {
     * the method the code belongs to, and `descend` says whether the trees under a tree are read.
     */
   def chains(root: tpd.Tree, owner: Symbol, descend: tpd.Tree => Boolean = _ => true): Vector[Lifted] = {
-    val found = mutable.ArrayBuffer.empty[Lifted]
-    val spine = mutable.Set.empty[tpd.Tree]
-    new tpd.TreeTraverser {
-      private var ancestors: List[tpd.Tree] = Nil
-      private var enclosing: Symbol         = owner
+    val traverser = Chains(owner, descend)
+    traverser.traverse(root)
+    traverser.found.toVector
+  }
 
-      def traverse(tree: tpd.Tree)(using Context): Unit = if (descend(tree)) {
-        tree match {
-          case tpd.Apply(function, _)     => spine += function
-          case tpd.TypeApply(function, _) => spine += function
-          case _                          => ()
-        }
-        if (!spine(tree) && !flattened(tree, ancestors))
-          build(tree, enclosing, ancestors).filter(_._1.chain.steps.exists(_.receiver.library)).foreach { lifted =>
-            found += lifted._1
-            spine ++= lifted._2
-          }
-        val before = enclosing
-        tree match {
-          case definition: tpd.DefDef if !definition.symbol.isAnonymousFunction => enclosing = definition.symbol
-          case _                                                                => ()
-        }
-        ancestors = tree :: ancestors
-        traverseChildren(tree)
-        ancestors = ancestors.tail
-        enclosing = before
+  private class Chains(owner: Symbol, descend: tpd.Tree => Boolean) extends tpd.TreeTraverser {
+    val found: mutable.ArrayBuffer[Lifted] = mutable.ArrayBuffer.empty[Lifted]
+    private val spine                      = mutable.Set.empty[tpd.Tree]
+    // The cursor of a traversal that visits every tree of the build.
+    // scalafix:off DisableSyntax.var
+    private var ancestors: List[tpd.Tree] = Nil
+    private var enclosing: Symbol         = owner
+    // scalafix:on DisableSyntax.var
+
+    def traverse(tree: tpd.Tree)(using Context): Unit = if (descend(tree)) {
+      tree match {
+        case tpd.Apply(function, _)     => spine += function
+        case tpd.TypeApply(function, _) => spine += function
+        case _                          => ()
       }
-    }.traverse(root)
-    found.toVector
+      if (!spine(tree) && !flattened(tree, ancestors))
+        build(tree, enclosing, ancestors).filter(_._1.chain.steps.exists(_.receiver.library)).foreach { lifted =>
+          found += lifted._1
+          spine ++= lifted._2
+        }
+      val before = enclosing
+      tree match {
+        case definition: tpd.DefDef if !definition.symbol.isAnonymousFunction => enclosing = definition.symbol
+        case _                                                                => ()
+      }
+      ancestors = tree :: ancestors
+      traverseChildren(tree)
+      ancestors = ancestors.tail
+      enclosing = before
+    }
   }
 
   private def build(tree: tpd.Tree, owner: Symbol, ancestors: List[tpd.Tree]): Option[(Lifted, List[tpd.Tree])] = {
@@ -166,22 +152,22 @@ class Lifter(purity: Purity)(using Context) {
     * with a parenthesised argument does.
     */
   private def balanced(content: Array[Char], span: Span): Span = {
-    var depth = 0
-    var at    = span.start
-    var end   = span.end
-    while (at < end) {
-      content(at) match {
-        case '(' | '[' | '{' => depth += 1
-        case ')' | ']' | '}' => depth -= 1
-        case _               => ()
-      }
-      at += 1
-    }
-    while (depth > 0 && end < content.length && (content(end) == ')' || content(end) == ']' || content(end) == '}')) {
-      end += 1
-      depth -= 1
-    }
-    Span(span.start, end)
+    @tailrec def opened(at: Int, depth: Int): Int =
+      if (at < span.end) opened(
+        at + 1,
+        depth +
+          (content(at) match {
+            case '(' | '[' | '{' => 1
+            case ')' | ']' | '}' => -1
+            case _               => 0
+          })
+      )
+      else depth
+    @tailrec def closed(end: Int, depth: Int): Int =
+      if (depth > 0 && end < content.length && (content(end) == ')' || content(end) == ']' || content(end) == '}'))
+        closed(end + 1, depth - 1)
+      else end
+    Span(span.start, closed(span.end, opened(span.start, 0)))
   }
 
   private def assertion(tree: tpd.Tree, ancestors: List[tpd.Tree]): Boolean = ancestors.headOption.exists {
@@ -384,7 +370,7 @@ class Lifter(purity: Purity)(using Context) {
   )
 
   private def peel(tree: tpd.Tree): Option[Call] = Calls.spine(tree) match {
-    case (select: tpd.Select, nodes) =>
+    case Calls.Spine(select: tpd.Select, nodes) =>
       val applied = nodes.zip(select :: nodes.dropRight(1))
       val lists   = applied.collect {
         case (tpd.Apply(_, arguments), function) if !function.tpe.widen.isImplicitMethod => arguments
@@ -685,17 +671,18 @@ class Lifter(purity: Purity)(using Context) {
               .orElse(ancestors.collectFirst { case scope: tpd.ValDef => scope })
         val wanted = Texts.of(index)
         scope.exists { scope =>
-          val accumulator = new tpd.TreeAccumulator[Boolean] {
-            def apply(found: Boolean, tree: tpd.Tree)(using Context): Boolean = found ||
-              (tree match {
-                case tpd.Apply(tpd.Select(target, name), List(other))
-                    if name.toString == "apply" && stripped(target).symbol == symbol && Texts.of(other) != wanted =>
-                  true
-                case _ => foldOver(found, tree)
-              })
-          }
-          accumulator(false, scope)
+          Lookups(symbol, wanted)(false, scope)
         }
       case _ => false
     }
+
+  private class Lookups(symbol: Symbol, wanted: String) extends tpd.TreeAccumulator[Boolean] {
+    def apply(found: Boolean, tree: tpd.Tree)(using Context): Boolean = found ||
+      (tree match {
+        case tpd.Apply(tpd.Select(target, name), List(other))
+            if name.toString == "apply" && stripped(target).symbol == symbol && Texts.of(other) != wanted =>
+          true
+        case _ => foldOver(found, tree)
+      })
+  }
 }

@@ -66,13 +66,13 @@ object Clones {
     def conforms(to: Typed): Boolean
   }
 
+  object Deferred {
+    def apply[A](compute: => A): Deferred[A] = new Deferred(compute)
+  }
+
   /** A value computed when first used, for what only fragments found alike need. */
   class Deferred[A](compute: => A) {
     lazy val value: A = compute
-  }
-
-  object Deferred {
-    def apply[A](compute: => A): Deferred[A] = new Deferred(compute)
   }
 
   /** The `index` of the parameter that a reference starts at, and the `suffix` of selections that follow it, which

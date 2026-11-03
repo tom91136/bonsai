@@ -122,17 +122,20 @@ class Fragments(lines: Lines)(using Context) {
     * alias the body does not have outside its scope, would change.
     */
   private def faithful(member: Symbol, body: tpd.Tree): Boolean = {
-    val actual   = body.tpe
     val declared = member.info.widenExpr.finalResultType
-    actual == null || declared <:< actual.widen && !declared.existsPart {
-      case reference: Types.NamedType =>
-        reference.symbol.is(Flags.Opaque) && !actual.existsPart {
-          case other: Types.NamedType => other.symbol == reference.symbol
-          case _                      => false
-        }
-      case _ => false
-    }
+    typeOf(body).forall(actual =>
+      declared <:< actual.widen && !declared.existsPart {
+        case reference: Types.NamedType =>
+          reference.symbol.is(Flags.Opaque) && !actual.existsPart {
+            case other: Types.NamedType => other.symbol == reference.symbol
+            case _                      => false
+          }
+        case _ => false
+      }
+    )
   }
+
+  private def typeOf(tree: tpd.Tree): Option[Types.Type] = Option(tree.tpe)
 
   /** The fragments that share a hash with another, confirmed with hashes that number locals by first occurrence. */
   private def candidates(): Vector[Clones.Candidate] = {
@@ -177,12 +180,9 @@ class Fragments(lines: Lines)(using Context) {
       )
     }
 
-  private def hasMap(tree: tpd.Tree): Boolean = {
-    val tpe = tree.tpe
-    (tpe != null &&
-      tpe.widen.baseClasses.exists(cls => cls.name.toString.endsWith("Map"))) ||
-    subtrees.of(tree).exists(hasMap(_))
-  }
+  private def hasMap(tree: tpd.Tree): Boolean =
+    typeOf(tree).exists(_.widen.baseClasses.exists(cls => cls.name.toString.endsWith("Map"))) ||
+      subtrees.of(tree).exists(hasMap(_))
 
   private def spanOf(tree: tpd.Tree): Option[(String, Int, Int)] =
     Option.when(tree.span.exists && tree.source.exists)((tree.source.path, tree.span.start, tree.span.end))
@@ -292,20 +292,15 @@ class Fragments(lines: Lines)(using Context) {
   }
 
   // A call made for its effect is no value to bind, and a method wrapping a single call shortens nothing.
-  private def unit(tree: tpd.Tree): Boolean = tree.tpe match {
-    case null => false
-    case tpe  => tpe.widen.isRef(defn.UnitClass)
-  }
+  private def unit(tree: tpd.Tree): Boolean = typeOf(tree).exists(_.widen.isRef(defn.UnitClass))
 
   // A value that holds state is no constant to share, and a field that makes it is no method a call replaces.
-  private def stateless(tree: tpd.Tree): Boolean = tree.tpe match {
-    case null => true
-    case tpe  =>
-      !tpe.widen.baseClasses.exists { cls =>
-        val name = cls.fullName.toString
-        name == "scala.Array" || name.startsWith("scala.collection.mutable.") || name.startsWith("java.util.")
-      }
-  }
+  private def stateless(tree: tpd.Tree): Boolean = typeOf(tree).forall(tpe =>
+    !tpe.widen.baseClasses.exists { cls =>
+      val name = cls.fullName.toString
+      name == "scala.Array" || name.startsWith("scala.collection.mutable.") || name.startsWith("java.util.")
+    }
+  )
 
   // A call that leaves arguments to their defaults, or passes named ones through values the compiler binds in order to
   // evaluate them, is no expression the author wrote.
@@ -319,10 +314,7 @@ class Fragments(lines: Lines)(using Context) {
   }
 
   // The callee of a call is no expression of its own.
-  private def evaluated(tree: tpd.Tree): Boolean = tree.tpe match {
-    case null => true
-    case tpe  => !tpe.widen.isInstanceOf[Types.MethodicType]
-  }
+  private def evaluated(tree: tpd.Tree): Boolean = typeOf(tree).forall(!_.widen.isInstanceOf[Types.MethodicType])
 
   private def keep(hash: Long, piece: Piece): Unit =
     pieces.getOrElseUpdate(hash, mutable.ArrayBuffer.empty) += piece: Unit
@@ -361,14 +353,10 @@ class Fragments(lines: Lines)(using Context) {
   }
 
   // The arguments the compiler passes for a using clause are no call the author wrote.
-  private def contextual(function: tpd.Tree): Boolean = function.tpe match {
-    case null => false
-    case tpe  =>
-      tpe.widen match {
-        case method: Types.MethodType => method.isImplicitMethod
-        case _                        => false
-      }
-  }
+  private def contextual(function: tpd.Tree): Boolean = typeOf(function).exists(_.widen match {
+    case method: Types.MethodType => method.isImplicitMethod
+    case _                        => false
+  })
 
   /** Whether a tree names a value, as a variable, a field, an object, or a selection from one, which a copy may refer
     * to another of, as the `apply` of an object may be that of another.
@@ -502,7 +490,7 @@ class Fragments(lines: Lines)(using Context) {
     }
   }
 
-  private def typed(tpe: Types.Type): Clones.Typed = Typing(if (tpe == null) defn.AnyType else tpe.widenExpr.widen)
+  private def typed(tpe: Types.Type): Clones.Typed = Typing(Option(tpe).fold(defn.AnyType)(_.widenExpr.widen))
 
   // A type that mentions the parameters or type parameters of the method is not one a call elsewhere can be held to.
   private def accepted(parameter: Symbol): Option[Clones.Typed] = {

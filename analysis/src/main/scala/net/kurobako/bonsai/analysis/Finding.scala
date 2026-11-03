@@ -3,6 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.charset.StandardCharsets.UTF_8
 import java.security.MessageDigest
 import net.kurobako.bonsai.java.*
+import scala.annotation.tailrec
 import scala.collection.mutable
 
 object Finding {
@@ -10,31 +11,22 @@ object Finding {
 
   /** `text` with every run of digits replaced by `#`. */
   private[analysis] def numberless(text: String): String = {
-    val out = mutable.StringBuilder(text.length)
-    var i   = 0
-    while (i < text.length) {
-      val c = text.charAt(i)
-      if (c >= '0' && c <= '9') {
-        while (i < text.length && text.charAt(i) >= '0' && text.charAt(i) <= '9') i += 1
+    val out                          = mutable.StringBuilder(text.length)
+    def digit(at: Int): Boolean      = text.charAt(at) >= '0' && text.charAt(at) <= '9'
+    @tailrec def skip(at: Int): Int  = if (at < text.length && digit(at)) skip(at + 1) else at
+    @tailrec def scan(at: Int): Unit = if (at < text.length) {
+      if (digit(at)) {
         out.append('#')
+        scan(skip(at))
       } else {
-        out.append(c)
-        i += 1
+        out.append(text.charAt(at))
+        scan(at + 1)
       }
     }
+    scan(0)
     out.toString
   }
   private val IdBytes = 5
-
-  /** A rule of the analysis. Rules are in reporting priority: evidence from references and constructions first,
-    * structural observations last. Warnings of `strict` rules fail the ci mode.
-    */
-  class Rule private[Finding] (val id: String, val strict: Boolean, val ordinal: Int) {
-    def suppressedBy(ids: Set[String]): Boolean =
-      ids("*") || ids(id) || ids.exists(other => JavaLint.IntelliJ.get(other).exists(_(id)))
-
-    override def toString: String = id
-  }
 
   object Rule {
     private val declared = mutable.ArrayBuffer.empty[Rule]
@@ -124,7 +116,17 @@ object Finding {
     JavaLint.chains.foreach(rule(_, strict = true))
 
     /** Every rule, in reporting priority. */
-    val values: Array[Rule] = declared.toArray
+    val values: Vector[Rule] = declared.toVector
+  }
+
+  /** A rule of the analysis. Rules are in reporting priority: evidence from references and constructions first,
+    * structural observations last. Warnings of `strict` rules fail the ci mode.
+    */
+  class Rule private (val id: String, val strict: Boolean, val ordinal: Int) {
+    def suppressedBy(ids: Set[String]): Boolean =
+      ids("*") || ids(id) || ids.exists(other => JavaLint.IntelliJ.get(other).exists(_(id)))
+
+    override def toString: String = id
   }
 
   /** Errors fail in every mode, warnings call for a change, and information describes structure worth reviewing. */

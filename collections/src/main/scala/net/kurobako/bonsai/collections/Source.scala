@@ -1,5 +1,8 @@
 package net.kurobako.bonsai.collections
 
+import scala.annotation.tailrec
+import scala.collection.mutable
+
 /** Small facts about source text that rewrites need, without parsing it. */
 object Source {
 
@@ -9,21 +12,23 @@ object Source {
 
   /** `text` with everything inside brackets and string literals replaced by underscores. */
   def outline(text: String): String = {
-    var depth   = 0
-    var quoted  = false
-    var escaped = false
-    text.map { c =>
+    val out = mutable.StringBuilder(text.length)
+    @tailrec def scan(index: Int, depth: Int, quoted: Boolean, escaped: Boolean): Unit = if (index < text.length) {
+      val c = text.charAt(index)
       if (quoted) {
-        if (escaped) escaped = false else if (c == '\\') escaped = true else if (c == '"') quoted = false
-        '_'
-      } else
+        out += '_'
+        scan(index + 1, depth, !(!escaped && c == '"'), !escaped && c == '\\')
+      } else {
         c match {
-          case '"'             => quoted = true; '_'
-          case '(' | '[' | '{' => depth += 1; '_'
-          case ')' | ']' | '}' => depth -= 1; '_'
-          case _               => if (depth > 0) '_' else c
+          case '"'             => out += '_'; scan(index + 1, depth, true, false)
+          case '(' | '[' | '{' => out += '_'; scan(index + 1, depth + 1, false, false)
+          case ')' | ']' | '}' => out += '_'; scan(index + 1, depth - 1, false, false)
+          case _               => out += (if (depth > 0) '_' else c); scan(index + 1, depth, false, false)
         }
+      }
     }
+    scan(0, 0, false, false)
+    out.toString
   }
 
   /** `text` as an operand of `&&` or `||`, parenthesised when it binds looser than the operator. */

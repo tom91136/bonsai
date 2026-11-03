@@ -1,22 +1,5 @@
 package net.kurobako.bonsai.collections
 
-/** The steps a law matched, which start at `from` in `chain`, and what they cost before and after the law. */
-private[collections] case class Hit(chain: Chain, from: Int, steps: Vector[Step], before: Cost, after: Cost) {
-  def until: Int                = from + steps.size
-  def receiver: Kind            = steps.head.receiver
-  def method(k: Int): String    = steps(k).method
-  def args(k: Int): Vector[Arg] = steps(k).args
-  def names: String             = steps.map(_.method).mkString(" then ")
-  def gain: String              = Cost.gain(before, after)
-}
-
-/** How a law reads in Java: what it says, the rewrite where Java has one, and when it holds there. */
-private[collections] case class JavaForm(
-    message: Hit => String,
-    rewrite: Option[(Hit, String) => String] = None,
-    applies: Hit => Boolean = _ => true
-)
-
 /** A law over a window of adjacent steps, as data: the methods each step may be, or one slot the `repeat`s of which
   * make a run of two or more; `applies` for what must hold for it to speak at all; `into`, the method it improves to,
   * which the cost model needs; and what it says. With a `rewrite` and `exact` holding, the outcome is that rewrite;

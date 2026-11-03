@@ -7,6 +7,7 @@ import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import sbt.*
 import sbt.Keys.*
+import scala.collection.mutable
 
 /** sbt restores cached outputs as links into its read-only cache, and the compiler rewrites the semanticdb of a changed
   * source in place, through such a link; each link becomes a file of its own before compiling, so the write lands. A
@@ -29,14 +30,16 @@ object WritableSemanticdb extends AutoPlugin {
     val found = Vector.newBuilder[Path]
     val _     = Files.walkFileTree(
       root,
-      new SimpleFileVisitor[Path] {
-        override def visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult = {
-          if (attributes.isSymbolicLink) found += file
-          FileVisitResult.CONTINUE
-        }
-      }
+      Links(found)
     )
     found.result()
+  }
+
+  private class Links(found: mutable.Builder[Path, Vector[Path]]) extends SimpleFileVisitor[Path] {
+    override def visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult = {
+      if (attributes.isSymbolicLink) found += file
+      FileVisitResult.CONTINUE
+    }
   }
 
   private def copyLinks(root: Path): Unit =

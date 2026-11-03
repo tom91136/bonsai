@@ -150,7 +150,8 @@ private class Lambdas(checks: Checks, hot: String => Boolean, cold: String => Bo
   private class Uses(parameter: Symbol, method: tpd.DefDef) extends tpd.TreeTraverser {
     private val mentioned = mutable.ListBuffer.empty[tpd.Tree]
     private val found     = mutable.ListBuffer.empty[tpd.Apply]
-    private var deferred  = 0
+    // The depth of the branches and short-circuited operands around the tree being visited.
+    private var deferred = 0 // scalafix:ok DisableSyntax.var
 
     // Arguments the method computes, like a result it only converts, are a step its callers would otherwise repeat.
     def single: Boolean = mentioned.size == 1 && found.size == 1 &&

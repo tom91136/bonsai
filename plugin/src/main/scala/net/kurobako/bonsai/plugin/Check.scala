@@ -3,11 +3,6 @@ package net.kurobako.bonsai.plugin
 import net.kurobako.bonsai.collections.*
 import scala.collection.mutable
 
-/** A check of the compiler plugin, named by the id its options and messages use; `strict` checks are errors in the ci
-  * mode. Besides the checks declared here there is one for each law of collection chains.
-  */
-private class Check private (val id: String, val strict: Boolean, val severity: Check.Severity)
-
 private object Check {
 
   /** How a check reports by default: an error fails in every mode, and information never fails. */
@@ -102,3 +97,8 @@ private object Check {
   /** Every check, including one for each law of collection chains. */
   lazy val all: List[Check] = declared.toList ++ laws
 }
+
+/** A check of the compiler plugin, named by the id its options and messages use; `strict` checks are errors in the ci
+  * mode. Besides the checks declared here there is one for each law of collection chains.
+  */
+private class Check private (val id: String, val strict: Boolean, val severity: Check.Severity)

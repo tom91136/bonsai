@@ -26,21 +26,21 @@ import scala.util.matching.Regex
 private[analysis] object Collector {
   // A hierarchy of one case is a single implementation, which another rule reports.
   private val MinimumCases = 2
-}
 
-/** A member of a build class whose references decide whether it is used, test-only or wider than needed. */
-private case class Definition(
-    name: String,
-    node: String,
-    deferred: Boolean,
-    public: Boolean,
-    variable: Boolean,
-    info: Node,
-    suppressed: Set[String],
-    field: Boolean = false,
-    alias: Boolean = false,
-    line: Int = 0
-)
+  /** A member of a build class whose references decide whether it is used, test-only or wider than needed. */
+  private case class Definition(
+      name: String,
+      node: String,
+      deferred: Boolean,
+      public: Boolean,
+      variable: Boolean,
+      info: Node,
+      suppressed: Set[String],
+      field: Boolean = false,
+      alias: Boolean = false,
+      line: Int = 0
+  )
+}
 
 private[analysis] class Collector(
     outputs: Vector[Output],
@@ -74,7 +74,7 @@ private[analysis] class Collector(
   private val clones         = mutable.ArrayBuffer.empty[Clones.Group]
   private val members        = mutable.Map.empty[Symbol, Definition]
   private val users          = mutable.Map.empty[Symbol, mutable.Set[String]]
-  private var usage          = Map.empty[String, Set[String]]
+  private val usage          = mutable.Map.empty[String, Set[String]]
   private val assigned       = mutable.Set.empty[Symbol]
   private val memberList     = mutable.ArrayBuffer.empty[Members.Member]
   private val givens         = mutable.Map.empty[Symbol, (String, Node)]
@@ -92,12 +92,13 @@ private[analysis] class Collector(
   private val unusedList     = mutable.ArrayBuffer.empty[Complexity.Bounded]
   private val pipelineList   = mutable.ArrayBuffer.empty[Pipelines.Lifted]
   private val templates      = mutable.Map.empty[Symbol, tpd.Template]
-  private var purityModel    = Purity.Model.empty
-  private val hierarchies    = mutable.ArrayBuffer.empty[(Symbol, String, String)]
-  private val bodied         = mutable.Set.empty[Symbol]
-  private val enumerations   = mutable.ArrayBuffer.empty[Algebra.Enumeration]
-  private var placements     = Option.empty[Placements]
-  private var callees        = Map.empty[Symbol, Callee]
+  // The phase runs once, and its results are read by the extraction that follows.
+  private var purityModel  = Purity.Model.empty       // scalafix:ok DisableSyntax.var
+  private val hierarchies  = mutable.ArrayBuffer.empty[(Symbol, String, String)]
+  private val bodied       = mutable.Set.empty[Symbol]
+  private val enumerations = mutable.ArrayBuffer.empty[Algebra.Enumeration]
+  private var placements   = Option.empty[Placements] // scalafix:ok DisableSyntax.var
+  private val callees      = mutable.Map.empty[Symbol, Callee]
 
   def phaseName: String = "bonsai-collect"
 
@@ -121,13 +122,13 @@ private[analysis] class Collector(
       if (derivations.derived(cls)) product.copy(origin = Algebra.Origin.Derived) else product
     )
     enumerations ++= hierarchies.flatMap((parent, name, key) => enumeration(parent, name, key))
-    callees = products.view.map((cls, product) =>
+    callees ++= products.view.map((cls, product) =>
       cls -> Callee(product.name, product.fields.size, Finding.simple(product.name), product.node, Set.empty)
     ).toMap ++ methods.view.map((symbol, method) =>
       symbol -> Callee(method.key, method.fields.size, method.short, method.node, method.suppressed)
     )
     callSites.align(callees)
-    usage = users.toVector.groupMapReduce((symbol, _) => memberName(symbol))((_, nodes) => nodes.toSet)(_ ++ _)
+    usage ++= users.toVector.groupMapReduce((symbol, _) => memberName(symbol))((_, nodes) => nodes.toSet)(_ ++ _)
     memberList ++= members.collect {
       case (symbol, definition) if !(definition.field && derivations.derived(symbol.owner)) =>
         val bases = symbol.allOverriddenSymbols.toVector

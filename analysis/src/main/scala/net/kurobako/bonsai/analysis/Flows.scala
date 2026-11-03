@@ -8,6 +8,7 @@ import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.lifting.*
+import scala.annotation.tailrec
 import scala.collection.mutable
 
 private object Flows {
@@ -67,15 +68,15 @@ private class Flows(
     private val sinks    = mutable.Map.empty[tpd.Tree, Sink]
     private val uses     = mutable.Map.empty[Symbol, Sink]
     private val declared = mutable.Map.empty[Symbol, Int]
-    private var changed  = false
+    private val changed  = mutable.Set.empty[Symbol]
 
     def run(): Flow = {
-      var rounds = 0
-      while (rounds == 0 || (changed && rounds < 8)) {
-        changed = false
-        rounds += 1
+      @tailrec def settle(rounds: Int): Unit = {
+        changed.clear()
         flow(definition.rhs, Sink.Returned, 0)
+        if (rounds < 8 && changed.nonEmpty) settle(rounds + 1)
       }
+      settle(1)
       Flow(sinks, uses)
     }
 
@@ -85,7 +86,7 @@ private class Flows(
         val joined   = previous.fold(sink)(_.join(sink))
         if (!previous.contains(joined)) {
           uses(symbol) = joined
-          changed = true
+          changed += symbol
         }
       }
 

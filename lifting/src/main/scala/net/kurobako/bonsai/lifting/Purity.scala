@@ -9,16 +9,6 @@ import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.effects.*
 
-/** What a front end knows of the effects of the functions a chain passes. `lambda` and `method` hold when calling the
-  * function has no effect a rewrite could reorder, repeat or drop, and `value` when evaluating a plain expression has
-  * none.
-  */
-trait Purity {
-  def lambda(owner: Symbol, definition: tpd.DefDef)(using Context): Boolean
-  def method(symbol: Symbol)(using Context): Boolean
-  def value(tree: tpd.Tree)(using Context): Boolean = Purity.Syntactic.body(tree, Set.empty)
-}
-
 object Purity {
 
   private val Stateful = Vector(
@@ -91,4 +81,14 @@ object Purity {
         (symbol.isOneOf(Flags.Module | Flags.Package) ||
           !symbol.isOneOf(Flags.Method | Flags.Lazy | Flags.Mutable) && !symbol.info.isInstanceOf[ExprType])
   }
+}
+
+/** What a front end knows of the effects of the functions a chain passes. `lambda` and `method` hold when calling the
+  * function has no effect a rewrite could reorder, repeat or drop, and `value` when evaluating a plain expression has
+  * none.
+  */
+trait Purity {
+  def lambda(owner: Symbol, definition: tpd.DefDef)(using Context): Boolean
+  def method(symbol: Symbol)(using Context): Boolean
+  def value(tree: tpd.Tree)(using Context): Boolean = Purity.Syntactic.body(tree, Set.empty)
 }

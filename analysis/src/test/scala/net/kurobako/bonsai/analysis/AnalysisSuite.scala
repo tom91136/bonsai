@@ -10,6 +10,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.regex.Pattern
+import javax.tools.DiagnosticListener
 import javax.tools.JavaFileObject
 import javax.tools.StandardLocation
 import javax.tools.ToolProvider
@@ -142,18 +143,21 @@ trait AnalysisSuite extends FunSuite {
   protected def assertNoFinding(found: Vector[Finding])(matches: Finding => Boolean): Unit =
     assert(!found.exists(matches), found.mkString("\n"))
 
+  private class Analyzed(collector: Collector) extends TaskListener {
+    override def finished(event: TaskEvent): Unit =
+      if (event.getKind == TaskEvent.Kind.ANALYZE) collector.unit(event.getCompilationUnit, event.getTypeElement)
+  }
+
   /** Compiles Java files into `classes` with the class path `path`, and returns the model the javac plugin collects. */
   protected def javac(files: Seq[Path], classes: Path, path: Seq[Path]): JavaModel.Model = {
     val compiler    = ToolProvider.getSystemJavaCompiler
     val diagnostics = java.util.ArrayList[String]()
-    val manager     = compiler.getStandardFileManager(null, null, null)
+    // scalafix:off DisableSyntax.null
+    val manager = compiler.getStandardFileManager(null, null, null)
     manager.setLocation(StandardLocation.CLASS_OUTPUT, java.util.List.of(classes.toFile))
     manager.setLocation(StandardLocation.CLASS_PATH, path.map(_.toFile).asJava)
-    val listener = new javax.tools.DiagnosticListener[JavaFileObject] {
-      def report(diagnostic: javax.tools.Diagnostic[? <: JavaFileObject]): Unit =
-        diagnostics.add(diagnostic.getMessage(null)): Unit
-    }
-    val task = compiler.getTask(
+    val listener: DiagnosticListener[JavaFileObject] = diagnostic => diagnostics.add(diagnostic.getMessage(null)): Unit
+    val task                                         = compiler.getTask(
       null,
       manager,
       listener,
@@ -162,10 +166,8 @@ trait AnalysisSuite extends FunSuite {
       manager.getJavaFileObjectsFromFiles(files.map(_.toFile).asJava)
     ).asInstanceOf[JavacTask]
     val collector = Collector(Trees.instance(task))
-    task.addTaskListener(new TaskListener {
-      override def finished(event: TaskEvent): Unit =
-        if (event.getKind == TaskEvent.Kind.ANALYZE) collector.unit(event.getCompilationUnit, event.getTypeElement)
-    })
+    task.addTaskListener(Analyzed(collector))
+    // scalafix:on DisableSyntax.null
     assert(task.call(), s"the sources compile: ${diagnostics.asScala.mkString("\n")}")
     collector.model
   }

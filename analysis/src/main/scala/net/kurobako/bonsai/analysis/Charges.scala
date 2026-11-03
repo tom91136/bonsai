@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.analysis
 
-import net.kurobako.bonsai.collections.Sink
+import net.kurobako.bonsai.collections.*
 import scala.collection.mutable
 
 /** The bounds and charges the cost model of either language is made of. */
@@ -44,7 +44,7 @@ private object Charges {
   private def sum(charges: Iterable[Charge]): Bound =
     charges.foldLeft(Bound.Zero)((total, charge) => total + Bound(charge.time, charge.escaping))
 
-  final class Memo[K] {
+  class Memo[K] {
     private val summaries = mutable.Map.empty[K, Bound]
     private val pending   = mutable.Set.empty[K]
 
@@ -111,6 +111,21 @@ private object Charges {
   /** Where a charge is made: its line, the scope around it, and what becomes of the value it produces. */
   case class Site(line: Int, scope: Scope, sink: Sink)
 
+  object Charge {
+    def at(site: Site, counted: Scope, work: Work): Charge =
+      Charge(
+        work.what,
+        site.scope.loops.findLast(!_.hidden).map(_.label),
+        counted.factor * work.time,
+        counted.factorFrom(site.sink.level) * work.space,
+        if (site.sink.escapes) counted.factor * work.space else Polynomial.Zero,
+        work.linear,
+        site.scope.callback,
+        site.scope.terminal,
+        site.line
+      )
+  }
+
   /** One costly operation, its cost already multiplied by the turns of the loops around it. Its space is what is live
     * at once, which only the loops it is kept across multiply; `escaping` is the space a caller inherits, which is the
     * part the method returns or stores.
@@ -130,20 +145,5 @@ private object Charges {
       if (terminal) this else copy(time = time * factor, space = space * factor, escaping = escaping * factor)
 
     def hit(terms: Vector[Complexity.Term]): Complexity.Hit = Complexity.Hit(terms, what, within, line)
-  }
-
-  object Charge {
-    def at(site: Site, counted: Scope, work: Work): Charge =
-      Charge(
-        work.what,
-        site.scope.loops.findLast(!_.hidden).map(_.label),
-        counted.factor * work.time,
-        counted.factorFrom(site.sink.level) * work.space,
-        if (site.sink.escapes) counted.factor * work.space else Polynomial.Zero,
-        work.linear,
-        site.scope.callback,
-        site.scope.terminal,
-        site.line
-      )
   }
 }

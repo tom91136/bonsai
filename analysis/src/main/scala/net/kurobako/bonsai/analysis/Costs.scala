@@ -5,8 +5,8 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import net.kurobako.bonsai.collections.Methods
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 /** Upper bounds on the time and allocation of build methods, as polynomials in the sizes of collections.
@@ -33,7 +33,7 @@ private class Costs(
 )(using Context) {
   import Charges.*
 
-  private val memo     = new Memo[Symbol]
+  private val memo     = Memo[Symbol]()
   private val subtrees = Children()
   private val flows    =
     Flows(library, definitions, method => definitions.contains(method) || known(method).isDefined, subtrees)
@@ -61,7 +61,8 @@ private class Costs(
   /** The summaries of the methods of the Java code, bound against the methods of the build. */
   def javaSummaries: Vector[Complexity.Summary] = java.summaries(resolve)
 
-  private def sizesOf(method: Symbol): Sizes = Sizes(library, method, initialisers, fixed, declaredSize, searching)
+  private def sizesOf(method: Symbol): Sizes =
+    Sizes(library, method, initialisers, fixed, declaredSize(_), searching(_))
 
   /** A sorted search, or a method whose body makes one, locates the element a scan starts from. */
   private def searching(method: Symbol): Boolean = searched.getOrElseUpdate(
@@ -417,7 +418,7 @@ private class Costs(
         scope: Scope
     ): Unit = {
       val roots = known(method).fold(
-        Calls.termClauses(method).flatten.map(name)
+        Calls.termClauses(method).flatten.map(name(_))
       )(_.roots)
       val receiver = select.fold(Some("this"))(selected => sizes.path(selected.qualifier, scope))
       val bindings = roots.zip(arguments).map { (root, argument) =>

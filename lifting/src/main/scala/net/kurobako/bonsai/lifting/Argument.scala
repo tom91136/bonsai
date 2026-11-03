@@ -10,44 +10,8 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.collections.*
 import scala.annotation.tailrec
-
-/** The source text of trees. */
-private[lifting] object Texts {
-  def of(tree: tpd.Tree)(using Context): String = {
-    val position = tree.sourcePos
-    if (position.exists) {
-      val content = scala.util.Try(position.source.content()).getOrElse(Array.empty[Char])
-      if (position.end <= content.length) String(content, position.start, position.end - position.start)
-      else tree.show
-    } else tree.show
-  }
-
-  def real(tree: tpd.Tree): Boolean = tree.span.exists && tree.span.end > tree.span.start
-}
-
-/** An argument of a step: the facts the laws ask of a tree and its text as written. A function written in place, with
-  * the parameter used at least once, keeps its body as the `template` whose pieces lie between the uses.
-  */
-private[lifting] class Argument(
-    val text: String,
-    val pure: Boolean,
-    override val identity: Boolean,
-    override val projection: Option[Int],
-    override val literal: Option[Any],
-    override val comparison: Option[Comparison],
-    override val membership: Option[String],
-    template: Option[Vector[String]]
-) extends Arg {
-  def applied(value: String): String =
-    if (identity) value
-    else
-      template.map(_.mkString(if (Argument.atomic(value)) value else s"($value)")).getOrElse(
-        if (Argument.Reference.matches(text)) s"$text($value)" else s"($text)($value)"
-      )
-}
 
 private[lifting] object Argument {
   private val Component = "_([0-9]+)".r
@@ -226,28 +190,27 @@ private[lifting] object Argument {
     flat.nonEmpty && flat.forall(c => c.isLetterOrDigit || c == '_' || c == '$' || c == '.' || c == '`')
   }
 
-  private def collect(expression: tpd.Tree, symbol: Symbol)(using Context): List[tpd.Tree] = {
-    val accumulator = new tpd.TreeAccumulator[List[tpd.Tree]] {
-      def apply(found: List[tpd.Tree], tree: tpd.Tree)(using Context): List[tpd.Tree] = tree match {
-        case _: tpd.Ident if tree.symbol == symbol => tree :: found
-        case _                                     => foldOver(found, tree)
-      }
+  private class Uses(symbol: Symbol) extends tpd.TreeAccumulator[List[tpd.Tree]] {
+    def apply(found: List[tpd.Tree], tree: tpd.Tree)(using Context): List[tpd.Tree] = tree match {
+      case _: tpd.Ident if tree.symbol == symbol => tree :: found
+      case _                                     => foldOver(found, tree)
     }
-    accumulator(Nil, expression)
   }
+
+  private def collect(expression: tpd.Tree, symbol: Symbol)(using Context): List[tpd.Tree] =
+    Uses(symbol)(Nil, expression)
 
   def free(tree: tpd.Tree, symbol: Symbol)(using Context): Boolean = collect(tree, symbol).isEmpty
 
-  private def assigns(expression: tpd.Tree)(using Context): Boolean = {
-    val accumulator = new tpd.TreeAccumulator[Boolean] {
-      def apply(found: Boolean, tree: tpd.Tree)(using Context): Boolean = found ||
-        (tree match {
-          case _: tpd.Assign => true
-          case _             => foldOver(found, tree)
-        })
-    }
-    accumulator(false, expression)
+  private object Assignments extends tpd.TreeAccumulator[Boolean] {
+    def apply(found: Boolean, tree: tpd.Tree)(using Context): Boolean = found ||
+      (tree match {
+        case _: tpd.Assign => true
+        case _             => foldOver(found, tree)
+      })
   }
+
+  private def assigns(expression: tpd.Tree)(using Context): Boolean = Assignments(false, expression)
 
   private def inside(use: tpd.Tree, expression: tpd.Tree): Boolean =
     use.span.start >= expression.span.start && use.span.end <= expression.span.end
@@ -264,65 +227,23 @@ private[lifting] object Argument {
     tree.tpe.widen.dealias.classSymbol == Classes.required("scala.collection.immutable.Set")
 }
 
-/** The patterns of generators and of the functions the compiler writes for them. */
-private[lifting] object PatternShapes {
-  private def ignored(pattern: tpd.Tree): Boolean = pattern match {
-    case tpd.Ident(name) => name.toString == "_"
-    case _               => false
-  }
-
-  def bound(pattern: tpd.Tree): Boolean = pattern match {
-    case bind: tpd.Bind => ignored(bind.body)
-    case _              => false
-  }
-
-  def simple(pattern: tpd.Tree): Boolean = ignored(pattern) || bound(pattern)
-
-  /** Whether `pattern` matches every value of the type `scrutinee`: a wildcard, a binding, and a tuple or case class of
-    * such, but not a type test or an extractor of a type with other cases.
-    */
-  def irrefutable(pattern: tpd.Tree, scrutinee: Type)(using Context): Boolean = pattern match {
-    case tpd.Ident(name)                    => name.toString == "_"
-    case tpd.Bind(_, inner)                 => irrefutable(inner, scrutinee)
-    case tpd.Typed(inner, tpt)              => scrutinee <:< tpt.tpe && irrefutable(inner, scrutinee)
-    case tpd.UnApply(function, _, patterns) =>
-      val symbol = pattern.tpe.widen.classSymbol
-      val tuple  = defn.isTupleClass(symbol)
-      symbol.exists && function.symbol.name.toString == "unapply" && function.symbol.owner.companionClass == symbol &&
-      (tuple || symbol.is(Flags.CaseClass) && function.symbol.is(Flags.Synthetic)) &&
-      scrutinee.widen <:< pattern.tpe.widen && {
-        val components = scrutinee.widen.dealias.argInfos
-        if (tuple && components.sizeIs == patterns.size) patterns.zip(components).forall(irrefutable(_, _))
-        else patterns.forall(simple(_))
-      }
-    case _ => false
-  }
-}
-
-/** A call of a binary operator: `tree` is `left operator right`. */
-class Binary(val tree: tpd.Tree, val left: tpd.Tree, val operator: String, val right: tpd.Tree)
-
-object Binary {
-  def unapply(tree: tpd.Tree): Option[Binary] = tree match {
-    case tpd.Apply(tpd.Select(left, name), List(right)) => Some(Binary(tree, left, name.toString, right))
-    // From Scala 3.10 `until` and `to` on `Int` are extension methods of its companion, applied to the left in a clause
-    // of their own.
-    case tpd.Apply(tpd.Apply(tpd.Select(_, name), List(left)), List(right)) =>
-      Some(Binary(tree, left, name.toString, right))
-    case _ => None
-  }
-}
-
-object Parameters {
-  def sole(definition: tpd.DefDef)(using Context): Option[Symbol] = definition.termParamss.flatten match {
-    case List(only) => Some(only.symbol)
-    case _          => None
-  }
-}
-
-/** An argument that is rewritten source text rather than a tree; it is never taken to be pure. */
-private[lifting] class TextArgument(val text: String) extends Arg {
-  def pure: Boolean = false
-
-  def applied(value: String): String = s"($text)($value)"
+/** An argument of a step: the facts the laws ask of a tree and its text as written. A function written in place, with
+  * the parameter used at least once, keeps its body as the `template` whose pieces lie between the uses.
+  */
+private[lifting] class Argument(
+    val text: String,
+    val pure: Boolean,
+    override val identity: Boolean,
+    override val projection: Option[Int],
+    override val literal: Option[Any],
+    override val comparison: Option[Comparison],
+    override val membership: Option[String],
+    template: Option[Vector[String]]
+) extends Arg {
+  def applied(value: String): String =
+    if (identity) value
+    else
+      template.map(_.mkString(if (Argument.atomic(value)) value else s"($value)")).getOrElse(
+        if (Argument.Reference.matches(text)) s"$text($value)" else s"($text)($value)"
+      )
 }

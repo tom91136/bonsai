@@ -196,7 +196,7 @@ class JavaLintsSuite extends AnalysisSuite {
     val rules = Finding.Rule.values.map(_.id)
     // Every lint has a rule of its own, and no other rule carries the id of a lint.
     assertEquals(rules.count(lints.contains), lints.size)
-    assertEquals(rules.distinct.length, rules.length)
+    assertEquals(rules.distinct.size, rules.size)
   }
   test("a lint of generated code is reported, and labelled as generated") {
     val node = Node(

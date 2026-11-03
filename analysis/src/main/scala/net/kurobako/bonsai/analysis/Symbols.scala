@@ -12,9 +12,15 @@ import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.io.AbstractFile
 import java.nio.file.Path
 import java.nio.file.PathMatcher
+import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 import scala.util.matching.Regex
+
+private[analysis] object Symbols {
+  def childClasses(parent: Symbol)(using Context): List[Symbol] =
+    parent.children.map(child => if (child.isTerm) child.moduleClass else child)
+}
 
 /** The nodes of the build that its symbols name, and the references between them. */
 private[analysis] class Symbols(
@@ -80,6 +86,8 @@ private[analysis] class Symbols(
   def link(from: Option[String], targets: Iterable[String]): Unit =
     from.foreach(source => targets.filter(_ != source).foreach(edge(source, _)))
 
+  // Edges arrive in runs from one source, so its set is kept to skip the lookup.
+  // scalafix:off DisableSyntax.var, DisableSyntax.null
   private var latestSource                       = ""
   private var latestTargets: mutable.Set[String] = null
 
@@ -90,11 +98,13 @@ private[analysis] class Symbols(
     }
     latestTargets += target: Unit
   }
+  // scalafix:on DisableSyntax.var, DisableSyntax.null
 
   /** The node key of any symbol, memoised because every tree and type of the build asks for one. */
   def key(symbol: Symbol)(using Context): Option[String] = {
     val cached = keys.get(symbol)
-    if (cached ne null) cached
+    // The map is a java one, where absent is null and a lookup allocates nothing.
+    if (cached ne null) cached // scalafix:ok DisableSyntax.null
     else {
       val created = register(node(symbol))
       keys.put(symbol, created)
@@ -151,7 +161,7 @@ private[analysis] class Symbols(
     }.toSet
   }
 
-  private def rules(id: String): Set[String] = net.kurobako.bonsai.java.JavaLint.resolve(id)
+  private def rules(id: String): Set[String] = JavaLint.resolve(id)
 
   /** The line `symbol` is declared at, or 0 when unknown. */
   def lineOf(symbol: Symbol)(using Context): Int =
@@ -240,9 +250,4 @@ private[analysis] class Symbols(
       names(symbol) = name
       name
   }
-}
-
-private[analysis] object Symbols {
-  def childClasses(parent: Symbol)(using Context): List[Symbol] =
-    parent.children.map(child => if (child.isTerm) child.moduleClass else child)
 }

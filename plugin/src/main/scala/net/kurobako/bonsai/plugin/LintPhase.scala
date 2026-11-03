@@ -25,7 +25,66 @@ import dotty.tools.dotc.util.NoSourcePosition
 import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.effects.*
 import net.kurobako.bonsai.lifting.*
+import scala.annotation.tailrec
 import scala.collection.mutable
+
+private object LintPhase {
+  val Positionals: Set[Check] =
+    Set(Check.LongArguments, Check.SameTypeArguments, Check.SwappedArguments, Check.BooleanArgument)
+
+  val Classifications: Set[Check] = Set(Check.MessageClassification)
+
+  val Identities: Set[Check] = Set(Check.IdentityToken)
+
+  private def space(char: Char): Boolean = char == ' ' || (char >= '\t' && char <= '\r')
+
+  private def identifierStart(char: Char): Boolean =
+    char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char == '_' || char == '$'
+
+  private def identifierPart(char: Char): Boolean = identifierStart(char) || char >= '0' && char <= '9'
+
+  @tailrec private def backwards(content: Array[Char], from: Int, at: Int, accept: Char => Boolean): Int =
+    if (at >= from && accept(content(at))) backwards(content, from, at - 1, accept) else at
+
+  @tailrec private def forwards(content: Array[Char], limit: Int, at: Int, accept: Char => Boolean): Int =
+    if (at < limit && accept(content(at))) forwards(content, limit, at + 1, accept) else at
+
+  /** Whether the 256 characters of `content` before `end` finish with `(name = ` or `, name = `. */
+  private def preceded(content: Array[Char], end: Int): Boolean = {
+    val from   = (end - 256).max(0)
+    val equals = backwards(content, from, end.min(content.length) - 1, space(_))
+    if (equals < from || content(equals) != '=') false
+    else {
+      val last = backwards(content, from, equals - 1, space(_))
+      val name = backwards(content, from, last, identifierPart(_))
+      if (name == last || !identifierStart(content(name + 1))) false
+      else {
+        val before = backwards(content, from, name, space(_))
+        before >= from && (content(before) == '(' || content(before) == ',')
+      }
+    }
+  }
+
+  /** Whether the text of `content` from `start` until `end` begins `name = value`. */
+  private def begins(content: Array[Char], start: Int, end: Int): Boolean = {
+    val limit = end.min(content.length)
+    if (start >= limit || !identifierStart(content(start))) false
+    else {
+      val at = forwards(content, limit, forwards(content, limit, start, identifierPart(_)), space(_))
+      at + 1 < limit && content(at) == '=' && content(at + 1) != '=' && content(at + 1) != '>'
+    }
+  }
+
+  /** Whether an argument was written as `name = value`, which typing can erase, as overload resolution does. Its span
+    * may start at the value or at the name.
+    */
+  private def labelled(argument: tpd.Tree)(using Context): Boolean = argument.span.exists &&
+    !argument.span.isSynthetic && {
+      val position = argument.sourcePos
+      preceded(argument.source.content(), argument.span.start) ||
+      begins(position.source.content(), position.start, position.end)
+    }
+}
 
 /** Lints that need the types of expressions, which SemanticDB does not record: array comparisons, conversions to the
   * type a value already has, `map` with a function producing `Unit`, nested futures, positional arguments that are easy
@@ -769,61 +828,4 @@ private class LintPhase(
       case _                                                                   => traverseChildren(tree)
     }
   }
-}
-
-private object LintPhase {
-  val Positionals: Set[Check] =
-    Set(Check.LongArguments, Check.SameTypeArguments, Check.SwappedArguments, Check.BooleanArgument)
-
-  val Classifications: Set[Check] = Set(Check.MessageClassification)
-
-  val Identities: Set[Check] = Set(Check.IdentityToken)
-
-  private def space(char: Char): Boolean = char == ' ' || (char >= '\t' && char <= '\r')
-
-  private def identifierStart(char: Char): Boolean =
-    char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char == '_' || char == '$'
-
-  private def identifierPart(char: Char): Boolean = identifierStart(char) || char >= '0' && char <= '9'
-
-  /** Whether the 256 characters of `content` before `end` finish with `(name = ` or `, name = `. */
-  private def preceded(content: Array[Char], end: Int): Boolean = {
-    val from = (end - 256).max(0)
-    var at   = end.min(content.length) - 1
-    while (at >= from && space(content(at))) at -= 1
-    if (at < from || content(at) != '=') false
-    else {
-      at -= 1
-      while (at >= from && space(content(at))) at -= 1
-      val last = at
-      while (at >= from && identifierPart(content(at))) at -= 1
-      if (at == last || !identifierStart(content(at + 1))) false
-      else {
-        while (at >= from && space(content(at))) at -= 1
-        at >= from && (content(at) == '(' || content(at) == ',')
-      }
-    }
-  }
-
-  /** Whether the text of `content` from `start` until `end` begins `name = value`. */
-  private def begins(content: Array[Char], start: Int, end: Int): Boolean = {
-    val limit = end.min(content.length)
-    var at    = start
-    if (at >= limit || !identifierStart(content(at))) false
-    else {
-      while (at < limit && identifierPart(content(at))) at += 1
-      while (at < limit && space(content(at))) at += 1
-      at + 1 < limit && content(at) == '=' && content(at + 1) != '=' && content(at + 1) != '>'
-    }
-  }
-
-  /** Whether an argument was written as `name = value`, which typing can erase, as overload resolution does. Its span
-    * may start at the value or at the name.
-    */
-  private def labelled(argument: tpd.Tree)(using Context): Boolean = argument.span.exists &&
-    !argument.span.isSynthetic && {
-      val position = argument.sourcePos
-      preceded(argument.source.content(), argument.span.start) ||
-      begins(position.source.content(), position.start, position.end)
-    }
 }

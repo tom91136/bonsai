@@ -1,5 +1,7 @@
 package net.kurobako.bonsai.analysis
 
+import java.util.concurrent.atomic.AtomicInteger
+
 class ClonesSuite extends AnalysisSuite {
   private def findings(main: Seq[(String, String)], test: Seq[(String, String)] = Nil): Vector[Finding] = {
     val result = extract(main, test, generated = GeneratedSources)
@@ -680,20 +682,20 @@ class ClonesSuite extends AnalysisSuite {
   }
 
   test("a literal is rendered when a finding names it, not when it is built") {
-    var renderings = 0
-    val literal    = Clones.Literal("a", string = true) { renderings += 1; "\"a\"" }
-    assertEquals(renderings, 0)
+    val renderings = AtomicInteger()
+    val literal    = Clones.Literal("a", string = true) { renderings.incrementAndGet(); "\"a\"" }
+    assertEquals(renderings.get, 0)
     assertEquals(literal.shown, "\"a\"")
     assertEquals(literal.shown, "\"a\"")
-    assertEquals(renderings, 1)
+    assertEquals(renderings.get, 1)
   }
 
   test("a deferred value is computed once, when first used") {
-    var computations = 0
-    val deferred     = Clones.Deferred { computations += 1; Vector(1) }
-    assertEquals(computations, 0)
+    val computations = AtomicInteger()
+    val deferred     = Clones.Deferred { computations.incrementAndGet(); Vector(1) }
+    assertEquals(computations.get, 0)
     assertEquals(deferred.value, Vector(1))
     assertEquals(deferred.value, Vector(1))
-    assertEquals(computations, 1)
+    assertEquals(computations.get, 1)
   }
 }

@@ -18,23 +18,22 @@ import dotty.tools.dotc.core.Types.TypeParamRef
 import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
-/** A construction or call kept until every precondition, binding and default argument of the build is known. */
-private case class Pending(
-    callee: Symbol,
-    method: Symbol,
-    arguments: List[tpd.Tree],
-    test: Boolean,
-    own: Boolean,
-    location: String
-)
+private object CallSites {
 
-/** A callee of the build: the key its sites are recorded under, its number of parameters, and the name, node and
-  * suppressions its findings carry.
-  */
-private[analysis] case class Callee(key: String, arity: Int, name: String, node: String, suppressed: Set[String])
+  /** A construction or call kept until every precondition, binding and default argument of the build is known. */
+  private case class Pending(
+      callee: Symbol,
+      method: Symbol,
+      arguments: List[tpd.Tree],
+      test: Boolean,
+      own: Boolean,
+      location: String
+  )
+}
 
 /** The calls and constructions of the build, counted and classified by what they pass and drop. */
 private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
+  import CallSites.*
   import symbols.*
 
   private val pending      = mutable.ArrayBuffer.empty[Pending]

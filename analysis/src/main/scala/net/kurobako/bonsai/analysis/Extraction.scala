@@ -112,12 +112,12 @@ object Extraction {
     val replacements = Twins.replacing(manifest, copies)
     val skipped      =
       unreadable.map(file => s"class file ${file.getFileName.toString.stripSuffix(".tasty")} could not be read")
-    val roots                = manifest.outputs.flatMap(output => Outputs.entryPoints(output.path)).toSet
-    val matchers             = generated.map(FileSystems.getDefault.getPathMatcher(_))
-    val (java, javaProblems) = JavaConversion.collected(manifest, matchers, parallel)
-    val moduleUses           = Modules.uses(manifest, java.nodes, java.reflections)
-    val javaCosts            = JavaCosts(java.costs, Complexity.Declared(bounded))
-    if (tasty.isEmpty && (skipped ++ javaProblems).nonEmpty) Left(skipped ++ javaProblems)
+    val roots      = manifest.outputs.flatMap(output => Outputs.entryPoints(output.path)).toSet
+    val matchers   = generated.map(FileSystems.getDefault.getPathMatcher(_))
+    val java       = JavaConversion.collected(manifest, matchers, parallel)
+    val moduleUses = Modules.uses(manifest, java.nodes, java.reflections)
+    val javaCosts  = JavaCosts(java.costs, Complexity.Declared(bounded))
+    if (tasty.isEmpty && (skipped ++ java.problems).nonEmpty) Left(skipped ++ java.problems)
     else if (tasty.isEmpty)
       // A build of Java code alone has no TASTy to read, so the model the javac plugin collected is all of it.
       Right(Result(
@@ -183,7 +183,7 @@ object Extraction {
         phase.absorb(twin)
         found
       }
-      val problems = skipped ++ javaProblems ++ phase.problems ++ errors ++ absorbed
+      val problems = skipped ++ java.problems ++ phase.problems ++ errors ++ absorbed
       val graph    = JavaConversion.merge(phase.graph(roots), java)
       // A platform twin replaces some sources with its own of the same name, so the types in them cannot move.
       val twinned = manifest.sources.filter(source => manifest.platforms(source.module)).groupMap(_.module)(_.path)

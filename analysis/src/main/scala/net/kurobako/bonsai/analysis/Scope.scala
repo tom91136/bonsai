@@ -59,7 +59,7 @@ private case class Scope(
 
   def pushed(loop: Scope.Loop): Scope =
     copy(
-      loops = loops :+ (if amortized.contains(loops.size) then loop.copy(trips = Polynomial.One) else loop),
+      loops = loops :+ (if (amortized.contains(loops.size)) loop.copy(trips = Polynomial.One) else loop),
       visible = if (loop.hidden) visible else visible :+ loops.size
     )
 }

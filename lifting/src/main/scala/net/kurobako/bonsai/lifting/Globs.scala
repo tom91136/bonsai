@@ -36,7 +36,7 @@ object Globs {
   }
 
   private def memoised(test: String => Boolean): String => Boolean = {
-    val known = ConcurrentHashMap[String, java.lang.Boolean]()
+    val known = ConcurrentHashMap[String, Boolean]()
     name => known.computeIfAbsent(name, key => test(key))
   }
 

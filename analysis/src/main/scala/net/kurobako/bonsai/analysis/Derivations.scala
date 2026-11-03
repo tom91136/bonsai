@@ -22,15 +22,19 @@ private[analysis] object Derivations {
   def cases(tpe: Type)(using Context): Set[Symbol] = classes(tpe)(_.is(Flags.CaseClass))
 
   private def classes(tpe: Type)(accept: Symbol => Boolean)(using Context): Set[Symbol] = {
-    val found = mutable.Set.empty[Symbol]
-    new TypeTraverser {
-      def traverse(tpe: Type): Unit = {
-        val cls = tpe.dealias.classSymbol
-        if (cls.isClass && accept(cls)) found += cls
-        traverseChildren(tpe.dealias)
-      }
-    }.traverse(tpe.widen)
-    found.toSet
+    val traverser = Classes(accept)
+    traverser.traverse(tpe.widen)
+    traverser.found.toSet
+  }
+
+  private class Classes(accept: Symbol => Boolean)(using Context) extends TypeTraverser {
+    val found: mutable.Set[Symbol] = mutable.Set.empty[Symbol]
+
+    def traverse(tpe: Type): Unit = {
+      val cls = tpe.dealias.classSymbol
+      if (cls.isClass && accept(cls)) found += cls
+      traverseChildren(tpe.dealias)
+    }
   }
 
   private def built(tpe: Type)(using Context): Set[Symbol] = classes(tpe)(structured(_))
@@ -77,7 +81,7 @@ private[analysis] class Derivations(defined: Symbol => Context ?=> Boolean) {
 
   private val reached  = mutable.Set.empty[Symbol]
   private val generics = mutable.Map.empty[Symbol, Boolean]
-  private var spread   = Option.empty[Set[Symbol]]
+  private val spread   = mutable.ArrayBuffer.empty[Set[Symbol]]
 
   // Expansion is invisible after pickling, so a method derives only if its body can depend on a type argument beyond
   // what typing it shows: a macro, a mirror, or compile-time inspection.
@@ -97,7 +101,7 @@ private[analysis] class Derivations(defined: Symbol => Context ?=> Boolean) {
         }
     )
 
-  def derived(cls: Symbol)(using Context): Boolean = spread.getOrElse(spreading()).contains(cls)
+  def derived(cls: Symbol)(using Context): Boolean = spread.headOption.getOrElse(spreading()).contains(cls)
 
   private def spreading()(using Context): Set[Symbol] = {
     val visited = mutable.Set.empty[Symbol]
@@ -107,7 +111,7 @@ private[analysis] class Derivations(defined: Symbol => Context ?=> Boolean) {
       if (defined(cls) && visited.add(cls)) pending.pushAll(components(cls))
     }
     val found = visited.toSet
-    spread = Some(found)
+    spread += found
     found
   }
 
@@ -121,6 +125,6 @@ private[analysis] class Derivations(defined: Symbol => Context ?=> Boolean) {
       case defn: tpd.TypeDef if defn.symbol.isClass && declared(defn.symbol) => reached += defn.symbol
       case _                                                                 => ()
     }
-    if (tree.isTerm && tree.tpe != null) mirrored(tree.tpe.widen).foreach(tpe => reached ++= built(tpe))
+    if (tree.isTerm) Option(tree.tpe).foreach(tpe => mirrored(tpe.widen).foreach(mirror => reached ++= built(mirror)))
   }
 }
