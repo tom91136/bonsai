@@ -21,7 +21,8 @@ private[analysis] final class Symbols(
     outputs: Vector[Output],
     libraries: Set[String],
     generated: Vector[PathMatcher],
-    reflective: Vector[Regex]
+    reflective: Vector[Regex],
+    lines: Lines
 ) {
   private val roots      = outputs.map(output => output -> output.path.toAbsolutePath.normalize)
   private val known      = mutable.Map.empty[String, Node]
@@ -154,7 +155,7 @@ private[analysis] final class Symbols(
 
   /** The line `symbol` is declared at, or 0 when unknown. */
   def lineOf(symbol: Symbol)(using Context): Int =
-    if (symbol.source.exists && symbol.span.exists) Lines.line(symbol.source, symbol.span.point) else 0
+    if (symbol.source.exists && symbol.span.exists) lines.line(symbol.source, symbol.span.point) else 0
 
   /** The key of an analysed node, recording the node on first sight. */
   def register(symbol: Symbol)(using Context): Option[String] =

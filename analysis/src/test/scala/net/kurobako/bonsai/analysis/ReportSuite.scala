@@ -19,8 +19,18 @@ class ReportSuite extends AnalysisSuite {
   private def lines(options: Report.Options): Vector[Report.Line] =
     Report(Report.findings(result), result.graph.nodes, options)
 
-  private val defaults = Report.Options(Set.empty, Set.empty, Set.empty, info = false)
-  private val every    = Finding.Rule.values.map(_.id).toSet
+  private val defaults  = Report.Options(Set.empty, Set.empty, Set.empty, info = false)
+  private val every     = Finding.Rule.values.map(_.id).toSet
+  private val toolsNode = Node(
+    "lib.Tools",
+    "core",
+    Output.Scope.Main,
+    "src/Tools.scala",
+    12,
+    generated = false,
+    exported = false,
+    outer = None
+  )
 
   private def disable(id: String, scope: Report.Scope = Report.Scope.Everywhere): Report.Disable =
     Report.Disable(Report.Selector.Named(id), scope)
@@ -184,25 +194,38 @@ class ReportSuite extends AnalysisSuite {
     assertEquals(first.id, other.id)
   }
 
-  test("a baseline keeps a finding whose lines moved or whose counts changed, and not one with other words") {
-    val node = Node(
-      "lib.Tools",
-      "core",
-      Output.Scope.Main,
-      "src/Tools.scala",
-      12,
-      generated = false,
-      exported = false,
-      outer = None
+  test("a baseline keeps a finding whose positions moved, and not one with other words") {
+    def finding(detail: String)                   = Finding(Finding.Rule.DuplicateCode, toolsNode, detail)
+    def levels(recorded: String, current: String) = {
+      val options = defaults.copy(failing = Set("duplicate-code"), baseline = Set(finding(recorded).key))
+      Report(Vector(finding(current)), Map(toolsNode.name -> toolsNode), options).map(_.level)
+    }
+    val copies = "2 copies of 5 lines (84 nodes): A.scala:10-14, B.scala:3-7"
+    assertEquals(levels(copies, "2 copies of 5 lines (84 nodes): A.scala:30-34, B.scala:23-27"), Vector("warning"))
+    assertEquals(levels(copies, "2 copies of 5 lines (84 nodes): A.scala:30-34, C.scala:23-27"), Vector("error"))
+    assertEquals(
+      levels(
+        "groups of copies repeat within A.scala, the largest at lines {1-5, 9-12}, {3-7, 20-24}",
+        "groups of copies repeat within A.scala, the largest at lines {31-35, 39-42}, {33-37, 50-54}"
+      ),
+      Vector("warning")
     )
-    val recorded =
-      Finding(Finding.Rule.DuplicateCode, node, "2 copies of 5 lines (84 nodes): A.scala:10-14, B.scala:3-7")
-    val moved   = recorded.copy(detail = "2 copies of 5 lines (68 nodes): A.scala:30-34, B.scala:23-27")
-    val other   = recorded.copy(detail = "2 copies of 5 lines (68 nodes): A.scala:30-34, C.scala:23-27")
-    val options = defaults.copy(failing = Set("duplicate-code"), baseline = Set(recorded.key))
-    def levels(finding: Finding) = Report(Vector(finding), Map(node.name -> node), options).map(_.level)
-    assertEquals(levels(moved), Vector("warning"))
-    assertEquals(levels(other), Vector("error"))
+    assertEquals(levels("stops at (line 12)", "stops at (line 48)"), Vector("warning"))
+  }
+
+  test("a baseline does not keep a finding whose counts or exponents changed") {
+    val copies  = Finding(Finding.Rule.DuplicateCode, toolsNode, "2 copies of 5 lines (84 nodes): A.scala:10-14")
+    val cost    = Finding(Finding.Rule.Complexity, toolsNode, "runs in O(|xs|^2) time")
+    val options = defaults.copy(
+      failing = Set("duplicate-code", "complexity"),
+      baseline = Set(copies.key, cost.key)
+    )
+    def levels(finding: Finding) = Report(Vector(finding), Map(toolsNode.name -> toolsNode), options).map(_.level)
+    assertEquals(
+      levels(copies.copy(detail = "2 copies of 5 lines (68 nodes): A.scala:10-14")),
+      Vector("error")
+    )
+    assertEquals(levels(cost.copy(detail = "runs in O(|xs|^3) time")), Vector("error"))
   }
 
   test("baselines round trip through their text form") {

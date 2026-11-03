@@ -17,8 +17,6 @@ object Bytecode {
   private val Limit      = 65535
   private val NearLimit  = 0.8
 
-  def read(directories: Vector[Path]): Vector[Method] = reading(directories, Parallel.sequential)()
-
   /** Starts reading the class files under `directories` on `parallel`, and returns what joins the methods, in the order
     * of the files.
     */

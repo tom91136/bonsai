@@ -1,0 +1,52 @@
+package net.kurobako.bonsai.analysis
+
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.jar.JarFile
+import scala.util.Using
+
+/** The artifacts a classpath names. */
+private[analysis] object Classpath {
+
+  private given Ordering[Vector[BigInt]] = Ordering.Implicits.seqOrdering[Vector, BigInt]
+
+  /** Keeps the newest version of each artifact, at the position its first copy held. */
+  def evicted(classpath: Vector[Path]): Vector[Path] = {
+    val versioned = classpath.flatMap(path => artifact(path).map(path -> _)).toMap
+    val newest    = versioned.groupMapReduce(_._2._1)(_._2._2)(Ordering[Vector[BigInt]].max)
+    val copies    = classpath.filter(versioned.contains).groupBy(path => versioned(path)._1)
+    val winners   =
+      copies.map((identity, paths) => identity -> paths.filter(path => versioned(path)._2 == newest(identity)))
+    classpath.flatMap(path =>
+      versioned.get(path) match {
+        case None                => Vector(path)
+        case Some((identity, _)) => if copies(identity).head == path then winners(identity) else Vector.empty
+      }
+    )
+  }
+
+  /** The identity and numeric version of a jar, from its manifest or else its Maven-style repository layout. */
+  private def artifact(path: Path): Option[(String, Vector[BigInt])] =
+    manifested(path).orElse(laidOut(path)).map((identity, version) =>
+      identity -> version.split("[.-]").view.map(_.takeWhile(_.isDigit)).takeWhile(_.nonEmpty).map(BigInt(_)).toVector
+    )
+
+  private def manifested(path: Path): Option[(String, String)] =
+    if !path.getFileName.toString.endsWith(".jar") || !Files.isRegularFile(path) then None
+    else
+      Using.resource(JarFile(path.toFile)) { jar =>
+        for {
+          attributes <- Option(jar.getManifest).map(_.getMainAttributes)
+          vendor     <- Option(attributes.getValue("Implementation-Vendor-Id"))
+          title      <- Option(attributes.getValue("Implementation-Title"))
+          version    <- Option(attributes.getValue("Implementation-Version"))
+        } yield s"$vendor:$title" -> version
+      }
+
+  private def laidOut(path: Path): Option[(String, String)] = for {
+    versionDirectory  <- Option(path.getParent)
+    artifactDirectory <- Option(versionDirectory.getParent)
+    version = versionDirectory.getFileName.toString
+    if path.getFileName.toString == s"${artifactDirectory.getFileName}-$version.jar"
+  } yield artifactDirectory.toString -> version
+}

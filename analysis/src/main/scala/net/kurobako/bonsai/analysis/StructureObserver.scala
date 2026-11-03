@@ -54,7 +54,7 @@ private[analysis] object StructureObserver {
   * rules count. It owns the strings code spells out, which `literals` and `typeNames` give to reflective-use
   * resolution, and the members `detachable` tells apart for member listing.
   */
-private[analysis] class StructureObserver(symbols: Symbols, classes: () => Iterable[Symbol]) {
+private[analysis] class StructureObserver(symbols: Symbols, classes: () => Iterable[Symbol], lines: Lines) {
   import StructureObserver.*
   import symbols.key
   import symbols.nodeOf
@@ -97,8 +97,8 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
         })
         if (info.outer.isEmpty && info.name == qualifiedName(cls) && definition.span.exists) {
           // A companion spans its own lines, and a synthetic one those of its class.
-          val first        = Lines.line(definition.source, definition.span.start)
-          val last         = Lines.line(definition.source, definition.span.end)
+          val first        = lines.line(definition.source, definition.span.start)
+          val last         = lines.line(definition.source, definition.span.end)
           val (start, end) = extents.getOrElse(info.name, (first, last))
           extents(info.name) = (start.min(first), end.max(last))
         }

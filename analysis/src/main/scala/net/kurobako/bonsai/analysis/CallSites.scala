@@ -34,7 +34,7 @@ private case class Pending(
 private[analysis] case class Callee(key: String, arity: Int, name: String, node: String, suppressed: Set[String])
 
 /** The calls and constructions of the build, counted and classified by what they pass and drop. */
-private[analysis] class CallSites(symbols: Symbols) {
+private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   import symbols.*
 
   private val pending      = mutable.ArrayBuffer.empty[Pending]
@@ -254,7 +254,7 @@ private[analysis] class CallSites(symbols: Symbols) {
           )
         ) {
           val position = application.sourcePos
-          val location = Lines.location(position)
+          val location = lines.location(position)
           val own      = if (constructed.exists) owner.isDefined && owner == key(callee) else enclosing(callee)
           pending += Pending(callee, method, application.args, test, own, location)
         }

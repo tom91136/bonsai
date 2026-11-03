@@ -28,7 +28,8 @@ private class Costs(
     initialisers: collection.Map[Symbol, tpd.Tree],
     declared: Complexity.Declared,
     java: JavaCosts,
-    library: Library
+    library: Library,
+    lines: Lines
 )(using Context) {
   import Charges.*
 
@@ -236,7 +237,7 @@ private class Costs(
     }
 
     private def label(tree: tpd.Tree, operation: String, count: Option[Polynomial]): String =
-      s"$operation over ${count.fold("?")(Atoms.show)} (line ${Lines.line(tree.sourcePos)})"
+      s"$operation over ${count.fold("?")(Atoms.show)} (line ${lines.line(tree.sourcePos)})"
 
     // a branch taken when two values are equal runs for few of the turns of the loops around it
     private def guarded(condition: tpd.Tree, scope: Scope): Scope =
@@ -253,7 +254,7 @@ private class Costs(
 
     private def charge(tree: tpd.Tree, work: Work, scope: Scope, counted: Scope): Unit = {
       val cause = if (scope.inFallback) work.copy(what = s"${work.what} (in orElse fallback)") else work
-      charges += Charge.at(scope, counted, cause, Lines.line(tree.sourcePos), flow.of(tree))
+      charges += Charge.at(scope, counted, cause, lines.line(tree.sourcePos), flow.of(tree))
     }
 
     private val exits = mutable.Set.empty[tpd.Tree]
@@ -430,7 +431,7 @@ private class Costs(
       val space     = Atoms.rebind(inherited.space, bindings)
       charge(
         application,
-        Work(s"call of ${method.name} (line ${Lines.line(application.sourcePos)})", time, space, linearIn(time)),
+        Work(s"call of ${method.name} (line ${lines.line(application.sourcePos)})", time, space, linearIn(time)),
         scope,
         scope
       )

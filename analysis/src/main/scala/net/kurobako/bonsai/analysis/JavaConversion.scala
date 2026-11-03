@@ -86,7 +86,7 @@ private[analysis] object JavaConversion {
           }
           // The builds that depend on a library construct its public types, so the constructions in this build do not
           // settle the shape of one, as with a case class of Scala code.
-          val built =
+          val exportedConstructible =
             if published then
               collected.nodes.collect {
                 case node if node.constructible && nodes.get(node.name).exists(_.exported) => node.name
@@ -127,7 +127,7 @@ private[analysis] object JavaConversion {
               owner,
               fields.map(found => field(found.parameter)),
               Set.empty,
-              exported = built(owner),
+              exported = exportedConstructible(owner),
               returns = returning.getOrElse(owner, Set.empty),
               construction = constructions.get(owner)
             )
@@ -139,7 +139,7 @@ private[analysis] object JavaConversion {
               product.node,
               product.fields.map(field),
               product.parents,
-              built(product.node),
+              exportedConstructible(product.node),
               returns = returning.getOrElse(product.node, Set.empty),
               construction = constructions.get(product.name)
             )

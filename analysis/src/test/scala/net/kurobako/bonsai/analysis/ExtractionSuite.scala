@@ -34,6 +34,24 @@ class ExtractionSuite extends AnalysisSuite {
       )
     }
 
+  private def archive(classes: Path, jar: Path, title: String, version: String): Path = {
+    val manifest = JarManifest()
+    Seq(
+      "Manifest-Version"         -> "1.0",
+      "Implementation-Vendor-Id" -> "org.example",
+      "Implementation-Title"     -> title,
+      "Implementation-Version"   -> version
+    ).foreach(manifest.getMainAttributes.putValue(_, _))
+    Using.resource(JarOutputStream(Files.newOutputStream(jar), manifest)) { out =>
+      Using.resource(Files.walk(classes))(_.iterator.asScala.filter(Files.isRegularFile(_)).foreach { entry =>
+        out.putNextEntry(JarEntry(classes.relativize(entry).toString))
+        out.write(Files.readAllBytes(entry))
+        out.closeEntry()
+      })
+    }
+    jar
+  }
+
   test("a build whose only class cannot be read fails, while readable classes keep the rest of the build") {
     assertEquals(readBroken(Seq("A.scala" -> "class A"), "A"), Left(Vector("class file A could not be read")))
     assertEquals(
@@ -50,22 +68,7 @@ class ExtractionSuite extends AnalysisSuite {
           Seq(s"$name.scala" -> s"package lib\nobject $name { def apply(): Int = 1 }"),
           Vector.empty
         )
-        val manifest = JarManifest()
-        Seq(
-          "Manifest-Version"         -> "1.0",
-          "Implementation-Vendor-Id" -> "org.example",
-          "Implementation-Title"     -> "lib",
-          "Implementation-Version"   -> "1.0"
-        ).foreach(manifest.getMainAttributes.putValue(_, _))
-        val jar = directory.resolve(platform).resolve(s"lib_${platform}_3-1.0.jar")
-        Using.resource(JarOutputStream(Files.newOutputStream(jar), manifest)) { out =>
-          Using.resource(Files.walk(classes))(_.iterator.asScala.filter(Files.isRegularFile(_)).foreach { entry =>
-            out.putNextEntry(JarEntry(classes.relativize(entry).toString))
-            out.write(Files.readAllBytes(entry))
-            out.closeEntry()
-          })
-        }
-        jar
+        archive(classes, directory.resolve(platform).resolve(s"lib_${platform}_3-1.0.jar"), "lib", "1.0")
       }
       val libraries = Map("jvm" -> library("jvm", "Jvm"), "native" -> library("native", "Native"))
       val outputs   = libraries.toVector.map { (module, jar) =>
@@ -78,6 +81,45 @@ class ExtractionSuite extends AnalysisSuite {
       assertEquals(result.problems, Vector.empty)
       assertEquals(result.graph.nodes.keySet.count(node => node.contains("UseJvm") || node.contains("UseNative")), 2)
     }
+  }
+
+  test("the merged classpath keeps the newest version of each artifact, where its first copy was") {
+    Scratch.using("bonsai-") { directory =>
+      def api(version: String, members: String): Path = {
+        val classes = compile(
+          directory.resolve(s"api-$version"),
+          Seq("Api.scala" -> s"package lib\nobject Api { $members }"),
+          Vector.empty
+        )
+        archive(classes, directory.resolve(s"api-$version.jar"), "api", version)
+      }
+      val older = api("1.9.0", "def apply(): Int = 1")
+      val newer = api("1.10.0", "def apply(): Int = 1; def extra(): Int = 2")
+      val first = compile(
+        directory.resolve("first-use"),
+        Seq("First.scala" -> "object UseFirst { val value = lib.Api() }"),
+        Vector(older)
+      )
+      val second = compile(
+        directory.resolve("second-use"),
+        Seq("Second.scala" -> "object UseSecond { val value = lib.Api.extra() }"),
+        Vector(newer)
+      )
+      val outputs  = Vector(Output("first", Output.Scope.Main, first), Output("second", Output.Scope.Main, second))
+      val manifest =
+        Manifest(outputs, Map("first" -> (older +: classpath), "second" -> (newer +: classpath)), Set.empty)
+      val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      assertEquals(result.problems, Vector.empty)
+      assertEquals(result.graph.nodes.keySet.count(_.contains("UseSecond")), 1)
+    }
+  }
+
+  test("eviction keeps the newest version of an artifact where its first copy was") {
+    val older  = Path.of("/cache/org/example/tool/1.9.0/tool-1.9.0.jar")
+    val other  = Path.of("/cache/org/example/other/2.0.0/other-2.0.0.jar")
+    val newest = Path.of("/cache/org/example/tool/1.10.0/tool-1.10.0.jar")
+    val output = Path.of("/work/classes")
+    assertEquals(Classpath.evicted(Vector(older, other, newest, output)), Vector(newest, other, output))
   }
 
   test("megamorphic sites list implementations by simple name unless two collide, count vals, and skip universals") {
@@ -430,6 +472,21 @@ class ExtractionSuite extends AnalysisSuite {
     Scratch.using("bonsai-") { directory =>
       Files.writeString(directory.resolve("Junk.tasty"), "not tasty"): Unit
       assert(Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, directory)), classpaths, Set.empty)).isLeft)
+    }
+  }
+
+  test("a failed extraction is one problem line") {
+    Scratch.using("bonsai-") { directory =>
+      val classes = compile(directory, Seq("Main.scala" -> "object Main"), Vector.empty)
+      Files.write(
+        classes.resolve("Junk.class"),
+        Array[Byte](0xca.toByte, 0xfe.toByte, 0xba.toByte, 0xbe.toByte, 0, 0, 0, 61, 0, 2, 99)
+      ): Unit
+      val problems =
+        Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, classes)), classpaths, Set.empty))
+          .left.getOrElse(Vector.empty)
+      assertEquals(problems.map(_.linesIterator.size), Vector(1))
+      assert(problems.head.startsWith("extraction failed: java.lang.IllegalArgumentException"), problems.toString)
     }
   }
 }

@@ -11,8 +11,6 @@ import dotty.tools.dotc.fromtasty.ReadTasty
 import dotty.tools.dotc.fromtasty.TASTYCompiler
 import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
-import java.io.PrintWriter
-import java.io.StringWriter
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
@@ -78,9 +76,8 @@ object Extraction {
     result.future.value.fold(Left(Vector("extraction terminated abnormally")))(
       _.fold(
         error => {
-          val trace = StringWriter()
-          error.printStackTrace(PrintWriter(trace))
-          Left(Vector(s"extraction failed: $trace"))
+          error.printStackTrace()
+          Left(Vector(s"extraction failed: $error"))
         },
         identity
       )
@@ -144,6 +141,7 @@ object Extraction {
     else {
       // The class files are read beside the compiler, and joined where the result needs them.
       val bytecode                                 = Bytecode.reading(primary.map(_.path), parallel)
+      val lines                                    = Lines()
       def collector(costs: Vector[JavaModel.Cost]) =
         Collector(
           manifest.outputs,
@@ -153,7 +151,8 @@ object Extraction {
           reflective.map(Globs.qualifiedNames),
           bounded,
           costs,
-          References(_, _)
+          References(_, _),
+          lines
         )
       def reading(phase: Collector, files: Vector[Path], classpath: Vector[Path]) = Reader(phase).process(
         Array(
@@ -171,7 +170,7 @@ object Extraction {
       // The compiler resolves a class once per run, so the run reads the classpaths of the modules in turn, the JVM
       // modules' first, and a class several platforms' copies of a library hold resolves to the first copy.
       val modules = (primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted
-      val merged  = manifest.classpathOf(modules)
+      val merged  = Classpath.evicted(manifest.classpathOf(modules))
       val phase   = collector(java.costs)
       val errors  = reading(phase, tasty, merged)
       // The replaced copies resolve against their own twin first, and the rest of the build behind it.

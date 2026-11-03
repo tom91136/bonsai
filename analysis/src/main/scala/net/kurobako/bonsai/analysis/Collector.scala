@@ -50,16 +50,17 @@ private[analysis] class Collector(
     reflective: Vector[Regex],
     bounded: Vector[Complexity.Bounded],
     javaCosts: Vector[JavaModel.Cost],
-    references: (Components, Fragments) => Context ?=> tpd.TreeTraverser
+    references: (Components, Fragments) => Context ?=> tpd.TreeTraverser,
+    lines: Lines
 ) extends Phase, Recorder {
   import Collector.*
 
-  private val symbols     = Symbols(outputs, libraries, generated, reflective)
-  private val callSites   = CallSites(symbols)
+  private val symbols     = Symbols(outputs, libraries, generated, reflective, lines)
+  private val callSites   = CallSites(symbols, lines)
   private val reads       = Reads(symbols, (symbol, from) => use(symbol, from))
   private val derivations = Derivations(symbol => symbols.key(symbol).isDefined)
   private val dispatching = Dispatch(symbols, bodies.contains(_))
-  private val structure   = StructureObserver(symbols, () => dispatching.classes)
+  private val structure   = StructureObserver(symbols, () => dispatching.classes, lines)
   import symbols.exported
   import symbols.fieldsOf
   import symbols.key
@@ -114,8 +115,8 @@ private[analysis] class Collector(
   protected def run(using Context): Unit = ()
 
   override def runOn(units: List[CompilationUnit])(using Context): List[CompilationUnit] = {
-    val fragments  = Fragments()
-    val placing    = Placements(symbols)
+    val fragments  = Fragments(lines)
+    val placing    = Placements(symbols, lines)
     val library    = Library()
     val components = Components(symbols, callSites, reads, derivations, dispatching, structure, library, this)
     placements = Some(placing)
@@ -174,7 +175,7 @@ private[analysis] class Collector(
     clones ++= fragments.groups()
     dispatching.resolve()
     val declared = Complexity.Declared(bounded)
-    val costs    = Costs(bodies ++ constructors, initialisers, declared, JavaCosts(javaCosts, declared), library)
+    val costs    = Costs(bodies ++ constructors, initialisers, declared, JavaCosts(javaCosts, declared), library, lines)
     complexityList ++= costed.flatMap(method =>
       costs.summary(method).flatMap(bounds =>
         key(method).map(Complexity.Summary(qualifiedName(method), _, bounds, suppressions(method)))
@@ -183,7 +184,7 @@ private[analysis] class Collector(
     complexityList ++= costs.javaSummaries
     unusedList ++= declared.unmatched
     val effects = inference(library)
-    val chains  = Pipelines.Chains(effects)
+    val chains  = Pipelines.Chains(effects, lines)
     pipelineList ++= bodies.view.filter((method, _) => ownMethod(method)).flatMap((method, definition) =>
       key(method).toVector.flatMap(
         chains.lifted(method, qualifiedName(method), _, suppressions(method), definition.rhs)
@@ -253,7 +254,7 @@ private[analysis] class Collector(
   }
 
   private def purity(effects: Purity.Inference)(using Context): Purity.Model = {
-    def site(method: Symbol, tree: tpd.Tree) = key(method).map(node => node -> Lines.location(tree.sourcePos))
+    def site(method: Symbol, tree: tpd.Tree) = key(method).map(node => node -> lines.location(tree.sourcePos))
     Purity.Model(
       effects.pointless.flatMap((method, callee, tree) =>
         site(method, tree).map((node, location) => Purity.Discard(callee, node, location, suppressions(method)))

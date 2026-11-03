@@ -75,7 +75,7 @@ class BytecodeSuite extends AnalysisSuite {
         directory.resolve("Junk.class"),
         Array[Byte](0xca.toByte, 0xfe.toByte, 0xba.toByte, 0xbe.toByte, 0, 0, 0, 61, 0, 2, 99)
       ): Unit
-      val error = intercept[IllegalArgumentException](Bytecode.read(Vector(directory)))
+      val error = intercept[IllegalArgumentException](Bytecode.reading(Vector(directory), Parallel.sequential)())
       assert(error.getMessage.contains("unknown constant pool tag"), error.getMessage)
     }
   }

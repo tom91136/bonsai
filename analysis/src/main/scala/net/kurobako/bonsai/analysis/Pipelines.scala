@@ -33,7 +33,7 @@ object Pipelines {
   /** Lifts the chains of collection calls in each method body to the shared algebra, with the purity of their functions
     * from `effects`.
     */
-  class Chains(effects: Purity.Inference)(using Context) {
+  class Chains(effects: Purity.Inference, lines: Lines)(using Context) {
     private val lifter = lifting.Lifter(Inferred(effects))
 
     // A nested method is lifted on its own when the build declares it; a local one is not lifted at all.
@@ -59,7 +59,7 @@ object Pipelines {
             name,
             node,
             found.chain,
-            found.ends.map(extent => Lines.line(found.file, extent.start)),
+            found.ends.map(extent => lines.line(found.file, extent.start)),
             suppressed
           )
         }

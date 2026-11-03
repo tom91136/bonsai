@@ -1,8 +1,10 @@
 package net.kurobako.bonsai.maven;
 
+import org.apache.maven.plugin.MojoExecution;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
+import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 
@@ -34,6 +36,9 @@ import java.util.List;
   requiresDependencyResolution = ResolutionScope.TEST
 )
 public class AnalyseMojo extends BonsaiMojo {
+
+  @Parameter(defaultValue = "${mojoExecution}", readonly = true, required = true)
+  private MojoExecution mojoExecution;
 
   @Override
   public void execute() throws MojoExecutionException {
@@ -111,14 +116,23 @@ public class AnalyseMojo extends BonsaiMojo {
     return directory(root().resolve("target").resolve("bonsai").resolve("manifests"));
   }
 
-  /** Whether the module analyses the build. */
-  private boolean analyses(MavenProject other) {
+  /** Whether the module binds the analysis goal, so that its fragments are read by the analysis. */
+  static boolean analyses(MavenProject other) {
     return other.getBuildPlugins().stream()
-      .anyMatch(plugin -> plugin.getArtifactId().equals("bonsai-maven-plugin"));
+      .filter(plugin -> plugin.getArtifactId().equals("bonsai-maven-plugin"))
+      .flatMap(plugin -> plugin.getExecutions().stream())
+      .anyMatch(execution -> execution.getGoals().contains("analyse"));
   }
 
-  /** The modules of this build that analyse it, which are the ones whose fragments the analysis reads. */
+  /**
+   * The modules of this build that analyse it, which are the ones whose fragments the analysis reads: every module when
+   * the goal is named on the command line, which runs it in each of them, else the modules that bind it.
+   */
   private List<String> modules() {
-    return session.getProjects().stream().filter(this::analyses).map(MavenProject::getArtifactId).toList();
+    boolean named = mojoExecution.getSource() == MojoExecution.Source.CLI;
+    return session.getProjects().stream()
+      .filter(other -> named || analyses(other))
+      .map(MavenProject::getArtifactId)
+      .toList();
   }
 }

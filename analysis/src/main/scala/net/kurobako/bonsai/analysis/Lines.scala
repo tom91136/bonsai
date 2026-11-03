@@ -3,14 +3,14 @@ package net.kurobako.bonsai.analysis
 import dotty.tools.dotc.util.SourceFile
 import dotty.tools.dotc.util.SourcePosition
 import java.util.Arrays
-import java.util.WeakHashMap
+import scala.collection.mutable
 
 /** Lines of offsets in sources, taken from the source's own text. The compiler's line table of a source read back from
   * TASTy is replaced by that of the last class read from it, so the lines it gives depend on the order classes were
   * read in.
   */
-private[analysis] object Lines {
-  private val starts = WeakHashMap[SourceFile, Array[Int]]()
+private[analysis] final class Lines {
+  private val starts = mutable.Map.empty[SourceFile, Array[Int]]
 
   /** The one-based line `position` is on, or 0 when it does not exist. */
   def line(position: SourcePosition): Int = if (position.exists) line(position.source, position.point) else 0
@@ -24,7 +24,7 @@ private[analysis] object Lines {
 
   /** The zero-based line `offset` is on. */
   def at(source: SourceFile, offset: Int): Int = {
-    var table = starts.get(source)
+    var table = starts.get(source).orNull
     if (table == null) {
       val text = source.content()
       if (text.isEmpty) return source.offsetToLine(offset)
@@ -36,7 +36,7 @@ private[analysis] object Lines {
         index += 1
       }
       table = builder.result()
-      starts.put(source, table)
+      starts(source) = table
     }
     val found = Arrays.binarySearch(table, offset)
     if (found >= 0) found else -found - 2

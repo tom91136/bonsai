@@ -27,7 +27,7 @@ import scala.collection.mutable
   * also match once the values of literals are ignored are near duplicates, reported with the literals that differ as
   * holes.
   */
-class Fragments(using Context) {
+class Fragments(lines: Lines)(using Context) {
 
   /** Where a fragment comes from, as `Clones.Fragment` describes it. `helper` holds when calls of the member may
     * replace copies of its body, which `reach` limits to the code of a type unless all code may call it, and
@@ -640,8 +640,8 @@ class Fragments(using Context) {
       val fragment = Clones.Fragment(
         piece.origin.node,
         first.source.path,
-        Lines.line(first.source, first.span.start),
-        Lines.line(last.source, last.span.end),
+        lines.line(first.source, first.span.start),
+        lines.line(last.source, last.span.end),
         piece.origin.test,
         piece.origin.family,
         piece.origin.specialised,

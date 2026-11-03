@@ -175,9 +175,11 @@ object Finding {
     if (values.size > limit) s"$shown, ${values.size - limit} more" else shown
   }
 
-  /** A key with the numbers of its detail left out, so a moved line or a changed count still matches the baseline. */
-  def unnumbered(key: String): String = key.split("\t", 3) match {
-    case Array(rule, name, detail) => s"$rule\t$name\t${numberless(detail)}"
+  private val Positions = """(\.[A-Za-z]\w*:|\blines? )(\{[\d ,{}-]*\}|\d+(?:[-:]\d+)*)""".r
+
+  /** A key with the source positions of its detail replaced by `#`, so a moved line still matches the baseline. */
+  def positionless(key: String): String = key.split("\t", 3) match {
+    case Array(rule, name, detail) => s"$rule\t$name\t${Positions.replaceAllIn(detail, "$1#")}"
     case _                         => key
   }
 
@@ -213,7 +215,7 @@ case class Finding(
       .map(byte => f"$byte%02x").mkString
   }
 
-  /** Records the finding in a baseline, which matches it by `Finding.unnumbered`. */
+  /** Records the finding in a baseline, which matches it by `Finding.positionless`. */
   def key: String = s"${rule.id}\t${node.name}\t${Finding.escaped(detail)}"
 
   /** Whether suppressed rule ids, with `*` for every rule, cover this finding. */

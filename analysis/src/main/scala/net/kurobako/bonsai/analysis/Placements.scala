@@ -37,7 +37,7 @@ object Placements {
   * declaration it names and for nothing around it: the imports, the prefix of a type, and a module named only to reach
   * what it declares are not references, so the graph is the same wherever its declarations stand.
   */
-private class Placements(resolver: Symbols)(using Context) extends tpd.TreeTraverser {
+private class Placements(resolver: Symbols, lines: Lines)(using Context) extends tpd.TreeTraverser {
   import Placements.*
 
   private val units   = mutable.LinkedHashMap.empty[String, Held]
@@ -175,8 +175,8 @@ private class Placements(resolver: Symbols)(using Context) extends tpd.TreeTrave
       symbol.paramSymss.flatten.find(_.isTerm).exists(_.info.typeSymbol.is(Flags.Opaque))
 
   private def extent(definition: tpd.MemberDef): Int =
-    if (definition.span.exists) Lines.line(definition.source, definition.span.end) -
-      Lines.line(definition.source, definition.span.start) + 1
+    if (definition.span.exists) lines.line(definition.source, definition.span.end) -
+      lines.line(definition.source, definition.span.start) + 1
     else 0
 
   private def holds(name: String, symbol: Symbol, definition: tpd.MemberDef)(using Context): Unit = {
@@ -218,7 +218,7 @@ private class Placements(resolver: Symbols)(using Context) extends tpd.TreeTrave
     } else {
       val owner = Option.unless(symbol.owner.isTopLevelDefinitionsObject)(unit(symbol.owner)).flatten
       described(owner.getOrElse(name)).foreach { node =>
-        val line   = if (definition.span.exists) Lines.line(definition.sourcePos) else node.line
+        val line   = if (definition.span.exists) lines.line(definition.sourcePos) else node.line
         val public = node.exported && !symbol.isOneOf(Flags.Private | Flags.Protected) && !symbol.privateWithin.exists
         members(name) = Held(
           Node(name, node.module, node.scope, node.source, line, node.generated, exported = public, owner, all),

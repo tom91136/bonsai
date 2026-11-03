@@ -674,4 +674,73 @@ class JavaCostsSuite extends AnalysisSuite {
       )
     }
   }
+
+  private lazy val leaving = build(Seq("demo/Leaving.java" ->
+    """
+    |package demo;
+    |
+    |import java.util.*;
+    |
+    |public class Leaving {
+    |  int returnsHeld(List<String> rows, List<String> cols, List<String> defines) {
+    |    int total = 0;
+    |    for (String row : rows) {
+    |      List<String> latest = null;
+    |      for (String col : cols) {
+    |        if (col.isEmpty()) return (latest = new ArrayList<>(defines)).size();
+    |      }
+    |      total += latest == null ? 0 : latest.size();
+    |    }
+    |    return total;
+    |  }
+    |  int keepsHeld(List<String> rows, List<String> cols, List<String> defines) {
+    |    int total = 0;
+    |    for (String row : rows) {
+    |      List<String> latest = null;
+    |      for (String col : cols) {
+    |        latest = new ArrayList<>(defines);
+    |      }
+    |      total += latest.size();
+    |    }
+    |    return total;
+    |  }
+    |  boolean returnsAdded(List<String> rows, List<String> cols, List<String> defines) {
+    |    List<List<String>> all = new ArrayList<>();
+    |    for (String row : rows) {
+    |      for (String col : cols) {
+    |        if (col.isEmpty()) return all.add(new ArrayList<>(defines));
+    |      }
+    |    }
+    |    return all.isEmpty();
+    |  }
+    |  List<List<String>> keepsAdded(List<String> rows, List<String> cols, List<String> defines) {
+    |    List<List<String>> all = new ArrayList<>();
+    |    for (String row : rows) {
+    |      for (String col : cols) {
+    |        all.add(new ArrayList<>(defines));
+    |      }
+    |    }
+    |    return all;
+    |  }
+    |}
+    |""".stripMargin))
+
+  test("a list built under a return in a nested loop is built once, however far out its holder lives") {
+    Vector("returnsHeld", "returnsAdded").foreach { name =>
+      assertNoFinding(found(leaving))(finding =>
+        finding.detail.startsWith(s"Leaving.$name ") && finding.detail.contains("|defines|")
+      )
+    }
+  }
+
+  test("a list built in a nested loop and kept across it is live space of the loops it stays across") {
+    assertFinding(found(leaving), "space-complexity", "Leaving.keepsHeld allocates O(|cols| * |defines|)")
+    assertFinding(
+      found(leaving),
+      "complexity",
+      "Leaving.keepsAdded is O(|cols| * |defines| * |rows|) in time and space"
+    )(
+      using Finding.Level.Error
+    )
+  }
 }
