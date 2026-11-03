@@ -1131,7 +1131,7 @@ class SmellsSuite extends AnalysisSuite {
         Set.empty,
         Algebra.Predicate.Known(true),
         Algebra.Access.Open,
-        exported = false
+        Algebra.Origin.Written
       )
     }
     val nodes = methods.map(_.node).map(key => key -> node(key)).toMap

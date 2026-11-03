@@ -81,31 +81,44 @@ public abstract class BonsaiMojo extends AbstractMojo {
 
   /** The configuration of the build for the module of this project, which the analysis jar reads. */
   protected Configuration configuration(Tools tools) throws MojoExecutionException {
-    List<String> command = List.of(
-      javaExecutable(),
-      "-cp",
-      Javac.processorPath(tools.analysis(version)),
-      "net.kurobako.bonsai.analysis.Configure",
-      "--config",
-      config.toString(),
-      "--module",
-      project.getArtifactId());
     try {
-      Process process = new ProcessBuilder(command).start();
-      String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-      String error = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).strip();
-      int code = process.waitFor();
-      if (code != 0) {
-        throw new MojoExecutionException(
-          error.isEmpty() ? "bonsai: cannot read " + config + ": the reader failed with " + code : error);
+      Path entries = Files.createTempFile("bonsai-configuration", ".tsv");
+      try {
+        return read(
+          List.of(
+            javaExecutable(),
+            "-cp",
+            Javac.processorPath(tools.analysis(version)),
+            "net.kurobako.bonsai.analysis.Configure",
+            "--config",
+            config.toString(),
+            "--module",
+            project.getArtifactId(),
+            "--out",
+            entries.toString()),
+          entries);
+      } finally {
+        Files.deleteIfExists(entries);
       }
-      return Configuration.parse(output.lines().toList());
     } catch (IOException error) {
       throw new MojoExecutionException("bonsai: cannot read " + config, error);
     } catch (InterruptedException error) {
       Thread.currentThread().interrupt();
       throw new MojoExecutionException("bonsai: reading " + config + " was interrupted", error);
     }
+  }
+
+  /** Runs the reader and parses the entries it writes to the file, leaving its stdout to the console. */
+  static Configuration read(List<String> command, Path entries)
+    throws IOException, InterruptedException, MojoExecutionException {
+    Process process = new ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.INHERIT).start();
+    String error = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+    int code = process.waitFor();
+    if (code != 0) {
+      throw new MojoExecutionException(
+        error.isEmpty() ? "bonsai: the configuration reader failed with " + code : error);
+    }
+    return Configuration.parse(Files.readAllLines(entries, StandardCharsets.UTF_8));
   }
 
   /** The mode the tools run in. */

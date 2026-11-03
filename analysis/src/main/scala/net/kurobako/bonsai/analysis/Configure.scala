@@ -1,15 +1,17 @@
 package net.kurobako.bonsai.analysis
 
+import java.nio.file.Files
 import java.nio.file.Path
 import net.kurobako.bonsai.configuration.BonsaiConfiguration
 import net.kurobako.bonsai.configuration.BonsaiConfiguration.ConfigurationError
 
-/** Reads `.bonsai.conf` for a module and prints what a build that does not read it itself needs, one tab-separated
-  * entry a line: the module's `disabled`, `errors`, `warnings`, `wildcards` and `library` settings, the build's `hot`
-  * and `checked` lists, the `option`s the analysis runs with, and the manifest lines of the text rules as they are.
+/** Reads `.bonsai.conf` for a module and writes what a build that does not read it itself needs to a file, one
+  * tab-separated entry a line: the module's `disabled`, `errors`, `warnings`, `wildcards` and `library` settings, the
+  * build's `hot` and `checked` lists, the `option`s the analysis runs with, and the manifest lines of the text rules as
+  * they are.
   */
 object Configure {
-  private val usage = "usage: bonsai-configure --config <file> --module <id>"
+  private val usage = "usage: bonsai-configure --config <file> --module <id> --out <file>"
 
   /** The lines of the module's configuration, whose paths are relative to the directory of the `file`. */
   def lines(file: Path, module: String): Either[String, Vector[String]] =
@@ -38,14 +40,17 @@ object Configure {
 
   def main(args: Array[String]): Unit = {
     val result = args.toList match {
-      case List("--config", file, "--module", module) => lines(Path.of(file), module)
-      case _                                          => Left(usage)
+      case List("--config", file, "--module", module, "--out", out) =>
+        lines(Path.of(file), module).map(entries =>
+          Files.writeString(Path.of(out), entries.map(_ + "\n").mkString): Unit
+        )
+      case _ => Left(usage)
     }
     result match {
       case Left(error) =>
         Console.err.println(error)
         sys.exit(1)
-      case Right(lines) => lines.foreach(println(_))
+      case Right(_) =>
     }
   }
 }

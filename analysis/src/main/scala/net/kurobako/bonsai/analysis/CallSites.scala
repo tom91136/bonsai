@@ -28,6 +28,11 @@ private case class Pending(
     location: String
 )
 
+/** A callee of the build: the key its sites are recorded under, its number of parameters, and the name, node and
+  * suppressions its findings carry.
+  */
+private[analysis] case class Callee(key: String, arity: Int, name: String, node: String, suppressed: Set[String])
+
 /** The calls and constructions of the build, counted and classified by what they pass and drop. */
 private[analysis] class CallSites(symbols: Symbols) {
   import symbols.*
@@ -58,20 +63,18 @@ private[analysis] class CallSites(symbols: Symbols) {
     spares.filterNot(spare => redundant((spare.node, spare.parameter))).toVector
   }
 
-  /** Classifies the calls kept, with `subjects` the key and arity of each callee that has a model, and notes the
-    * default arguments they repeat and the defaults no call overrides.
-    */
   private def site(call: Pending, arguments: Vector[Algebra.Argument] = Vector.empty): Algebra.Site =
     Algebra.Site(arguments, call.test, call.own, call.location)
 
-  def align(subjects: Map[Symbol, (String, Int)], methods: collection.Map[Symbol, Smells.Method])(using
-      Context
-  ): Unit = {
+  /** Classifies the calls kept, with `callees` those that have a model, and notes the default arguments they repeat and
+    * the defaults no call overrides.
+    */
+  def align(callees: collection.Map[Symbol, Callee])(using Context): Unit = {
     for {
       (callee, recorded) <- pending.groupBy(_.callee)
-      (key, arity)       <- subjects.get(callee)
-      aligned = recorded.filter(_.arguments.size == arity) if aligned.nonEmpty
-    } sites(key) = aligned.map(call => site(call, call.arguments.map(classify(_)).toVector)).toVector
+      subject            <- callees.get(callee)
+      aligned = recorded.filter(_.arguments.size == subject.arity) if aligned.nonEmpty
+    } sites(subject.key) = aligned.map(call => site(call, call.arguments.map(classify(_)).toVector)).toVector
     for {
       call              <- pending if call.method.name != nme.copy && defaulted(call.method)
       (argument, index) <- call.arguments.zipWithIndex if !omitted(argument) && droppable(call.arguments, index)
@@ -80,7 +83,7 @@ private[analysis] class CallSites(symbols: Symbols) {
       parameter         <- fieldsOf(call.callee).lift(index)
     } explicit.getOrElseUpdate((call.callee, parameter.name, value), mutable.ArrayBuffer.empty) +=
       site(call)
-    spares ++= spareDefaults(methods)
+    spares ++= spareDefaults(callees)
     pending.clear()
   }
 
@@ -113,22 +116,17 @@ private[analysis] class CallSites(symbols: Symbols) {
       )
     }
 
-  def defaulting(
-      products: collection.Map[Symbol, Algebra.Product],
-      methods: collection.Map[Symbol, Smells.Method]
-  ): Vector[Smells.Default] =
+  def defaulting(callees: collection.Map[Symbol, Callee]): Vector[Smells.Default] =
     explicit.toVector.flatMap { case ((callee, parameter, value), recorded) =>
-      val subject = products.get(callee).map(product => Finding.simple(product.name) -> product.node)
-        .orElse(methods.get(callee).map(method => method.short -> method.node))
-      subject.map((owner, node) =>
-        Smells.Default(owner, node, parameter, value, recorded.toVector)
+      callees.get(callee).map(subject =>
+        Smells.Default(subject.name, subject.node, parameter, value, recorded.toVector)
       )
     }
 
-  private def spareDefaults(methods: collection.Map[Symbol, Smells.Method])(using Context): Vector[Smells.Spare] =
-    pending.groupBy(_.method).toVector.flatMap((method, calls) => spare(method, calls.toVector, methods))
+  private def spareDefaults(callees: collection.Map[Symbol, Callee])(using Context): Vector[Smells.Spare] =
+    pending.groupBy(_.method).toVector.flatMap((method, calls) => spare(method, calls.toVector, callees))
 
-  private def spare(method: Symbol, calls: Vector[Pending], methods: collection.Map[Symbol, Smells.Method])(using
+  private def spare(method: Symbol, calls: Vector[Pending], callees: collection.Map[Symbol, Callee])(using
       Context
   ): Vector[Smells.Spare] = {
     val plain = method.is(Flags.Method) && !method.isConstructor && !method.is(Flags.Synthetic) &&
@@ -136,12 +134,12 @@ private[analysis] class CallSites(symbols: Symbols) {
     val clause    = method.paramSymss.find(_.forall(_.isTerm)).getOrElse(Nil).toVector
     val sites     = calls.map(site(_))
     val arguments = calls.map(_.arguments.toVector)
-    methods.get(method).filter(_ => plain && calls.exists(!_.own)).toVector.flatMap { smell =>
+    callees.get(method).filter(_ => plain && calls.exists(!_.own)).toVector.flatMap { subject =>
       clause.zipWithIndex.collect {
         case (parameter, index)
             if parameter.is(Flags.HasDefault) &&
               arguments.forall(args => args.sizeIs == clause.size && !omitted(args(index))) =>
-          Smells.Spare(smell.short, smell.node, parameter.name.toString, sites, smell.suppressed)
+          Smells.Spare(subject.name, subject.node, parameter.name.toString, sites, subject.suppressed)
       }
     }
   }

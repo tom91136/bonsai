@@ -698,6 +698,99 @@ class LintSuite extends munit.FunSuite {
     assertEquals(found.method, "demo.Errors.run")
   }
 
+  test("an exception looked at only through a same-named field of an inner class is reported") {
+    val model = compile("Shadowed" -> """
+      |package demo;
+      |
+      |public class Shadowed {
+      |  public void run() {
+      |    try {
+      |      work();
+      |    } catch (RuntimeException failure) {
+      |      Runnable inner = new Runnable() {
+      |        private final String failure = "unused";
+      |
+      |        public void run() {
+      |          System.out.println(failure);
+      |        }
+      |      };
+      |      inner.run();
+      |    }
+      |  }
+      |
+      |  private void work() {
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "swallowed-exception")
+    assertEquals(found.size, 1, model.lints.mkString("\n"))
+    assertEquals(found.head.detail, "the exception is caught and never looked at")
+  }
+
+  test("an exception used inside an inner class is not reported") {
+    val model = compile("Captured" -> """
+      |package demo;
+      |
+      |public class Captured {
+      |  public void run() {
+      |    try {
+      |      work();
+      |    } catch (RuntimeException failure) {
+      |      Runnable inner = new Runnable() {
+      |        public void run() {
+      |          System.out.println(failure);
+      |        }
+      |      };
+      |      inner.run();
+      |    }
+      |  }
+      |
+      |  private void work() {
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "swallowed-exception").size, 0, model.lints.mkString("\n"))
+  }
+
+  test("a same-named lambda parameter does not count as a derived throwable") {
+    val model = compile("Lambdas" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |
+      |public class Lambdas {
+      |  public void run(List<String> names) {
+      |    try {
+      |      names.size();
+      |    } catch (Throwable failure) {
+      |      if (names.isEmpty()) {
+      |        Throwable cause = failure.getCause();
+      |        cause.hashCode();
+      |      }
+      |      names.forEach(cause -> log(cause));
+      |    }
+      |  }
+      |
+      |  public void handed(List<String> names) {
+      |    try {
+      |      names.size();
+      |    } catch (Throwable failure) {
+      |      names.forEach(item -> log(failure));
+      |    }
+      |  }
+      |
+      |  private void log(Object value) {
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "catch-throwable")
+    assertEquals(found.size, 1, model.lints.mkString("\n"))
+    assertEquals(found.head.method, "demo.Lambdas.run")
+  }
+
   test("a catch of throwable that only logs a message is reported") {
     val model = compile("Catches" -> """
       |package demo;
@@ -2017,6 +2110,31 @@ class LintSuite extends munit.FunSuite {
 
     val found = model.lints.filter(_.id == "catch-may-ignore-exception")
     assertEquals(found.size, 1, model.lints.mkString("\n"))
+  }
+
+  test("a catch parameter named as ignored is not read when only a same-named field is") {
+    val model = compile("Ignored" -> """
+      |package demo;
+      |
+      |public class Ignored {
+      |  public void run(String value) {
+      |    try {
+      |      Integer.parseInt(value);
+      |    } catch (RuntimeException ignored) {
+      |      Runnable inner = new Runnable() {
+      |        private final String ignored = "unused";
+      |
+      |        public void run() {
+      |          System.out.println(ignored);
+      |        }
+      |      };
+      |      inner.run();
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "catch-may-ignore-exception").size, 0, model.lints.mkString("\n"))
   }
 
   test("an Optional.get without a presence check is reported, and a guarded one is not") {
@@ -5874,6 +5992,65 @@ class LintSuite extends munit.FunSuite {
       swallowed.head.detail,
       "the exception thrown from the catch block drops the caught exception as its cause"
     )
+  }
+
+  test("a same-named field passed as a cause does not hide a dropped exception") {
+    val model = compile("Causes" -> """
+      |package demo;
+      |
+      |public class Causes {
+      |  private String cause;
+      |
+      |  public void dropped(String value) {
+      |    try {
+      |      Integer.parseInt(value);
+      |    } catch (IllegalArgumentException failure) {
+      |      if (value != null) {
+      |        Exception cause = failure;
+      |      }
+      |      throw new IllegalStateException(cause);
+      |    }
+      |  }
+      |
+      |  public void derived(String value) {
+      |    try {
+      |      Integer.parseInt(value);
+      |    } catch (IllegalArgumentException failure) {
+      |      Exception cause = failure;
+      |      throw new IllegalStateException(cause);
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "swallowed-exception")
+    assertEquals(found.size, 1, model.lints.mkString("\n"))
+    assert(found.head.method.endsWith("dropped"), found.head.method)
+    assertEquals(
+      found.head.detail,
+      "the exception thrown from the catch block drops the caught exception as its cause"
+    )
+  }
+
+  test("a cause held in an Optional is recognised as the caught exception") {
+    val model = compile("Holders" -> """
+      |package demo;
+      |
+      |import java.util.Optional;
+      |
+      |public class Holders {
+      |  public void run(String value) {
+      |    try {
+      |      Integer.parseInt(value);
+      |    } catch (IllegalArgumentException failure) {
+      |      Optional<Throwable> held = Optional.of(failure);
+      |      throw new IllegalStateException("invalid", held.get());
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "swallowed-exception").size, 0, model.lints.mkString("\n"))
   }
 
   test("an exception thrown by orElseThrow counts as thrown, and an unthrown one does not") {

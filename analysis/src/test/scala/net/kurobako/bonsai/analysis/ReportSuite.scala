@@ -22,6 +22,9 @@ class ReportSuite extends AnalysisSuite {
   private val defaults = Report.Options(Set.empty, Set.empty, Set.empty, info = false)
   private val every    = Finding.Rule.values.map(_.id).toSet
 
+  private def disable(id: String, scope: Report.Scope = Report.Scope.Everywhere): Report.Disable =
+    Report.Disable(Report.Selector.Named(id), scope)
+
   private def details(found: Vector[Report.Line], level: String): Vector[String] =
     found.view.collect { case line if line.level == level => line.finding.detail }.toVector
 
@@ -35,7 +38,7 @@ class ReportSuite extends AnalysisSuite {
   test("escalated rules fail unless the finding is in the baseline, and disabled rules are dropped") {
     val spare = lines(defaults).map(_.finding).find(_.detail == "Tools.spare is never referenced").get
     val found = lines(defaults.copy(
-      disabled = Set("unused"),
+      disabled = Set(disable("unused")),
       failing = Set("unused-member", "weaker-access"),
       baseline = Set(spare.key),
       info = true
@@ -46,7 +49,7 @@ class ReportSuite extends AnalysisSuite {
     assert(!found.exists(line => line.finding.level == Finding.Level.Info && line.level == "error"))
   }
 
-  test("rules disabled over generated code drop its findings of them, and * drops all its findings") {
+  test("disabled rules drop findings everywhere or over generated code, and * drops all generated ones") {
     def opcodes(name: String) =
       s"""enum $name {
          |  case AddI(dest: Int, a: Int, b: Int); case SubI(dest: Int, a: Int, b: Int); case MulI(dest: Int, a: Int, b: Int)
@@ -67,11 +70,16 @@ class ReportSuite extends AnalysisSuite {
     val written = rules(defaults, generated = false)
     val made    = rules(defaults, generated = true)
     assert(made.nonEmpty && made.subsetOf(written), s"generated: $made\nhandwritten: $written")
-    val one = made.head
-    assertEquals(rules(defaults.copy(generatedDisabled = Set(one)), generated = true), made - one)
-    assertEquals(rules(defaults.copy(generatedDisabled = Set(one)), generated = false), written)
-    assertEquals(rules(defaults.copy(generatedDisabled = Set("*")), generated = true), Set.empty[String])
-    assertEquals(rules(defaults.copy(generatedDisabled = Set("*")), generated = false), written)
+    val one          = made.head
+    val everywhere   = Set(disable(one))
+    val onGenerated  = Set(disable(one, Report.Scope.Generated))
+    val allGenerated = Set(Report.Disable(Report.Selector.All, Report.Scope.Generated))
+    assertEquals(rules(defaults.copy(disabled = everywhere), generated = true), made - one)
+    assertEquals(rules(defaults.copy(disabled = everywhere), generated = false), written - one)
+    assertEquals(rules(defaults.copy(disabled = onGenerated), generated = true), made - one)
+    assertEquals(rules(defaults.copy(disabled = onGenerated), generated = false), written)
+    assertEquals(rules(defaults.copy(disabled = allGenerated), generated = true), Set.empty[String])
+    assertEquals(rules(defaults.copy(disabled = allGenerated), generated = false), written)
   }
 
   test("findings naming long types stay on one line") {
@@ -172,7 +180,7 @@ class ReportSuite extends AnalysisSuite {
     def ids(options: Report.Options) = Report(all, Map(node.name -> node), options).map(_.id)
     assertEquals(ids(defaults.copy(info = true)), Vector(first.id, s"${first.id}-2", s"${first.id}-3"))
     assertEquals(ids(defaults), Vector(first.id, s"${first.id}-2"))
-    assertEquals(ids(defaults.copy(disabled = Set("duplicate-code"))), Vector.empty)
+    assertEquals(ids(defaults.copy(disabled = Set(disable("duplicate-code")))), Vector.empty)
     assertEquals(first.id, other.id)
   }
 

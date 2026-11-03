@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.analysis
 
+import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import munit.FunSuite
 import net.kurobako.bonsai.testing.Scratch
@@ -69,5 +70,21 @@ class ConfigureSuite extends FunSuite {
 
   test("a configuration that does not read is an error") {
     assert(lines("nothing = 1\n").left.exists(_.contains("unknown keys nothing")))
+  }
+
+  test("the entries are written to the given file and not printed") {
+    Scratch.using("configure") { directory =>
+      val conf = directory.resolve(".bonsai.conf")
+      val out  = directory.resolve("entries.tsv")
+      Files.writeString(conf, "disabled = [acyclic]\n")
+      val arguments = Array("--config", conf.toString, "--module", "demo", "--out", out.toString)
+      val printed   = ByteArrayOutputStream()
+      Console.withOut(printed)(Configure.main(arguments))
+      assertEquals(printed.toString, "")
+      assertEquals(
+        Files.readString(out).linesIterator.filter(_.startsWith("disabled\t")).toVector,
+        Vector("disabled\tacyclic")
+      )
+    }
   }
 }

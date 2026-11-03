@@ -318,7 +318,16 @@ private[analysis] object JavaConversion {
       construction: Option[JavaModel.Construction] = None
   ): Algebra.Product =
     constructed(
-      Algebra.Product(name, node, fields, parents, invariant, Algebra.Access.Open, exported, returns = returns),
+      Algebra.Product(
+        name,
+        node,
+        fields,
+        parents,
+        invariant,
+        Algebra.Access.Open,
+        Algebra.Origin.of(exported),
+        returns = returns
+      ),
       construction
     )
 

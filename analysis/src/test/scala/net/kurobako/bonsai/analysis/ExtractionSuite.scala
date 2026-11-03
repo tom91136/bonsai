@@ -153,7 +153,7 @@ class ExtractionSuite extends AnalysisSuite {
 
   test("private constructors make construction private and keep a library's case class out of its API") {
     assertEquals(
-      products(Set("lib.Token", "lib.Scoped"))(product => (product.access, product.exported)),
+      products(Set("lib.Token", "lib.Scoped"))(product => (product.access, product.origin == Algebra.Origin.Exported)),
       Map("lib.Token" -> (Algebra.Access.Private, false), "lib.Scoped" -> (Algebra.Access.Private, false))
     )
   }

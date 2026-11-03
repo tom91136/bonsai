@@ -44,7 +44,7 @@ class CLISuite extends FunSuite {
         manifest = Some(Path.of("build.tsv")),
         generated = Vector.empty,
         info = true,
-        disabled = Set("weaker-access"),
+        disabled = Set(Report.Disable(Report.Selector.Named("weaker-access"), Report.Scope.Everywhere)),
         errors = Set("unused", "duplicate-code"),
         warnings = Set("huge-method"),
         mode = CLI.Mode.CI,
@@ -128,8 +128,11 @@ class CLISuite extends FunSuite {
 
   test("rules are disabled over generated code by id, or all of them with *") {
     assertEquals(
-      CLI.parse(List("--generated-disable", "duplicate-code", "--generated-disable", "*")).map(_.generatedDisabled),
-      Right(Set("duplicate-code", "*"))
+      CLI.parse(List("--generated-disable", "duplicate-code", "--generated-disable", "*")).map(_.disabled),
+      Right(Set(
+        Report.Disable(Report.Selector.Named("duplicate-code"), Report.Scope.Generated),
+        Report.Disable(Report.Selector.All, Report.Scope.Generated)
+      ))
     )
     assert(CLI.parse(List("--generated-disable", "bogus")).left.exists(_.startsWith("unknown rule: bogus")))
   }

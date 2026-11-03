@@ -92,6 +92,34 @@ class AlgebraSuite extends AnalysisSuite {
     assertFinding(found, "duplicate-shape", "MixedPlain, MixedWire")
   }
 
+  test("public types that generic derivation builds are not duplicates") {
+    val result = extract(
+      main = Seq(
+        "Support.scala" ->
+          """package support
+            |trait Codec[A]
+            |object Codec { def derived[A](using scala.deriving.Mirror.Of[A]): Codec[A] = new Codec[A] {} }
+            |""".stripMargin,
+        "A.scala" ->
+          """package foo
+            |import support.Codec
+            |case class WireA(offset: Int, width: Int) derives Codec
+            |case class PlainA(count: Long, tag: Char)
+            |""".stripMargin,
+        "B.scala" ->
+          """package bar
+            |import support.Codec
+            |case class WireB(offset: Int, width: Int) derives Codec
+            |case class PlainB(count: Long, tag: Char)
+            |""".stripMargin
+      ),
+      libraries = Set("m")
+    )
+    val found = Algebra.findings(result.algebra, result.graph.nodes)
+    assertFinding(found, "duplicate-shape", "PlainA")
+    assertNoFinding(found)(finding => finding.rule == Finding.Rule.DuplicateShape && finding.detail.contains("Wire"))
+  }
+
   test("function types with named parameters are plain functions") {
     val found = findings(
       "P.scala" -> "case class P(x: Int, y: String, f: (Long, Char) => Byte)",
@@ -483,7 +511,7 @@ class AlgebraSuite extends AnalysisSuite {
       parents: Set[String] = Set.empty,
       access: Algebra.Access = Algebra.Access.Open
   ): Algebra.Product =
-    Algebra.Product(name, name, fields, parents, Algebra.Predicate.Known(true), access, exported = false)
+    Algebra.Product(name, name, fields, parents, Algebra.Predicate.Known(true), access, Algebra.Origin.Written)
 
   private def model(
       products: Vector[Algebra.Product] = Vector.empty,

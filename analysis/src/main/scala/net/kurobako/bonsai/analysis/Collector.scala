@@ -107,6 +107,7 @@ private[analysis] class Collector(
   private val bodied         = mutable.Set.empty[Symbol]
   private val enumerations   = mutable.ArrayBuffer.empty[Algebra.Enumeration]
   private var placements     = Option.empty[Placements]
+  private var callees        = Map.empty[Symbol, Callee]
 
   def phaseName: String = "bonsai-collect"
 
@@ -126,12 +127,16 @@ private[analysis] class Collector(
       } catch { case NonFatal(error) => problem(s"${unit.source.path} could not be analysed: $error") }
     }
     qualifiedUses()
-    products.mapValuesInPlace((cls, product) => product.copy(derived = derivations.derived(cls)))
+    products.mapValuesInPlace((cls, product) =>
+      if (derivations.derived(cls)) product.copy(origin = Algebra.Origin.Derived) else product
+    )
     enumerations ++= hierarchies.flatMap((parent, name, key) => enumeration(parent, name, key))
-    val subjects = products.view.mapValues(product => product.name -> product.fields.size).toMap ++
-      methods.view.mapValues(method => method.key -> method.fields.size) ++
-      required.view.mapValues((key, product) => key -> product.fields.size)
-    callSites.align(subjects, methods)
+    callees = products.view.map((cls, product) =>
+      cls -> Callee(product.name, product.fields.size, Finding.simple(product.name), product.node, Set.empty)
+    ).toMap ++ methods.view.map((symbol, method) =>
+      symbol -> Callee(method.key, method.fields.size, method.short, method.node, method.suppressed)
+    )
+    callSites.align(callees)
     usage = users.toVector.groupMapReduce((symbol, _) => memberName(symbol))((_, nodes) => nodes.toSet)(_ ++ _)
     memberList ++= members.collect {
       case (symbol, definition) if !(definition.field && derivations.derived(symbol.owner)) =>
@@ -217,7 +222,7 @@ private[analysis] class Collector(
     )
 
   def smells: Smells.Model = {
-    val defaults = callSites.defaulting(products, methods)
+    val defaults = callSites.defaulting(callees)
     Smells.Model(
       methods.toVector.map((symbol, method) =>
         if (overridden.getOrElse(symbol, 0) > 1) method.copy(shared = true) else method
@@ -339,7 +344,7 @@ private[analysis] class Collector(
           parents,
           invariant,
           access(cls, fields),
-          exported(cls) && exported(cls.primaryConstructor),
+          Algebra.Origin.of(exported(cls) && exported(cls.primaryConstructor)),
           returns = returns
         )
       } else if (cls.is(Flags.Sealed)) {
@@ -582,7 +587,7 @@ private[analysis] class Collector(
           Set.empty,
           condition,
           Algebra.Access.Open,
-          exported(method)
+          Algebra.Origin.of(exported(method))
         )
       }
     }

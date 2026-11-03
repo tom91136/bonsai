@@ -7,9 +7,9 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * The bonsai configuration of a module, as the reader shipped with the analysis prints it.
+ * The bonsai configuration of a module, as the reader shipped with the analysis writes it.
  *
- * <p>The reader is the one the sbt plugin uses, so both builds configure bonsai the same way. It prints one entry a
+ * <p>The reader is the one the sbt plugin uses, so both builds configure bonsai the same way. It writes one entry a
  * line, a key and its value apart by a tab, and this class holds what the goals take from them.
  */
 public final class Configuration {
@@ -88,7 +88,7 @@ public final class Configuration {
         case "wildcards" -> configuration.wildcards = Integer.parseInt(value);
         case "library" -> configuration.library = Boolean.parseBoolean(value);
         case "text", "text-exclude" -> configuration.text.add(line);
-        default -> throw new IOException("bonsai: the configuration reader printed an unknown entry: " + line);
+        default -> throw new IOException("bonsai: the configuration reader wrote an unknown entry: " + line);
       }
     }
     return configuration;

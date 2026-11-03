@@ -32,8 +32,7 @@ object CLI {
       manifest: Option[Path] = None,
       generated: Vector[String] = Vector.empty,
       info: Boolean = false,
-      disabled: Set[String] = Set.empty,
-      generatedDisabled: Set[String] = Set.empty,
+      disabled: Set[Report.Disable] = Set.empty,
       errors: Set[String] = Set.empty,
       warnings: Set[String] = Set.empty,
       mode: Mode = Mode.Dev,
@@ -64,6 +63,9 @@ object CLI {
   private val rules         = Finding.Rule.values.map(_.id).toSet
   private val ruleFlags     = Set("--disable", "--generated-disable", "--warn", "--error")
   private val wildcardFlags = Set("--generated-disable", "--error")
+
+  private def disable(rule: String, scope: Report.Scope): Report.Disable =
+    Report.Disable(if (rule == "*") Report.Selector.All else Report.Selector.Named(rule), scope)
 
   def main(args: Array[String]): Unit = {
     val result = for {
@@ -105,14 +107,7 @@ object CLI {
       val baseline = options.baseline.filter(Files.exists(_)).fold(Set.empty[String])(file =>
         Report.keys(Files.readString(file))
       )
-      val report = Report.Options(
-        options.disabled,
-        options.failing,
-        baseline,
-        options.info,
-        options.warnings,
-        options.generatedDisabled
-      )
+      val report = Report.Options(options.disabled, options.failing, baseline, options.info, options.warnings)
       options.record.foreach(file =>
         Files.writeString(file, Report.write(Report(findings, result.graph.nodes, report.copy(info = false)))): Unit
       )
@@ -228,9 +223,10 @@ object CLI {
     case "--mode" :: mode :: rest => parse(rest, options.copy(mode = Mode.values.find(_.id == mode).get))
     case flag :: rule :: _ if ruleFlags(flag) && !(wildcardFlags(flag) && rule == "*") && !rules(rule) =>
       Left(s"unknown rule: $rule\n$usage")
-    case "--disable" :: rule :: rest           => parse(rest, options.copy(disabled = options.disabled + rule))
+    case "--disable" :: rule :: rest =>
+      parse(rest, options.copy(disabled = options.disabled + disable(rule, Report.Scope.Everywhere)))
     case "--generated-disable" :: rule :: rest =>
-      parse(rest, options.copy(generatedDisabled = options.generatedDisabled + rule))
+      parse(rest, options.copy(disabled = options.disabled + disable(rule, Report.Scope.Generated)))
     case "--warn" :: rule :: rest  => parse(rest, options.copy(warnings = options.warnings + rule))
     case "--error" :: rule :: rest => parse(rest, options.copy(errors = options.errors + rule))
     case other :: _                => Left(s"unknown argument: $other\n$usage")

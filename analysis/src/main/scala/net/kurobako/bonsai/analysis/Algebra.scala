@@ -49,6 +49,18 @@ object Algebra {
     lazy val shape: Polynomial = Polynomial.product(fields.map(_.shape))
   }
 
+  /** Why a product has the shape it has: `Written` by the author for this build alone, `Exported` as the API of a
+    * library that other builds construct, or `Derived` when generic derivation builds and reads it field by field.
+    * Derived wins where both hold, as twins of a derived shape are exempt from the duplicate rule.
+    */
+  enum Origin {
+    case Written, Exported, Derived
+  }
+
+  object Origin {
+    def of(exported: Boolean): Origin = if (exported) Exported else Written
+  }
+
   /** A case class, or a method whose parameters stand in for fields when it has a precondition. */
   case class Product(
       name: String,
@@ -57,8 +69,7 @@ object Algebra {
       parents: Set[String],
       invariant: Predicate,
       access: Access,
-      exported: Boolean,
-      derived: Boolean = false,
+      origin: Origin,
       returns: Set[String] = Set.empty
   ) {
     def validated: Boolean = access != Access.Open || invariant != Predicate.Known(true)
@@ -196,7 +207,7 @@ object Algebra {
           named ++ unnamed
         }
         .filter((_, group) =>
-          group.map(_.node).distinct.size > 1 && !group.forall(_.derived) && !sameParent(group) &&
+          group.map(_.node).distinct.size > 1 && !group.forall(_.origin == Origin.Derived) && !sameParent(group) &&
             !intended.settles(group.map(_.name))
         )
         .toVector.sortBy((named, group) => (!named, -group.head.shape.weight)).flatMap { (named, group) =>
@@ -216,7 +227,7 @@ object Algebra {
           Finding.at(nodes, group.head.node, Finding.Rule.DuplicateShape, detail, level)
         }
     // Other builds construct a library's public products, so the constructions here do not settle their shape.
-    val constructions = model.products.view.filterNot(product => product.exported || product.derived).flatMap { product =>
+    val constructions = model.products.view.filter(_.origin == Origin.Written).flatMap { product =>
       model.sites.get(product.name).toVector.flatMap { sites =>
         construction(product, sites).flatMap((rule, detail) =>
           Finding.at(nodes, product.node, rule, detail, onlyTests = onlyTests(sites))

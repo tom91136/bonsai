@@ -3,17 +3,37 @@ package net.kurobako.bonsai.analysis
 /** Selects the findings to report and decides which fail the build. */
 object Report {
 
+  /** The rules a disable entry covers: one by id, or every rule. */
+  enum Selector {
+    case Named(id: String)
+    case All
+
+    def covers(id: String): Boolean = this match {
+      case Named(named) => named == id
+      case All          => true
+    }
+  }
+
+  /** Where a disable entry applies: everywhere, or over generated code only. */
+  enum Scope {
+    case Everywhere
+    case Generated
+  }
+
+  case class Disable(selector: Selector, scope: Scope) {
+    def covers(finding: Finding): Boolean =
+      selector.covers(finding.rule.id) && (scope == Scope.Everywhere || finding.node.generated)
+  }
+
   /** The warnings of `failing` rules fail, as do errors except those of `lenient` rules, and in either case except
-    * findings whose keys are in `baseline`. `generatedDisabled` names the rules dropped over generated code, or all of
-    * them with `*`.
+    * findings whose keys are in `baseline`. `disabled` names the findings dropped, by rule and scope.
     */
   case class Options(
-      disabled: Set[String],
+      disabled: Set[Disable],
       failing: Set[String],
       baseline: Set[String],
       info: Boolean,
-      lenient: Set[String] = Set.empty,
-      generatedDisabled: Set[String] = Set.empty
+      lenient: Set[String] = Set.empty
   )
 
   /** A reported finding with its level: `error`, `warning` or `info`; `repeat` counts the findings before it with the
@@ -62,8 +82,7 @@ object Report {
     }._2
     numbering.view.collect {
       case (finding, repeat)
-          if !options.disabled(finding.rule.id) && !generatedDisabled(finding, options) &&
-            !finding.suppressedBy(finding.suppressed) &&
+          if !options.disabled.exists(_.covers(finding)) && !finding.suppressedBy(finding.suppressed) &&
             !suppressed(finding, nodes, Some(finding.node.name)) &&
             (options.info || finding.level != Finding.Level.Info) =>
         val id        = finding.rule.id
@@ -77,9 +96,6 @@ object Report {
         Line(if (escalated) "error" else level, finding, repeat)
     }.toVector
   }
-
-  private def generatedDisabled(finding: Finding, options: Options): Boolean =
-    finding.node.generated && (options.generatedDisabled("*") || options.generatedDisabled(finding.rule.id))
 
   /** The baseline text recording `lines`, one finding key per line. */
   def write(lines: Vector[Line]): String = lines.map(_.finding.key).mkString("", "\n", "\n")
