@@ -930,6 +930,39 @@ class LintSuite extends munit.FunSuite {
     )
   }
 
+  test("a catch of throwable that stores it in an array is reported unless the array is handed on") {
+    val model = compile("Catches" -> """
+      |package demo;
+      |
+      |public class Catches {
+      |  private void report(Object value) {}
+      |
+      |  public void handed(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Throwable t) {
+      |      Throwable[] held = { t };
+      |      report(held);
+      |    }
+      |  }
+      |
+      |  public void stored(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Throwable t) {
+      |      Throwable[] held = { t };
+      |      System.out.println(held.length);
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(_.id == "catch-throwable").map(_.method),
+      Vector("demo.Catches.stored")
+    )
+  }
+
   test("an exception that is caught and looked at is not swallowed") {
     val model = compile("Errors" -> """
       |package demo;
@@ -6032,6 +6065,31 @@ class LintSuite extends munit.FunSuite {
     )
   }
 
+  test("a message derived from the caught exception is not a cause") {
+    val model = compile("Messages" -> """
+      |package demo;
+      |
+      |public class Messages {
+      |  public void dropped(String value) {
+      |    try {
+      |      Integer.parseInt(value);
+      |    } catch (IllegalArgumentException failure) {
+      |      String message = failure.getMessage();
+      |      throw new IllegalStateException(message);
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "swallowed-exception")
+    assertEquals(found.size, 1, model.lints.mkString("\n"))
+    assert(found.head.method.endsWith("dropped"), found.head.method)
+    assertEquals(
+      found.head.detail,
+      "the exception thrown from the catch block drops the caught exception as its cause"
+    )
+  }
+
   test("a cause held in an Optional is recognised as the caught exception") {
     val model = compile("Holders" -> """
       |package demo;
@@ -6045,6 +6103,36 @@ class LintSuite extends munit.FunSuite {
       |    } catch (IllegalArgumentException failure) {
       |      Optional<Throwable> held = Optional.of(failure);
       |      throw new IllegalStateException("invalid", held.get());
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "swallowed-exception").size, 0, model.lints.mkString("\n"))
+  }
+
+  test("a cause held in an array or a List is recognised as the caught exception") {
+    val model = compile("Holders" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |
+      |public class Holders {
+      |  public void array(String value) {
+      |    try {
+      |      Integer.parseInt(value);
+      |    } catch (IllegalArgumentException failure) {
+      |      Throwable[] held = { failure };
+      |      throw new IllegalStateException("invalid", held[0]);
+      |    }
+      |  }
+      |
+      |  public void list(String value) {
+      |    try {
+      |      Integer.parseInt(value);
+      |    } catch (IllegalArgumentException failure) {
+      |      List<Throwable> held = List.of(failure);
+      |      throw new IllegalStateException("invalid", held.get(0));
       |    }
       |  }
       |}

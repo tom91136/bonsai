@@ -2,6 +2,8 @@ package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
 import com.sun.source.util.TreeScanner
+import javax.lang.model.`type`.ArrayType
+import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.`type`.ExecutableType
 import javax.lang.model.`type`.TypeKind
 import javax.lang.model.`type`.TypeMirror
@@ -45,7 +47,7 @@ object LintErrors {
           override def visitLambdaExpression(node: LambdaExpressionTree, unused: Unit): Unit = ()
         }.scan(catchTree.getBlock, ())
 
-        val derived = derivedElements(context, catchTree.getBlock, element)
+        val derived = derivedElements(context, catchTree.getBlock, element, carries(context))
         if throws.nonEmpty && !callsInitCause(context, catchTree.getBlock, derived) &&
           throws.exists(t => !mentionsAny(context, t.getExpression, derived))
         then
@@ -75,7 +77,7 @@ object LintErrors {
       context: Context,
       block: BlockTree,
       caught: Element,
-      carries: Tree => Boolean = _ => true
+      carries: Tree => Boolean
   ): Set[Element] = {
     val derived = mutable.Set[Element](caught)
     var changed = true
@@ -171,10 +173,16 @@ object LintErrors {
 
   private def carries(context: Context): Tree => Boolean = {
     val throwable = Option(context.elements.getTypeElement("java.lang.Throwable")).map(_.asType())
+    def contains(base: TypeMirror, tpe: TypeMirror): Boolean = Lints.subtype(context, tpe, base) ||
+      (tpe match {
+        case declared: DeclaredType => declared.getTypeArguments.asScala.exists(contains(base, _))
+        case array: ArrayType       => contains(base, array.getComponentType)
+        case _                      => false
+      })
     tree =>
       throwable.exists { base =>
         val typed = context.typeOf(tree)
-        Lints.subtype(context, typed, base) || Lints.subtype(context, base, typed)
+        Lints.subtype(context, base, typed) || contains(base, typed)
       }
   }
 
