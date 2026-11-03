@@ -114,12 +114,51 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
+  test("artifacts whose manifests share a vendor and title stay apart on the merged classpath") {
+    Scratch.using("bonsai-") { directory =>
+      def core(name: String, version: String, member: String): Path = {
+        val classes = compile(
+          directory.resolve(name),
+          Seq(s"$member.scala" -> s"package lib\nobject $member { def apply(): Int = 1 }"),
+          Vector.empty
+        )
+        archive(classes, directory.resolve(s"$name-core_3-$version.jar"), "core", version)
+      }
+      val config  = core("config", "0.18.7", "Config")
+      val format  = core("format", "3.11.5", "Format")
+      val outputs = Vector("Config" -> config, "Format" -> format).map { (member, jar) =>
+        val sources = Seq("Use.scala" -> s"object Use$member { val value = lib.$member() }")
+        Output(member, Output.Scope.Main, compile(directory.resolve(s"$member-use"), sources, Vector(jar)))
+      }
+      val manifest =
+        Manifest(outputs, Map("Config" -> (config +: classpath), "Format" -> (format +: classpath)), Set.empty)
+      val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      assertEquals(result.problems, Vector.empty)
+      assertEquals(result.graph.nodes.keySet.count(node => node.contains("UseConfig") || node.contains("UseFormat")), 2)
+    }
+  }
+
   test("eviction keeps the newest version of an artifact where its first copy was") {
     val older  = Path.of("/cache/org/example/tool/1.9.0/tool-1.9.0.jar")
     val other  = Path.of("/cache/org/example/other/2.0.0/other-2.0.0.jar")
     val newest = Path.of("/cache/org/example/tool/1.10.0/tool-1.10.0.jar")
     val output = Path.of("/work/classes")
     assertEquals(Classpath.evicted(Vector(older, other, newest, output)), Vector(newest, other, output))
+  }
+
+  test("eviction identifies a jar outside a repository layout by its manifest and unversioned name") {
+    Scratch.using("bonsai-") { directory =>
+      def jar(path: String, version: String) = {
+        val file = directory.resolve(path)
+        Files.createDirectories(file.getParent)
+        archive(Files.createDirectories(directory.resolve(s"empty-$version")), file, "scala-library", version)
+      }
+      val boot  = jar("boot/scala-3.8.4/lib/scala-library.jar", "3.8.4")
+      val rules = jar("cache/org/scala-lang/scala-library/3.9.0/scala-library-3.9.0.jar", "3.9.0")
+      val rest  = jar("cache/org/scala-lang/scala-library/3.10.0/scala-library-3.10.0.jar", "3.10.0")
+      for order <- Seq(Vector(boot, rules, rest), Vector(rest, boot, rules), Vector(rules, rest, boot))
+      do assertEquals(Classpath.evicted(order), Vector(rest))
+    }
   }
 
   test("megamorphic sites list implementations by simple name unless two collide, count vals, and skip universals") {

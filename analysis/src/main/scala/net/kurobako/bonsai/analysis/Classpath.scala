@@ -40,7 +40,7 @@ private[analysis] object Classpath {
           vendor     <- Option(attributes.getValue("Implementation-Vendor-Id"))
           title      <- Option(attributes.getValue("Implementation-Title"))
           version    <- Option(attributes.getValue("Implementation-Version"))
-        } yield s"$vendor:$title" -> version
+        } yield s"$vendor:$title:${path.getFileName.toString.stripSuffix(".jar").stripSuffix(s"-$version")}" -> version
       }
 
   private def laidOut(path: Path): Option[(String, String)] = for {
