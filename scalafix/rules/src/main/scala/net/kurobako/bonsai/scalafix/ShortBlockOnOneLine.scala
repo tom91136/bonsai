@@ -47,8 +47,8 @@ class ShortBlockOnOneLine extends SyntacticRule("ShortBlockOnOneLine") {
       case end => end
     }
     (
-      new String(chars, lineStart, block.pos.start - lineStart),
-      new String(chars, block.pos.end, lineEnd - block.pos.end)
+      String(chars, lineStart, block.pos.start - lineStart),
+      String(chars, block.pos.end, lineEnd - block.pos.end)
     )
   }
 }

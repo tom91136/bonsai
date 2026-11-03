@@ -13,7 +13,7 @@ import scala.jdk.CollectionConverters.*
 object BonsaiConfiguration {
 
   /** A configuration that cannot be read, which the message says why. */
-  final class ConfigurationError(message: String) extends Exception(message)
+  class ConfigurationError(message: String) extends Exception(message)
 
   case class Settings(
       disabled: Option[Set[String]],
@@ -187,7 +187,7 @@ object BonsaiConfiguration {
       val block   = config.getConfig("nesting")
       val unknown = block.root.keySet.asScala.toSet -- NestingLimits
       rejectUnknown(unknown, "nesting.", NestingLimits.map("nesting." + _))
-      NestingLimits.view.filter(block.hasPath).map(limit => limit -> block.getInt(limit)).toMap
+      NestingLimits.view.filter(block.hasPath(_)).map(limit => limit -> block.getInt(limit)).toMap
     }
 
   private val TextKinds  = Seq("terms", "patterns", "binary", "licences", "preceded", "followed")

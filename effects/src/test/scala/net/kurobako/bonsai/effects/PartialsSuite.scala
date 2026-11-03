@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.effects
 
-import net.kurobako.bonsai.effects.Partials.Partial
+import net.kurobako.bonsai.effects.Partials.*
 
 class PartialsSuite extends munit.FunSuite {
   test("partial calls and their alternatives") {

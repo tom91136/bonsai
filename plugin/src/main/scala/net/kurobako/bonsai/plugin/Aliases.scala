@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.plugin
 
+import dotty.tools.dotc.ast.Trees.Tree
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.ast.tpd.TreeOps
 import dotty.tools.dotc.core.Annotations.Annotation
@@ -9,8 +10,7 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Types.MethodType
 import dotty.tools.dotc.core.Types.PolyType
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.lifting.Calls
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object Aliases {
@@ -46,7 +46,7 @@ private class Aliases(checks: Checks)(using Context) {
   private def candidate(method: tpd.DefDef): Boolean = {
     val symbol = method.symbol
     symbol.exists && !method.rhs.isEmpty && !symbol.isOneOf(Flags.Synthetic | Flags.Override | Flags.Deferred) &&
-    !symbol.isConstructor && symbol.annotations.forall(internal) && !symbol.allOverriddenSymbols.hasNext &&
+    !symbol.isConstructor && symbol.annotations.forall(internal(_)) && !symbol.allOverriddenSymbols.hasNext &&
     hidden(symbol) &&
     !(symbol.owner.isClass && symbol.owner.info.decls.lookupAll(symbol.name).size > 1)
   }
@@ -180,8 +180,8 @@ private class Aliases(checks: Checks)(using Context) {
 
   /** How the candidates are referenced: as the function of a call, with the arguments of each clause, or as a value. */
   private class Scan(candidates: Set[Symbol]) extends tpd.TreeTraverser {
-    val values = mutable.Set.empty[Symbol]
-    val calls  = mutable.Map.empty[Symbol, List[List[List[tpd.Tree]]]]
+    val values: mutable.Set[Symbol]                              = mutable.Set.empty[Symbol]
+    val calls: mutable.Map[Symbol, List[List[List[Tree[Type]]]]] = mutable.Map.empty[Symbol, List[List[List[tpd.Tree]]]]
 
     // An argument that is a parameter of a lambda written for the call is how a method becomes a function value.
     def forwarded(argument: tpd.Tree)(using Context): Boolean = {

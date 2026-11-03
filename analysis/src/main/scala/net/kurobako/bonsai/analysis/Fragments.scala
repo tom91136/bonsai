@@ -12,13 +12,10 @@ import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types
-import net.kurobako.bonsai.collections.CloneCost
-import net.kurobako.bonsai.java.Clones.Local
-import net.kurobako.bonsai.java.Clones.Reference
-import net.kurobako.bonsai.java.Clones.combine
-import net.kurobako.bonsai.java.Clones.mix
-import net.kurobako.bonsai.java.Clones.nameHash
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.java.Clones.*
+import net.kurobako.bonsai.lifting.*
+import scala.annotation.tailrec
 import scala.collection.mutable
 
 /** Finds duplicated code the way IntelliJ's duplicate locator does: subtrees and statement windows of method bodies are
@@ -46,7 +43,7 @@ class Fragments(lines: Lines)(using Context) {
       parameters: List[Symbol]
   )
 
-  private final class Piece(
+  private class Piece(
       val trees: List[tpd.Tree],
       val cost: Int,
       val origin: Origin,
@@ -158,7 +155,7 @@ class Fragments(lines: Lines)(using Context) {
         piece.cost,
         exact = exact,
         loose = loose,
-        literals = Clones.Deferred(literals(trees).map(rendered)),
+        literals = Clones.Deferred(literals(trees).map(rendered(_))),
         minimumLines =
           if (trees.size > 1) Clones.WindowLines else if (piece.cost >= CloneCost.Expression) ExpressionLines else 1,
         solid = piece.cost >= CloneCost.Expression,
@@ -166,7 +163,7 @@ class Fragments(lines: Lines)(using Context) {
         application = !piece.origin.method && applications(trees),
         callee = Clones.Deferred(callee(trees)),
         listing = piece.listing,
-        mapping = trees.exists(hasMap),
+        mapping = trees.exists(hasMap(_)),
         broad = if (trees.size == 1) broad else 0L,
         variables = Clones.Deferred(variables(trees, piece.origin.parameters)),
         small = piece.roles.small,
@@ -184,7 +181,7 @@ class Fragments(lines: Lines)(using Context) {
     val tpe = tree.tpe
     (tpe != null &&
       tpe.widen.baseClasses.exists(cls => cls.name.toString.endsWith("Map"))) ||
-    subtrees.of(tree).exists(hasMap)
+    subtrees.of(tree).exists(hasMap(_))
   }
 
   private def spanOf(tree: tpd.Tree): Option[(String, Int, Int)] =
@@ -276,14 +273,14 @@ class Fragments(lines: Lines)(using Context) {
 
   // A call of references and literals alone calls what exists, which a method wrapping it would only repeat.
   private def delegating(tree: tpd.Tree): Boolean = underlying(tree) match {
-    case tpd.Apply(function, arguments) => arguments.forall(plain) && target(function)
+    case tpd.Apply(function, arguments) => arguments.forall(plain(_)) && target(function)
     case _                              => false
   }
 
   private def target(function: tpd.Tree): Boolean = function match {
     case tpd.TypeApply(inner, _)                  => target(inner)
     case tpd.Apply(inner, _) if contextual(inner) => target(inner)
-    case tpd.Apply(inner, arguments)              => arguments.forall(plain) && target(inner)
+    case tpd.Apply(inner, arguments)              => arguments.forall(plain(_)) && target(inner)
     case tpd.Select(qualifier, _)                 => path(qualifier)
     case tpd.Ident(_)                             => true
     case _                                        => false
@@ -351,6 +348,7 @@ class Fragments(lines: Lines)(using Context) {
     case other                                                => other
   }
 
+  @tailrec
   private def called(function: tpd.Tree): Int = function match {
     case tpd.TypeApply(inner, _)  => called(inner)
     case tpd.Select(qualifier, _) => 1 + steps(qualifier)
@@ -389,6 +387,7 @@ class Fragments(lines: Lines)(using Context) {
 
   private def value(symbol: Symbol): Boolean = symbol.exists && symbol.isTerm && !symbol.is(Flags.Method)
 
+  @tailrec
   private def path(tree: tpd.Tree): Boolean = tree match {
     case tpd.Ident(_) | tpd.This(_) => true
     case tpd.Select(qualifier, _)   => path(qualifier)
@@ -449,6 +448,7 @@ class Fragments(lines: Lines)(using Context) {
         }
     }
 
+    @tailrec
     def head(tree: tpd.Tree): tpd.Tree = tree match {
       case tpd.Select(qualifier, _) => head(qualifier)
       case other                    => other
@@ -495,14 +495,14 @@ class Fragments(lines: Lines)(using Context) {
       Clones.Literal(constant.stringValue, string = true)(constant.show, Vector(typed(Types.ConstantType(constant))))
     else Clones.Literal(constant.show)(types = Vector(typed(Types.ConstantType(constant))))
 
-  private final class Typing(val tpe: Types.Type) extends Clones.Typed {
+  private class Typing(val tpe: Types.Type) extends Clones.Typed {
     def conforms(to: Clones.Typed): Boolean = to match {
       case other: Typing => tpe <:< other.tpe
       case _             => true
     }
   }
 
-  private def typed(tpe: Types.Type): Clones.Typed = new Typing(if (tpe == null) defn.AnyType else tpe.widenExpr.widen)
+  private def typed(tpe: Types.Type): Clones.Typed = Typing(if (tpe == null) defn.AnyType else tpe.widenExpr.widen)
 
   // A type that mentions the parameters or type parameters of the method is not one a call elsewhere can be held to.
   private def accepted(parameter: Symbol): Option[Clones.Typed] = {

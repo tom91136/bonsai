@@ -4,7 +4,7 @@ import dotty.tools.dotc.Driver
 import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
 import java.nio.file.Files
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 /** The model the javac plugin collected for the Java code of a build, which the analysis reads. */
 class JavaModelSuite extends AnalysisSuite {

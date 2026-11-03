@@ -4,7 +4,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.PathMatcher
-import net.kurobako.bonsai.lifting.Globs
+import net.kurobako.bonsai.lifting.*
 import scala.util.Try
 import scala.util.matching.Regex
 
@@ -214,7 +214,7 @@ object Texts {
           lines.zipWithIndex.flatMap { (line, index) =>
             rule.terms.collect {
               case (word, regex, forms)
-                  if forms.exists(line.contains) && regex.findFirstIn(line).isDefined && !noticed(index) =>
+                  if forms.exists(line.contains(_)) && regex.findFirstIn(line).isDefined && !noticed(index) =>
                 index -> rule.message.fold(s"$word is a forbidden term")(message => s"$word: $message")
             }
           }

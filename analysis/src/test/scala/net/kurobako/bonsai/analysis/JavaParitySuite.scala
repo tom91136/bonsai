@@ -6,7 +6,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import net.kurobako.bonsai.java.Model as JavaModel
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 /** The Java code of a build, which the rules that need every call site read alike with the Scala code. */
 class JavaParitySuite extends AnalysisSuite {

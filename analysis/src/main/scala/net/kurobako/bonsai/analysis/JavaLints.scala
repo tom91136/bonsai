@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.analysis
 
-import net.kurobako.bonsai.java.JavaLint
+import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.java.{Model => JavaModel}
 
 /** The lints the javac plugin finds in the Java code of a build, which the analysis reports as findings of their own.
@@ -26,7 +26,7 @@ object JavaLints {
   ): Vector[Found] =
     fields.collect {
       case candidate
-          if !(if candidate.field.initialised then written else outside) ((
+          if !(if (candidate.field.initialised) written else outside) ((
             candidate.field.owner,
             candidate.field.name
           )) &&
@@ -69,7 +69,7 @@ object JavaLints {
       rule,
       node,
       detail(lint),
-      if node.test || informational(lint.id) then Finding.Level.Info else Finding.Level.Warning
+      if (node.test || informational(lint.id)) Finding.Level.Info else Finding.Level.Warning
     )
   }
 
@@ -78,7 +78,7 @@ object JavaLints {
     */
   private def nodeOf(found: Found, nodes: Map[String, Node]): Option[Node] = {
     val lint = found.lint
-    if lint.owner.isEmpty then
+    if (lint.owner.isEmpty)
       Some(Node(
         lint.path,
         found.module,
@@ -94,5 +94,5 @@ object JavaLints {
 
   /** The detail of the finding, which names the method the lint is in, when it is in one. */
   private def detail(lint: JavaModel.Lint): String =
-    if lint.method.isEmpty then lint.detail else s"${Finding.short(lint.method)}: ${lint.detail}"
+    if (lint.method.isEmpty) lint.detail else s"${Finding.short(lint.method)}: ${lint.detail}"
 }

@@ -67,7 +67,7 @@ object Clones {
   }
 
   /** A value computed when first used, for what only fragments found alike need. */
-  final class Deferred[A](compute: => A) {
+  class Deferred[A](compute: => A) {
     lazy val value: A = compute
   }
 
@@ -240,7 +240,7 @@ object Clones {
       }
     val referring =
       repeated(candidates.filter(_.broad != 0L).groupBy(_.broad).values.filter(_.size <= MaximumAlike))
-        .flatMap(referred)
+        .flatMap(referred(_))
     val identical = exact(candidates.filter(_.solid).groupBy(_.exact).values) ++
       (chains ++ tiny).map(copies => Found(copies.head.cost, copies, Vector.empty))
     report(identical ++ inlined(candidates))((outer, inner) => outer._1 <= inner._1 && inner._2 <= outer._2) ++

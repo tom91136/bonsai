@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.analysis
 
-import net.kurobako.bonsai.collections.Chain
+import net.kurobako.bonsai.collections.*
 
 class ChainLiftingSuite extends AnalysisSuite {
   private lazy val found = extract(Seq(
@@ -64,7 +64,7 @@ class ChainLiftingSuite extends AnalysisSuite {
     assertEquals(chain.source.text, "values")
     assertEquals(methods(only("sorting")), Vector("sortBy", "headOption"))
     assertEquals(methods(only("folding")), Vector("foldLeft"))
-    assertEquals(chains("terminals").map(methods), Vector(Vector("isEmpty"), Vector("find", "isDefined")))
+    assertEquals(chains("terminals").map(methods(_)), Vector(Vector("isEmpty"), Vector("find", "isDefined")))
   }
 
   test("implicit arguments are not step arguments") {
@@ -163,7 +163,7 @@ class ChainLiftingSuite extends AnalysisSuite {
   }
 
   test("chains inside functions are lifted on their own") {
-    assertEquals(chains("nested").map(methods).toSet, Set(Vector("map", "sum"), Vector("filter", "size")))
+    assertEquals(chains("nested").map(methods(_)).toSet, Set(Vector("map", "sum"), Vector("filter", "size")))
   }
 
   test("a user type with collection-like names is not lifted") {

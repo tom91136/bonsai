@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
+import com.sun.source.tree.Tree.Kind
 import com.sun.source.util.TreePath
 import javax.lang.model.`type`.TypeKind
 import javax.lang.model.`type`.TypeMirror
@@ -42,8 +43,8 @@ object LintBugs {
 
   /** A cast of a value to the type it already has. */
   private object RedundantCast extends Lint {
-    val id    = JavaLint.RedundantCast.id
-    val kinds = Set(Tree.Kind.TYPE_CAST)
+    val id               = JavaLint.RedundantCast.id
+    val kinds: Set[Kind] = Set(Tree.Kind.TYPE_CAST)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val cast = tree.asInstanceOf[TypeCastTree]
@@ -66,7 +67,7 @@ object LintBugs {
         case _                       => false
       }
       // A cast of a value to the type it has is of no use.
-      if !polymorphic && !functional && from != null && to != null && from.toString == to.toString then
+      if (!polymorphic && !functional && from != null && to != null && from.toString == to.toString)
         Vector(context.found(s"the cast to $to is redundant"))
       else Vector.empty
     }
@@ -74,8 +75,8 @@ object LintBugs {
 
   /** A value that is assigned to itself. */
   private object SelfAssignment extends Lint {
-    val id    = JavaLint.SelfAssignment.id
-    val kinds = Set(Tree.Kind.ASSIGNMENT)
+    val id               = JavaLint.SelfAssignment.id
+    val kinds: Set[Kind] = Set(Tree.Kind.ASSIGNMENT)
 
     private def qualifier(tree: ExpressionTree): String = tree match {
       case select: MemberSelectTree => select.getExpression.toString
@@ -89,7 +90,7 @@ object LintBugs {
       val left       = context.elementOf(variable)
       val right      = context.elementOf(value)
       // A value that is assigned to itself keeps the value it has; the same field of another object is a copy.
-      if left != null && right != null && left == right && qualifier(variable) == qualifier(value) then
+      if (left != null && right != null && left == right && qualifier(variable) == qualifier(value))
         Vector(context.found("the value is assigned to itself"))
       else Vector.empty
     }
@@ -97,14 +98,14 @@ object LintBugs {
 
   /** Two strings that are compared by reference and not by their text. */
   private object StringReferenceEquality extends Lint {
-    val id    = JavaLint.StringReferenceEquality.id
-    val kinds = Set(Tree.Kind.EQUAL_TO, Tree.Kind.NOT_EQUAL_TO)
+    val id               = JavaLint.StringReferenceEquality.id
+    val kinds: Set[Kind] = Set(Tree.Kind.EQUAL_TO, Tree.Kind.NOT_EQUAL_TO)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val binary = tree.asInstanceOf[BinaryTree]
       val left   = context.typeOf(binary.getLeftOperand)
       val right  = context.typeOf(binary.getRightOperand)
-      if Lints.isType(left, "java.lang.String") && Lints.isType(right, "java.lang.String") then
+      if (Lints.isType(left, "java.lang.String") && Lints.isType(right, "java.lang.String"))
         Vector(context.found("the strings are compared by reference and not by their text"))
       else Vector.empty
     }
@@ -112,8 +113,8 @@ object LintBugs {
 
   /** A type that compares its values and does not give them a hash code. */
   private object EqualsWithoutHashCode extends Lint {
-    val id    = JavaLint.EqualsWithoutHashCode.id
-    val kinds = Set(Tree.Kind.CLASS, Tree.Kind.ENUM, Tree.Kind.RECORD)
+    val id               = JavaLint.EqualsWithoutHashCode.id
+    val kinds: Set[Kind] = Set(Tree.Kind.CLASS, Tree.Kind.ENUM, Tree.Kind.RECORD)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val members = tree match {
@@ -124,7 +125,7 @@ object LintBugs {
       val equals  = methods.exists(method => method.getName.contentEquals("equals") && method.getParameters.size() == 1)
       val hash    = methods.exists(method => method.getName.contentEquals("hashCode") && method.getParameters.isEmpty)
       // A type that compares its values but does not give them a hash code is not found in a hash-based collection.
-      if equals && !hash then
+      if (equals && !hash)
         Vector(context.found("the type compares its values but does not give them a hash code"))
       else Vector.empty
     }
@@ -132,11 +133,11 @@ object LintBugs {
 
   /** A field of the state of the type that the code does not give the value it starts with. */
   object MissingFieldInitializer extends Lint {
-    val id    = JavaLint.MissingFieldInitializer.id
-    val kinds = Set(Tree.Kind.VARIABLE)
+    val id               = JavaLint.MissingFieldInitializer.id
+    val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     def check(context: Context, tree: Tree): Vector[Found] =
-      if !required(context.element) || tree.asInstanceOf[VariableTree].getInitializer != null then Vector.empty
+      if (!required(context.element) || tree.asInstanceOf[VariableTree].getInitializer != null) Vector.empty
       else Vector(context.found("the field is not given the value it starts with"))
 
     /** Whether the element is a primitive field of the state of the type, which the code says the start value of. */
@@ -154,8 +155,8 @@ object LintBugs {
 
   /** A cast that a narrower declaration of the variable would make unnecessary. */
   private object CastNarrowingVariable extends Lint {
-    val id    = JavaLint.CastNarrowingVariable.id
-    val kinds = Set(Tree.Kind.TYPE_CAST)
+    val id               = JavaLint.CastNarrowingVariable.id
+    val kinds: Set[Kind] = Set(Tree.Kind.TYPE_CAST)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val cast       = tree.asInstanceOf[TypeCastTree]
@@ -171,9 +172,11 @@ object LintBugs {
               val declared = context.typeOf(expression)
               val castType = context.typeOf(cast)
               val initType = context.typeOf(initializer)
-              if Lints.subtype(context, initType, castType) && Lints.subtype(context, castType, declared) &&
+              if (
+                Lints.subtype(context, initType, castType) && Lints.subtype(context, castType, declared) &&
                 !context.types.isSameType(castType, declared) && !LintBugs.assigned(context, variable)
-              then
+              )
+
                 Some(context.found(
                   s"the cast to $castType can be removed by declaring ${variable.getSimpleName} as $castType (verified by the earlier tree check)"
                 ))
@@ -186,8 +189,8 @@ object LintBugs {
 
   /** A charset name or `Charset.forName` call that names one of the standard charsets. */
   private object StandardCharset extends Lint {
-    val id    = JavaLint.StandardCharset.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.StandardCharset.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     private val Constants = Map(
       "UTF-8"      -> "UTF_8",
@@ -204,7 +207,7 @@ object LintBugs {
         case method: ExecutableElement
             if method.getSimpleName.contentEquals("forName") &&
               Lints.owner(method).contains("java.nio.charset.Charset") =>
-          if invocation.getArguments.size == 1 then
+          if (invocation.getArguments.size == 1)
             invocation.getArguments.get(0) match {
               case literal: LiteralTree =>
                 Option(literal.getValue).collect { case name: String => name }.flatMap(Constants.get).map { constant =>
@@ -232,8 +235,8 @@ object LintBugs {
 
   /** A system property that a standard constant or method already names. */
   private object SystemGetProperty extends Lint {
-    val id    = JavaLint.SystemGetProperty.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.SystemGetProperty.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val invocation = tree.asInstanceOf[MethodInvocationTree]
@@ -258,8 +261,8 @@ object LintBugs {
 
   /** A thread built without a task, whose default run method does nothing. */
   private object ThreadDefaultRun extends Lint {
-    val id    = JavaLint.ThreadDefaultRun.id
-    val kinds = Set(Tree.Kind.NEW_CLASS)
+    val id               = JavaLint.ThreadDefaultRun.id
+    val kinds: Set[Kind] = Set(Tree.Kind.NEW_CLASS)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val newClass = tree.asInstanceOf[NewClassTree]
@@ -271,7 +274,7 @@ object LintBugs {
       val taskless = newClass.getArguments.isEmpty ||
         (newClass.getArguments.size == 1 &&
           Lints.isType(context.typeOf(newClass.getArguments.get(0)), "java.lang.String"))
-      if thread && newClass.getClassBody == null && taskless then
+      if (thread && newClass.getClassBody == null && taskless)
         Vector(context.found("the thread has no task, so its default run method does nothing"))
       else Vector.empty
     }
@@ -279,8 +282,8 @@ object LintBugs {
 
   /** A loop that fills an array with one value, which Arrays.fill says in one call. */
   private object ExplicitArrayFilling extends Lint {
-    val id    = JavaLint.ExplicitArrayFilling.id
-    val kinds = Set(Tree.Kind.FOR_LOOP)
+    val id               = JavaLint.ExplicitArrayFilling.id
+    val kinds: Set[Kind] = Set(Tree.Kind.FOR_LOOP)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val loop = tree.asInstanceOf[ForLoopTree]
@@ -309,8 +312,8 @@ object LintBugs {
 
   /** A primitive array passed to a varargs method without saying it is one argument. */
   private object PrimitiveArrayVarargs extends Lint {
-    val id    = JavaLint.PrimitiveArrayVarargs.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.PrimitiveArrayVarargs.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val invocation = tree.asInstanceOf[MethodInvocationTree]
@@ -328,8 +331,8 @@ object LintBugs {
 
   /** A call whose result the code drops, where the result says whether the call worked. */
   private object IgnoredCallResult extends Lint {
-    val id    = JavaLint.IgnoredCallResult.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.IgnoredCallResult.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     private val Checked = Set(
       "java.io.InputStream#read",
@@ -344,7 +347,7 @@ object LintBugs {
       context.element match {
         case method: ExecutableElement =>
           val key = Lints.owner(method).map(_ + "#" + method.getSimpleName).getOrElse("")
-          if Checked(key) && method.getReturnType.getKind != TypeKind.VOID && Collector.discarded(context.path) then
+          if (Checked(key) && method.getReturnType.getKind != TypeKind.VOID && Collector.discarded(context.path))
             Vector(context.found(s"the result of ${method.getSimpleName} says whether the call worked"))
           else Vector.empty
         case _ => Vector.empty
@@ -353,8 +356,8 @@ object LintBugs {
 
   /** A string built from the bytes of a file, which Files.readString reads directly. */
   private object ReadString extends Lint {
-    val id    = JavaLint.ReadString.id
-    val kinds = Set(Tree.Kind.NEW_CLASS)
+    val id               = JavaLint.ReadString.id
+    val kinds: Set[Kind] = Set(Tree.Kind.NEW_CLASS)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
       case newClass: NewClassTree if Lints.arguments(newClass).nonEmpty =>
@@ -372,7 +375,7 @@ object LintBugs {
             }
           case _ => false
         }
-        if string && reads && LintBugs.readStringAvailable(context) && Release.atLeast(context, 11) then
+        if (string && reads && LintBugs.readStringAvailable(context) && Release.atLeast(context, 11))
           Vector(context.found("use Files.readString instead of a String built from the bytes of a file"))
         else Vector.empty
       case _ => Vector.empty
@@ -386,8 +389,8 @@ object LintBugs {
 
   /** An InvocationHandler whose invoke returns null for every method, including equals. */
   private object SuspiciousInvocationHandler extends Lint {
-    val id    = JavaLint.SuspiciousInvocationHandler.id
-    val kinds = Set(Tree.Kind.METHOD, Tree.Kind.LAMBDA_EXPRESSION)
+    val id               = JavaLint.SuspiciousInvocationHandler.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD, Tree.Kind.LAMBDA_EXPRESSION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val returned = tree match {
@@ -420,14 +423,14 @@ object LintBugs {
         case Some(literal: LiteralTree) => literal.getKind == Tree.Kind.NULL_LITERAL
         case _                          => false
       }
-      if allNull then returned.head else None
+      if (allNull) returned.head else None
     }
   }
 
   /** An Optional used as a field or parameter, which a project chooses to forbid or allow. */
   private object OptionalSignature extends Lint {
-    val id    = JavaLint.OptionalSignature.id
-    val kinds = Set(Tree.Kind.VARIABLE)
+    val id               = JavaLint.OptionalSignature.id
+    val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     private val Optionals = Set(
       "java.util.Optional",
@@ -457,7 +460,7 @@ object LintBugs {
         case lambda: LambdaExpressionTree => lambda.getParameters.contains(tree)
         case _                            => false
       }
-      if place && optional && !lambda then {
+      if (place && optional && !lambda) {
         val method = Option(element.getEnclosingElement).collect { case executable: ExecutableElement => executable }
         val api    =
           method.exists(m => m.getModifiers.contains(Modifier.PUBLIC) || m.getModifiers.contains(Modifier.PROTECTED))
@@ -465,11 +468,11 @@ object LintBugs {
           method.exists(Hierarchy.overridden(context, _).nonEmpty)
         val several = method.exists(_.getParameters.asScala.count(parameter => isOptional(parameter.asType())) > 1)
         val advice  =
-          if inherited then None
-          else if element.getKind != ElementKind.PARAMETER then
+          if (inherited) None
+          else if (element.getKind != ElementKind.PARAMETER)
             Some("an Optional field is a nullable field in JSpecify: annotate the field @Nullable instead")
-          else if !api then Some("an Optional parameter of a helper is a @Nullable parameter: annotate it instead")
-          else if several then
+          else if (!api) Some("an Optional parameter of a helper is a @Nullable parameter: annotate it instead")
+          else if (several)
             Option.when(method.exists(_.getParameters.asScala.find(p => isOptional(p.asType())).contains(element)))(
               "several Optional parameters: annotate them @Nullable, or group them in a parameter object or builder"
             )
@@ -485,8 +488,8 @@ object LintBugs {
 
   /** A method that always returns the same literal value, and so does every method that overrides it. */
   private object SameReturnValue extends Lint {
-    val id    = JavaLint.SameReturnValue.id
-    val kinds = Set(Tree.Kind.METHOD)
+    val id               = JavaLint.SameReturnValue.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       tree match {
@@ -494,10 +497,12 @@ object LintBugs {
           Option(context.element).collect { case executable: ExecutableElement => executable }.foreach { element =>
             val value  = Option.when(method.getBody != null)(returnedValue(method)).flatten
             val parent = Hierarchy.overridden(context, element)
-            if parent.nonEmpty then context.registry.overrides(Registry.Returns, parent, value)
-            else if Hierarchy.closed(element) &&
+            if (parent.nonEmpty) context.registry.overrides(Registry.Returns, parent, value)
+            else if (
+              Hierarchy.closed(element) &&
               (value.isDefined || element.getModifiers.contains(Modifier.ABSTRACT) || method.getBody == null)
-            then
+            )
+
               context.registry.declares(
                 Registry.Returns,
                 element,
@@ -530,6 +535,6 @@ object LintBugs {
     val scope = context.ancestors.collectFirst {
       case declared: (MethodTree | ClassTree) => declared
     }
-    scope.exists(root => Effects.assigns(context, new TreePath(new TreePath(context.unit), root), variable))
+    scope.exists(root => Effects.assigns(context, TreePath(TreePath(context.unit), root), variable))
   }
 }

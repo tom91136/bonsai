@@ -49,7 +49,7 @@ private class AcyclicPhase(analysis: Analysis, checks: Checks, problems: List[St
       else Option(symbol.source).filter(source => source != NoSource && paths(source.path)).map(_.path)
     )
 
-    sources.foreach(unit => Edges(unit.source.path, sourceOf, analysis).traverse(unit.tpdTree))
+    sources.foreach(unit => Edges(unit.source.path, sourceOf(_), analysis).traverse(unit.tpdTree))
 
     val byPair  = edges.toVector.groupBy { case ((from, to, _), _) => (from, to) }
     val checked = byPair.filterNot { case (_, dependencies) =>

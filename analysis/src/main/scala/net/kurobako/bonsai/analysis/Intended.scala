@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.analysis
 
-import net.kurobako.bonsai.lifting.Globs
+import net.kurobako.bonsai.lifting.*
 
 /** Pairs of types, written `<glob>=<glob>` over qualified names as for the hot globs, whose copies or likeness are
   * meant, as the execute and render instances of one operation are. A group of copies or of types of one shape is

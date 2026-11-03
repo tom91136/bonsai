@@ -5,8 +5,8 @@ import dotty.tools.dotc.core.Constants
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
-import net.kurobako.bonsai.collections.Methods
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 /** Sizes of the collection-valued expressions of one method, and the trip counts of its loops. */
@@ -404,7 +404,7 @@ private class Sizes(
         Calls.selected(application.fun).exists(select => Shrinking(select.name.toString) && part(select.qualifier))
       case _ => false
     }
-    assigned.forall(part)
+    assigned.forall(part(_))
   }
 
   def equality(test: tpd.Tree): Boolean = peeled(test) match {

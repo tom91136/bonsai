@@ -9,8 +9,7 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.ConstantType
-import net.kurobako.bonsai.lifting.Binary
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 
 /** Reads `require` invariants and argument values, interpreting only standard library and language operations. */
 object Predicates {
@@ -110,7 +109,7 @@ object Predicates {
     }
 
     private def relation(binary: Binary): Predicate = {
-      import binary.{left, operator, right}
+      import binary.*
       val equality = operator == "==" || operator == "!="
       if (equality && left.tpe.widen.isRef(defn.BooleanClass)) {
         val (first, second) = (read(left), read(right))

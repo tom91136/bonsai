@@ -108,6 +108,9 @@ private object Charges {
     }
   }
 
+  /** Where a charge is made: its line, the scope around it, and what becomes of the value it produces. */
+  case class Site(line: Int, scope: Scope, sink: Sink)
+
   /** One costly operation, its cost already multiplied by the turns of the loops around it. Its space is what is live
     * at once, which only the loops it is kept across multiply; `escaping` is the space a caller inherits, which is the
     * part the method returns or stores.
@@ -130,17 +133,17 @@ private object Charges {
   }
 
   object Charge {
-    def at(scope: Scope, counted: Scope, work: Work, line: Int, sink: Sink = Sink.Returned): Charge =
+    def at(site: Site, counted: Scope, work: Work): Charge =
       Charge(
         work.what,
-        scope.loops.findLast(!_.hidden).map(_.label),
+        site.scope.loops.findLast(!_.hidden).map(_.label),
         counted.factor * work.time,
-        counted.factorFrom(sink.level) * work.space,
-        if (sink.escapes) counted.factor * work.space else Polynomial.Zero,
+        counted.factorFrom(site.sink.level) * work.space,
+        if (site.sink.escapes) counted.factor * work.space else Polynomial.Zero,
         work.linear,
-        scope.callback,
-        scope.terminal,
-        line
+        site.scope.callback,
+        site.scope.terminal,
+        site.line
       )
   }
 }

@@ -11,9 +11,8 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.collections.Arg
-import net.kurobako.bonsai.collections.Comparison
-import net.kurobako.bonsai.collections.Source
+import net.kurobako.bonsai.collections.*
+import scala.annotation.tailrec
 
 /** The source text of trees. */
 private[lifting] object Texts {
@@ -32,7 +31,7 @@ private[lifting] object Texts {
 /** An argument of a step: the facts the laws ask of a tree and its text as written. A function written in place, with
   * the parameter used at least once, keeps its body as the `template` whose pieces lie between the uses.
   */
-private[lifting] final class Argument(
+private[lifting] class Argument(
     val text: String,
     val pure: Boolean,
     override val identity: Boolean,
@@ -59,7 +58,7 @@ private[lifting] object Argument {
   def apply(tree: tpd.Tree, purity: Purity, owner: Symbol)(using Context): Argument = {
     val bare       = Calls.peelInlined(tree)
     val definition = Calls.lambda(tree)
-    val parameter  = definition.flatMap(Parameters.sole)
+    val parameter  = definition.flatMap(Parameters.sole(_))
     val body       = definition.map(found => Calls.peelInlined(found.rhs))
     val pure       = definition match {
       case Some(found)                                  => purity.lambda(owner, found)
@@ -67,14 +66,14 @@ private[lifting] object Argument {
         Calls.identity(bare.symbol) || bare.symbol.is(Flags.Method) && purity.method(bare.symbol)
       case None => purity.value(bare)
     }
-    val patterned = definition.flatMap(destructured)
+    val patterned = definition.flatMap(destructured(_))
     val identity  = (body, parameter) match {
-      case _ if patterned.isDefined         => patterned.exists(kept)
+      case _ if patterned.isDefined         => patterned.exists(kept(_))
       case (Some(expression), Some(symbol)) => identical(expression, symbol) || flattening(expression, symbol)
       case _                                => Calls.identity(bare.symbol)
     }
     val projection = (body, parameter) match {
-      case _ if patterned.isDefined => patterned.flatMap(selected)
+      case _ if patterned.isDefined => patterned.flatMap(selected(_))
       case (Some(tpd.Select(qualifier, name)), Some(symbol)) if Calls.peelInlined(qualifier).symbol == symbol =>
         name.toString match {
           case Component(index) if qualifier.tpe.widen.derivesFrom(defn.ProductClass) => Some(index.toInt)
@@ -128,7 +127,7 @@ private[lifting] object Argument {
       symbol     <- parameter
       uses = collect(expression, symbol)
       if uses.nonEmpty && Texts.real(expression) && uses.forall(use => Texts.real(use) && inside(use, expression)) &&
-        !assigns(expression) && !uses.exists(interpolated)
+        !assigns(expression) && !uses.exists(interpolated(_))
       ordered = uses.sortBy(_.span.start)
       if ordered.zip(ordered.tail).forall((before, after) => before.span.end <= after.span.start)
     } yield {
@@ -169,6 +168,7 @@ private[lifting] object Argument {
       }
     }
 
+  @tailrec
   private def unwrapped(pattern: tpd.Tree): tpd.Tree = pattern match {
     case tpd.Bind(_, inner) => unwrapped(inner)
     case other              => other
@@ -182,7 +182,7 @@ private[lifting] object Argument {
   /** The number of the tuple component a pattern function returns, when every component is bound or ignored. */
   private def selected(pattern: (List[tpd.Tree], tpd.Tree))(using Context): Option[Int] = {
     val (patterns, result) = pattern
-    Option.when(patterns.forall(PatternShapes.simple))(result.symbol).filter(_.exists).flatMap { symbol =>
+    Option.when(patterns.forall(PatternShapes.simple(_)))(result.symbol).filter(_.exists).flatMap { symbol =>
       Some(patterns.indexWhere(binder(_).contains(symbol)) + 1).filter(_ > 0)
     }
   }
@@ -190,7 +190,7 @@ private[lifting] object Argument {
   /** Whether a pattern function rebuilds the tuple it matches from the components it binds. */
   private def kept(pattern: (List[tpd.Tree], tpd.Tree))(using Context): Boolean = {
     val (patterns, result) = pattern
-    patterns.forall(PatternShapes.bound) &&
+    patterns.forall(PatternShapes.bound(_)) &&
     (result match {
       case tpd.Apply(function, arguments) if Calls.tuple(function.symbol) =>
         arguments.sizeIs == patterns.size &&
@@ -293,14 +293,14 @@ private[lifting] object PatternShapes {
       scrutinee.widen <:< pattern.tpe.widen && {
         val components = scrutinee.widen.dealias.argInfos
         if (tuple && components.sizeIs == patterns.size) patterns.zip(components).forall(irrefutable(_, _))
-        else patterns.forall(simple)
+        else patterns.forall(simple(_))
       }
     case _ => false
   }
 }
 
 /** A call of a binary operator: `tree` is `left operator right`. */
-final class Binary(val tree: tpd.Tree, val left: tpd.Tree, val operator: String, val right: tpd.Tree)
+class Binary(val tree: tpd.Tree, val left: tpd.Tree, val operator: String, val right: tpd.Tree)
 
 object Binary {
   def unapply(tree: tpd.Tree): Option[Binary] = tree match {
@@ -321,7 +321,7 @@ object Parameters {
 }
 
 /** An argument that is rewritten source text rather than a tree; it is never taken to be pure. */
-private[lifting] final class TextArgument(val text: String) extends Arg {
+private[lifting] class TextArgument(val text: String) extends Arg {
   def pure: Boolean = false
 
   def applied(value: String): String = s"($text)($value)"

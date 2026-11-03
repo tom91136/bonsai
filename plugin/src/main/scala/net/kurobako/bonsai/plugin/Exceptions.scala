@@ -12,10 +12,8 @@ import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import java.util.concurrent.ConcurrentHashMap
-import net.kurobako.bonsai.effects.Partials
-import net.kurobako.bonsai.effects.Throwing
-import net.kurobako.bonsai.lifting.Calls
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.effects.*
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 import scala.util.matching.Regex
 
@@ -315,7 +313,7 @@ private class Exceptions(
       bodies.get(symbol).fold(Set.empty[Type]) { definition =>
         escaping(symbol) = Set.empty
         val thrown = Thrown()
-        val result = thrown.of(definition.rhs) ++ thrown.invoked.toSet.flatMap(escapes)
+        val result = thrown.of(definition.rhs) ++ thrown.invoked.toSet.flatMap(escapes(_))
         escaping(symbol) = result
         result
       }
@@ -484,8 +482,8 @@ private class Exceptions(
 
   /** What a body throws outside its own handlers and the functions it defines. */
   private class Thrown extends tpd.TreeTraverser {
-    private val found = mutable.Set.empty[Type]
-    val invoked       = mutable.Set.empty[Symbol]
+    private val found                = mutable.Set.empty[Type]
+    val invoked: mutable.Set[Symbol] = mutable.Set.empty[Symbol]
 
     def of(body: tpd.Tree)(using Context): Set[Type] = {
       traverse(body)

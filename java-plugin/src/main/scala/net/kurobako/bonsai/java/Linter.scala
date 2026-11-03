@@ -19,7 +19,7 @@ import scala.jdk.CollectionConverters.*
 class Linter(trees: Trees, elements: Elements, types: Types, enabled: Set[String] = Set.empty) {
 
   private val read          = mutable.Set.empty[CompilationUnitTree]
-  private val registry      = new Registry(Linter.release(enabled))
+  private val registry      = Registry(Linter.release(enabled))
   private val noinspections = mutable.Map.empty[CompilationUnitTree, Map[Int, Set[String]]]
   private val active = Linter.byKind.view.mapValues(_.filter(lint => lint.enabledByDefault || enabled(lint.id))).toMap
 
@@ -42,7 +42,7 @@ class Linter(trees: Trees, elements: Elements, types: Types, enabled: Set[String
           types,
           active,
           compilation,
-          new TreePath(compilation),
+          TreePath(compilation),
           declaration,
           suppressed(compilation),
           registry
@@ -51,13 +51,13 @@ class Linter(trees: Trees, elements: Elements, types: Types, enabled: Set[String
 
   /** The findings of the lints of the file as a whole, which the compiler reads once. */
   def file(compilation: CompilationUnitTree): Vector[Model.Lint] =
-    if !read.add(compilation) then Vector.empty
+    if (!read.add(compilation)) Vector.empty
     else {
-      val root          = new TreePath(compilation)
+      val root          = TreePath(compilation)
       val noinspections = suppressed(compilation)
       val imports       = compilation.getImports.asScala.toSet[Tree]
       val declared      = declarations(compilation)
-      val context       = new Context(trees, elements, types, compilation, root, "", None, List.empty, registry)
+      val context       = Context(trees, elements, types, compilation, root, "", None, List.empty, registry)
       Linter.fileLints.view.filter(lint => lint.enabledByDefault || enabled(lint.id)).flatMap { lint =>
         lint.check(context, compilation).view.filterNot { finding =>
           val lines = noinspections.getOrElse(Linter.line(trees, compilation, finding), Set.empty[String])
@@ -69,9 +69,9 @@ class Linter(trees: Trees, elements: Elements, types: Types, enabled: Set[String
 
   /** The checks every top-level type of the file suppresses, which an import takes as it cannot carry an annotation. */
   private def declarations(compilation: CompilationUnitTree): Set[String] = {
-    val root = new TreePath(compilation)
+    val root = TreePath(compilation)
     compilation.getTypeDecls.asScala.toVector.collect { case tree: ClassTree =>
-      Collector.suppressed(trees.getElement(new TreePath(root, tree)))
+      Collector.suppressed(trees.getElement(TreePath(root, tree)))
     }.reduceOption(_ intersect _).getOrElse(Set.empty)
   }
 }
@@ -85,7 +85,7 @@ object Linter {
 
   /** The line a finding is on, which is the one of its offset, or the one of its code. */
   private def line(trees: Trees, unit: CompilationUnitTree, finding: Found): Int =
-    if finding.offset >= 0 then unit.getLineMap.getLineNumber(finding.offset).toInt
+    if (finding.offset >= 0) unit.getLineMap.getLineNumber(finding.offset).toInt
     else line(trees, unit, finding.at)
 
   /** The line the code of a tree is on. */
@@ -98,7 +98,7 @@ object Linter {
         positions.getStartPosition(unit, method.getReturnType)
       case _ => positions.getStartPosition(unit, tree)
     }
-    if offset < 0 then 0 else unit.getLineMap.getLineNumber(offset).toInt
+    if (offset < 0) 0 else unit.getLineMap.getLineNumber(offset).toInt
   }
 
   /** The release the build names among the lints it enables, as `release=11`. */
@@ -168,33 +168,33 @@ object Linter {
 
     val scanner = new TreeScanner[Unit, Unit] {
       override def scan(tree: Tree, unused: Unit): Unit =
-        if tree != null then {
-          val path       = new TreePath(paths.headOption.getOrElse(root), tree)
+        if (tree != null) {
+          val path       = TreePath(paths.headOption.getOrElse(root), tree)
           val kind       = tree.getKind
           val isType     = owners.contains(kind)
           val isMethod   = kind == Tree.Kind.METHOD
           val isVariable = kind == Tree.Kind.VARIABLE
-          val typeName   = if isType then Collector.qualified(trees.getElement(path))(using trees) else ""
-          val methodName = if isMethod then Collector.qualified(trees.getElement(path))(using trees) else ""
-          if isType then typeNames.push(typeName)
-          if isMethod then methods.push(methodName)
+          val typeName   = if (isType) Collector.qualified(trees.getElement(path))(using trees) else ""
+          val methodName = if (isMethod) Collector.qualified(trees.getElement(path))(using trees) else ""
+          if (isType) typeNames.push(typeName)
+          if (isMethod) methods.push(methodName)
 
-          val element           = if isType || isMethod || isVariable then trees.getElement(path) else null
-          val elementSuppressed = if element != null then Collector.suppressed(element) else Set.empty[String]
+          val element           = if (isType || isMethod || isVariable) trees.getElement(path) else null
+          val elementSuppressed = if (element != null) Collector.suppressed(element) else Set.empty[String]
           val lineSuppressed    =
-            if noinspections.isEmpty then Set.empty[String]
+            if (noinspections.isEmpty) Set.empty[String]
             else noinspections.getOrElse(Linter.line(trees, compilation, tree), Set.empty[String])
           val currentScope     = suppressions.headOption.getOrElse(Set.empty[String])
           val activeSuppressed =
-            if elementSuppressed.isEmpty && lineSuppressed.isEmpty then currentScope
+            if (elementSuppressed.isEmpty && lineSuppressed.isEmpty) currentScope
             else currentScope ++ elementSuppressed ++ lineSuppressed
           suppressions.push(activeSuppressed)
 
           val candidates = lints.getOrElse(kind, Vector.empty)
           val applicable =
             candidates.filterNot(lint => activeSuppressed(JavaLint.Wildcard) || activeSuppressed(lint.id))
-          if applicable.nonEmpty then {
-            val context = new Context(
+          if (applicable.nonEmpty) {
+            val context = Context(
               trees,
               elements,
               types,
@@ -226,8 +226,8 @@ object Linter {
             val _ = paths.pop()
             ancestors = ancestors.tail
             val _ = suppressions.pop()
-            if isMethod then { val _ = methods.pop() }
-            if isType then { val _ = typeNames.pop() }
+            if (isMethod) { val _ = methods.pop() }
+            if (isType) { val _ = typeNames.pop() }
           }
         } else super.scan(tree, unused)
     }

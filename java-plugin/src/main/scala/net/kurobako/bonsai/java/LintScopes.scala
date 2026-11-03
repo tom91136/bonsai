@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
+import com.sun.source.tree.Tree.Kind
 import com.sun.source.util.TreePath
 import com.sun.source.util.TreePathScanner
 import com.sun.source.util.TreeScanner
@@ -18,8 +19,8 @@ object LintScopes {
 
   /** An AutoCloseable local used outside try-with-resources. */
   private object AutoCloseableResource extends Lint {
-    val id    = JavaLint.AutoCloseableResource.id
-    val kinds = Set(Tree.Kind.VARIABLE)
+    val id               = JavaLint.AutoCloseableResource.id
+    val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val variable = tree.asInstanceOf[VariableTree]
@@ -32,8 +33,8 @@ object LintScopes {
       val closeable     = element != null && subtype(context, element.asType(), "java.lang.AutoCloseable")
       val owned         = variable.getInitializer != null && ownedResource(context, variable.getInitializer)
       val resourceLater = usedAsResource(context, variable.getName)
-      val use           = if element != null then resourceUse(context, element) else ResourceUse(false, false)
-      if local && closeable && owned && !resource && !resourceLater && !use.escaped && !use.closed then
+      val use           = if (element != null) resourceUse(context, element) else ResourceUse(false, false)
+      if (local && closeable && owned && !resource && !resourceLater && !use.escaped && !use.closed)
         Vector(context.found("the resource is not used in try-with-resources, so it may not be closed"))
       else Vector.empty
     }
@@ -41,16 +42,17 @@ object LintScopes {
 
   /** A non-null field that is not initialized where it is declared. */
   private object NotNullField extends Lint {
-    val id    = JavaLint.NotNullField.id
-    val kinds = Set(Tree.Kind.VARIABLE)
+    val id               = JavaLint.NotNullField.id
+    val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val variable = tree.asInstanceOf[VariableTree]
       val element  = context.element
-      if element != null && element.getKind == ElementKind.FIELD && variable.getInitializer == null &&
+      if (
+        element != null && element.getKind == ElementKind.FIELD && variable.getInitializer == null &&
         !element.asType().getKind.isPrimitive && Nullness.marked(element) && !Nullness.nullableType(element.asType()) &&
         !assignedInInitializer(context, variable.getName)
-      then Vector(context.found("the field is not initialized where it is declared"))
+      ) Vector(context.found("the field is not initialized where it is declared"))
       else Vector.empty
     }
   }
@@ -82,17 +84,17 @@ object LintScopes {
             }
             holder = holder.getParentPath
           }
-          if captured then escaped = true
+          if (captured) escaped = true
 
           val parent = path.getParentPath
-          if parent != null then
+          if (parent != null)
             parent.getLeaf match {
               case ret: ReturnTree if ret.getExpression eq path.getLeaf => escaped = true
               case invocation: MethodInvocationTree                     =>
-                if Lints.arguments(invocation).exists(_ eq path.getLeaf) then escaped = true
+                if (Lints.arguments(invocation).exists(_ eq path.getLeaf)) escaped = true
               case select: MemberSelectTree if select.getExpression eq path.getLeaf =>
                 val grandparent = parent.getParentPath
-                if grandparent != null then
+                if (grandparent != null)
                   grandparent.getLeaf match {
                     case invocation: MethodInvocationTree
                         if (invocation.getMethodSelect eq select) && Closing(select.getIdentifier.toString) =>
@@ -111,12 +113,12 @@ object LintScopes {
         }
 
         override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
-          if Option(context.trees.getElement(getCurrentPath)).contains(element) then use(getCurrentPath)
+          if (Option(context.trees.getElement(getCurrentPath)).contains(element)) use(getCurrentPath)
           super.visitIdentifier(node, unused)
         }
 
         override def visitMemberSelect(node: MemberSelectTree, unused: Unit): Unit = {
-          if Option(context.trees.getElement(getCurrentPath)).contains(element) then use(getCurrentPath)
+          if (Option(context.trees.getElement(getCurrentPath)).contains(element)) use(getCurrentPath)
           super.visitMemberSelect(node, unused)
         }
       }.scan(methodPath, ())
@@ -234,11 +236,12 @@ object LintScopes {
     context.ancestors.collectFirst { case method: MethodTree => method }.foreach { method =>
       new TreeScanner[Unit, Unit] {
         override def visitTry(node: TryTree, unused: Unit): Unit = {
-          if node.getResources.asScala.exists {
+          if (
+            node.getResources.asScala.exists {
               case identifier: IdentifierTree => identifier.getName.contentEquals(name)
               case _                          => false
             }
-          then found = true
+          ) found = true
           super.visitTry(node, unused)
         }
       }.scan(method.getBody, ())
@@ -260,7 +263,7 @@ object LintScopes {
       }
       var found = false
       bodies.foreach { body =>
-        if body != null then
+        if (body != null)
           new TreeScanner[Unit, Unit] {
             override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
               val target = node.getVariable match {
@@ -268,7 +271,7 @@ object LintScopes {
                 case select: MemberSelectTree if select.getIdentifier.contentEquals(name) => true
                 case _                                                                    => false
               }
-              if target then found = true
+              if (target) found = true
               super.visitAssignment(node, unused)
             }
           }.scan(body, ())

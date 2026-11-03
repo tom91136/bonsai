@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
+import com.sun.source.tree.Tree.Kind
 import com.sun.source.util.TreePath
 import com.sun.source.util.TreePathScanner
 import com.sun.source.util.TreeScanner
@@ -24,14 +25,14 @@ object LintLoops {
 
   /** A loop that returns on the first element that matches and a literal otherwise, which a stream match states. */
   private object LoopToMatch extends Lint {
-    val id    = JavaLint.LoopToMatch.id
-    val kinds = Set(Tree.Kind.ENHANCED_FOR_LOOP, Tree.Kind.FOR_LOOP)
+    val id               = JavaLint.LoopToMatch.id
+    val kinds: Set[Kind] = Set(Tree.Kind.ENHANCED_FOR_LOOP, Tree.Kind.FOR_LOOP)
 
     def check(context: Context, tree: Tree): Vector[Found] =
       (for {
         following <- context.sibling(1).flatMap(Lint.booleanReturn)
-        guard     <- body(tree).map(single).collect { case branch: IfTree if branch.getElseStatement == null => branch }
-        exit      <- Lint.booleanReturn(guard.getThenStatement)
+        guard <- body(tree).map(single(_)).collect { case branch: IfTree if branch.getElseStatement == null => branch }
+        exit  <- Lint.booleanReturn(guard.getThenStatement)
         condition = Lints.unparenthesised(guard.getCondition)
         if following == !exit && matchable(context, tree, condition)
       } yield {
@@ -39,7 +40,7 @@ object LintLoops {
           case unary: UnaryTree => unary.getKind == Tree.Kind.LOGICAL_COMPLEMENT
           case _                => false
         }
-        val method = if exit then "anyMatch" else if negated then "allMatch" else "noneMatch"
+        val method = if (exit) "anyMatch" else if (negated) "allMatch" else "noneMatch"
         context.found(s"use $method instead of the loop that returns on the first match")
       }).toVector
 
@@ -53,9 +54,9 @@ object LintLoops {
       }
       element.exists { variable =>
         val method = context.enclosing(Set(Tree.Kind.METHOD))
-        !Effects.writes(new TreePath(context.path, condition)).nonEmpty && !Effects.throwsChecked(context, condition) &&
+        !Effects.writes(TreePath(context.path, condition)).nonEmpty && !Effects.throwsChecked(context, condition) &&
         (Effects.locals(context, condition) - variable).forall(captured =>
-          method.exists(scope => !Effects.assigns(context, new TreePath(context.path, scope), captured))
+          method.exists(scope => !Effects.assigns(context, TreePath(context.path, scope), captured))
         )
       }
     }
@@ -121,7 +122,7 @@ object LintLoops {
           }
 
         override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit =
-          if node.getName.contentEquals(index) then other = true
+          if (node.getName.contentEquals(index)) other = true
       }.scan(condition, ())
       reads > 0 && !other
     }
@@ -129,8 +130,8 @@ object LintLoops {
 
   /** A loop that has the same body as the loop before it, which one loop over both sources runs. */
   private object ConsecutiveIdenticalLoops extends Lint {
-    val id    = JavaLint.ConsecutiveIdenticalLoops.id
-    val kinds = Set(Tree.Kind.ENHANCED_FOR_LOOP)
+    val id               = JavaLint.ConsecutiveIdenticalLoops.id
+    val kinds: Set[Kind] = Set(Tree.Kind.ENHANCED_FOR_LOOP)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val current = tree.asInstanceOf[EnhancedForLoopTree]
@@ -158,8 +159,8 @@ object LintLoops {
 
   /** A list that one loop fills and the next loop iterates once, which the first loop can use directly. */
   private object TemporaryListIteratedOnce extends Lint {
-    val id    = JavaLint.TemporaryListIteratedOnce.id
-    val kinds = Set(Tree.Kind.VARIABLE)
+    val id               = JavaLint.TemporaryListIteratedOnce.id
+    val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     private val lists = Set("java.util.ArrayList", "java.util.LinkedList")
 
@@ -194,8 +195,8 @@ object LintLoops {
       val paths = Vector.newBuilder[TreePath]
       new TreePathScanner[Unit, Unit] {
         override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit =
-          if context.trees.getElement(getCurrentPath) == element then paths += getCurrentPath
-      }.scan(new TreePath(context.path, tree), ())
+          if (context.trees.getElement(getCurrentPath) == element) paths += getCurrentPath
+      }.scan(TreePath(context.path, tree), ())
       paths.result()
     }
 
@@ -245,8 +246,8 @@ object LintLoops {
     * outside the loop.
     */
   private object LoopInvariantCondition extends Lint {
-    val id    = JavaLint.LoopInvariantCondition.id
-    val kinds = Set(Tree.Kind.IF)
+    val id               = JavaLint.LoopInvariantCondition.id
+    val kinds: Set[Kind] = Set(Tree.Kind.IF)
 
     private val boundaries = Set(
       Tree.Kind.LAMBDA_EXPRESSION,
@@ -263,7 +264,7 @@ object LintLoops {
       val condition = guard.getCondition
       (for {
         loop <- context.ancestors.takeWhile(ancestor => !boundaries(ancestor.getKind)).find(a => Lints.loops(a.getKind))
-        if guard.getElseStatement == null && body(loop).map(single).exists(_ eq guard)
+        if guard.getElseStatement == null && body(loop).map(single(_)).exists(_ eq guard)
         reads <- Effects.reads(context, condition)
         if reads.variables.nonEmpty && reads.variables.forall(Effects.local) &&
           !Effects.changes(context, loop, reads.all)
@@ -279,7 +280,7 @@ object LintLoops {
     var found = false
     new TreeScanner[Unit, Unit] {
       override def scan(tree: Tree, unused: Unit): Unit =
-        if tree != null && kinds(tree.getKind) then found = true else super.scan(tree, unused)
+        if (tree != null && kinds(tree.getKind)) found = true else super.scan(tree, unused)
     }.scan(body, ())
     !found
   }

@@ -9,8 +9,7 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.lifting.Calls
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.lifting.*
 
 private object Trees {
 

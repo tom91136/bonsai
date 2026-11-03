@@ -177,7 +177,7 @@ object Algebra {
       if (isAllPublic || isOneModule) Vector(group)
       else {
         val publics = Option.when(group.count(_.access != Access.Private) > 1)(group.filter(_.access != Access.Private))
-        val byModule = group.groupBy(moduleOf).values.filter(_.size > 1).toVector
+        val byModule = group.groupBy(moduleOf(_)).values.filter(_.size > 1).toVector
         (publics.toVector ++ byModule).distinct
       }
     }
@@ -195,7 +195,7 @@ object Algebra {
       )
         .groupBy(_.shape.key).values.view
         .flatMap { group =>
-          val named = group.groupBy(_.fields.map(_.name).sorted).values.view.flatMap(compatibleGroups).collect {
+          val named = group.groupBy(_.fields.map(_.name).sorted).values.view.flatMap(compatibleGroups(_)).collect {
             case named if named.size > 1 => true -> named
           }.toVector
           val namedSizes = named.map(_._2.size).toSet

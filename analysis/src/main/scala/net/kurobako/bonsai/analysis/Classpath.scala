@@ -20,7 +20,7 @@ private[analysis] object Classpath {
     classpath.flatMap(path =>
       versioned.get(path) match {
         case None                => Vector(path)
-        case Some((identity, _)) => if copies(identity).head == path then winners(identity) else Vector.empty
+        case Some((identity, _)) => if (copies(identity).head == path) winners(identity) else Vector.empty
       }
     )
   }
@@ -32,7 +32,7 @@ private[analysis] object Classpath {
     )
 
   private def manifested(path: Path): Option[(String, String)] =
-    if !path.getFileName.toString.endsWith(".jar") || !Files.isRegularFile(path) then None
+    if (!path.getFileName.toString.endsWith(".jar") || !Files.isRegularFile(path)) None
     else
       Using.resource(JarFile(path.toFile)) { jar =>
         for {

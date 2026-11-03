@@ -2,8 +2,8 @@ package net.kurobako.bonsai.plugin
 
 import java.nio.file.Files
 import munit.FunSuite
-import net.kurobako.bonsai.collections.Laws
-import net.kurobako.bonsai.effects.Throwing
+import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.effects.*
 
 class LintSuite extends FunSuite {
   private def warnings(source: String, options: String*): List[String] = warningsAt("Lints.scala", source, options*)

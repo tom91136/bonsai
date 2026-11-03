@@ -6,14 +6,8 @@ import dotty.tools.dotc.core.Contexts.ctx
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import dotty.tools.dotc.util.SourcePosition
 import dotty.tools.dotc.util.Spans.Span
-import net.kurobako.bonsai.collections.Laws
-import net.kurobako.bonsai.collections.Methods
-import net.kurobako.bonsai.collections.Ops
-import net.kurobako.bonsai.collections.Outcome
-import net.kurobako.bonsai.collections.Shape
-import net.kurobako.bonsai.lifting.Lifted
-import net.kurobako.bonsai.lifting.Lifter
-import net.kurobako.bonsai.lifting.Purity
+import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object Chains {

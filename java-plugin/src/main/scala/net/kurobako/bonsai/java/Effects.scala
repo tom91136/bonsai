@@ -23,7 +23,7 @@ import scala.jdk.CollectionConverters.*
 object Effects {
 
   /** What an expression that changes nothing reads: the variables it names, and the final fields its getters return. */
-  final case class Reads(variables: Set[Element], getters: Set[Element]) {
+  case class Reads(variables: Set[Element], getters: Set[Element]) {
     def all: Set[Element] = variables ++ getters
   }
 
@@ -74,11 +74,11 @@ object Effects {
     val getters   = mutable.Set.empty[Element]
 
     def variable(element: VariableElement): Boolean = {
-      if !Lints.constant(element) && element.getSimpleName.toString != "length" then variables += element
+      if (!Lints.constant(element) && element.getSimpleName.toString != "length") variables += element
       true
     }
 
-    def all(trees: java.util.List[? <: Tree]): Boolean = trees.asScala.forall(go)
+    def all(trees: java.util.List[? <: Tree]): Boolean = trees.asScala.forall(go(_))
 
     def go(tree: Tree): Boolean = Lint.unwrapped(tree) match {
       case null                       => true
@@ -142,13 +142,13 @@ object Effects {
       case _                => ""
     }
     val name = method.getSimpleName.toString
-    if Immutable(owner) || (owner == "java.util.Objects" && Comparisons(name)) then Some(None)
-    else if Lookups(name) && container(context, call) then Some(None)
+    if (Immutable(owner) || (owner == "java.util.Objects" && Comparisons(name))) Some(None)
+    else if (Lookups(name) && container(context, call)) Some(None)
     else getter(context, method).map(Some(_))
   }
 
   private val resolved = java.util.Collections.synchronizedMap(
-    new java.util.WeakHashMap[Elements, Vector[TypeMirror]]()
+    java.util.WeakHashMap[Elements, Vector[TypeMirror]]()
   )
 
   private def containers(context: Context): Vector[TypeMirror] =
@@ -184,7 +184,7 @@ object Effects {
     val fixed = method.getModifiers.contains(Modifier.FINAL) || method.getModifiers.contains(Modifier.PRIVATE) ||
       method.getModifiers.contains(Modifier.STATIC) || owner.getModifiers.contains(Modifier.FINAL) ||
       owner.getKind.name == "RECORD"
-    if !fixed || !method.getParameters.isEmpty then None
+    if (!fixed || !method.getParameters.isEmpty) None
     else
       Option(context.trees.getTree(method)) match {
         case Some(tree) => returned(context, tree)
@@ -232,11 +232,11 @@ object Effects {
   def changes(context: Context, scope: Tree, elements: Set[Element]): Boolean = {
     var changed = false
     val shared  = elements.filterNot(element => immutable(element.asType))
-    val root    = new TreePath(context.path, scope)
+    val root    = TreePath(context.path, scope)
     val targets = written(root)
     val mention = (path: TreePath) => {
       val element = context.trees.getElement(path)
-      if !changed && element != null && elements(element) then
+      if (!changed && element != null && elements(element))
         changed = (path.getLeaf ne scope) && targets.contains(path.getLeaf) ||
           (shared(element) && escapes(context, path, scope))
     }
@@ -250,10 +250,10 @@ object Effects {
 
       override def visitVariable(node: VariableTree, unused: Unit): Unit = {
         val element = context.trees.getElement(getCurrentPath)
-        if element != null && elements(element) then changed = true
+        if (element != null && elements(element)) changed = true
         super.visitVariable(node, unused)
       }
-    }.scan(new TreePath(context.path, scope), ())
+    }.scan(TreePath(context.path, scope), ())
     changed
   }
 
@@ -262,13 +262,13 @@ object Effects {
     writes(scope).exists(write => context.refers(write.at, write.target, element))
 
   /** A variable, or a chain of fields read from one, with the index of the array element it ends in, if any. */
-  final case class AccessPath(root: Element, fields: List[Element] = Nil, index: Option[String] = None)
+  case class AccessPath(root: Element, fields: List[Element] = Nil, index: Option[String] = None)
 
   /** The access path an expression names, if every element on it is accepted. */
   def accessPath(tree: ExpressionTree, element: Tree => Element, accepts: Element => Boolean): Option[AccessPath] = {
     def of(tree: ExpressionTree): Option[AccessPath] = Lints.unparenthesised(tree) match {
       case identifier: IdentifierTree =>
-        if Call.isThis(identifier) then None else Option(element(identifier)).filter(accepts).map(AccessPath(_))
+        if (Call.isThis(identifier)) None else Option(element(identifier)).filter(accepts).map(AccessPath(_))
       case assignment: AssignmentTree => of(assignment.getVariable)
       case select: MemberSelectTree   =>
         Option(element(select)).filter(el => el.getKind == ElementKind.FIELD && accepts(el)).flatMap { field =>
@@ -292,7 +292,7 @@ object Effects {
   }
 
   /** A write to a variable: the assignment, compound assignment or step at the path, and the expression it writes. */
-  final case class Write(at: TreePath, target: ExpressionTree, plain: Boolean)
+  case class Write(at: TreePath, target: ExpressionTree, plain: Boolean)
 
   /** The writes the code under the path makes, in source order. */
   def writes(root: TreePath): List[Write] = {
@@ -309,7 +309,7 @@ object Effects {
       }
 
       override def visitUnary(node: UnaryTree, unused: Unit): Unit = {
-        if stepping(node) then found += Write(getCurrentPath, node.getExpression, plain = false)
+        if (stepping(node)) found += Write(getCurrentPath, node.getExpression, plain = false)
         super.visitUnary(node, unused)
       }
     }.scan(root, ())
@@ -325,7 +325,7 @@ object Effects {
     def check(path: TreePath): Unit =
       context.trees.getElement(path) match {
         case method: ExecutableElement =>
-          if method.getThrownTypes.asScala.exists(tpe => !unchecked.exists(context.types.isSubtype(tpe, _))) then
+          if (method.getThrownTypes.asScala.exists(tpe => !unchecked.exists(context.types.isSubtype(tpe, _))))
             thrown = true
         case _ => ()
       }
@@ -339,7 +339,7 @@ object Effects {
         check(getCurrentPath)
         super.visitNewClass(node, unused)
       }
-    }.scan(new TreePath(context.path, tree), ())
+    }.scan(TreePath(context.path, tree), ())
     thrown
   }
 
@@ -358,12 +358,12 @@ object Effects {
         name()
         super.visitMemberSelect(node, unused)
       }
-    }.scan(new TreePath(context.path, tree), ())
+    }.scan(TreePath(context.path, tree), ())
     named.toSet
   }
 
   /** The variables of a method the code of the tree names. */
-  def locals(context: Context, tree: Tree): Set[Element] = variables(context, tree).filter(local)
+  def locals(context: Context, tree: Tree): Set[Element] = variables(context, tree).filter(local(_))
 
   /** The variables the code of the tree declares. */
   def declared(context: Context, tree: Tree): Set[Element] = {
@@ -373,12 +373,12 @@ object Effects {
         Option(context.trees.getElement(getCurrentPath)).foreach(declared += _)
         super.visitVariable(node, unused)
       }
-    }.scan(new TreePath(context.path, tree), ())
+    }.scan(TreePath(context.path, tree), ())
     declared.toSet
   }
 
   private def written(scope: TreePath): java.util.Set[Tree] = {
-    val trees = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap[Tree, java.lang.Boolean])
+    val trees = java.util.Collections.newSetFromMap(java.util.IdentityHashMap[Tree, java.lang.Boolean]())
     @annotation.tailrec
     def mark(target: Tree): Unit = {
       trees.add(target)
@@ -400,7 +400,7 @@ object Effects {
     def climb(below: TreePath): Boolean = {
       val child  = below.getLeaf
       val parent = below.getParentPath
-      if parent == null || (child eq scope) then false
+      if (parent == null || (child eq scope)) false
       else
         parent.getLeaf match {
           case _: ParenthesizedTree | _: TypeCastTree | _: BinaryTree | _: ArrayAccessTree => climb(parent)

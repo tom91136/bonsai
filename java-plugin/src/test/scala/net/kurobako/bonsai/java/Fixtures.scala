@@ -12,7 +12,7 @@ import javax.tools.JavaFileObject
 import javax.tools.StandardJavaFileManager
 import javax.tools.StandardLocation
 import javax.tools.ToolProvider
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 import scala.jdk.CollectionConverters.*
 
 object Fixtures {
@@ -49,7 +49,7 @@ object Fixtures {
     Files.createDirectories(classes)
 
     val compiler    = ToolProvider.getSystemJavaCompiler
-    val diagnostics = new java.util.ArrayList[java.lang.String]()
+    val diagnostics = java.util.ArrayList[java.lang.String]()
     val fileManager = Fixtures.fileManager(classes)
     val units       = fileManager.getJavaFileObjectsFromFiles(files.map(_.toFile).asJava)
     val task        =
@@ -66,7 +66,7 @@ object Fixtures {
     val collector = Collector(trees)
     task.addTaskListener(new TaskListener {
       override def finished(event: TaskEvent): Unit =
-        if event.getKind == TaskEvent.Kind.ANALYZE then
+        if (event.getKind == TaskEvent.Kind.ANALYZE)
           try collector.unit(event.getCompilationUnit, event.getTypeElement)
           catch {
             case error: Throwable =>
@@ -74,7 +74,7 @@ object Fixtures {
               diagnostics.add("the collector failed"): Unit
           }
     })
-    if !task.call() then
+    if (!task.call())
       throw AssertionError(
         s"the fixture compiles: ${diagnostics.asScala.mkString("\n")}\n${sources.map(_._2).mkString}"
       )

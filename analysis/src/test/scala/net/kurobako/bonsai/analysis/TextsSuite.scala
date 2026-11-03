@@ -3,7 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import munit.FunSuite
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 class TextsSuite extends FunSuite {
   private def rule(fields: (String, String)*): Texts.Rule =

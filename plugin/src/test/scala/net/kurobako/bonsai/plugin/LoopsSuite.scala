@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.plugin
 
-import Warnings.tagged
+import Warnings.*
 import munit.FunSuite
 
 class LoopsSuite extends FunSuite {

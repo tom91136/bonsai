@@ -11,7 +11,7 @@ import scala.jdk.CollectionConverters.*
   * The evaluation runs the statements of a helper over values it knows: arrays of classes, a class, a length. It gives
   * up, and the signature stays unknown, at any statement it does not read.
   */
-private[java] final class ClassArrays(context: Context) {
+private[java] class ClassArrays(context: Context) {
   import ClassArrays.*
   import Known.*
 
@@ -22,7 +22,7 @@ private[java] final class ClassArrays(context: Context) {
     evaluate(tree, Map.empty, 0).collect { case Items(items) => items }.filter(_.forall(_.isDefined)).map(_.flatten)
 
   private def evaluate(tree: ExpressionTree, env: Env, depth: Int): Option[Known] =
-    if depth > Depth then None
+    if (depth > Depth) None
     else
       tree match {
         case parenthesized: ParenthesizedTree => evaluate(parenthesized.getExpression, env, depth)
@@ -40,12 +40,12 @@ private[java] final class ClassArrays(context: Context) {
             left  <- evaluate(binary.getLeftOperand, env, depth)
             right <- evaluate(binary.getRightOperand, env, depth)
             sum   <- (left, right) match {
-              case (Count(a), Count(b)) => Some(Count(if binary.getKind == Tree.Kind.PLUS then a + b else a - b))
+              case (Count(a), Count(b)) => Some(Count(if (binary.getKind == Tree.Kind.PLUS) a + b else a - b))
               case _                    => None
             }
           } yield sum
         case array: NewArrayTree =>
-          if array.getInitializers != null then {
+          if (array.getInitializers != null) {
             val items = array.getInitializers.asScala.toVector.map(evaluate(_, env, depth))
             Option.when(items.forall(_.exists(_.isInstanceOf[Item])))(
               Items(items.flatMap(_.collect { case Item(tpe) => Some(tpe) }))
@@ -97,7 +97,7 @@ private[java] final class ClassArrays(context: Context) {
     context.ancestors.collectFirst { case method: MethodTree => method }.foreach { method =>
       new com.sun.source.util.TreeScanner[Unit, Unit] {
         override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
-          if Option(context.elementOf(node.getVariable)).contains(element) then found = true
+          if (Option(context.elementOf(node.getVariable)).contains(element)) found = true
           super.visitAssignment(node, unused)
         }
       }.scan(method, ())
@@ -112,8 +112,8 @@ private[java] final class ClassArrays(context: Context) {
   private def call(invocation: MethodInvocationTree, env: Env, depth: Int): Option[Known] =
     invokedMethod(invocation).flatMap {
       method =>
-        if Lints.owner(method).contains("java.util.Arrays") && method.getSimpleName.contentEquals("copyOf")
-        then
+        if (Lints.owner(method).contains("java.util.Arrays") && method.getSimpleName.contentEquals("copyOf"))
+
           Lints.arguments(invocation) match {
             case Vector(source, size) =>
               for {
@@ -129,7 +129,7 @@ private[java] final class ClassArrays(context: Context) {
         else
           Option(context.trees.getTree(method)).filter(_.getBody != null).flatMap { source =>
             val arguments = Lints.arguments(invocation).map(evaluate(_, env, depth))
-            if arguments.exists(_.isEmpty) || arguments.size != method.getParameters.size then None
+            if (arguments.exists(_.isEmpty) || arguments.size != method.getParameters.size) None
             else {
               val bound = method.getParameters.asScala.zip(arguments.flatten).map((p, v) => (p: Element) -> v).toMap
               run(source.getBody.getStatements.asScala.toList, bound, depth + 1)

@@ -1,7 +1,7 @@
 package net.kurobako.bonsai.analysis
 
 import java.nio.file.Files
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 class BytecodeSuite extends AnalysisSuite {
   // The fixture is a method of thousands of statements and a class of thousands of enum cases; on a loaded machine the

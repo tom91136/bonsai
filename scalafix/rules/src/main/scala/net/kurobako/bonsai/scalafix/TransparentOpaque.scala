@@ -16,7 +16,7 @@ class TransparentOpaque extends SyntacticRule("TransparentOpaque") {
       case owner: Defn.Object => definitions.members(owner.templ).collect { case method: Defn.Def => method }
       case _                  => Nil
     }
-    val forwarded = methods.filter(forwards).view.flatMap(_.decltpe).map(_.toString).toSet
+    val forwarded = methods.filter(forwards(_)).view.flatMap(_.decltpe).map(_.toString).toSet
     val unwrapped = stats.flatMap {
       case extension: Defn.ExtensionGroup => unwrapping(extension)
       case _                              => None

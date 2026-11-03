@@ -10,9 +10,7 @@ import java.net.URI
 import javax.tools.JavaFileObject
 import javax.tools.SimpleJavaFileObject
 import javax.tools.ToolProvider
-import net.kurobako.bonsai.collections.Comparison
-import net.kurobako.bonsai.collections.Kind
-import net.kurobako.bonsai.collections.Ops
+import net.kurobako.bonsai.collections.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
@@ -30,7 +28,7 @@ class ChainLifterSuite extends munit.FunSuite {
     val units = task.parse().asScala.toVector
     task.analyze()
     val trees    = Trees.instance(task)
-    val registry = new Registry(Some(release))
+    val registry = Registry(Some(release))
     val found    = mutable.LinkedHashMap.empty[String, Vector[Lifted]]
     units.foreach { unit =>
       new TreePathScanner[Unit, Unit] {
@@ -38,12 +36,12 @@ class ChainLifterSuite extends munit.FunSuite {
           val path      = getCurrentPath
           val ancestors =
             Iterator.iterate(path.getParentPath)(_.getParentPath).takeWhile(_ != null).map(_.getLeaf).toList
-          val context = new Context(trees, task.getElements, task.getTypes, unit, path, "T", None, ancestors, registry)
+          val context = Context(trees, task.getElements, task.getTypes, unit, path, "T", None, ancestors, registry)
           val method  = ancestors.collectFirst { case method: MethodTree => method.getName.toString }.getOrElse("")
           ChainLifter.lift(context).foreach(lifted => found(method) = found.getOrElse(method, Vector.empty) :+ lifted)
           super.visitMethodInvocation(node, unused)
         }
-      }.scan(new TreePath(unit), ())
+      }.scan(TreePath(unit), ())
     }
     val unknown = found.values.flatten.flatMap(_.chain.steps.map(_.method)).filter(Ops(_).isEmpty)
     assertEquals(unknown.toSet, Set.empty[String])

@@ -8,7 +8,7 @@ private[sbt] object Parallelism {
   /** The most tasks the `restrictions` let sbt run at once, up to `processors`: the largest count they allow, with one
     * as the least, as sbt always runs a task alone.
     */
-  def of(restrictions: Seq[Tags.Rule], processors: Int = Runtime.getRuntime.availableProcessors): Int = {
+  def of(restrictions: Seq[Tags.Rule], processors: Int = sys.runtime.availableProcessors): Int = {
     val allowed = Tags.predicate(restrictions)
     (processors to 2 by -1).find(count => allowed(Map(Tags.All -> count))).getOrElse(1)
   }

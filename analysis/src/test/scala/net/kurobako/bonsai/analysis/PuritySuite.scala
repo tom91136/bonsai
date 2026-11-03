@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.analysis
 
-import net.kurobako.bonsai.effects.Kind
+import net.kurobako.bonsai.effects.*
 
 class PuritySuite extends AnalysisSuite {
   private lazy val result = extract(Seq(

@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
+import com.sun.source.tree.Tree.Kind
 import javax.lang.model.element.ElementKind
 import javax.lang.model.element.TypeElement
 import scala.jdk.CollectionConverters.*
@@ -17,8 +18,8 @@ object LintSerialization {
 
   /** A serial version field that can carry the `@Serial` annotation. */
   private object MissingSerialAnnotation extends Lint {
-    val id    = JavaLint.MissingSerialAnnotation.id
-    val kinds = Set(Tree.Kind.VARIABLE)
+    val id               = JavaLint.MissingSerialAnnotation.id
+    val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val variable = tree.asInstanceOf[VariableTree]
@@ -29,7 +30,7 @@ object LintSerialization {
         Lints.constant(element) &&
         variable.getName.contentEquals("serialVersionUID")
       lazy val annotated = element != null && Nullness.hasAnnotation(element, "java.io.Serial")
-      if field && supported && !annotated then
+      if (field && supported && !annotated)
         Vector(context.found("the serialVersionUID field can be annotated with @Serial"))
       else Vector.empty
     }
@@ -37,8 +38,8 @@ object LintSerialization {
 
   /** A type that is serialized and does not name the version of its form. */
   private object MissingSerialVersionUid extends Lint {
-    val id    = JavaLint.MissingSerialVersionUid.id
-    val kinds = Set(Tree.Kind.CLASS, Tree.Kind.ENUM, Tree.Kind.RECORD)
+    val id               = JavaLint.MissingSerialVersionUid.id
+    val kinds: Set[Kind] = Set(Tree.Kind.CLASS, Tree.Kind.ENUM, Tree.Kind.RECORD)
 
     def check(context: Context, tree: Tree): Vector[Found] =
       context.element match {
@@ -48,7 +49,7 @@ object LintSerialization {
           val named = typeElement.getEnclosedElements.asScala.exists { member =>
             member.getKind == ElementKind.FIELD && member.getSimpleName.toString == "serialVersionUID"
           }
-          if serializable && !named then
+          if (serializable && !named)
             Vector(context.found("the type is serialized and does not name the version of its form"))
           else Vector.empty
         case _ => Vector.empty

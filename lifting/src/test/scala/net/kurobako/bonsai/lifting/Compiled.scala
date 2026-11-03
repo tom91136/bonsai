@@ -9,10 +9,10 @@ import dotty.tools.dotc.core.Contexts.ctx
 import dotty.tools.dotc.core.Phases.Phase
 import dotty.tools.dotc.reporting.StoreReporter
 import java.nio.file.Files
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 /** A source compiled up to the typed trees the plugin sees, with the context that holds them. */
-final class Compiled(val source: String) {
+class Compiled(val source: String) {
   private var captured: Option[(tpd.Tree, Context)] = None
 
   private object Capture extends Phase {

@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.scalafix
 
+import scala.annotation.tailrec
 import scala.meta.*
 import scala.meta.tokens.Token
 import scalafix.v1.*
@@ -43,6 +44,7 @@ class FoldIdentity extends SemanticRule("FoldIdentity") {
     case _ => Patch.empty
   }
 
+  @tailrec
   private def identityFunction(term: Term)(using SemanticDocument): Boolean = term match {
     case function: Term.Function =>
       function.paramClause.values match {

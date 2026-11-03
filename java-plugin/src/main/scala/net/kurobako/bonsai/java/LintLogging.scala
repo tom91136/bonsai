@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
+import com.sun.source.tree.Tree.Kind
 import com.sun.source.util.TreeScanner
 import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.TypeElement
@@ -13,8 +14,8 @@ object LintLogging {
 
   /** Two log calls whose messages say nearly the same thing. */
   private object SimilarMessages extends Lint {
-    val id    = JavaLint.LoggingSimilar.id
-    val kinds = Set.empty[Tree.Kind]
+    val id               = JavaLint.LoggingSimilar.id
+    val kinds: Set[Kind] = Set.empty[Tree.Kind]
 
     private val Levels = Set("trace", "debug", "info", "warn", "error")
 

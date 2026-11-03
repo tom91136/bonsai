@@ -15,7 +15,7 @@ import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import net.kurobako.bonsai.java.{Model => JavaModel}
-import net.kurobako.bonsai.lifting.Globs
+import net.kurobako.bonsai.lifting.{Purity as _, *}
 import scala.concurrent.Promise
 import scala.util.Try
 import scala.util.control.NonFatal

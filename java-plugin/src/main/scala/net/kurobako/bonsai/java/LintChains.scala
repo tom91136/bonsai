@@ -1,8 +1,8 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
-import net.kurobako.bonsai.collections.Laws
-import net.kurobako.bonsai.collections.Outcome
+import com.sun.source.tree.Tree.Kind
+import net.kurobako.bonsai.collections.*
 
 /** The lints of the chains of calls on the collections, streams and optionals of the Java code.
   *
@@ -14,11 +14,11 @@ object LintChains {
   val lints: Vector[Lint] = Vector(Chains)
 
   private object Chains extends Lint {
-    val id    = "collection-chains"
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = "collection-chains"
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] =
-      if generated(context) then Vector.empty
+      if (generated(context)) Vector.empty
       else
         ChainLifter.lift(context).toVector.flatMap { lifted =>
           Laws.outcomes(lifted.chain).flatMap(found(context, lifted, _))
@@ -31,7 +31,7 @@ object LintChains {
     private def found(context: Context, lifted: Lifted, outcome: Outcome): Option[Found] =
       outcome.java.filterNot(_ => defines(context, outcome)).map { java =>
         val replacement = java.render.map(render => render(lifted.receiver(outcome.from))).map { code =>
-          if lifted.implicitThis && outcome.from == 0 then code.replaceFirst("^(!?)this\\.", "$1") else code
+          if (lifted.implicitThis && outcome.from == 0) code.replaceFirst("^(!?)this\\.", "$1") else code
         }
         Found(
           replacement.fold(java.message)(code => s"${java.message}: $code"),

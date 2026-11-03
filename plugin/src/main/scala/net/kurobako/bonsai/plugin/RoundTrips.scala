@@ -6,7 +6,7 @@ import dotty.tools.dotc.core.Constants.Constant
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Contexts.ctx
 import dotty.tools.dotc.core.Symbols.Symbol
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object RoundTrips {
@@ -19,8 +19,8 @@ private object RoundTrips {
   * elsewhere is left alone.
   */
 private class RoundTrips(checks: Checks)(using Context) {
-  private final case class Render(scope: Symbol, parts: List[String], tree: tpd.Tree)
-  private final case class Parse(scope: Symbol, parts: List[String], tree: tpd.Tree, source: tpd.Tree)
+  private case class Render(scope: Symbol, parts: List[String], tree: tpd.Tree)
+  private case class Parse(scope: Symbol, parts: List[String], tree: tpd.Tree, source: tpd.Tree)
 
   private val MinimumParts = 3
 
@@ -73,7 +73,7 @@ private class RoundTrips(checks: Checks)(using Context) {
         ).foreach(_ =>
           checks(
             Check.StringRoundTrip,
-            s"the string is built from its parts and parsed back with the same format; use the parts",
+            "the string is built from its parts and parsed back with the same format; use the parts",
             parse.tree.srcPos
           )
         )

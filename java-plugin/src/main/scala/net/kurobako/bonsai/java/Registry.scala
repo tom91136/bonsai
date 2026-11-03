@@ -7,7 +7,7 @@ import scala.collection.mutable
   * what it saw as the compiler attributes the types, and reports at the end of the compilation, when it has seen them
   * all.
   */
-final class Registry(named: Option[Int] = None) {
+class Registry(named: Option[Int] = None) {
 
   private var probed = Option.empty[Int]
 
@@ -23,7 +23,7 @@ final class Registry(named: Option[Int] = None) {
   /** A method that has one trait, such as the value it returns or that its body is empty, or an abstract method, which
     * the end of the compilation reports if every method that overrides it has the trait too.
     */
-  private final case class Declared(
+  private case class Declared(
       kind: String,
       method: ExecutableElement,
       value: Option[String],

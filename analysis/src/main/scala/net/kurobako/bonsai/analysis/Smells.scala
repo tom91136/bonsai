@@ -276,7 +276,7 @@ object Smells {
   private def parameters(method: Method, sites: Vector[Algebra.Site]): Vector[(Finding.Rule, String)] = {
     // Java calls are kept at every arity, so a varargs call with another count is not a call of these parameters.
     val calls = sites.filter(_.arguments.size == method.fields.size)
-    if calls.isEmpty then Vector.empty
+    if (calls.isEmpty) Vector.empty
     else {
       val columns = calls.map(_.arguments).transpose
       // A flag the method only stores is data of the value it builds, which no branch splits, and an inline method is

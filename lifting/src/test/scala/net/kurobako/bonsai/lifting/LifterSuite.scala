@@ -1,7 +1,7 @@
 package net.kurobako.bonsai.lifting
 
 import munit.FunSuite
-import net.kurobako.bonsai.collections.Kind
+import net.kurobako.bonsai.collections.*
 import scala.io.Source
 
 class LifterSuite extends FunSuite {

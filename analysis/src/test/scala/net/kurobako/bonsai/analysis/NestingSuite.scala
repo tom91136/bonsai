@@ -10,7 +10,7 @@ class NestingSuite extends AnalysisSuite {
       config: Nesting.Config = Nesting.Config()
   ): Vector[String] = {
     val result = extract(main, test, libraries = Set("m"))
-    Nesting.plan(result.nesting, config).reported.map(describe).sorted
+    Nesting.plan(result.nesting, config).reported.map(describe(_)).sorted
   }
 
   private def describe(move: Nesting.Move): String = {

@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.java
 
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 class JavaPluginSuite extends munit.FunSuite {
 

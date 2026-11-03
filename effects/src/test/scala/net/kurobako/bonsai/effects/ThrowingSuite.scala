@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.effects
 
-import net.kurobako.bonsai.effects.Throwing.Platform
+import net.kurobako.bonsai.effects.Throwing.*
 
 class ThrowingSuite extends munit.FunSuite {
   test("exceptions by pattern, with the platform's own transport errors") {

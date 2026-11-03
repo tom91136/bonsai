@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
+import com.sun.source.tree.Tree.Kind
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.`type`.TypeMirror
 import javax.lang.model.element.*
@@ -16,8 +17,8 @@ object LintReflection {
 
   /** An anonymous implementation large enough to extract into a named type. */
   private object ExtractMethod extends Lint {
-    val id    = JavaLint.ExtractMethod.id
-    val kinds = Set(Tree.Kind.VARIABLE)
+    val id               = JavaLint.ExtractMethod.id
+    val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
       case variable: VariableTree =>
@@ -33,8 +34,8 @@ object LintReflection {
 
   /** A reflected member that the target type does not declare. */
   private object ReflectionMember extends Lint {
-    val id    = JavaLint.ReflectionMember.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.ReflectionMember.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     private val Fields = Set("getField", "getDeclaredField")
 
@@ -50,7 +51,7 @@ object LintReflection {
               classType(context, select.getExpression).flatMap { target =>
                 val name   = executable.getSimpleName.toString
                 val exists =
-                  if Methods(name) then
+                  if (Methods(name))
                     Lints.arguments(invocation) match {
                       case (literal: LiteralTree) +: parameters =>
                         Some(literal.getValue).collect { case text: String => text }.flatMap { methodName =>
@@ -60,10 +61,10 @@ object LintReflection {
                         }
                       case _ => None
                     }
-                  else if Constructors(name) then
+                  else if (Constructors(name))
                     signature(context, Lints.arguments(invocation))
                       .map(types => findConstructor(context, target, types).isDefined)
-                  else if Fields(name) then
+                  else if (Fields(name))
                     Lints.arguments(invocation) match {
                       case Vector(literal: LiteralTree) =>
                         Option(literal.getValue).collect { case text: String => text }
@@ -103,8 +104,8 @@ object LintReflection {
 
   /** A reflective call whose resolved member the arguments do not fit. */
   private object ReflectionInvocation extends Lint {
-    val id    = JavaLint.ReflectionInvocation.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.ReflectionInvocation.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
       case invocation: MethodInvocationTree =>
@@ -122,7 +123,7 @@ object LintReflection {
               val resolved = member(context, select.getExpression)
               resolved.flatMap { target =>
                 val arguments =
-                  if method.getSimpleName.contentEquals("invoke") then
+                  if (method.getSimpleName.contentEquals("invoke"))
                     Lints.arguments(invocation).drop(1)
                   else Lints.arguments(invocation)
                 mismatch(context, target, arguments)
@@ -171,7 +172,7 @@ object LintReflection {
             tc.flatMap { target =>
               val name      = executable.getSimpleName.toString
               val arguments = Lints.arguments(invocation)
-              if Methods(name) then
+              if (Methods(name))
                 arguments match {
                   case (literal: LiteralTree) +: parameters =>
                     Option(literal.getValue).collect { case text: String => text }.flatMap { methodName =>
@@ -181,7 +182,7 @@ object LintReflection {
                     }
                   case _ => None
                 }
-              else if Constructors(name) then
+              else if (Constructors(name))
                 parameterTypes(context, arguments).flatMap { types =>
                   findConstructor(context, target, types)
                 }
@@ -198,14 +199,14 @@ object LintReflection {
         arguments: Vector[ExpressionTree]
     ): Option[String] = {
       val parameters = target.getParameters.asScala.toVector
-      val fixed      = if target.isVarArgs then parameters.size - 1 else parameters.size
-      if target.isVarArgs && arguments.size >= fixed then None
-      else if arguments.size != parameters.size then
+      val fixed      = if (target.isVarArgs) parameters.size - 1 else parameters.size
+      if (target.isVarArgs && arguments.size >= fixed) None
+      else if (arguments.size != parameters.size)
         Some(s"the reflective call passes ${arguments.size} argument(s) but the member requires ${parameters.size}")
       else
         arguments.zip(parameters).collectFirst {
           case (argument, parameter) if !matches(context, argument, parameter.asType()) =>
-            val name = if target.getKind == ElementKind.CONSTRUCTOR then target.getEnclosingElement.getSimpleName
+            val name = if (target.getKind == ElementKind.CONSTRUCTOR) target.getEnclosingElement.getSimpleName
             else target.getSimpleName
             Some(s"the reflective call passes ${context.typeOf(argument)} where $name requires ${parameter.asType()}")
         }.flatten
@@ -246,8 +247,8 @@ object LintReflection {
 
   /** A modifier argument written as a magic number or unchecked variable. */
   private object MagicConstant extends Lint {
-    val id    = JavaLint.MagicConstant.id
-    val kinds = Set(Tree.Kind.NEW_CLASS)
+    val id               = JavaLint.MagicConstant.id
+    val kinds: Set[Kind] = Set(Tree.Kind.NEW_CLASS)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
       case newClass: NewClassTree if newClass.getArguments.size > 3 =>
@@ -261,7 +262,7 @@ object LintReflection {
           case identifier: IdentifierTree => identifier.getName.toString.toLowerCase.contains("modifier")
           case _                          => false
         }
-        if owner.exists(name => name == "java.awt.event.MouseEvent" || name == "java.awt.event.KeyEvent") && magic then
+        if (owner.exists(name => name == "java.awt.event.MouseEvent" || name == "java.awt.event.KeyEvent") && magic)
           Vector(context.found("use the InputEvent or KeyEvent mask constants for the modifier argument"))
         else Vector.empty
       case _ => Vector.empty
@@ -276,7 +277,7 @@ object LintReflection {
       declaredOnly: Boolean
   ): Option[ExecutableElement] = {
     val members =
-      if declaredOnly then target.getEnclosedElements.asScala.toVector
+      if (declaredOnly) target.getEnclosedElements.asScala.toVector
       else context.elements.getAllMembers(target).asScala.toVector
     members.collectFirst {
       case method: ExecutableElement
@@ -318,7 +319,7 @@ object LintReflection {
         argument.getKind.isPrimitive
       }
     }
-    if types.forall(_.isDefined) then Some(types.flatten) else None
+    if (types.forall(_.isDefined)) Some(types.flatten) else None
   }
 
   private def matchParameters(
@@ -332,7 +333,7 @@ object LintReflection {
 
   private def sameType(context: Context, declared: TypeMirror, actual: TypeMirror): Boolean = {
     val direct = context.types.isSameType(context.types.erasure(declared), context.types.erasure(actual))
-    if direct then true
+    if (direct) true
     else {
       unboxed(context, declared).exists(context.types.isSameType(_, actual)) ||
       unboxed(context, actual).exists(context.types.isSameType(declared, _))

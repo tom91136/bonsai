@@ -9,7 +9,7 @@ import dotty.tools.dotc.core.Types.AnnotatedType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import dotty.tools.dotc.util.Spans.Span
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.lifting.*
 
 private object Nowarns {
   val Checks: Set[Check] = Set(Check.NowarnSuppression)
@@ -24,8 +24,8 @@ private class Nowarns(checks: Checks)(using Context) {
 
   def run(tree: tpd.Tree): Unit = tree.foreachSubTree {
     case definition: tpd.MemberDef if definition.symbol.exists =>
-      definition.symbol.annotations.filter(_.matches(Nowarn)).foreach(report)
-    case tpd.Typed(_, tpt) => annotations(tpt.tpe).foreach(report)
+      definition.symbol.annotations.filter(_.matches(Nowarn)).foreach(report(_))
+    case tpd.Typed(_, tpt) => annotations(tpt.tpe).foreach(report(_))
     case _                 => ()
   }
 

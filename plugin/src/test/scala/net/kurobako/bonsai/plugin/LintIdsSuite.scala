@@ -1,8 +1,8 @@
 package net.kurobako.bonsai.plugin
 
 import munit.FunSuite
-import net.kurobako.bonsai.collections.Laws
-import net.kurobako.bonsai.java.JavaLint
+import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.java.*
 
 /** The ids of the checks of the compiler plugin, which must not be the ids of the lints of the Java code unless both
   * are the laws of collection chains, which the Java code has too.

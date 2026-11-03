@@ -12,7 +12,7 @@ import scala.collection.mutable
   * types are never the same, and an inferred type must be equal, so overloads and instantiations that differ keep two
   * trees apart.
   */
-private final class Sameness(using Context) {
+private class Sameness(using Context) {
   private val renamed = mutable.Map.empty[Symbol, Symbol]
 
   def apply(left: tpd.Tree, right: tpd.Tree): Boolean = same(left, right)
@@ -42,7 +42,7 @@ private final class Sameness(using Context) {
     })
 
   private def values(left: List[Any], right: List[Any]): Boolean =
-    left.size == right.size && left.lazyZip(right).forall(value)
+    left.size == right.size && left.lazyZip(right).forall(value(_, _))
 
   private def value(left: Any, right: Any): Boolean = (left, right) match {
     case (a: ast.Tree[?], b: ast.Tree[?]) => same(a.asInstanceOf[tpd.Tree], b.asInstanceOf[tpd.Tree])

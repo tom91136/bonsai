@@ -6,8 +6,7 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Types.ExprType
-import net.kurobako.bonsai.lifting.Calls
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.lifting.*
 
 private object Implied {
   val Checks: Set[Check] = Set(Check.ImpliedCondition)

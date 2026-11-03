@@ -48,7 +48,7 @@ class CodecNaming extends SemanticRule("CodecNaming") {
     definition.templ.derives.exists(derived => derived.syntax.split('.').last == "Schema")
 
   private def removal(annotation: Mod.Annot): Patch = {
-    val spacing = annotation.parent.iterator.flatMap(_.tokens).dropWhile(_.start < annotation.pos.end)
+    val spacing = annotation.parent.toList.flatMap(_.tokens).dropWhile(_.start < annotation.pos.end)
       .takeWhile(_.is[Token.Whitespace]).toList
     Patch.removeTokens(annotation.tokens) + Patch.removeTokens(spacing)
   }

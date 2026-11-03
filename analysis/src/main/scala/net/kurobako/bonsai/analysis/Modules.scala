@@ -34,11 +34,11 @@ object Modules {
       reflections: Vector[JavaModel.Reflection]
   ): Vector[Use] = {
     val descriptors = manifest.sources.flatMap { source =>
-      if source.path.getFileName.toString == "module-info.java" then
+      if (source.path.getFileName.toString == "module-info.java")
         descriptor(source.path).map(source.module -> _)
       else None
     }.toMap
-    if descriptors.isEmpty then Vector.empty
+    if (descriptors.isEmpty) Vector.empty
     else {
       val byName  = descriptors.map((_, descriptor) => descriptor.name -> descriptor)
       val outputs = manifest.outputs.sortBy(_.scope == Output.Scope.Test).map(output => output.module -> output.path)
@@ -82,7 +82,7 @@ object Modules {
   /** Whether the module reads the other one, directly or through a module it reads that re-exports it. */
   private def reads(from: String, target: String, modules: Map[String, Descriptor]): Boolean = {
     def visit(module: String, root: Boolean, seen: Set[String]): Boolean =
-      if seen(module) then false
+      if (seen(module)) false
       else
         modules.get(module).exists(_.requires.exists { (dependency, transitive) =>
           dependency == target || ((root || transitive) && visit(dependency, root = false, seen + module))
@@ -93,7 +93,7 @@ object Modules {
   /** The file and line a location names, which the model writes as `path:line`. */
   private def located(location: String): Option[(String, Int)] = {
     val split = location.lastIndexOf(':')
-    if split < 0 then None
+    if (split < 0) None
     else location.substring(split + 1).toIntOption.map(line => location.substring(0, split) -> line)
   }
 }

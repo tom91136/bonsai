@@ -19,13 +19,13 @@ private object JdkPackages {
 
   def unsupported(pkg: String): Option[String] =
     packages.get(pkg).flatMap { case (module, exported) =>
-      if module == "jdk.unsupported" then Some(s"in the unsupported module $module")
-      else if exported then None
+      if (module == "jdk.unsupported") Some(s"in the unsupported module $module")
+      else if (exported) None
       else Some(s"not exported by $module")
     }
 
   def unsupportedName(name: String): Option[String] = {
     val prefixes = name.indices.view.filter(name(_) == '.').map(name.take).toList.reverse
-    (name :: prefixes).find(packages.contains).flatMap(unsupported)
+    (name :: prefixes).find(packages.contains).flatMap(unsupported(_))
   }
 }

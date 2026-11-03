@@ -32,20 +32,20 @@ class JavaPlugin extends Plugin {
     // without the modules around it; the property of the process is the older way of naming it, which a build that
     // passes no argument keeps.
     val output = args.headOption
-      .orElse(Option(System.getProperty(JavaPlugin.Output)))
+      .orElse(sys.props.get(JavaPlugin.Output))
       .map(Path.of(_))
     task.addTaskListener(new TaskListener {
       override def finished(event: TaskEvent): Unit =
-        if event.getKind == TaskEvent.Kind.ANALYZE then {
+        if (event.getKind == TaskEvent.Kind.ANALYZE) {
           val compilation = event.getCompilationUnit
           val typeElement = event.getTypeElement
           // The module and package descriptors are not a type, so the walk of a type has nothing to read.
-          if typeElement != null then {
+          if (typeElement != null) {
             collector.unit(compilation, typeElement)
             collector.lint(linter.attributed(compilation, typeElement))
           }
           collector.lint(linter.file(compilation))
-        } else if event.getKind == TaskEvent.Kind.COMPILATION then {
+        } else if (event.getKind == TaskEvent.Kind.COMPILATION) {
           collector.lint(linter.finished())
           output.foreach(file => Model.write(collector.model, file))
         }

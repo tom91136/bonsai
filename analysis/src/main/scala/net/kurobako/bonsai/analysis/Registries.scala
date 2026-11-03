@@ -5,7 +5,7 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 
 /** Values of one type that a collection literal of their siblings, all of one type constructor, registers. */
 private object Registries {

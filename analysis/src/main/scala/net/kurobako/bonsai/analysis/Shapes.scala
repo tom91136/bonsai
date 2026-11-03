@@ -9,7 +9,7 @@ import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.TermRef
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeRef
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 
 /** Algebraic shapes of types: standard sums, products and functions are interpreted, every other type is an atom. */
 object Shapes {

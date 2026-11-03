@@ -6,9 +6,9 @@ import com.sun.source.util.Trees
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.`type`.TypeKind
 import javax.lang.model.element.*
-import net.kurobako.bonsai.java.Model.Guard
-import net.kurobako.bonsai.java.Model.Probe
-import net.kurobako.bonsai.java.Model.Stored
+import net.kurobako.bonsai.java.Model.{Model as _, *}
+import scala.annotation.tailrec
+import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
 /** Reads how a type is constructed: who may call its constructors, and what the constructor requires of its arguments
@@ -36,7 +36,7 @@ private[java] object Guards {
   ): Vector[(TreePath, ExecutableElement)] =
     declaration.getMembers.asScala.toVector.flatMap {
       case method: MethodTree =>
-        val member = new TreePath(path, method)
+        val member = TreePath(path, method)
         trees.getElement(member) match {
           case element: ExecutableElement if element.getKind == kind => Some(member -> element)
           case _                                                     => None
@@ -53,9 +53,9 @@ private[java] object Guards {
       case (declaration: ClassTree, owner: TypeElement) if instantiable(owner) =>
         val constructors = declared(trees, path, declaration, ElementKind.CONSTRUCTOR)
         val restricted   = constructors.nonEmpty && constructors.forall(_._2.getModifiers.contains(Modifier.PRIVATE))
-        val factories    = if restricted then Vector.empty else factoriesOf(owner)
+        val factories    = if (restricted) Vector.empty else factoriesOf(owner)
         val guard        = guardOf(trees, owner, constructors)
-        val access       = if restricted then "private" else if factories.nonEmpty then "factory" else "open"
+        val access       = if (restricted) "private" else if (factories.nonEmpty) "factory" else "open"
         Option.when(access != "open" || guard != Guard.Known(true))(
           Model.Construction(Collector.qualified(owner)(using trees), access, factories, guard)
         )
@@ -72,11 +72,11 @@ private[java] object Guards {
         val constructors = declared(trees, path, declaration, ElementKind.CONSTRUCTOR)
         val readers      =
           constructors.map((constructor, element) => element -> Reader(trees, owner, constructor, element)).toMap
-        val kept = scala.collection.mutable.Map.empty[ExecutableElement, Map[String, Stored]]
+        val kept = mutable.Map.empty[ExecutableElement, Map[String, Stored]]
         def keeps(element: ExecutableElement): Map[String, Stored] =
           kept.getOrElseUpdate(
             element,
-            readers.get(element).filterNot(_ => element.isVarArgs).fold(Map.empty[String, Stored])(_.stores(keeps))
+            readers.get(element).filterNot(_ => element.isVarArgs).fold(Map.empty[String, Stored])(_.stores(keeps(_)))
           )
         constructors.map((_, element) => element -> keeps(element))
       case _ => Vector.empty
@@ -97,7 +97,7 @@ private[java] object Guards {
           val fixed     = modifiers.contains(Modifier.STATIC) || modifiers.contains(Modifier.PRIVATE) ||
             modifiers.contains(Modifier.FINAL) || owner.getKind == ElementKind.RECORD ||
             owner.getModifiers.contains(Modifier.FINAL)
-          if !fixed || names(element.getSimpleName.toString) > 1 || Collector.overriding(element) then None
+          if (!fixed || names(element.getSimpleName.toString) > 1 || Collector.overriding(element)) None
           else
             Reader(trees, owner, method, element).guard.filter(guard => informative(guard) && !probe(guard))
               .map(Model.Precondition(CostTrees.key(element)(using trees), _))
@@ -105,6 +105,7 @@ private[java] object Guards {
       case _ => Vector.empty
     }
 
+  @tailrec
   private def probe(guard: Guard): Boolean = guard match {
     case _: Guard.Holds   => true
     case Guard.Not(inner) => probe(inner)
@@ -185,12 +186,12 @@ private[java] object Guards {
   }
 
   private class Reader(trees: Trees, owner: TypeElement, constructor: TreePath, element: ExecutableElement) {
-    import Lints.child
+    import Lints.*
     import Reader.*
 
     private val method     = constructor.getLeaf.asInstanceOf[MethodTree]
     private val body       = method.getBody
-    private val bodyPath   = Option(body).map(new TreePath(constructor, _))
+    private val bodyPath   = Option(body).map(TreePath(constructor, _))
     private val statements = Option(body).fold(Vector.empty[StatementTree])(_.getStatements.asScala.toVector)
 
     private def variable(path: TreePath): Option[VariableElement] = trees.getElement(path) match {
@@ -223,7 +224,7 @@ private[java] object Guards {
       */
     private val stored: Map[VariableElement, String] = {
       val parameters = element.getParameters.asScala.toVector.filterNot(reassigned)
-      if element.getKind == ElementKind.METHOD || owner.getKind == ElementKind.RECORD then
+      if (element.getKind == ElementKind.METHOD || owner.getKind == ElementKind.RECORD)
         parameters.map(parameter => parameter -> parameter.getSimpleName.toString).toMap
       else {
         val pairs       = bodyPath.toVector.flatMap(root => statements.flatMap(stored(root, _)))
@@ -269,11 +270,11 @@ private[java] object Guards {
     private def delegated(invocation: TreePath, argument: ExpressionTree): Option[Stored] =
       variable(child(invocation, argument)).map(element.getParameters.indexOf(_)).filter(_ >= 0)
         .filterNot(index => reassigned(element.getParameters.get(index))).map(Stored.Parameter(_)).orElse(
-          Some(Collector.argument(trees, invocation, argument)).filter(constant).map(Stored.Constant(_))
+          Some(Collector.argument(trees, invocation, argument)).filter(constant(_)).map(Stored.Constant(_))
         )
 
     private def constant(argument: String): Boolean =
-      Set("true", "false", "absent")(argument) || Set("number:", "text:", "symbol:").exists(argument.startsWith)
+      Set("true", "false", "absent")(argument) || Set("number:", "text:", "symbol:").exists(argument.startsWith(_))
 
     private def stored(path: TreePath, kind: String): Option[VariableElement] =
       variable(path).filter(held => stored.contains(held) && Collector.parameter(held).kind == kind)
@@ -340,8 +341,8 @@ private[java] object Guards {
         Some(
           (stored(bounds(2), "number"), number(bounds(0)), number(bounds(1))) match {
             case (Some(held), Some(low), Some(high)) =>
-              Guard.Compare(stored(held), if inclusive then ">=" else ">", low)
-                .and(Guard.Compare(stored(held), if inclusive then "<=" else "<", high))
+              Guard.Compare(stored(held), if (inclusive) ">=" else ">", low)
+                .and(Guard.Compare(stored(held), if (inclusive) "<=" else "<", high))
             case _ => Guard.Unknown
           }
         )
@@ -350,7 +351,7 @@ private[java] object Guards {
 
     /** The guard of the constructor, unless it hands its work to another constructor of the type. */
     def guard: Option[Guard] =
-      if statements.headOption.exists(Call.isThisCall) then None
+      if (statements.headOption.exists(Call.isThisCall)) None
       else
         Some(
           bodyPath.fold(Guard.Known(true)) { root =>
@@ -379,7 +380,7 @@ private[java] object Guards {
           case _                                                    => None
         })
         asserted(expression).orElse(ranged(expression)).orElse(indexing).orElse(
-          if checked.isDefined then checked.map(nonNull(_, true)) else assignment(path).map(_ => Guard.Known(true))
+          if (checked.isDefined) checked.map(nonNull(_, true)) else assignment(path).map(_ => Guard.Known(true))
         )
       case _ => None
     }
@@ -397,8 +398,8 @@ private[java] object Guards {
       case None       => Guard.Unknown
       case Some(name) =>
         val shape = Collector.parameter(parameter)
-        if shape.kind == "optional" && Collector.optionalValue(parameter.asType).isEmpty then
-          if wanted then Guard.Holds(name, Probe.Present) else Guard.Not(Guard.Holds(name, Probe.Present))
+        if (shape.kind == "optional" && Collector.optionalValue(parameter.asType).isEmpty)
+          if (wanted) Guard.Holds(name, Probe.Present) else Guard.Not(Guard.Holds(name, Probe.Present))
         else Guard.Known(wanted)
     }
 
@@ -440,7 +441,7 @@ private[java] object Guards {
                 case select: MemberSelectTree =>
                   val receiver = child(child(path, select), select.getExpression)
                   variable(receiver).flatMap(stored.get).fold[Guard](Guard.Unknown) { field =>
-                    if name == "isPresent" then Guard.Holds(field, Probe.Present)
+                    if (name == "isPresent") Guard.Holds(field, Probe.Present)
                     else Guard.Not(Guard.Holds(field, Probe.Present))
                   }
                 case _ => Guard.Unknown
@@ -450,6 +451,7 @@ private[java] object Guards {
         case _ => Guard.Unknown
       }
 
+    @tailrec
     private def isNull(path: TreePath): Boolean = path.getLeaf match {
       case parenthesized: ParenthesizedTree => isNull(child(path, parenthesized.getExpression))
       case literal: LiteralTree             => literal.getValue == null
@@ -478,7 +480,7 @@ private[java] object Guards {
     private def relation(operator: String, left: TreePath, right: TreePath): Guard = {
       val equality                  = operator == "==" || operator == "!="
       def parameter(path: TreePath) = variable(path).filter(stored.contains)
-      def negate(guard: Guard)      = if operator == "!=" then Guard.Not(guard) else guard
+      def negate(guard: Guard)      = if (operator == "!=") Guard.Not(guard) else guard
       def comparison(path: TreePath, value: TreePath, operator: String) =
         for {
           held  <- parameter(path)
@@ -492,12 +494,12 @@ private[java] object Guards {
           if Collector.parameter(held).kind == "tag"
         } yield negate(Guard.Is(stored(held), name))
       val booleans = trees.getTypeMirror(left).getKind == TypeKind.BOOLEAN
-      if equality && isNull(right) then parameter(left).fold[Guard](Guard.Unknown)(nonNull(_, operator == "!="))
-      else if equality && isNull(left) then parameter(right).fold[Guard](Guard.Unknown)(nonNull(_, operator == "!="))
-      else if equality && booleans then negate(same(condition(left), condition(right)))
+      if (equality && isNull(right)) parameter(left).fold[Guard](Guard.Unknown)(nonNull(_, operator == "!="))
+      else if (equality && isNull(left)) parameter(right).fold[Guard](Guard.Unknown)(nonNull(_, operator == "!="))
+      else if (equality && booleans) negate(same(condition(left), condition(right)))
       else
         comparison(left, right, operator).orElse(comparison(right, left, Flipped(operator))).orElse(
-          if equality then tag(left, right).orElse(tag(right, left)) else None
+          if (equality) tag(left, right).orElse(tag(right, left)) else None
         ).getOrElse(Guard.Unknown)
     }
 

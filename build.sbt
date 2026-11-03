@@ -109,7 +109,7 @@ lazy val commonSettings = Seq(
 /** The algebra of collection chains: the laws and costs the compiler plugin and the analysis share. The plugin builds
   * on it, so it does not lint it; the whole-build analysis does.
   */
-lazy val collections = project.in(file("collections"))
+lazy val collections = linted(project.in(file("collections")))
   .settings(
     commonSettings,
     name                                   := "bonsai-collections",
@@ -127,7 +127,7 @@ lazy val collections = project.in(file("collections"))
 /** The effects of calls to code with no body to read, and what throws: the axioms the compiler plugin and the analysis
   * share. It is free of the compiler, so the plugin bundles it.
   */
-lazy val effects = project.in(file("effects"))
+lazy val effects = linted(project.in(file("effects")))
   .settings(
     commonSettings,
     name               := "bonsai-effects",
@@ -137,8 +137,7 @@ lazy val effects = project.in(file("effects"))
 /** `.bonsai.conf`, which the sbt plugin and the analysis read alike. It is built with the Scala version of sbt, whose
   * plugins depend on it, and the newer Scala of the analysis reads its TASTy.
   */
-lazy val bonsaiConfig = project.in(file("configuration"))
-  .disablePlugins(_root_.scalafix.sbt.ScalafixPlugin)
+lazy val bonsaiConfig = linted(project.in(file("configuration")))
   .settings(
     name         := "bonsai-configuration",
     scalaVersion := sbtScalaVersion,
@@ -151,7 +150,7 @@ lazy val bonsaiConfig = project.in(file("configuration"))
   )
 
 /** Helpers the test suites share, such as scratch directories that do not outlive the test JVM. */
-lazy val testSupport = project.in(file("test-support"))
+lazy val testSupport = linted(project.in(file("test-support")))
   .settings(
     commonSettings,
     name               := "bonsai-test-support",
@@ -162,7 +161,7 @@ lazy val testSupport = project.in(file("test-support"))
 /** Lifts typed Scala 3 trees into the chains of the algebra, for the compiler plugin, which bundles it, and the
   * analysis. It compiles against the compiler of the build.
   */
-lazy val lifting = project.in(file("lifting"))
+lazy val lifting = linted(project.in(file("lifting")))
   .dependsOn(collections, effects, testSupport % Test)
   .settings(
     commonSettings,
@@ -211,6 +210,7 @@ lazy val fixtureSettings = Seq(
   libraryDependencies += "org.scalameta" %% "munit" % munitVersion
 )
 
+// The fixtures hold code that breaks the rules on purpose, so no rule lints them.
 lazy val ruleInput = project.in(file("scalafix/input"))
   .disablePlugins(_root_.scalafix.sbt.ScalafixPlugin)
   .settings(fixtureSettings)
@@ -219,13 +219,13 @@ lazy val ruleOutput = project.in(file("scalafix/output"))
   .disablePlugins(_root_.scalafix.sbt.ScalafixPlugin)
   .settings(fixtureSettings)
 
-lazy val ruleTests = project.in(file("scalafix/tests"))
+lazy val ruleTests = linted(project.in(file("scalafix/tests")))
   .dependsOn(ruleInput, rules)
   .enablePlugins(_root_.scalafix.sbt.ScalafixTestkitPlugin)
-  .disablePlugins(_root_.scalafix.sbt.ScalafixPlugin)
   .settings(
-    scalaVersion                           := scalafixScalaVersion,
-    publish / skip                         := true,
+    scalaVersion   := scalafixScalaVersion,
+    publish / skip := true,
+    scalacOptions += "-Wunused:all",
     scalafixTestkitOutputSourceDirectories := (ruleOutput / Compile / sourceDirectories).value,
     scalafixTestkitInputSourceDirectories  := (ruleInput / Compile / sourceDirectories).value,
     scalafixTestkitInputClasspath          := (ruleInput / Compile / fullClasspath).value,
@@ -243,8 +243,7 @@ lazy val ruleTests = project.in(file("scalafix/tests"))
     }.taskValue
   )
 
-lazy val plugin = project.in(file("plugin"))
-  .dependsOn(rules % ScalafixConfig)
+lazy val plugin = linted(project.in(file("plugin")))
   .dependsOn(lifting % "compile-internal")
   .dependsOn(effects % "compile-internal")
   // The ids of the lints of the Java code, which the checks of the plugin must not be the ids of.
@@ -289,9 +288,14 @@ lazy val plugin = project.in(file("plugin"))
     }
   )
 
+/** A module linted by bonsai's scalafix rules, which scalafix loads from the sources of this build. The compiler plugin
+  * cannot check the modules it is built from or tested with, so these are linted only.
+  */
+def linted(module: Project): Project = module.dependsOn(rules % ScalafixConfig)
+
 /** A module linted by bonsai's scalafix rules and checked by its own compiler plugin, with every check an error. */
-def analysed(module: Project): Project = module
-  .dependsOn(rules % ScalafixConfig, plugin % "plugin->compile")
+def analysed(module: Project): Project = linted(module)
+  .dependsOn(plugin % "plugin->compile")
   .settings(commonSettings, scalacOptions += "-P:bonsai:error=*")
 
 lazy val analysis = analysed(project.in(file("analysis")))
@@ -326,7 +330,7 @@ lazy val analysis = analysed(project.in(file("analysis")))
     analysisClasspath := Def.uncached(println(classpathOf((Runtime / fullClasspath).value, fileConverter.value)))
   )
 
-lazy val javaPlugin = project.in(file("java-plugin"))
+lazy val javaPlugin = linted(project.in(file("java-plugin")))
   .dependsOn(collections, testSupport % Test)
   .settings(
     commonSettings,
@@ -341,9 +345,8 @@ lazy val javaPlugin = project.in(file("java-plugin"))
     Test / fork                       := true
   )
 
-lazy val sbtBonsai = project.in(file("sbt-plugin"))
+lazy val sbtBonsai = linted(project.in(file("sbt-plugin")))
   .enablePlugins(SbtPlugin)
-  .disablePlugins(_root_.scalafix.sbt.ScalafixPlugin)
   .dependsOn(bonsaiConfig)
   .settings(
     name         := "sbt-bonsai",

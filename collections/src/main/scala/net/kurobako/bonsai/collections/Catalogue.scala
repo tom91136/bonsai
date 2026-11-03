@@ -27,7 +27,7 @@ private[collections] object Catalogue {
 
   private val primitiveKeyed = Set("immutable.LongMap", "immutable.IntMap")
 
-  val identities = Map(
+  val identities: Map[String, Set[String]] = Map(
     "toSeq"        -> Set("immutable.Seq"),
     "toList"       -> Set("immutable.List"),
     "toVector"     -> Set("immutable.Vector"),
@@ -95,7 +95,7 @@ private[collections] object Catalogue {
         val name      = fresh(receiver +: functions.map(_.text))
         s"$receiver.$method($name => ${body(name, functions)})"
       },
-      exact = pure,
+      exact = pure(_),
       message = hit => s"use one $method for ${hit.names}: ${hit.gain}",
       report = Some { hit =>
         s"${hit.names} fuse into one $method, but the order of their effects would change unless both functions are " +
@@ -190,8 +190,8 @@ private[collections] object Catalogue {
 
   private def bound(hit: Hit, bounds: (Int, Int) => Option[(Int, Int)]): Option[(Int, Int)] =
     for {
-      a      <- single(hit, 0).flatMap(int)
-      b      <- single(hit, 1).flatMap(int)
+      a      <- single(hit, 0).flatMap(int(_))
+      b      <- single(hit, 1).flatMap(int(_))
       result <- bounds(a, b)
     } yield result
 
@@ -205,7 +205,7 @@ private[collections] object Catalogue {
       Vector(Set(check)),
       into = method,
       idiom = true,
-      applies = notString,
+      applies = notString(_),
       rewrite = Some((_, receiver) => s"$receiver.$method"),
       message = _ => s"use $method instead of a size comparison with zero",
       java = Some(JavaForm(
@@ -507,7 +507,7 @@ private[collections] object Catalogue {
       "drop-zero",
       Vector(Set("drop")),
       into = "self",
-      applies = zero,
+      applies = zero(_),
       rewrite = Some((_, receiver) => receiver),
       message = _ => "drop(0) returns the collection itself"
     ),
@@ -515,7 +515,7 @@ private[collections] object Catalogue {
       "take-zero",
       Vector(Set("take")),
       into = "empty",
-      applies = zero,
+      applies = zero(_),
       message = _ => "take(0) is always empty; return an empty collection or check the bound"
     ),
     Law(
@@ -661,7 +661,7 @@ private[collections] object Catalogue {
       applies = hit =>
         strictRun(hit) && unary(hit) && hit.receiver.name != "Array" &&
           (!hit.steps.head.desugared || Set("map", "flatMap")(hit.method(1))),
-      rewrite = Some(nested),
+      rewrite = Some(nested(_, _)),
       exact = hit => pure(hit) && !hit.args(1).head.text.startsWith("case"),
       message = hit =>
         if (hit.steps.head.desugared) s"fold the ${hit.method(1)} into ${foldedInto(hit)}: ${hit.gain}"
@@ -699,8 +699,8 @@ private[collections] object Catalogue {
       Vector(Set("joinReduce", "joinReduceStrict")),
       into = "join",
       idiom = true,
-      message = reduction,
-      java = Some(JavaForm(reduction))
+      message = reduction(_),
+      java = Some(JavaForm(reduction(_)))
     ),
     javaOnly(
       "java9-collection-factory",
@@ -710,7 +710,7 @@ private[collections] object Catalogue {
       hit => s"use ${copied(hit)} instead of ${hit.method(0)} of a copy",
       (hit, receiver) => s"${copied(hit)}($receiver)"
     ),
-    fusion("map", composed),
+    fusion("map", composed(_, _)),
     fusion("filter", joined("&&")),
     fusion("filterNot", joined("||")),
     Law(
@@ -721,7 +721,7 @@ private[collections] object Catalogue {
       advice = true,
       deferred = true,
       viewable = true,
-      applies = strictRun,
+      applies = strictRun(_),
       message = hit => s"${hit.names}: use a view to fuse them, ${hit.gain}"
     )
   )

@@ -19,12 +19,9 @@ import dotty.tools.dotc.core.Types.PolyType
 import dotty.tools.dotc.core.Types.TermRef
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.util.Spans.Span
-import net.kurobako.bonsai.collections.Methods
-import net.kurobako.bonsai.effects.Axioms
-import net.kurobako.bonsai.lifting.Calls
-import net.kurobako.bonsai.lifting.Classes
-import net.kurobako.bonsai.lifting.Parameters
-import net.kurobako.bonsai.lifting.Purity
+import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.effects.*
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object Loops {
@@ -1035,7 +1032,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
           s"$shown scans the collection the loop iterates, which makes it quadratic; build an index of it first",
           tree.srcPos
         )
-      } else if (Calls.lambda(predicate).exists(relating)) {
+      } else if (Calls.lambda(predicate).exists(relating(_))) {
         scans += tree.span
         checks(
           Check.KeyedLookupInLoop,

@@ -7,7 +7,7 @@ object Macros {
   inline def checked(inline value: String): Unit = ${ check('value) }
 
   def check(value: Expr[String])(using Quotes): Expr[Unit] = {
-    if value.value.contains("") then quotes.reflect.report.error("the text is empty", value)
+    if (value.value.contains("")) quotes.reflect.report.error("the text is empty", value)
     '{ () }
   }
 }

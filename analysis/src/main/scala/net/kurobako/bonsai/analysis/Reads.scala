@@ -10,14 +10,14 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeTraverser
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 /** The reads of the fields of a case class that showing, comparing and hashing a value make, passed to `use` as uses of
   * the fields.
   */
 private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) => Context ?=> Unit) {
-  import symbols.qualifiedName
+  import symbols.*
 
   // Printing, interpolating, appending or putting a value in a message calls its toString, which a case class writes
   // from every field.

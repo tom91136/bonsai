@@ -3,7 +3,7 @@ package net.kurobako.bonsai.java
 import java.nio.file.Files
 import javax.tools.StandardLocation
 import javax.tools.ToolProvider
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 import scala.jdk.CollectionConverters.*
 
 /** The suite of the lints the plugin finds in the code it compiles, which the model of the compilation holds.
@@ -21,7 +21,7 @@ class LintSuite extends munit.FunSuite {
           .filter(url => url.getProtocol == "file")
           .map(url => url.getPath)
           .mkString(java.io.File.pathSeparator)
-      case _ => System.getProperty("java.class.path")
+      case _ => sys.props("java.class.path")
     }
 
   /** Compiles the sources with the plugin, and returns the model the plugin wrote of them. */
@@ -40,11 +40,11 @@ class LintSuite extends munit.FunSuite {
     val output = root.resolve("model.tsv")
 
     val compiler    = ToolProvider.getSystemJavaCompiler
-    val diagnostics = new java.util.ArrayList[java.lang.String]()
+    val diagnostics = java.util.ArrayList[java.lang.String]()
     val fileManager = Fixtures.fileManager(classes)
     // The annotations of the test code, such as JSpecify, are on the classpath of the suite.
     val classpath = processorPath.split(java.io.File.pathSeparator).view.filter(_.nonEmpty).map(path =>
-      new java.io.File(path)
+      java.io.File(path)
     ).toVector
     fileManager.setLocation(StandardLocation.CLASS_PATH, classpath.asJava)
     val units = fileManager.getJavaFileObjectsFromFiles(files.map(_.toFile).asJava)
@@ -54,7 +54,7 @@ class LintSuite extends munit.FunSuite {
         fileManager,
         Fixtures.listener(diagnostics),
         ((Seq("-proc:full", "-processorpath", processorPath) ++ options) :+
-          ("-Xplugin:bonsai " + output + (if enabled.nonEmpty then " " + enabled.mkString(",") else ""))).asJava,
+          ("-Xplugin:bonsai " + output + (if (enabled.nonEmpty) " " + enabled.mkString(",") else ""))).asJava,
         null,
         units
       )
@@ -245,7 +245,7 @@ class LintSuite extends munit.FunSuite {
 
   test("the file of the model is the argument of the plugin, not a property the modules of a build share") {
     val stale = Scratch.directory("bonsai-stale").resolve("model.tsv")
-    System.setProperty(JavaPlugin.Output, stale.toString)
+    sys.props.update(JavaPlugin.Output, stale.toString)
     try {
       val model = compile("Quiet" -> """
         |package demo;
@@ -257,7 +257,7 @@ class LintSuite extends munit.FunSuite {
 
       assert(model.nodes.exists(_.name == "demo.Quiet"))
       assert(!Files.exists(stale), s"the model was written to the property $stale")
-    } finally System.clearProperty(JavaPlugin.Output): Unit
+    } finally sys.props.remove(JavaPlugin.Output): Unit
   }
 
   test("a modifier the code around it implies is of no use") {

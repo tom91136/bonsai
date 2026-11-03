@@ -6,7 +6,7 @@ import java.io.File
 import java.lang.invoke.MethodType
 import java.nio.file.Files
 import net.kurobako.bonsai.java.Model as JavaModel
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 /** Loops, library work and calls of Java methods, bound against the methods of the build in either language. */
 class JavaCostsSuite extends AnalysisSuite {

@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
+import com.sun.source.tree.Tree.Kind
 import com.sun.source.util.TreeScanner
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.`type`.TypeKind
@@ -27,15 +28,15 @@ object LintOptionals {
 
   /** A call of `Optional.get()` that the code does not guard with a check that the value is present. */
   private object Get extends Lint {
-    val id    = JavaLint.OptionalGet.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.OptionalGet.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val invocation = tree.asInstanceOf[MethodInvocationTree]
       receiver(context, invocation, Getters) match {
         case None           => Vector.empty
         case Some(receiver) =>
-          if guarded(context, receiver.toString) then Vector.empty
+          if (guarded(context, receiver.toString)) Vector.empty
           else Vector(context.found(s"$invocation is called without checking that the optional is present"))
       }
     }
@@ -43,8 +44,8 @@ object LintOptionals {
 
   /** An `isPresent` check whose branch calls `get`, which a functional expression states in one step. */
   private object IsPresent extends Lint {
-    val id    = JavaLint.OptionalIsPresent.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.OptionalIsPresent.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val invocation = tree.asInstanceOf[MethodInvocationTree]
@@ -58,7 +59,7 @@ object LintOptionals {
         }.flatMap { (whenTrue, whenFalse) =>
           val calledWhenTrue  = called(whenTrue, receiver.toString)
           val calledWhenFalse = whenFalse.exists(called(_, receiver.toString))
-          val target          = if present then calledWhenTrue else calledWhenFalse
+          val target          = if (present) calledWhenTrue else calledWhenFalse
           Option.when(target) {
             context.found(
               s"$invocation with ${getter(context, receiver.toString)} can be one functional expression"
@@ -140,7 +141,7 @@ object LintOptionals {
         val range = position(context, statement)
         range.exists((from, to) => from <= start && start < to)
       }
-      if index < 0 then false
+      if (index < 0) false
       else
         statements.take(index).exists {
           case ifTree: IfTree if ifTree.getElseStatement == null =>
@@ -152,7 +153,7 @@ object LintOptionals {
   /** Whether the statement always leaves the code it is in. */
   private def exits(statement: StatementTree): Boolean = statement match {
     case _: ReturnTree | _: ThrowTree | _: BreakTree | _: ContinueTree => true
-    case block: BlockTree => block.getStatements.asScala.lastOption.exists(exits)
+    case block: BlockTree => block.getStatements.asScala.lastOption.exists(exits(_))
     case ifTree: IfTree   =>
       Option(ifTree.getElseStatement).exists(other => exits(ifTree.getThenStatement) && exits(other))
     case _ => false

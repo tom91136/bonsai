@@ -9,7 +9,7 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.util.Spans.Span
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object Lazies {
@@ -23,7 +23,7 @@ private object Lazies {
 private class Lazies(checks: Checks)(using Context) {
   private val text = Edits.source
 
-  private final case class Fill(flag: Option[Symbol], cache: Symbol, value: tpd.Tree)
+  private case class Fill(flag: Option[Symbol], cache: Symbol, value: tpd.Tree)
 
   def run(tree: tpd.Tree): Unit = {
     val references = mutable.Map.empty[Symbol, List[Span]]

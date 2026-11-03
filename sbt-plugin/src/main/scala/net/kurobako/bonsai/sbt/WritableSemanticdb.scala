@@ -31,7 +31,7 @@ object WritableSemanticdb extends AutoPlugin {
       root,
       new SimpleFileVisitor[Path] {
         override def visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult = {
-          if attributes.isSymbolicLink then found += file
+          if (attributes.isSymbolicLink) found += file
           FileVisitResult.CONTINUE
         }
       }

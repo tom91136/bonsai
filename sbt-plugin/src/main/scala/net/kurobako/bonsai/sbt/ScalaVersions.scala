@@ -16,7 +16,7 @@ private[sbt] object ScalaVersions {
     */
   def plugin(version: String): Option[String] = parse(version).flatMap { (minor, patch) =>
     val line   = s"3.$minor"
-    val oldest = BonsaiArtifacts.oldest.get(line).flatMap(parse).fold(0)((_, first) => first)
+    val oldest = BonsaiArtifacts.oldest.get(line).flatMap(parse(_)).fold(0)((_, first) => first)
     Option.when(BonsaiArtifacts.lines.contains(line) && patch >= oldest)(line)
   }
 

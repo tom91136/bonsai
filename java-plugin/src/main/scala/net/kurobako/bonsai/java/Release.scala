@@ -32,7 +32,7 @@ object Release {
         member.isEmpty ||
         tpe.getEnclosedElements.stream().anyMatch(element => element.getSimpleName.contentEquals(member.drop(1)))
       }
-      if present then release else found
+      if (present) release else found
     }
 
   /** Whether the code may use what the release introduced. */

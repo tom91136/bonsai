@@ -6,13 +6,12 @@ import com.sun.source.util.TreeScanner
 import com.sun.source.util.Trees
 import javax.lang.model.`type`.*
 import javax.lang.model.element.*
-import net.kurobako.bonsai.collections.Methods
-import net.kurobako.bonsai.collections.Sink
+import net.kurobako.bonsai.collections.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
 /** The sinks of the expressions of a method. */
-private[java] final class CostFlow(sinks: collection.Map[Tree, Sink]) {
+private[java] class CostFlow(sinks: collection.Map[Tree, Sink]) {
   def of(tree: Tree): Sink = sinks.getOrElse(tree, Sink.Returned)
 }
 
@@ -26,7 +25,7 @@ private[java] final class CostFlow(sinks: collection.Map[Tree, Sink]) {
   * reference, such as a number or a string, holds nothing. The stages of a stream are lazy, so what a function of a
   * stage returns goes where the result of the stage does, rather than being held until the traversal ends.
   */
-private[java] final class CostFlows(
+private[java] class CostFlows(
     trees: Trees,
     root: TreePath,
     assigned: collection.Set[Element]
@@ -59,13 +58,13 @@ private[java] final class CostFlows(
     tpe.getKind.isPrimitive || Voids(tpe.getKind) || CostTrees.derives(tpe, Atoms*)
   }
 
-  private def carried(tree: Tree, sink: Sink): Sink = if scalar(tree) then Sink.Dropped else sink
+  private def carried(tree: Tree, sink: Sink): Sink = if (scalar(tree)) Sink.Dropped else sink
 
   private def use(element: Element, sink: Sink): Unit =
-    if Effects.local(element) then {
+    if (Effects.local(element)) {
       val before = uses.getOrElse(element, Sink.Dropped)
       val joined = before.join(sink)
-      if joined != before then {
+      if (joined != before) {
         uses(element) = joined
         changed = true
       }
@@ -76,7 +75,7 @@ private[java] final class CostFlows(
     */
   private def held(element: Element): Sink = {
     val read = uses.getOrElse(element, Sink.Dropped)
-    if assigned(element) then read.join(Sink(declared.getOrElse(element, 0), read.returned, read.stored)) else read
+    if (assigned(element)) read.join(Sink(declared.getOrElse(element, 0), read.returned, read.stored)) else read
   }
 
   private def target(tree: ExpressionTree): Sink = Lint.unwrapped(tree) match {
@@ -93,7 +92,7 @@ private[java] final class CostFlows(
   private def children(tree: Tree, sink: Sink, depth: Int): Unit =
     tree.accept(
       new TreeScanner[Unit, Unit] {
-        override def scan(node: Tree, unused: Unit): Unit = if node != null then flow(node, sink, depth)
+        override def scan(node: Tree, unused: Unit): Unit = if (node != null) flow(node, sink, depth)
       },
       ()
     )
@@ -152,7 +151,7 @@ private[java] final class CostFlows(
       case wrapped: ParenthesizedTree => flow(wrapped.getExpression, sink, depth)
       case cast: TypeCastTree         => flow(cast.getExpression, carried(cast, sink), depth)
       case test: InstanceOfTree       =>
-        flow(test.getExpression, if test.getPattern != null then Sink.Returned else Sink.Dropped, depth)
+        flow(test.getExpression, if (test.getPattern != null) Sink.Returned else Sink.Dropped, depth)
       case choice: ConditionalExpressionTree =>
         flow(choice.getCondition, Sink.Dropped, depth)
         flow(choice.getTrueExpression, sink, depth)
@@ -191,7 +190,7 @@ private[java] final class CostFlows(
     val matching = cases.asScala.exists(_.getLabels.asScala.exists(_.isInstanceOf[PatternCaseLabelTree]))
     yields = sink
     try {
-      flow(selector, if matching then Sink.Returned else Sink.Dropped, depth)
+      flow(selector, if (matching) Sink.Returned else Sink.Dropped, depth)
       cases.forEach { branch =>
         Option(branch.getGuard).foreach(flow(_, Sink.Dropped, depth))
         branch.getBody match {
@@ -234,16 +233,16 @@ private[java] final class CostFlows(
     val receiver  = selected.flatMap(_._1)
     val name      = selected.fold("")(_._2)
     val arguments = Lints.arguments(call)
-    val kind      = receiver.flatMap(typeOf)
+    val kind      = receiver.flatMap(typeOf(_))
     val holder    = kind.exists(CostTrees.collection)
     val mutating  = Methods.Mutators(name) && holder
     val traversal = kind.exists(CostTrees.derives(_, "java.util.stream.BaseStream")) ||
       (CostTrees.Visits(name) && holder)
-    val kept = if mutating then receiver.map(target) else None
+    val kept = if (mutating) receiver.map(target(_)) else None
     kept.foreach(into => sinks(call) = sink.join(into))
     receiver.foreach(flow(_, result, depth))
-    val collected         = if Methods.Accumulating(name) then result else Sink.Dropped
-    val (function, inner) = if traversal then (collected, depth + 1) else (result, depth)
+    val collected         = if (Methods.Accumulating(name)) result else Sink.Dropped
+    val (function, inner) = if (traversal) (collected, depth + 1) else (result, depth)
     passed(arguments, kept.getOrElse(result), function, inner, depth)
   }
 }

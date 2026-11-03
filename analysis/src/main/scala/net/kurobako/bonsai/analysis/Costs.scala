@@ -37,6 +37,7 @@ private class Costs(
   private val subtrees = Children()
   private val flows    =
     Flows(library, definitions, method => definitions.contains(method) || known(method).isDefined, subtrees)
+  private val memos    = Memos(definitions, subtrees)
   private val fixed    = mutable.Map.empty[Symbol, Option[Polynomial]]
   private val sized    = mutable.Map.empty[Symbol, Option[Polynomial]]
   private val searched = mutable.Map.empty[Symbol, Boolean]
@@ -254,7 +255,7 @@ private class Costs(
 
     private def charge(tree: tpd.Tree, work: Work, scope: Scope, counted: Scope): Unit = {
       val cause = if (scope.inFallback) work.copy(what = s"${work.what} (in orElse fallback)") else work
-      charges += Charge.at(scope, counted, cause, lines.line(tree.sourcePos), flow.of(tree))
+      charges += Charge.at(Site(lines.line(tree.sourcePos), scope, flow.of(tree)), counted, cause)
     }
 
     private val exits = mutable.Set.empty[tpd.Tree]
@@ -429,11 +430,12 @@ private class Costs(
       val inherited = callee(method)
       val time      = Atoms.rebind(inherited.time, bindings)
       val space     = Atoms.rebind(inherited.space, bindings)
+      val once      = memos(method) && select.forall(selected => memos.outliving(selected.qualifier))
       charge(
         application,
         Work(s"call of ${method.name} (line ${lines.line(application.sourcePos)})", time, space, linearIn(time)),
         scope,
-        scope
+        if (once) scope.outside else scope
       )
     }
 

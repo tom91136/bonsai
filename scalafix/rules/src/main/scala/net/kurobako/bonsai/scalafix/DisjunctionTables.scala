@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.scalafix
 
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.meta.*
 import scalafix.v1.*
@@ -20,17 +21,17 @@ class DisjunctionTables extends SemanticRule("DisjunctionTables") {
 
   override def fix(using document: SemanticDocument): Patch = {
     val expressions = document.tree.collect { case tree: Term if combinator(tree) && !combined(tree) => tree }
-    val tables      = expressions.flatMap(table)
+    val tables      = expressions.flatMap(table(_))
     val reported    = tables.map(_._1)
     val calls       = document.tree.collect {
       case chain: Term.ApplyInfix if disjunction(chain) && !disjoined(chain) && !within(chain, reported) => chain
     }
-    tables.map(_._2).asPatch + calls.flatMap(repeated).asPatch
+    tables.map(_._2).asPatch + calls.flatMap(repeated(_)).asPatch
   }
 
   private def table(expression: Term)(using SemanticDocument): Option[(Tree, Patch)] = {
     val leaves = flatten(expression)
-    val tests  = leaves.flatMap(test)
+    val tests  = leaves.flatMap(test(_))
     Option.when(tests.size >= EqualityTests && tests.map(_.operand.syntax).distinct.size <= OperandLimit) {
       val message = s"${tests.size} equality tests against constants; look the value up in a Set or a Map of Sets"
       val patch   = lookup(expression, leaves, tests) match {
@@ -61,7 +62,7 @@ class DisjunctionTables extends SemanticRule("DisjunctionTables") {
 
   private def repeated(chain: Term.ApplyInfix): Option[Patch] = {
     val operands = disjuncts(chain)
-    Option.when(operands.size >= CallVariants && operands.forall(call) && variesInOneConstant(operands)) {
+    Option.when(operands.size >= CallVariants && operands.forall(call(_)) && variesInOneConstant(operands)) {
       lint(
         "repeated-call-disjunction",
         s"${operands.size} calls differ in one constant; test the constants with exists over a collection",
@@ -137,6 +138,7 @@ class DisjunctionTables extends SemanticRule("DisjunctionTables") {
 
   private def capitalised(name: String): Boolean = name.headOption.exists(_.isUpper)
 
+  @tailrec
   private def stable(term: Term): Boolean = term match {
     case _: Term.Name | _: Term.This => true
     case Term.Select(qualifier, _)   => stable(qualifier)
@@ -159,9 +161,9 @@ class DisjunctionTables extends SemanticRule("DisjunctionTables") {
     case parent                 => Some(parent)
   }
 
-  private def combined(tree: Tree): Boolean = operandParent(tree).exists(combinator)
+  private def combined(tree: Tree): Boolean = operandParent(tree).exists(combinator(_))
 
-  private def disjoined(tree: Tree): Boolean = operandParent(tree).exists(disjunction)
+  private def disjoined(tree: Tree): Boolean = operandParent(tree).exists(disjunction(_))
 
   private def within(tree: Tree, trees: List[Tree]): Boolean =
     trees.exists(other => (other eq tree) || ancestry.ancestors(tree).exists(_ eq other))

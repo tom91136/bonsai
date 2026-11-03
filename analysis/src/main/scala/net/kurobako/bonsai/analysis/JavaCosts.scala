@@ -96,36 +96,36 @@ private class JavaCosts(costs: Iterable[JavaModel.Cost], declared: Complexity.De
       if (extent == Fixed) Atoms.Binding(None, Some(Polynomial.One), static = true)
       else sizeOf(extent).fold(Atoms.Binding(None, None))(size => Atoms.Binding(Some(named(extent)), Some(size)))
 
-    def charge(line: Int, work: Work, scope: Scope, counted: Scope, sink: Sink = Sink.Returned): Unit =
-      charges += Charge.at(scope, counted, work, line, sink)
+    def charge(site: Site, work: Work, counted: Scope): Unit =
+      charges += Charge.at(site, counted, work)
 
-    def operation(line: Int, kind: Kind, extent: String, sink: Sink, scope: Scope): Unit = {
+    def operation(site: Site, kind: Kind, extent: String): Unit = {
       val count  = sizeOf(extent)
       val size   = count.getOrElse(Atoms.Unknown)
       val linear = growsWith(count)
-      val what   = s"${kind.render.takeWhile(_ != ':')} over ${count.fold("?")(Atoms.show)} (line $line)"
+      val what   = s"${kind.render.takeWhile(_ != ':')} over ${count.fold("?")(Atoms.show)} (line ${site.line})"
       val work   = kind match {
         case Kind.Search        => Operation.Search.work(what, size, linear)
         case Kind.Shift         => Operation.Shift.work(what, size, linear)
         case Kind.Copy          => Operation.Copy.work(what, size, linear)
         case Kind.Sort          => Operation.Sort.work(what, size, linear)
         case Kind.Concat(depth) =>
-          val length = Polynomial.One + Polynomial.product(scope.loops.takeRight(depth).map(_.trips))
-          Work(s"text growth over ${Atoms.show(length)} (line $line)", length, length, linear = true)
+          val length = Polynomial.One + Polynomial.product(site.scope.loops.takeRight(depth).map(_.trips))
+          Work(s"text growth over ${Atoms.show(length)} (line ${site.line})", length, length, linear = true)
       }
-      charge(line, work, scope, scope, sink)
+      charge(site, work, site.scope)
     }
 
-    def call(line: Int, key: String, receiver: String, arguments: Vector[String], sink: Sink, scope: Scope): Unit =
-      if (key == cost.key) selves += SelfCall(arguments, scope.loops.nonEmpty)
+    def call(site: Site, key: String, receiver: String, arguments: Vector[String]): Unit =
+      if (key == cost.key) selves += SelfCall(arguments, site.scope.loops.nonEmpty)
       else
         callee(key, resolve).orElse(resolve(key)).foreach { found =>
           val inherited = inherit(found.bound)
           val bindings  = found.roots.zip(arguments.map(binding)).toMap + ("this" -> binding(receiver))
           val time      = Atoms.rebind(inherited.time, bindings)
           val space     = Atoms.rebind(inherited.space, bindings)
-          val what      = s"call of ${key.takeWhile(_ != '(').split('.').last} (line $line)"
-          charge(line, Work(what, time, space, linearIn(time)), scope, scope, sink)
+          val what      = s"call of ${key.takeWhile(_ != '(').split('.').last} (line ${site.line})"
+          charge(site, Work(what, time, space, linearIn(time)), site.scope)
         }
 
     def recursion: Recursion = selves.toVector match {
@@ -146,11 +146,15 @@ private class JavaCosts(costs: Iterable[JavaModel.Cost], declared: Complexity.De
           scope.pushed(Scope.Loop(count.getOrElse(Atoms.Unknown), what, absorbs)).copy(callback =
             scope.callback || callback
           )
-        charge(node.line, Work(what, Polynomial.One, Polynomial.Zero, linear = false), scope, inner)
+        charge(
+          Site(node.line, scope, Sink.Returned),
+          Work(what, Polynomial.One, Polynomial.Zero, linear = false),
+          inner
+        )
         body.foreach(walk(_, inner))
       case Step.Exit(body)                           => body.foreach(walk(_, scope.copy(terminal = true)))
-      case Step.Op(kind, extent, sink)               => operation(node.line, kind, extent, sink, scope)
-      case Step.Call(key, receiver, arguments, sink) => call(node.line, key, receiver, arguments, sink, scope)
+      case Step.Op(kind, extent, sink)               => operation(Site(node.line, scope, sink), kind, extent)
+      case Step.Call(key, receiver, arguments, sink) => call(Site(node.line, scope, sink), key, receiver, arguments)
     }
 
     cost.body.foreach(walk(_, Scope()))

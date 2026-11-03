@@ -2,7 +2,7 @@ package net.kurobako.bonsai.analysis
 
 import java.nio.file.Files
 import java.nio.file.Path
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 class DeterminismSuite extends AnalysisSuite {
   override def munitTimeout: scala.concurrent.duration.Duration = scala.concurrent.duration.Duration(2, "min")

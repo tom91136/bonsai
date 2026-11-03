@@ -12,32 +12,28 @@ import javax.lang.model.element.TypeElement
 import javax.lang.model.element.VariableElement
 import javax.lang.model.util.Elements
 import javax.lang.model.util.Types
-import net.kurobako.bonsai.collections.Arg
-import net.kurobako.bonsai.collections.Chain
-import net.kurobako.bonsai.collections.Comparison
-import net.kurobako.bonsai.collections.Kind
-import net.kurobako.bonsai.collections.Step
+import net.kurobako.bonsai.collections.*
 import scala.jdk.CollectionConverters.*
 
 /** A chain of calls as the laws see it, with the expression that runs each step: `ends(i)` is the call, or the
   * comparison or negation of one, that completes step `i`. A chain whose first call names no receiver runs on `this`,
   * which `chain.source` then stands for.
   */
-final case class Lifted(chain: Chain, ends: Vector[ExpressionTree], implicitThis: Boolean = false) {
+case class Lifted(chain: Chain, ends: Vector[ExpressionTree], implicitThis: Boolean = false) {
 
   /** The text of the expression the step `from` runs on. */
-  def receiver(from: Int): String = if from == 0 then chain.source.text else ends(from - 1).toString
+  def receiver(from: Int): String = if (from == 0) chain.source.text else ends(from - 1).toString
 }
 
 /** An argument of a step, which is a function written in place, a reference to a method or a plain expression. */
-private final class JavaArg(
+private class JavaArg(
     val text: String,
     val pure: Boolean,
     override val identity: Boolean,
     override val literal: Option[Any],
     override val comparison: Option[Comparison] = None
 ) extends Arg {
-  def applied(value: String): String = if identity then value else s"($text).apply($value)"
+  def applied(value: String): String = if (identity) value else s"($text).apply($value)"
 }
 
 /** The names of the Java methods the lifter reads as steps of the algebra, by the receiver they are called on and the
@@ -126,7 +122,7 @@ object ChainLifter {
 
   private val scalar = Kind(library = false)
 
-  private final case class Link(
+  private case class Link(
       end: ExpressionTree,
       receiver: TreePath,
       method: String,
@@ -138,7 +134,7 @@ object ChainLifter {
       implicitThis: Boolean = false
   )
 
-  private final class Roots(elements: Elements, val types: Types) {
+  private class Roots(elements: Elements, val types: Types) {
     private def erased(name: String): Option[TypeMirror] =
       Option(elements.getTypeElement(name)).map(element => types.erasure(element.asType))
 
@@ -157,7 +153,7 @@ object ChainLifter {
       root.exists(found => types.isSubtype(mirror, found))
 
     def family(mirror: TypeMirror): Option[(Family, Kind)] =
-      Option(mirror).map(types.erasure).flatMap { erasure =>
+      Option(mirror).map(types.erasure(_)).flatMap { erasure =>
         erasure.getKind match {
           case TypeKind.ARRAY    => Some((Family.Array, Kind(library = true, name = "java.array")))
           case TypeKind.DECLARED => declared(erasure)
@@ -211,7 +207,7 @@ object ChainLifter {
     Lints.enclosing(path.getParentPath).flatMap { parent =>
       parent.getLeaf match {
         case select: MemberSelectTree
-            if bareOf(new TreePath(parent, select.getExpression)).getLeaf eq path.getLeaf =>
+            if bareOf(TreePath(parent, select.getExpression)).getLeaf eq path.getLeaf =>
           Option(parent.getParentPath).filter(_.getLeaf match {
             case invocation: MethodInvocationTree => invocation.getMethodSelect eq select
             case _                                => false
@@ -228,7 +224,7 @@ object ChainLifter {
       link(context, outer).exists(found =>
         found.walks && (bareOf(found.receiver).getLeaf eq path.getLeaf)
       )
-    called(path).exists(next => runsOn(next) || called(next).exists(runsOn))
+    called(path).exists(next => runsOn(next) || called(next).exists(runsOn(_)))
   }
 
   private def build(context: Context, top: TreePath): Option[Lifted] = {
@@ -256,7 +252,7 @@ object ChainLifter {
       val steps  = merged.map(link => Step(link.method, link.args, link.from, link.to, link.typed))
       val onThis = merged.head.implicitThis
       Option.when(steps.exists(_.receiver.library)) {
-        val source = new JavaArg(if onThis then "this" else origin.toString, false, false, None)
+        val source = JavaArg(if (onThis) "this" else origin.toString, false, false, None)
         Lifted(Chain(source, steps), merged.map(_.end), onThis)
       }
     }
@@ -276,12 +272,12 @@ object ChainLifter {
 
   @annotation.tailrec
   private def bareOf(path: TreePath): TreePath = path.getLeaf match {
-    case parenthesized: ParenthesizedTree => bareOf(new TreePath(path, parenthesized.getExpression))
+    case parenthesized: ParenthesizedTree => bareOf(TreePath(path, parenthesized.getExpression))
     case _                                => path
   }
 
   /** A call of a method of the standard library, with what the lifting of it reads. */
-  private final case class Site(context: Context, call: Call, roots: Roots) {
+  private case class Site(context: Context, call: Call, roots: Roots) {
     export call.invocation
     export call.method
     export call.name
@@ -290,7 +286,7 @@ object ChainLifter {
     def typed: Boolean = invocation.getTypeArguments.size > 0
 
     def arguments: Vector[Arg] =
-      call.arguments.map(tree => argument(context, new TreePath(path, tree), tree))
+      call.arguments.map(tree => argument(context, TreePath(path, tree), tree))
 
     def family(at: TreePath): Option[(Family, Kind)] = roots.family(context.trees.getTypeMirror(at))
 
@@ -302,12 +298,12 @@ object ChainLifter {
       val site = Site(context, found, Roots(context.elements, context.types))
       found.invocation.getMethodSelect match {
         case select: MemberSelectTree =>
-          val receiver = new TreePath(new TreePath(path, select), select.getExpression)
+          val receiver = TreePath(TreePath(path, select), select.getExpression)
           factory(site, receiver).orElse(unmodifiable(site)).orElse(arrayStream(site)).orElse(
             call(site, receiver, site.family(receiver))
           )
         case name: IdentifierTree =>
-          own(site).flatMap(family => call(site, new TreePath(path, name), Some(family)))
+          own(site).flatMap(family => call(site, TreePath(path, name), Some(family)))
             .map(_.copy(implicitThis = true))
         case _ => None
       }
@@ -330,7 +326,7 @@ object ChainLifter {
     val streams = site.method.getModifiers.contains(Modifier.STATIC) && site.invocation.getArguments.size == 1 &&
       ((Lints.owner(site.method).contains("java.util.Arrays") && site.name == "stream") ||
         (Lints.owner(site.method).contains("java.util.stream.Stream") && site.name == "of" && site.method.isVarArgs))
-    lazy val source = new TreePath(site.path, site.invocation.getArguments.get(0))
+    lazy val source = TreePath(site.path, site.invocation.getArguments.get(0))
     Option.when(streams)(site.family(source)).flatten.collect { case (Family.Array, kind) =>
       Link(site.invocation, source, "stream", Vector.empty, kind, site.result, site.typed, walks = false)
     }
@@ -359,13 +355,13 @@ object ChainLifter {
           case List(construction: NewClassTree)
               if construction.getClassBody == null && construction.getArguments.size == 1 &&
                 Release.atLeast(site.context, 10) =>
-            val source = new TreePath(new TreePath(site.path, construction), construction.getArguments.get(0))
+            val source = TreePath(TreePath(site.path, construction), construction.getArguments.get(0))
             for {
               (_, kind) <- site.family(source).filter { (family, _) =>
-                family == (if copied == "java.util.Map" then Family.Map else Family.Collection)
+                family == (if (copied == "java.util.Map") Family.Map else Family.Collection)
               }
               if kind.name.startsWith("java.util.")
-              (_, built) <- site.family(new TreePath(site.path, construction))
+              (_, built) <- site.family(TreePath(site.path, construction))
               if !(built.ordered && (built.distinct || built.keyed))
               (_, to) <- site.family(site.path)
             } yield Link(site.invocation, source, site.name, Vector.empty, kind, to, site.typed, walks = false)
@@ -374,7 +370,7 @@ object ChainLifter {
     }
 
   private def call(site: Site, receiver: TreePath, kind: Option[(Family, Kind)]): Option[Link] =
-    if site.method.getModifiers.contains(Modifier.STATIC) || !library(site.method) then None
+    if (site.method.getModifiers.contains(Modifier.STATIC) || !library(site.method)) None
     else
       kind.flatMap { (family, from) =>
         val name  = site.name
@@ -388,13 +384,13 @@ object ChainLifter {
         }
         def plain(method: String): Link =
           Link(site.invocation, receiver, method, site.arguments, from, site.result, site.typed)
-        if family == Family.Stream && name == "collect" then collected(site, receiver, from)
-        else if family == Family.Optional && (name == "orElse" || name == "orElseThrow") then
-          reduced(site, name).orElse(table.get((name, size)).map(plain))
+        if (family == Family.Stream && name == "collect") collected(site, receiver, from)
+        else if (family == Family.Optional && (name == "orElse" || name == "orElseThrow"))
+          reduced(site, name).orElse(table.get((name, size)).map(plain(_)))
         else
           table.get((name, size)).map { lowered =>
-            if lowered == "size" then comparison(site.path, site.invocation, plain(lowered))
-            else if family == Family.Optional && (lowered == "isDefined" || lowered == "isEmpty") then
+            if (lowered == "size") comparison(site.path, site.invocation, plain(lowered))
+            else if (family == Family.Optional && (lowered == "isDefined" || lowered == "isEmpty"))
               negation(site.context, site.path, receiver, from, lowered).getOrElse(plain(lowered))
             else plain(lowered)
           }
@@ -403,7 +399,7 @@ object ChainLifter {
   private def collected(site: Site, receiver: TreePath, from: Kind): Option[Link] =
     site.invocation.getArguments.asScala.toList match {
       case List(collector: MethodInvocationTree) =>
-        val inner = new TreePath(site.path, collector)
+        val inner = TreePath(site.path, collector)
         site.context.trees.getElement(inner) match {
           case method: ExecutableElement if Lints.owner(method).contains("java.util.stream.Collectors") =>
             val args = collector.getArguments
@@ -412,7 +408,7 @@ object ChainLifter {
               case ("toSet", 0)   => Some(("toSet", Vector.empty[Arg]))
               case ("joining", 0) => Some(("join", Vector.empty[Arg]))
               case ("joining", 1) =>
-                Some(("join", Vector(argument(site.context, new TreePath(inner, args.get(0)), args.get(0)))))
+                Some(("join", Vector(argument(site.context, TreePath(inner, args.get(0)), args.get(0)))))
               case _ => None
             }
             step.map((name, arguments) =>
@@ -429,12 +425,12 @@ object ChainLifter {
     val lenient   = name == "orElse" && arguments.size == 1 && Lints.literalText(arguments.head).contains("")
     site.invocation.getMethodSelect match {
       case select: MemberSelectTree if strict || lenient =>
-        val reduceTree = bareOf(new TreePath(new TreePath(site.path, select), select.getExpression))
+        val reduceTree = bareOf(TreePath(TreePath(site.path, select), select.getExpression))
         reduceTree.getLeaf match {
           case reduce: MethodInvocationTree if reduce.getArguments.size == 1 =>
             reduce.getMethodSelect match {
               case reduction: MemberSelectTree if reduction.getIdentifier.contentEquals("reduce") =>
-                val receiver = new TreePath(new TreePath(reduceTree, reduction), reduction.getExpression)
+                val receiver = TreePath(TreePath(reduceTree, reduction), reduction.getExpression)
                 for {
                   separator <- joinSeparator(reduce.getArguments.get(0))
                   if Lints.isType(site.context.trees.getTypeMirror(reduceTree), "java.util.Optional<java.lang.String>")
@@ -443,8 +439,8 @@ object ChainLifter {
                 } yield Link(
                   site.invocation,
                   receiver,
-                  if strict then "joinReduceStrict" else "joinReduce",
-                  Vector(argument(site.context, new TreePath(reduceTree, separator), separator)),
+                  if (strict) "joinReduceStrict" else "joinReduce",
+                  Vector(argument(site.context, TreePath(reduceTree, separator), separator)),
                   from,
                   scalar,
                   site.typed
@@ -484,7 +480,7 @@ object ChainLifter {
     var free = true
     new com.sun.source.util.TreeScanner[Unit, Unit] {
       override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit =
-        if names(node.getName.toString) then free = false
+        if (names(node.getName.toString)) free = false
     }.scan(tree, ())
     free
   }
@@ -512,9 +508,9 @@ object ChainLifter {
   private def comparison(path: TreePath, invocation: MethodInvocationTree, plain: Link): Link =
     Lints.enclosing(path.getParentPath).map(parent => (parent, parent.getLeaf)).collect {
       case (parent, binary: BinaryTree) if Mirrored.contains(binary.getKind) =>
-        val onLeft = bareOf(new TreePath(parent, binary.getLeftOperand)).getLeaf eq invocation
-        val other  = if onLeft then binary.getRightOperand else binary.getLeftOperand
-        val kind   = if onLeft then binary.getKind else Mirrored(binary.getKind)
+        val onLeft = bareOf(TreePath(parent, binary.getLeftOperand)).getLeaf eq invocation
+        val other  = if (onLeft) binary.getRightOperand else binary.getLeftOperand
+        val kind   = if (onLeft) binary.getKind else Mirrored(binary.getKind)
         (binary, kind, number(other))
     }.flatMap { (binary, kind, value) =>
       val method = (kind, value) match {
@@ -534,14 +530,14 @@ object ChainLifter {
     Lints.enclosing(path.getParentPath).map(_.getLeaf).collect {
       case unary: UnaryTree if unary.getKind == Tree.Kind.LOGICAL_COMPLEMENT => unary
     }.filter(_ => method != "isDefined" || Release.atLeast(context, 11)).map { unary =>
-      Link(unary, receiver, if method == "isDefined" then "isNone" else "isSome", Vector.empty, from, scalar, false)
+      Link(unary, receiver, if (method == "isDefined") "isNone" else "isSome", Vector.empty, from, scalar, false)
     }
 
   private def argument(context: Context, path: TreePath, tree: Tree): Arg =
-    new JavaArg(tree.toString, pure(context, path), identity(context, path), literal(tree), comparison(context, path))
+    JavaArg(tree.toString, pure(context, path), identity(context, path), literal(tree), comparison(context, path))
 
   private def parameterTypeIsArray(context: Context, path: TreePath, parameter: VariableTree): Boolean =
-    Option(context.trees.getTypeMirror(new TreePath(path, parameter))).exists(_.getKind == TypeKind.ARRAY)
+    Option(context.trees.getTypeMirror(TreePath(path, parameter))).exists(_.getKind == TypeKind.ARRAY)
 
   /** The equality test with a constant a function is: a lambda or a reference to `equals` of a constant, or a lambda of
     * `equals` or `Objects.equals` of the parameter and a constant, negated or not. Arrays are compared by identity, so
@@ -553,12 +549,12 @@ object ChainLifter {
           if lambda.getParameters.size == 1 && lambda.getBodyKind == LambdaExpressionTree.BodyKind.EXPRESSION &&
             !parameterTypeIsArray(context, path, lambda.getParameters.get(0)) =>
         val parameter = lambda.getParameters.get(0).getName.toString
-        equality(context, new TreePath(path, lambda.getBody), parameter)
+        equality(context, TreePath(path, lambda.getBody), parameter)
       case reference: MemberReferenceTree
           if reference.getMode == MemberReferenceTree.ReferenceMode.INVOKE &&
             reference.getName.contentEquals("equals") &&
             objectEquals(context.trees.getElement(path)) =>
-        val qualifier = new TreePath(path, reference.getQualifierExpression)
+        val qualifier = TreePath(path, reference.getQualifierExpression)
         Option.unless(context.trees.getElement(qualifier).isInstanceOf[TypeElement])(qualifier).flatMap(
           constant(context, _, "").map(Comparison(equal = true, _))
         )
@@ -573,14 +569,14 @@ object ChainLifter {
     }
 
   private def equality(context: Context, path: TreePath, parameter: String): Option[Comparison] = {
-    def sub(tree: ExpressionTree): TreePath = new TreePath(path, tree)
+    def sub(tree: ExpressionTree): TreePath = TreePath(path, tree)
     def isParameter(tree: ExpressionTree)   = Lints.unparenthesised(tree) match {
       case name: IdentifierTree => name.getName.contentEquals(parameter)
       case _                    => false
     }
     def against(first: ExpressionTree, second: ExpressionTree): Option[Comparison] =
-      if isParameter(first) then constant(context, sub(second), parameter).map(Comparison(equal = true, _))
-      else if isParameter(second) then constant(context, sub(first), parameter).map(Comparison(equal = true, _))
+      if (isParameter(first)) constant(context, sub(second), parameter).map(Comparison(equal = true, _))
+      else if (isParameter(second)) constant(context, sub(first), parameter).map(Comparison(equal = true, _))
       else None
     path.getLeaf match {
       case parenthesized: ParenthesizedTree => equality(context, sub(parenthesized.getExpression), parameter)
@@ -681,16 +677,16 @@ object ChainLifter {
     * change, and operators on those, any call being taken to have one.
     */
   private def pure(context: Context, path: TreePath): Boolean = {
-    def sub(tree: Tree): Boolean = pure(context, new TreePath(path, tree))
+    def sub(tree: Tree): Boolean = pure(context, TreePath(path, tree))
     path.getLeaf match {
       case _: LiteralTree               => true
       case lambda: LambdaExpressionTree =>
         lambda.getBodyKind == LambdaExpressionTree.BodyKind.EXPRESSION && sub(lambda.getBody)
       case parenthesized: ParenthesizedTree => sub(parenthesized.getExpression)
-      case _: IdentifierTree                => Option(context.trees.getElement(path)).exists(variable)
+      case _: IdentifierTree                => Option(context.trees.getElement(path)).exists(variable(_))
       case select: MemberSelectTree         =>
-        Option(context.trees.getElement(path)).exists(variable) &&
-        (context.trees.getElement(new TreePath(path, select.getExpression)) match {
+        Option(context.trees.getElement(path)).exists(variable(_)) &&
+        (context.trees.getElement(TreePath(path, select.getExpression)) match {
           case _: TypeElement => true
           case _              => sub(select.getExpression)
         })
@@ -708,8 +704,8 @@ object ChainLifter {
       case Tree.Kind.DIVIDE | Tree.Kind.REMAINDER => number(binary.getRightOperand).exists(_ != 0)
       case Tree.Kind.PLUS                         =>
         Option(context.trees.getTypeMirror(path)).exists(tpe => tpe.getKind.isPrimitive) ||
-        Lints.isType(context.trees.getTypeMirror(new TreePath(path, binary.getLeftOperand)), "java.lang.String") &&
-        Lints.isType(context.trees.getTypeMirror(new TreePath(path, binary.getRightOperand)), "java.lang.String")
+        Lints.isType(context.trees.getTypeMirror(TreePath(path, binary.getLeftOperand)), "java.lang.String") &&
+        Lints.isType(context.trees.getTypeMirror(TreePath(path, binary.getRightOperand)), "java.lang.String")
       case _ => true
     }
 }

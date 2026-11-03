@@ -6,9 +6,8 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.collections.Methods
-import net.kurobako.bonsai.collections.Sink
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object Flows {
@@ -117,8 +116,8 @@ private class Flows(
     private def binds(pattern: tpd.Tree): Boolean = pattern match {
       case tpd.Bind(_, _)              => true
       case tpd.Typed(inner, _)         => binds(inner)
-      case tpd.UnApply(_, _, patterns) => patterns.exists(binds)
-      case tpd.Alternative(patterns)   => patterns.exists(binds)
+      case tpd.UnApply(_, _, patterns) => patterns.exists(binds(_))
+      case tpd.Alternative(patterns)   => patterns.exists(binds(_))
       case _                           => false
     }
 

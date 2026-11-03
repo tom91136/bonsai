@@ -1,7 +1,7 @@
 package net.kurobako.bonsai.analysis
 
 import munit.FunSuite
-import net.kurobako.bonsai.java.JavaLint
+import net.kurobako.bonsai.java.*
 
 /** The ids of the lints of the Java code, which the analysis reports as findings of their own. */
 class LintIdsSuite extends FunSuite {

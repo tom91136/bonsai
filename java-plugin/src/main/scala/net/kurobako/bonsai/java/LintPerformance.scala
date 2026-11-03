@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
+import com.sun.source.tree.Tree.Kind
 import javax.lang.model.`type`.DeclaredType
 
 /** The lints of the performance of the Java code, which the code of a type holds.
@@ -24,8 +25,8 @@ object LintPerformance {
 
   /** A text that is built anew on every turn of a loop. */
   private object StringConcatenationInLoop extends Lint {
-    val id    = JavaLint.StringConcatenationInLoop.id
-    val kinds = Set(Tree.Kind.ASSIGNMENT, Tree.Kind.PLUS_ASSIGNMENT)
+    val id               = JavaLint.StringConcatenationInLoop.id
+    val kinds: Set[Kind] = Set(Tree.Kind.ASSIGNMENT, Tree.Kind.PLUS_ASSIGNMENT)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val variable = tree match {
@@ -33,7 +34,7 @@ object LintPerformance {
         case compound: CompoundAssignmentTree => compound.getVariable
         case _                                => null
       }
-      if variable == null then Vector.empty
+      if (variable == null) Vector.empty
       else {
         val text = Lints.isType(context.typeOf(variable), "java.lang.String")
         // A text that is added to on every turn of a loop is built anew on every turn of it, whether it is added to
@@ -47,7 +48,7 @@ object LintPerformance {
           case _: CompoundAssignmentTree => true
           case _                         => false
         }
-        if concatenation && text && context.inLoop then
+        if (concatenation && text && context.inLoop)
           Vector(context.found("the text is built anew on every turn of the loop"))
         else Vector.empty
       }
@@ -56,8 +57,8 @@ object LintPerformance {
 
   /** The size of a collection that is asked for on every turn of a loop. */
   private object CollectionSizeInLoop extends Lint {
-    val id    = JavaLint.CollectionSizeInLoop.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.CollectionSizeInLoop.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val invocation = tree.asInstanceOf[MethodInvocationTree]
@@ -68,7 +69,7 @@ object LintPerformance {
         case select: MemberSelectTree => LintPerformance.isCollection(context.typeOf(select.getExpression))
         case _                        => false
       }
-      if sized && collection && context.inLoop && !madeInLoop(context, method) then
+      if (sized && collection && context.inLoop && !madeInLoop(context, method))
         Vector(context.found("the size of the collection is asked for on every turn of the loop"))
       else Vector.empty
     }
@@ -103,13 +104,13 @@ object LintPerformance {
 
   /** A value that is boxed on every turn of a loop. */
   private object BoxingInLoop extends Lint {
-    val id    = JavaLint.BoxingInLoop.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.BoxingInLoop.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val invocation = tree.asInstanceOf[MethodInvocationTree]
       val method     = invocation.getMethodSelect
-      if LintRedundant.boxing(context, method) && context.inLoop then
+      if (LintRedundant.boxing(context, method) && context.inLoop)
         Vector(context.found("the value is boxed on every turn of the loop"))
       else Vector.empty
     }
@@ -117,8 +118,8 @@ object LintPerformance {
 
   /** A text that is built in a way that another thread may see half of. */
   private object StringBufferInsteadOfBuilder extends Lint {
-    val id    = JavaLint.StringBufferInsteadOfBuilder.id
-    val kinds = Set(Tree.Kind.NEW_CLASS)
+    val id               = JavaLint.StringBufferInsteadOfBuilder.id
+    val kinds: Set[Kind] = Set(Tree.Kind.NEW_CLASS)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       // The text is built in a buffer, which the type of the code names.
@@ -126,7 +127,7 @@ object LintPerformance {
         .map(_.getEnclosingElement)
         .map(_.toString)
         .getOrElse("")
-      if buffer == "java.lang.StringBuffer" then
+      if (buffer == "java.lang.StringBuffer")
         Vector(context.found("the text is built in a way that another thread may see half of"))
       else Vector.empty
     }
@@ -134,8 +135,8 @@ object LintPerformance {
 
   /** A loop over a collection that a loop around it runs over as well, which takes time quadratic in its size. */
   private object NestedLoopOverSameCollection extends Lint {
-    val id    = JavaLint.NestedLoopOverSameCollection.id
-    val kinds = Set(Tree.Kind.ENHANCED_FOR_LOOP, Tree.Kind.FOR_LOOP, Tree.Kind.WHILE_LOOP)
+    val id               = JavaLint.NestedLoopOverSameCollection.id
+    val kinds: Set[Kind] = Set(Tree.Kind.ENHANCED_FOR_LOOP, Tree.Kind.FOR_LOOP, Tree.Kind.WHILE_LOOP)
 
     def check(context: Context, tree: Tree): Vector[Found] =
       iterated(tree).filter(collection =>
@@ -147,7 +148,7 @@ object LintPerformance {
     /** The collection a loop runs over, when it names one by a variable or a field. */
     private def iterated(loop: Tree): Option[String] = loop match {
       case each: EnhancedForLoopTree => named(each.getExpression)
-      case plain: ForLoopTree        => Option(plain.getCondition).flatMap(bounded)
+      case plain: ForLoopTree        => Option(plain.getCondition).flatMap(bounded(_))
       case waiting: WhileLoopTree    => bounded(waiting.getCondition)
       case _                         => None
     }
@@ -177,8 +178,8 @@ object LintPerformance {
 
   /** A search of a list that is made on every turn of a loop, which reads the whole list each time. */
   private object ListSearchInLoop extends Lint {
-    val id    = JavaLint.ListSearchInLoop.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.ListSearchInLoop.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     private val searches = Set("contains", "indexOf", "lastIndexOf", "containsAll")
 
@@ -194,8 +195,8 @@ object LintPerformance {
 
   /** An edit at the front of an array list on every turn of a loop, which moves every element after it. */
   private object ListFrontEditInLoop extends Lint {
-    val id    = JavaLint.ListFrontEditInLoop.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.ListFrontEditInLoop.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val invocation = tree.asInstanceOf[MethodInvocationTree]
@@ -205,7 +206,7 @@ object LintPerformance {
           val name  = select.getIdentifier.toString
           val front = (name == "remove" && arguments.size == 1 && zero(arguments.head)) ||
             (name == "add" && arguments.size == 2 && zero(arguments.head))
-          if front then
+          if (front)
             Vector(context.found(s"$name at the front of the list moves every element on each turn of the loop"))
           else Vector.empty
         case _ => Vector.empty

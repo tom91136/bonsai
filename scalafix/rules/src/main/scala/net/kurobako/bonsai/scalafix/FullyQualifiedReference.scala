@@ -37,7 +37,7 @@ class FullyQualifiedReference(namespaces: List[QualifiedCollectionNamespaces.Nam
     ) ++ references.placements(needed)).asPatch
   }
 
-  private final case class Candidate(tree: Tree, pkg: String, name: String, entity: String)
+  private case class Candidate(tree: Tree, pkg: String, name: String, entity: String)
 
   private def candidate(tree: Tree)(using SemanticDocument): Option[Candidate] = selection(tree).flatMap {
     case (qualifier, name) =>

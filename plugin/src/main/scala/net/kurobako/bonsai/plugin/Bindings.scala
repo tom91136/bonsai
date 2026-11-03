@@ -8,7 +8,7 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Names.Name
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 
 private object Bindings {
   val Checks: Set[Check] = Set(Check.BindingInOneBranch)
@@ -52,7 +52,7 @@ private class Bindings(checks: Checks)(using Context) {
       case _                    => false
     }
 
-  private final case class Branching(bodies: List[tpd.Tree], elsewhere: List[tpd.Tree], patterns: List[tpd.Tree])
+  private case class Branching(bodies: List[tpd.Tree], elsewhere: List[tpd.Tree], patterns: List[tpd.Tree])
 
   private def branching(statement: tpd.Tree): Option[Branching] = Calls.peelInlined(statement) match {
     case head: tpd.If if !head.isInline =>

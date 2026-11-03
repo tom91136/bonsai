@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.analysis
 
-import net.kurobako.bonsai.collections.CloneCost
+import net.kurobako.bonsai.collections.*
 import scala.concurrent.duration.*
 
 /** Equivalent Scala and Java code has the same cost, and so is a copy in both languages or in neither. */
@@ -45,7 +45,7 @@ class CloneScaleSuite extends AnalysisSuite {
       s"  int f$index(List<Integer> xs, String s) {\n${indented(body)}\n  }"
     )
     val source =
-      s"package demo;\nimport java.util.List;\nimport static demo.Util.*;\npublic class First extends Base {\n" +
+      "package demo;\nimport java.util.List;\nimport static demo.Util.*;\npublic class First extends Base {\n" +
         methods.mkString("\n") + "\n}"
     javaFacts(
       Set.empty,

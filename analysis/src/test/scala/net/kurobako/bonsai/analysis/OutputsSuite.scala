@@ -1,7 +1,7 @@
 package net.kurobako.bonsai.analysis
 
 import java.nio.file.Files
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 class OutputsSuite extends munit.FunSuite {
 

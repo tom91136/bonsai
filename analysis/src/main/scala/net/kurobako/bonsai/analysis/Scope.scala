@@ -52,6 +52,9 @@ private case class Scope(
       turns.dropRight(loop.absorbs) :+ loop.trips
     ))
 
+  /** The scope with no loops around it, for work that is done once however many turns reach it. */
+  def outside: Scope = copy(loops = Vector.empty, visible = Vector.empty)
+
   def tracking(symbol: Symbol, variable: Scope.Variable): Scope = copy(variables = variables.updated(symbol, variable))
 
   def pushed(loop: Scope.Loop): Scope =

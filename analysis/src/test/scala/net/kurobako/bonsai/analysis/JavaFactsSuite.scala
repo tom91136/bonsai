@@ -1,7 +1,7 @@
 package net.kurobako.bonsai.analysis
 
 import java.nio.file.Files
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 /** The facts of Java sources that the algebra and invariant engines read, from the sources through the javac plugin. */
 class JavaFactsSuite extends AnalysisSuite {

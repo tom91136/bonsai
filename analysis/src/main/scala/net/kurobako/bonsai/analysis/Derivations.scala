@@ -12,7 +12,7 @@ import dotty.tools.dotc.core.Types.RefinedType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeTraverser
 import dotty.tools.dotc.inlines.Inlines
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.lifting.*
 import scala.annotation.tailrec
 import scala.collection.mutable
 
@@ -33,7 +33,7 @@ private[analysis] object Derivations {
     found.toSet
   }
 
-  private def built(tpe: Type)(using Context): Set[Symbol] = classes(tpe)(structured)
+  private def built(tpe: Type)(using Context): Set[Symbol] = classes(tpe)(structured(_))
 
   private def structured(cls: Symbol)(using Context): Boolean = cls.is(Flags.CaseClass) || cls.is(Flags.Sealed)
 
@@ -42,7 +42,7 @@ private[analysis] object Derivations {
     val fields =
       if (cls.is(Flags.CaseClass))
         cls.info.decls.toList.filter(_.is(Flags.ParamAccessor)).flatMap(field =>
-          classes(field.info.widenExpr)(structured)
+          classes(field.info.widenExpr)(structured(_))
         )
       else Nil
     val subclasses =

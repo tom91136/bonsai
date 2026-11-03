@@ -1,8 +1,5 @@
 package net.kurobako.bonsai.sbt
 
-import net.kurobako.bonsai.sbt.BonsaiConfiguration.Configuration
-import net.kurobako.bonsai.sbt.BonsaiConfiguration.Settings
-import net.kurobako.bonsai.sbt.ManifestLines
 import sbt.*
 import sbt.Keys.*
 import sbt.internal.util.MessageOnlyException
@@ -84,66 +81,68 @@ object BonsaiPlugin extends AutoPlugin {
       case Dev, CI
     }
 
-    val bonsaiMode = settingKey[BonsaiMode](
+    val bonsaiMode: SettingKey[BonsaiMode] = settingKey[BonsaiMode](
       "Dev warns; CI fails on the strict checks and rules. Defaults to BONSAI_MODE, else CI when CI is set"
     )
-    val bonsaiDisabled =
+    val bonsaiDisabled: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks, analysis rules and scalafix rules left out, by id")
-    val bonsaiErrors =
+    val bonsaiErrors: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks and analysis rules that fail in every mode, by id")
-    val bonsaiWarnings =
+    val bonsaiWarnings: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks, analysis rules and scalafix rules that never fail, by id")
-    val bonsaiWildcards = settingKey[Int]("Positional wildcards a case class pattern may carry")
-    val bonsaiBaseline  = settingKey[File]("Analysis findings recorded here report without failing")
-    val bonsaiLibrary   = taskKey[Boolean](
+    val bonsaiWildcards: SettingKey[Int] = settingKey[Int]("Positional wildcards a case class pattern may carry")
+    val bonsaiBaseline: SettingKey[File] = settingKey[File]("Analysis findings recorded here report without failing")
+    val bonsaiLibrary: TaskKey[Boolean]  = taskKey[Boolean](
       "Whether other builds use this project's public API, so the analysis counts it as used. " +
         "Defaults to whether the project is published and has no main class"
     )
-    val bonsaiPurity  = settingKey[File]("Methods recorded here as pure fail the analysis once they are not")
-    val bonsaiEffects = settingKey[Map[String, Set[String]]](
+    val bonsaiPurity: SettingKey[File] =
+      settingKey[File]("Methods recorded here as pure fail the analysis once they are not")
+    val bonsaiEffects: SettingKey[Map[String, Set[String]]] = settingKey[Map[String, Set[String]]](
       "Kinds of effects (reads, writes, input, output, random, unknown) the methods of a package or class may have, by " +
         "its qualified name, with * for any one name; the most specific entry decides"
     )
-    val bonsaiGenerated = settingKey[Set[String]](
+    val bonsaiGenerated: SettingKey[Set[String]] = settingKey[Set[String]](
       "Globs of sources the build generates, such as **/src/generated/**, which the analysis labels as generated; " +
         "every source is checked by default"
     )
-    val bonsaiGeneratedDisabled = settingKey[Set[String]](
+    val bonsaiGeneratedDisabled: SettingKey[Set[String]] = settingKey[Set[String]](
       "Rules the analysis does not report over generated code, by id, or * for all of them; every rule reports it by " +
         "default"
     )
-    val bonsaiConcurrent =
+    val bonsaiConcurrent: SettingKey[Set[String]] =
       settingKey[Set[String]]("Methods, by qualified name, that run the functions passed to them on other threads")
-    val bonsaiHot = settingKey[Set[String]](
+    val bonsaiHot: SettingKey[Set[String]] = settingKey[Set[String]](
       "Globs of the classes and objects whose code runs hot, by qualified name, with * for one name segment and ** " +
         "for any number, and ! before a glob leaving out what it matches; boxing-fold, megamorphic-call, and " +
         "invariant-in-loop on matches whose arms vary, report only in them, while unspecialised-function and " +
         "lambda-trait leave out classes a ! glob matches and hot ones respectively"
     )
-    val bonsaiReflective = settingKey[Set[String]](
+    val bonsaiReflective: SettingKey[Set[String]] = settingKey[Set[String]](
       "Globs of the classes and objects, by qualified name as for bonsaiHot, that code outside the sources names, " +
         "as text compiled later or reflection does; they and their public members are used"
     )
-    val bonsaiIntended = settingKey[Set[String]](
+    val bonsaiIntended: SettingKey[Set[String]] = settingKey[Set[String]](
       "Pairs of globs written <glob>=<glob>, matched as for bonsaiHot, of types whose copies or likeness are meant; " +
         "duplicate-code, near-duplicate-code and duplicate-shape leave out groups whose members are all such pairs"
     )
-    val bonsaiChecked = settingKey[Set[String]](
+    val bonsaiChecked: SettingKey[Set[String]] = settingKey[Set[String]](
       "Refinement types, by qualified name, whose checked extensions and overloads a conversion can bypass, and whose " +
         "inferred refinements the compiler plugin reports"
     )
-    val bonsaiNesting = settingKey[Map[String, Int]](
+    val bonsaiNesting: SettingKey[Map[String, Int]] = settingKey[Map[String, Int]](
       "Limits of the nesting rule by name: depth, damping and size; a limit left out takes the analysis' default"
     )
-    val bonsaiBounded = settingKey[Vector[(String, Int, String)]](
+    val bonsaiBounded: SettingKey[Vector[(String, Int, String)]] = settingKey[Vector[(String, Int, String)]](
       "Members, as (qualified name glob matched as for bonsaiHot, largest number of elements, reason), whose " +
         "collections hold at most that many elements, which the complexity rules count as constants"
     )
-    val bonsaiAnalysisHeap =
+    val bonsaiAnalysisHeap: SettingKey[String] =
       settingKey[String]("The largest heap the forked analysis may take, as -Xmx takes it, such as 4g")
-    val bonsaiAnalyse       = taskKey[Unit]("Analyse this project and the projects it aggregates as one build")
-    val bonsaiBaselineWrite = taskKey[File]("Record the current analysis warnings in bonsaiBaseline")
-    val bonsaiPurityWrite   = taskKey[File]("Record the methods of main code that are pure in bonsaiPurity")
+    val bonsaiAnalyse: TaskKey[Unit] = taskKey[Unit]("Analyse this project and the projects it aggregates as one build")
+    val bonsaiBaselineWrite: TaskKey[File] = taskKey[File]("Record the current analysis warnings in bonsaiBaseline")
+    val bonsaiPurityWrite: TaskKey[File]   =
+      taskKey[File]("Record the methods of main code that are pure in bonsaiPurity")
   }
 
   import autoImport.*
@@ -174,7 +173,7 @@ object BonsaiPlugin extends AutoPlugin {
   private val bonsaiEnabled =
     settingKey[Boolean]("Whether bonsai analyses this project").withRank(KeyRanks.Invisible)
   private val bonsaiConfiguration =
-    settingKey[Configuration]("The settings .bonsai.conf gives").withRank(KeyRanks.Invisible)
+    settingKey[BonsaiConfiguration.Configuration]("The settings .bonsai.conf gives").withRank(KeyRanks.Invisible)
 
   /** The kinds of effects a policy may allow. */
   private val Effects = Set("reads", "writes", "input", "output", "random", "unknown")
@@ -312,17 +311,21 @@ object BonsaiPlugin extends AutoPlugin {
     BonsaiArtifacts.lines.map(line => BonsaiArtifacts.oldest.get(line).fold(line)(oldest => s"$line from $oldest"))
       .mkString(", ")
 
-  private def own(configured: Configuration, project: String): Option[Settings] =
+  private def own(
+      configured: BonsaiConfiguration.Configuration,
+      project: String
+  ): Option[BonsaiConfiguration.Settings] =
     configured.projects.get(project)
 
-  private def ownOr[A](key: SettingKey[A])(pick: Settings => Option[A]): Def.Initialize[A] = Def.setting {
-    own(bonsaiConfiguration.value, thisProject.value.id).flatMap(pick).getOrElse((ThisBuild / key).value)
-  }
+  private def ownOr[A](key: SettingKey[A])(pick: BonsaiConfiguration.Settings => Option[A]): Def.Initialize[A] =
+    Def.setting {
+      own(bonsaiConfiguration.value, thisProject.value.id).flatMap(pick).getOrElse((ThisBuild / key).value)
+    }
 
   private def extendsTest(configuration: sbt.librarymanagement.Configuration): Boolean =
     configuration.extendsConfigs.exists(parent => parent.name == Test.name || extendsTest(parent))
 
-  private final case class Analysed(
+  private case class Analysed(
       project: String,
       configuration: String,
       scope: String,
@@ -336,7 +339,7 @@ object BonsaiPlugin extends AutoPlugin {
   private def redundant(entries: Seq[Analysed]): Seq[Analysed] =
     entries.groupBy(_.project).values.toSeq.flatMap { own =>
       def base(entry: Analysed) = entry.configuration == Compile.name || entry.configuration == Test.name
-      val (primary, extra)      = own.partition(base)
+      val (primary, extra)      = own.partition(base(_))
       extra.sortBy(_.configuration).foldLeft((primary, Vector.empty[Analysed])) { case ((kept, dropped), entry) =>
         if (
           entry.sources.isEmpty ||
@@ -382,7 +385,7 @@ object BonsaiPlugin extends AutoPlugin {
     val platforms    = if (jvm.nonEmpty) twins.map(_.project).toSet else Set.empty[String]
     // Configurations that extend Test, as integration tests do, hold test code too.
     val tests = enabled.view.flatMap(ref => (ref / thisProject).get(data).toList.flatMap(_.configurations))
-      .filter(extendsTest).toSeq.distinctBy(_.name)
+      .filter(extendsTest(_)).toSeq.distinctBy(_.name)
     val testNames      = tests.map(_.name).toSet + Test.name
     val configurations = Compile +: Test +: tests
     val analysed       = ScopeFilter(inProjects(enabled*), inConfigurations(configurations*))

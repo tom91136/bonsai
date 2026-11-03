@@ -7,8 +7,8 @@ import com.sun.source.util.TreeScanner
 import com.sun.source.util.Trees
 import javax.lang.model.`type`.*
 import javax.lang.model.element.*
-import net.kurobako.bonsai.collections.Methods
-import net.kurobako.bonsai.collections.Sink
+import net.kurobako.bonsai.collections.*
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
@@ -22,9 +22,9 @@ import scala.jdk.CollectionConverters.*
 object CostTrees {
   import Model.Cost.*
 
-  private val lineages = java.util.Collections.synchronizedMap(new java.util.WeakHashMap[TypeElement, Set[String]])
+  private val lineages = java.util.Collections.synchronizedMap(java.util.WeakHashMap[TypeElement, Set[String]]())
 
-  private val fixedFields = java.util.Collections.synchronizedMap(new java.util.WeakHashMap[Element, java.lang.Boolean])
+  private val fixedFields = java.util.Collections.synchronizedMap(java.util.WeakHashMap[Element, java.lang.Boolean]())
 
   private val Standard = Vector("java.", "javax.", "jdk.", "sun.", "com.sun.", "scala.")
 
@@ -61,7 +61,7 @@ object CostTrees {
         trees.getElement(path) match {
           case element: ExecutableElement =>
             val walk = Walk(compilation, path, element)
-            walk.scan(new TreePath(path, method.getBody), ())
+            walk.scan(TreePath(path, method.getBody), ())
             Some(
               Model.Cost(
                 owner,
@@ -80,7 +80,7 @@ object CostTrees {
 
   /** The qualified owner, the name and the erased JVM descriptor of a method or constructor. */
   private[java] def key(element: ExecutableElement)(using Trees): String = {
-    val name       = if element.getKind == ElementKind.CONSTRUCTOR then "<init>" else element.getSimpleName.toString
+    val name       = if (element.getKind == ElementKind.CONSTRUCTOR) "<init>" else element.getSimpleName.toString
     val parameters = synthetic(element) ++ parametersOf(element).map(parameter => descriptor(parameter.asType))
     val owner      = Collector.qualified(element.getEnclosingElement)
     Descriptors.key(owner, name, parameters, descriptor(element.getReturnType))
@@ -90,7 +90,7 @@ object CostTrees {
     * class.
     */
   private def synthetic(element: ExecutableElement): Vector[String] =
-    if element.getKind != ElementKind.CONSTRUCTOR then Vector.empty
+    if (element.getKind != ElementKind.CONSTRUCTOR) Vector.empty
     else
       element.getEnclosingElement match {
         case cls: TypeElement if cls.getKind == ElementKind.ENUM =>
@@ -136,7 +136,7 @@ object CostTrees {
   private def standard(element: Element)(using Trees): Boolean =
     standard(Collector.qualified(element.getEnclosingElement))
 
-  private[java] def standard(owner: String): Boolean = Standard.exists(owner.startsWith)
+  private[java] def standard(owner: String): Boolean = Standard.exists(owner.startsWith(_))
 
   private[java] def collection(tpe: TypeMirror): Boolean = derives(tpe, "java.util.Collection", "java.util.Map")
 
@@ -157,7 +157,7 @@ object CostTrees {
 
   private def lineage(element: TypeElement): Set[String] =
     Option(lineages.get(element)).getOrElse {
-      val supers = (element.getSuperclass +: element.getInterfaces.asScala.toVector).flatMap(typeElement)
+      val supers = (element.getSuperclass +: element.getInterfaces.asScala.toVector).flatMap(typeElement(_))
       val found  = supers.foldLeft(Set(element.getQualifiedName.toString))(_ ++ lineage(_))
       lineages.put(element, found)
       found
@@ -194,19 +194,20 @@ object CostTrees {
       }
 
       override def visitUnary(node: UnaryTree, unused: Unit): Unit = {
-        if Set(
+        if (
+          Set(
             Tree.Kind.POSTFIX_INCREMENT,
             Tree.Kind.POSTFIX_DECREMENT,
             Tree.Kind.PREFIX_INCREMENT,
             Tree.Kind.PREFIX_DECREMENT
           )(node.getKind)
-        then assign(node.getExpression)
+        ) assign(node.getExpression)
         super.visitUnary(node, unused)
       }
 
       private def assign(target: ExpressionTree): Unit = target match {
         case identifier: IdentifierTree =>
-          Option(trees.getElement(new TreePath(method, identifier))).foreach(assigned += _)
+          Option(trees.getElement(TreePath(method, identifier))).foreach(assigned += _)
         case _ =>
       }
     }.scan(method.getLeaf, ())
@@ -215,7 +216,7 @@ object CostTrees {
 
     def line(tree: Tree): Int = {
       val position = trees.getSourcePositions.getStartPosition(compilation, tree)
-      if position < 0 then 0 else compilation.getLineMap.getLineNumber(position).toInt
+      if (position < 0) 0 else compilation.getLineMap.getLineNumber(position).toInt
     }
 
     private def emit(node: Node): Unit = frames.top.nodes += node: Unit
@@ -240,7 +241,7 @@ object CostTrees {
       try body
       finally {
         val inner = frames.pop().nodes
-        if inner.nonEmpty then emit(Node(line(tree), Step.Exit(inner.toVector)))
+        if (inner.nonEmpty) emit(Node(line(tree), Step.Exit(inner.toVector)))
       }
     }
 
@@ -267,21 +268,21 @@ object CostTrees {
       var found = false
       new TreePathScanner[Unit, Unit] {
         override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
-          if trees.getElement(getCurrentPath) == element then found = true
+          if (trees.getElement(getCurrentPath) == element) found = true
           super.visitMethodInvocation(node, unused)
         }
-      }.scan(new TreePath(parent, tree), ())
+      }.scan(TreePath(parent, tree), ())
       found
     }
 
     private def ending(tree: Tree): Boolean = tree match {
       case _: (ReturnTree | ThrowTree) => true
-      case block: BlockTree            => block.getStatements.asScala.lastOption.exists(ending)
+      case block: BlockTree            => block.getStatements.asScala.lastOption.exists(ending(_))
       case _                           => false
     }
 
     private def branch(tree: Tree, exit: Boolean): Unit =
-      if exit then exiting(tree)(scan(tree, ())) else scan(tree, ())
+      if (exit) exiting(tree)(scan(tree, ())) else scan(tree, ())
 
     override def visitIf(node: IfTree, unused: Unit): Unit = {
       scan(node.getCondition, ())
@@ -329,11 +330,11 @@ object CostTrees {
     private def sequence(statements: List[(StatementTree, Boolean)]): Unit = statements match {
       case (head: IfTree, later) :: rest
           if rest.nonEmpty && head.getElseStatement == null && ending(head.getThenStatement) &&
-            recurs(head.getThenStatement, new TreePath(getCurrentPath, head)) != later =>
+            recurs(head.getThenStatement, TreePath(getCurrentPath, head)) != later =>
         val thenRecurs = !later
-        if !thenRecurs then leaving += head
+        if (!thenRecurs) leaving += head
         scan(head, ())
-        if thenRecurs then exiting(rest.head._1)(sequence(rest)) else sequence(rest)
+        if (thenRecurs) exiting(rest.head._1)(sequence(rest)) else sequence(rest)
       case (head, _) :: rest =>
         scan(head, ())
         sequence(rest)
@@ -353,14 +354,14 @@ object CostTrees {
 
     private def path(tree: ExpressionTree): Option[String] = Lint.unwrapped(tree) match {
       case identifier: IdentifierTree =>
-        if identifier.getName.contentEquals("this") then Some("this")
+        if (identifier.getName.contentEquals("this")) Some("this")
         else
           Option(elementOf(identifier)).flatMap { found =>
             found.getKind match {
               case ElementKind.PARAMETER =>
                 Some(parameters.indexOf(found)).filter(_ >= 0).map(index => s"$$$index")
               case ElementKind.FIELD | ElementKind.ENUM_CONSTANT =>
-                if static(found) then Some(Collector.qualified(found))
+                if (static(found)) Some(Collector.qualified(found))
                 else
                   Option.when(derives(
                     owner.asType,
@@ -372,7 +373,7 @@ object CostTrees {
           }
       case select: MemberSelectTree =>
         Option(elementOf(select)).filter(_.getKind.isField).flatMap { found =>
-          if static(found) then Some(Collector.qualified(found))
+          if (static(found)) Some(Collector.qualified(found))
           else path(select.getExpression).map(base => s"$base.${select.getIdentifier}")
         }
       case _ => None
@@ -389,10 +390,10 @@ object CostTrees {
           Lints.constant(found) &&
           (found.asType.getKind == TypeKind.ARRAY || {
             val known = fixedFields.get(found)
-            if known != null then known.booleanValue
+            if (known != null) known.booleanValue
             else {
               val fixed = Option(trees.getTree(found)).exists {
-                case field: VariableTree => Option(field.getInitializer).exists(factory)
+                case field: VariableTree => Option(field.getInitializer).exists(factory(_))
                 case _                   => false
               }
               fixedFields.put(found, fixed)
@@ -420,8 +421,9 @@ object CostTrees {
       case _ => false
     }
 
-    private def reach(tree: ExpressionTree): Option[String] = if fixed(tree) then Some(Fixed) else path(tree)
+    private def reach(tree: ExpressionTree): Option[String] = if (fixed(tree)) Some(Fixed) else path(tree)
 
+    @tailrec
     private def extent(tree: ExpressionTree): Option[String] = Lint.unwrapped(tree) match {
       case call: MethodInvocationTree =>
         Call.selected(call.getMethodSelect) match {
@@ -437,6 +439,7 @@ object CostTrees {
     private def sized(tree: ExpressionTree): Boolean =
       derives(typeOf(tree), "java.util.Collection", "java.util.Map", "java.lang.CharSequence")
 
+    @tailrec
     private def sizeOf(tree: ExpressionTree): Option[String] = Lint.unwrapped(tree) match {
       case select: MemberSelectTree
           if select.getIdentifier.contentEquals("length") && typeOf(select.getExpression).getKind == TypeKind.ARRAY =>
@@ -475,7 +478,7 @@ object CostTrees {
               sizeOf(binary.getRightOperand).map(_ -> counter(binary.getLeftOperand))
             case Tree.Kind.GREATER_THAN | Tree.Kind.GREATER_THAN_EQUAL =>
               sizeOf(binary.getLeftOperand).map(_ -> counter(binary.getRightOperand)).orElse(
-                init.flatMap(sizeOf).map(_ -> counter(binary.getLeftOperand))
+                init.flatMap(sizeOf(_)).map(_ -> counter(binary.getLeftOperand))
               )
             case _ => None
           }
@@ -501,12 +504,12 @@ object CostTrees {
 
     override def visitVariable(node: VariableTree, unused: Unit): Unit = {
       val found = trees.getElement(getCurrentPath)
-      if found != null && found.getKind == ElementKind.LOCAL_VARIABLE then {
+      if (found != null && found.getKind == ElementKind.LOCAL_VARIABLE) {
         declared(found) = depth
         Option(node.getInitializer).filter(_ => !assigned(found)).foreach { init =>
-          if derives(found.asType, "java.util.Iterator") then extent(init).foreach(iterators(found) = _)
-          else if found.asType.getKind == TypeKind.INT then sizeOf(init).foreach(lengths(found) = _)
-          else if !found.asType.getKind.isPrimitive then {
+          if (derives(found.asType, "java.util.Iterator")) extent(init).foreach(iterators(found) = _)
+          else if (found.asType.getKind == TypeKind.INT) sizeOf(init).foreach(lengths(found) = _)
+          else if (!found.asType.getKind.isPrimitive) {
             path(init).foreach(aliases(found) = _)
             shrinking(init).foreach(shrinks(found) = _)
           }
@@ -549,11 +552,12 @@ object CostTrees {
       }
 
     override def visitCompoundAssignment(node: CompoundAssignmentTree, unused: Unit): Unit = {
-      if node.getKind == Tree.Kind.PLUS_ASSIGNMENT then grown(node, node.getVariable)
+      if (node.getKind == Tree.Kind.PLUS_ASSIGNMENT) grown(node, node.getVariable)
       super.visitCompoundAssignment(node, unused)
     }
 
     override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
+      @tailrec
       def leftmost(tree: ExpressionTree): Tree = Lint.unwrapped(tree) match {
         case binary: BinaryTree if binary.getKind == Tree.Kind.PLUS => leftmost(binary.getLeftOperand)
         case other                                                  => other
@@ -573,9 +577,9 @@ object CostTrees {
       Lint.unwrapped(target) match {
         case identifier: IdentifierTree =>
           val found = elementOf(identifier)
-          if found != null && derives(found.asType, "java.lang.String") then {
+          if (found != null && derives(found.asType, "java.lang.String")) {
             val since = depth - declared.getOrElse(found, 0)
-            if since > 0 then sited(node)(Step.Op(Kind.Concat(since), Static, _))
+            if (since > 0) sited(node)(Step.Op(Kind.Concat(since), Static, _))
           }
         case _ =>
       }
@@ -587,10 +591,10 @@ object CostTrees {
         case constructor: ExecutableElement =>
           val arguments   = Lints.arguments(node)
           val constructed = constructor.getEnclosingElement.asType
-          if standard(constructor) then {
-            if collection(constructed) && arguments.sizeIs == 1 && collection(typeOf(arguments.head))
-            then sited(node)(Step.Op(Kind.Copy, extent(arguments.head).getOrElse(Unknown), _))
-          } else if node.getClassBody == null then
+          if (standard(constructor)) {
+            if (collection(constructed) && arguments.sizeIs == 1 && collection(typeOf(arguments.head)))
+              sited(node)(Step.Op(Kind.Copy, extent(arguments.head).getOrElse(Unknown), _))
+          } else if (node.getClassBody == null)
             sited(node)(Step.Call(key(constructor), Static, arguments.map(extent(_).getOrElse(Unknown)), _))
         case _ =>
       }
@@ -603,7 +607,7 @@ object CostTrees {
       val over =
         found.flatMap { case Call(_, _, _, receiver, name, _) =>
           receiver.flatMap { target =>
-            if Visits(name) && collection(typeOf(target)) then Some(extent(target).getOrElse(Unknown))
+            if (Visits(name) && collection(typeOf(target))) Some(extent(target).getOrElse(Unknown))
             else stream(target)
           }
         }
@@ -616,10 +620,10 @@ object CostTrees {
         case other => scan(other, ())
       }
       found.foreach { case Call(_, _, callee, receiver, name, _) =>
-        if standard(callee) then library(node, callee, receiver, name, arguments)
+        if (standard(callee)) library(node, callee, receiver, name, arguments)
         else {
           val target =
-            if static(callee) || callee.getKind == ElementKind.CONSTRUCTOR then Static
+            if (static(callee) || callee.getKind == ElementKind.CONSTRUCTOR) Static
             else receiver.fold("this")(target => path(target).getOrElse(Unknown))
           sited(node)(Step.Call(key(callee), target, passed(callee, arguments), _))
         }
@@ -628,7 +632,7 @@ object CostTrees {
 
     private def passed(callee: ExecutableElement, arguments: Vector[ExpressionTree]): Vector[String] =
       arguments.zipWithIndex.map { (argument, index) =>
-        (if callee == element then descent(argument, index) else None).orElse(extent(argument)).getOrElse(Unknown)
+        (if (callee == element) descent(argument, index) else None).orElse(extent(argument)).getOrElse(Unknown)
       }
 
     private def positive(tree: ExpressionTree): Boolean = Lint.unwrapped(tree) match {
@@ -651,7 +655,7 @@ object CostTrees {
       def parameter(of: ExpressionTree): Option[Int] =
         path(of).filter(_.startsWith("$")).flatMap(_.drop(1).toIntOption).filter(parameters.indices.contains)
       def cut(receiver: ExpressionTree, from: ExpressionTree, to: ExpressionTree) =
-        if positive(from) || lengthLess(to, receiver) then parameter(receiver) else None
+        if (positive(from) || lengthLess(to, receiver)) parameter(receiver) else None
       Lint.unwrapped(tree) match {
         case call: MethodInvocationTree =>
           val args = Lints.arguments(call)
@@ -684,7 +688,7 @@ object CostTrees {
         case callee: ExecutableElement if !standard(callee)                    =>
           val qualifier = reference.getQualifierExpression
           val receiver  =
-            if static(callee) || callee.getKind == ElementKind.CONSTRUCTOR then Static
+            if (static(callee) || callee.getKind == ElementKind.CONSTRUCTOR) Static
             else
               elementOf(qualifier) match {
                 case _: TypeElement => Unknown
@@ -710,24 +714,27 @@ object CostTrees {
       val linked  = receiver.exists(target => derives(typeOf(target), "java.util.LinkedList"))
       val onOwner = Collector.qualified(callee.getEnclosingElement)
       val first   = arguments.headOption
-      if Methods.Searches(name) && list then op(Kind.Search, receiver.flatMap(extent))
-      else if name == "remove" && list && arguments.sizeIs == 1 then {
-        if callee.getParameters.get(0).asType.getKind == TypeKind.INT then {
-          if zero(arguments.head) && !linked then op(Kind.Shift, receiver.flatMap(extent))
-        } else op(Kind.Search, receiver.flatMap(extent))
-      } else if name == "add" && list && !linked && arguments.sizeIs == 2 && zero(arguments.head) then
-        op(Kind.Shift, receiver.flatMap(extent))
-      else if Methods.Sorts(name) && Set("java.util.Collections", "java.util.Arrays")(onOwner) then
-        op(Kind.Sort, first.flatMap(extent))
-      else if Methods.Sorts(name) && list then op(Kind.Sort, receiver.flatMap(extent))
-      else if Methods.Sorts(name) && receiver.exists(stream(_).isDefined) then op(Kind.Sort, receiver.flatMap(stream))
-      else if name == "addAll" && arguments.sizeIs == 1 && receiver.map(typeOf).exists(collection) then
-        op(Kind.Copy, first.flatMap(extent))
-      else if name == "toArray" && receiver.map(typeOf).exists(collection) then op(Kind.Copy, receiver.flatMap(extent))
-      else if Set("copyOf", "copyOfRange")(name) &&
+      if (Methods.Searches(name) && list) op(Kind.Search, receiver.flatMap(extent(_)))
+      else if (name == "remove" && list && arguments.sizeIs == 1) {
+        if (callee.getParameters.get(0).asType.getKind == TypeKind.INT) {
+          if (zero(arguments.head) && !linked) op(Kind.Shift, receiver.flatMap(extent(_)))
+        } else op(Kind.Search, receiver.flatMap(extent(_)))
+      } else if (name == "add" && list && !linked && arguments.sizeIs == 2 && zero(arguments.head))
+        op(Kind.Shift, receiver.flatMap(extent(_)))
+      else if (Methods.Sorts(name) && Set("java.util.Collections", "java.util.Arrays")(onOwner))
+        op(Kind.Sort, first.flatMap(extent(_)))
+      else if (Methods.Sorts(name) && list) op(Kind.Sort, receiver.flatMap(extent(_)))
+      else if (Methods.Sorts(name) && receiver.exists(stream(_).isDefined)) op(Kind.Sort, receiver.flatMap(stream(_)))
+      else if (name == "addAll" && arguments.sizeIs == 1 && receiver.map(typeOf(_)).exists(collection(_)))
+        op(Kind.Copy, first.flatMap(extent(_)))
+      else if (name == "toArray" && receiver.map(typeOf(_)).exists(collection(_)))
+        op(Kind.Copy, receiver.flatMap(extent(_)))
+      else if (
+        Set("copyOf", "copyOfRange")(name) &&
         Set("java.util.Arrays", "java.util.List", "java.util.Set", "java.util.Map")(onOwner)
-      then
-        op(Kind.Copy, first.flatMap(extent))
+      )
+
+        op(Kind.Copy, first.flatMap(extent(_)))
     }
   }
 }

@@ -1,7 +1,6 @@
 package net.kurobako.bonsai.effects
 
-import net.kurobako.bonsai.effects.Axioms.Call
-import net.kurobako.bonsai.effects.Axioms.Operand
+import net.kurobako.bonsai.effects.Axioms.*
 
 class AxiomsSuite extends munit.FunSuite {
   private def on(classes: String*): Option[Operand] = Some(Operand(classes.toSet))

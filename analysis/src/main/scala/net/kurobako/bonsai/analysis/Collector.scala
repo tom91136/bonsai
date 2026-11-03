@@ -18,7 +18,7 @@ import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.TypeRef
 import java.nio.file.PathMatcher
 import net.kurobako.bonsai.java.{Model => JavaModel}
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.{Purity as _, *}
 import scala.collection.mutable
 import scala.util.control.NonFatal
 import scala.util.matching.Regex
@@ -61,18 +61,7 @@ private[analysis] class Collector(
   private val derivations = Derivations(symbol => symbols.key(symbol).isDefined)
   private val dispatching = Dispatch(symbols, bodies.contains(_))
   private val structure   = StructureObserver(symbols, () => dispatching.classes, lines)
-  import symbols.exported
-  import symbols.fieldsOf
-  import symbols.key
-  import symbols.lineOf
-  import symbols.methodKey
-  import symbols.methodName
-  import symbols.node
-  import symbols.nodeOf
-  import symbols.nodes
-  import symbols.qualifiedName
-  import symbols.register
-  import symbols.suppressions
+  import symbols.*
 
   private val products       = mutable.Map.empty[Symbol, Algebra.Product]
   private val required       = mutable.Map.empty[Symbol, (String, Algebra.Product)]
@@ -667,7 +656,7 @@ private[analysis] class Collector(
     if (
       symbol.isClass && symbol.owner.isClass && !symbol.owner.is(Flags.Package) && !symbol.isAnonymousClass &&
       !symbol.isOneOf(hidden) && !(symbol.is(Flags.ModuleClass) && symbol.sourceModule.isOneOf(hidden)) &&
-      !symbol.ownersIterator.exists(confined) && !symbol.isAllOf(Flags.EnumCase)
+      !symbol.ownersIterator.exists(confined(_)) && !symbol.isAllOf(Flags.EnumCase)
     ) key(symbol).foreach(nested += _)
   }
 

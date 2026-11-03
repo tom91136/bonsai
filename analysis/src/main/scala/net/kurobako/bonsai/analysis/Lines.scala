@@ -2,14 +2,13 @@ package net.kurobako.bonsai.analysis
 
 import dotty.tools.dotc.util.SourceFile
 import dotty.tools.dotc.util.SourcePosition
-import java.util.Arrays
 import scala.collection.mutable
 
 /** Lines of offsets in sources, taken from the source's own text. The compiler's line table of a source read back from
   * TASTy is replaced by that of the last class read from it, so the lines it gives depend on the order classes were
   * read in.
   */
-private[analysis] final class Lines {
+private[analysis] class Lines {
   private val starts = mutable.Map.empty[SourceFile, Array[Int]]
 
   /** The one-based line `position` is on, or 0 when it does not exist. */
@@ -38,7 +37,7 @@ private[analysis] final class Lines {
       table = builder.result()
       starts(source) = table
     }
-    val found = Arrays.binarySearch(table, offset)
+    val found = java.util.Arrays.binarySearch(table, offset)
     if (found >= 0) found else -found - 2
   }
 }

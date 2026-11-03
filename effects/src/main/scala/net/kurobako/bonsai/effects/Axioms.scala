@@ -6,13 +6,13 @@ package net.kurobako.bonsai.effects
 object Axioms {
 
   /** What a call is made on: whether its type derives from a class, by qualified name, and whether it is a module. */
-  final case class Operand(derives: String => Boolean, module: Boolean = false)
+  case class Operand(derives: String => Boolean, module: Boolean = false)
 
   /** A call to `name`, declared in `owner`; `generated` for a synthetic method or a default argument, `java` when
     * defined by Java code, and `returns` the qualified name of the class it returns, which is only asked for when the
     * tables need it.
     */
-  final class Call(
+  class Call(
       val owner: String,
       val name: String,
       val constructor: Boolean = false,

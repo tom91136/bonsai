@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.lifting
 
-import net.kurobako.bonsai.collections.Source
+import net.kurobako.bonsai.collections.*
 
 /** Small facts about source text, which rewrites need without parsing it. */
 private[lifting] object Text {

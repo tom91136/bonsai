@@ -4,12 +4,13 @@ import java.util.regex.Pattern
 import metaconfig.Configured
 import scala.meta.*
 import scala.meta.tokens.Token
+import scala.util.matching.Regex
 import scalafix.v1.*
 
 object ToolingComments {
   def compile(pattern: String): Pattern = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE)
 
-  val Directive = "(?:scalafix|scalafmt|bonsai):\\s*[a-z{]".r
+  val Directive: Regex = "(?:scalafix|scalafmt|bonsai):\\s*[a-z{]".r
 }
 
 /** Comments that justify code by the tools that check it, naming a linter, a warning, or a dependency cycle. A comment
@@ -83,12 +84,12 @@ class ToolingComments(extra: List[Pattern]) extends SyntacticRule("ToolingCommen
   private def about(text: String): Boolean = (Patterns ++ extra).exists(_.matcher(text).find()) ||
     Context.matcher(text).find() && Contextual.exists(_.matcher(text).find())
 
-  private def stems(words: Iterator[String]): Set[String] =
+  private def stems(words: Iterable[String]): Set[String] =
     words.map(_.toLowerCase(java.util.Locale.ROOT).stripSuffix("s")).filter(_.length >= 4).toSet
 
   private def restating(text: String, rules: List[String]): Boolean =
     Repeats.matcher(text).find() &&
-      stems(Word.findAllIn(text)).intersect(stems(rules.iterator.flatMap(RuleWord.findAllIn(_)))).nonEmpty
+      stems(Word.findAllIn(text).toList).intersect(stems(rules.flatMap(RuleWord.findAllIn(_).toList))).nonEmpty
 
   // The rules named by the annotation after a comment, past other comments and whitespace, if it suppresses.
   private def suppressed(tokens: scala.meta.tokens.Tokens, index: Int): Option[List[String]] = {

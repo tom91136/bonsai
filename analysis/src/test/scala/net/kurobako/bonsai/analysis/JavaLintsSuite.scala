@@ -4,9 +4,9 @@ import dotty.tools.dotc.Driver
 import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
 import java.nio.file.Files
-import net.kurobako.bonsai.java.JavaLint
+import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.java.Model as JavaModel
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 /** The lints the javac plugin finds in the Java code of a build, which the analysis reports as findings of their own.
   */

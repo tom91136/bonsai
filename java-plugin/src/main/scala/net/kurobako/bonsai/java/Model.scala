@@ -3,7 +3,8 @@ package net.kurobako.bonsai.java
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import net.kurobako.bonsai.collections.Sink
+import net.kurobako.bonsai.collections.*
+import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
 
@@ -164,7 +165,7 @@ object Model {
 
     /** The guard as the text the analysis reads it from. */
     def render: String = this match {
-      case Known(value)                   => if value then "T" else "F"
+      case Known(value)                   => if (value) "T" else "F"
       case Holds(field, Probe.Present)    => s"(present $field)"
       case Holds(field, Probe.Flag)       => s"(flag $field)"
       case Is(field, value)               => s"(is $field $value)"
@@ -198,7 +199,7 @@ object Model {
         case "(" :: (name @ ("and" | "or")) :: tail =>
           one(tail).flatMap { (left, afterLeft) =>
             one(afterLeft).collect { case (right, ")" :: after) =>
-              (Connective(if name == "and" then Junction.And else Junction.Or, left, right), after)
+              (Connective(if (name == "and") Junction.And else Junction.Or, left, right), after)
             }
           }
         case _ => None
@@ -352,16 +353,16 @@ object Model {
     }
 
     def renderSink(sink: Sink): String =
-      if sink == Sink.Returned then ""
+      if (sink == Sink.Returned) ""
       else
-        " @" + (if sink.level == Int.MaxValue then "-" else sink.level.toString) + (if sink.returned then "r" else "") +
-          (if sink.stored then "s" else "")
+        " @" + (if (sink.level == Int.MaxValue) "-" else sink.level.toString) + (if (sink.returned) "r" else "") +
+          (if (sink.stored) "s" else "")
 
     private val sinkToken = "@(-|\\d+)(r?)(s?)".r
 
     def parseSink(token: String): Option[Sink] = token match {
       case sinkToken(level, returned, stored) =>
-        val depth = if level == "-" then Some(Int.MaxValue) else level.toIntOption
+        val depth = if (level == "-") Some(Int.MaxValue) else level.toIntOption
         depth.map(Sink(_, returned.nonEmpty, stored.nonEmpty))
       case _ => None
     }
@@ -370,7 +371,7 @@ object Model {
     case class Node(line: Int, step: Step) {
       def render: String = step match {
         case Step.Loop(extent, callback, absorbs, body) =>
-          val head = (if callback then "{each" else "{loop") + (if absorbs > 0 then s":$absorbs" else "")
+          val head = (if (callback) "{each" else "{loop") + (if (absorbs > 0) s":$absorbs" else "")
           (Vector(head, line.toString, extent) ++ body.map(_.render)).mkString(" ") + "}"
         case Step.Exit(body)             => (Vector("{exit", line.toString) ++ body.map(_.render)).mkString(" ") + "}"
         case Step.Op(kind, extent, sink) => s"{op $line ${kind.render} $extent${renderSink(sink)}}"
@@ -442,7 +443,7 @@ object Model {
     }
   }
 
-  private final case class Codec[A](
+  private case class Codec[A](
       tag: String,
       least: Int,
       message: String,
@@ -480,11 +481,11 @@ object Model {
 
   private def variableText(variable: Clones.Variable): String =
     Vector(variable.kind.toString, variable.text, variable.shown, variable.parameter.toString, variable.suffix)
-      .map(escape)
+      .map(escape(_))
       .mkString("|")
 
   private def variableList(text: String): Either[String, Vector[Clones.Variable]] =
-    all(items(text).map(item => variableOf(item.split("\\|", -1).map(unescape))))
+    all(items(text).map(item => variableOf(item.split("\\|", -1).map(unescape(_)))))
 
   private def variableOf(columns: Array[String]): Either[String, Clones.Variable] =
     columns match {
@@ -577,7 +578,7 @@ object Model {
       Vector(
         site.caller,
         site.callee,
-        site.arguments.map(escape).mkString(","),
+        site.arguments.map(escape(_)).mkString(","),
         site.location,
         site.discarded.toString,
         site.negated.toString
@@ -587,7 +588,7 @@ object Model {
         Site(
           columns(0),
           columns(1),
-          items(columns(2)).map(unescape),
+          items(columns(2)).map(unescape(_)),
           columns(3),
           columns.lift(4).exists(_.toBoolean),
           columns.lift(5).exists(_.toBoolean)
@@ -618,10 +619,10 @@ object Model {
         fragment.cost.toString,
         fragment.exact.toString,
         fragment.loose.toString,
-        fragment.literals.map(escape).mkString(","),
+        fragment.literals.map(escape(_)).mkString(","),
         fragment.member,
         fragment.broad.toString,
-        fragment.variables.map(variableText).mkString(","),
+        fragment.variables.map(variableText(_)).mkString(","),
         fragment.roles.toString,
         fragment.reach
       ),
@@ -637,7 +638,7 @@ object Model {
           columns(6).toInt,
           columns(7).toLong,
           columns(8).toLong,
-          items(columns(9)).map(unescape),
+          items(columns(9)).map(unescape(_)),
           columns.lift(10).getOrElse(""),
           columns.lift(11).map(_.toLong).getOrElse(0L),
           variables,
@@ -708,11 +709,11 @@ object Model {
         instance.caller,
         instance.owner,
         escape(instance.constructor),
-        instance.arguments.map(escape).mkString(","),
+        instance.arguments.map(escape(_)).mkString(","),
         instance.location
       ),
     columns =>
-      Right(Instance(columns(0), columns(1), unescape(columns(2)), items(columns(3)).map(unescape), columns(4)))
+      Right(Instance(columns(0), columns(1), unescape(columns(2)), items(columns(3)).map(unescape(_)), columns(4)))
   )
 
   private val storeCodec = Codec[Store](
@@ -859,7 +860,7 @@ object Model {
       val rows                                                   = lines.map(_.split("\t", -1)).groupMap(_.head)(_.tail)
       def records[A](codec: Codec[A]): Vector[Either[String, A]] =
         rows.getOrElse(codec.tag, Vector.empty).map { columns =>
-          if columns.length < codec.least then Left(s"$file: ${codec.message}")
+          if (columns.length < codec.least) Left(s"$file: ${codec.message}")
           else
             try codec.read(columns).left.map(message => s"$file: $message")
             catch { case error: IllegalArgumentException => Left(s"$file: ${codec.message}: ${error.getMessage}") }
@@ -886,7 +887,7 @@ object Model {
           constructions ++ preconditions ++ reassignables ++ writes ++ costs ++ instances ++ stores).collect {
           case Left(failure) => failure
         }
-      if failures.nonEmpty then Left(failures.mkString("\n"))
+      if (failures.nonEmpty) Left(failures.mkString("\n"))
       else
         Right(
           Model(
@@ -918,9 +919,9 @@ object Model {
   private def escape(value: String): String = {
     var index = 0
     while index < value.length && !needsEscape(value.charAt(index)) do index += 1
-    if index == value.length then value
+    if (index == value.length) value
     else {
-      val text = new StringBuilder(value.length + 16)
+      val text = mutable.StringBuilder(value.length + 16)
       text.underlying.append(value, 0, index)
       while index < value.length do {
         val char = value.charAt(index)
@@ -955,10 +956,10 @@ object Model {
 
   /** A text the format held whole. */
   private def unescape(value: String): String = {
-    val text  = new StringBuilder
+    val text  = mutable.StringBuilder()
     var index = 0
     while index < value.length do
-      if value.charAt(index) == '\\' && index + 1 < value.length then {
+      if (value.charAt(index) == '\\' && index + 1 < value.length) {
         value.charAt(index + 1) match {
           case '\\' => text += '\\'
           case 'c'  => text += ','

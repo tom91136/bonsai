@@ -2,8 +2,8 @@ package net.kurobako.bonsai.analysis
 
 import java.nio.file.Path
 import munit.FunSuite
-import net.kurobako.bonsai.effects.Kind
-import net.kurobako.bonsai.java.JavaLint
+import net.kurobako.bonsai.effects.*
+import net.kurobako.bonsai.java.*
 
 class CLISuite extends FunSuite {
   private def thrown(work: () => Int): Throwable =

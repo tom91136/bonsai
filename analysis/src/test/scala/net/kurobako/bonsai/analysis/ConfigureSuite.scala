@@ -3,7 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import munit.FunSuite
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 class ConfigureSuite extends FunSuite {
   private def lines(conf: String, module: String = "demo"): Either[String, Vector[String]] =

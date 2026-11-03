@@ -2,8 +2,8 @@ package net.kurobako.bonsai.analysis
 
 import java.nio.file.Files
 import java.nio.file.Path
-import net.kurobako.bonsai.configuration.BonsaiConfiguration
-import net.kurobako.bonsai.configuration.BonsaiConfiguration.ConfigurationError
+import net.kurobako.bonsai.configuration.*
+import net.kurobako.bonsai.configuration.BonsaiConfiguration.*
 
 /** Reads `.bonsai.conf` for a module and writes what a build that does not read it itself needs to a file, one
   * tab-separated entry a line: the module's `disabled`, `errors`, `warnings`, `wildcards` and `library` settings, the

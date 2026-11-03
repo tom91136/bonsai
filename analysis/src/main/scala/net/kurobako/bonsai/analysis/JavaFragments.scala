@@ -30,7 +30,7 @@ object JavaFragments {
       minimumLines = if (whole) Clones.WindowLines else 1,
       solid = whole,
       broad = fragment.broad,
-      variables = Clones.Deferred(fragment.variables.map(variable)),
+      variables = Clones.Deferred(fragment.variables.map(variable(_))),
       small = has(JavaModel.Roles.Small),
       tiny = has(JavaModel.Roles.Tiny),
       entire = has(JavaModel.Roles.Entire),
@@ -42,7 +42,7 @@ object JavaFragments {
   }
 
   private def variable(value: JavaClones.Variable): Clones.Literal =
-    if value.kind == 'R' then
+    if (value.kind == 'R')
       Clones.Literal(
         value.text,
         reference = true,

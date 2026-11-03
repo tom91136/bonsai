@@ -1,8 +1,8 @@
 package net.kurobako.bonsai.java
 
 import java.nio.file.Files
-import net.kurobako.bonsai.collections.Sink
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.testing.*
 
 class ModelSuite extends munit.FunSuite {
 

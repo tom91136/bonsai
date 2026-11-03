@@ -8,7 +8,7 @@ import java.nio.file.Path
 import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
 import java.util.jar.Manifest as JarManifest
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 

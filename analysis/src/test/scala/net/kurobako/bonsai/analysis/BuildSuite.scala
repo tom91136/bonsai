@@ -3,7 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.file.Files
 import java.nio.file.Path
 import munit.FunSuite
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 class BuildSuite extends FunSuite {
   private def withRoot(name: String)(body: Path => Unit): Unit =

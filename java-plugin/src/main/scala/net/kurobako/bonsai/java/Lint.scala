@@ -25,14 +25,14 @@ import scala.jdk.CollectionConverters.*
   * @param id
   *   the id the finding is reported under, for a lint that reports under several, or empty for the id of the lint
   */
-final case class Found(detail: String, at: Tree, offset: Int = -1, id: String = "") {
+case class Found(detail: String, at: Tree, offset: Int = -1, id: String = "") {
 
   /** The id the finding is reported under, which the lint that found it is the default of. */
-  def reportedAs(lint: Lint): String = if id.isEmpty then lint.id else id
+  def reportedAs(lint: Lint): String = if (id.isEmpty) lint.id else id
 }
 
 /** A call of a method, with the receiver and the simple name the code gives the method. */
-final case class Call(
+case class Call(
     path: TreePath,
     invocation: MethodInvocationTree,
     method: ExecutableElement,
@@ -101,7 +101,7 @@ object Call {
   * @param registry
   *   what the lints of one compilation leave for each other, and for the end of it
   */
-final class Context(
+class Context(
     val trees: Trees,
     val elements: Elements,
     val types: Types,
@@ -110,7 +110,7 @@ final class Context(
     val owner: String,
     val method: Option[String],
     val ancestors: List[Tree],
-    val registry: Registry = new Registry(),
+    val registry: Registry = Registry(),
     val suppressed: Set[String] = Set.empty
 ) {
 
@@ -225,7 +225,7 @@ object Lints {
     Set(Tree.Kind.WHILE_LOOP, Tree.Kind.FOR_LOOP, Tree.Kind.DO_WHILE_LOOP, Tree.Kind.ENHANCED_FOR_LOOP)
 
   /** The path of a tree under the path of the tree that holds it. */
-  def child(path: TreePath, tree: Tree): TreePath = new TreePath(path, tree)
+  def child(path: TreePath, tree: Tree): TreePath = TreePath(path, tree)
 
   /** The element a tree under the path names. */
   def elementOf(trees: Trees, path: TreePath, tree: Tree): Element = trees.getElement(child(path, tree))
@@ -236,9 +236,9 @@ object Lints {
   /** The declaration of the type the compiler has just attributed, which the file holds. */
   def declaration(trees: Trees, compilation: CompilationUnitTree, typeElement: TypeElement): Option[ClassTree] = {
     val name = typeElement.getQualifiedName.toString
-    val root = new TreePath(compilation)
+    val root = TreePath(compilation)
     compilation.getTypeDecls.asScala.collectFirst {
-      case tree: ClassTree if Collector.qualified(trees.getElement(new TreePath(root, tree)))(using trees) == name =>
+      case tree: ClassTree if Collector.qualified(trees.getElement(TreePath(root, tree)))(using trees) == name =>
         tree
     }
   }

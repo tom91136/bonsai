@@ -41,9 +41,9 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
     }.flatten.asPatch
   }
 
-  private final case class Variant(name: String, singleton: Boolean, args: List[Term])
+  private case class Variant(name: String, singleton: Boolean, args: List[Term])
 
-  private final case class Enumeration(
+  private case class Enumeration(
       name: String,
       params: List[String],
       variants: List[Variant],
@@ -56,12 +56,12 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
     def accessors: List[Option[Int]] = fields ++ Option.when(!overridesToString)(None)
   }
 
-  private final case class Index(enums: Map[String, Enumeration], imports: Set[(String, Option[String])]) {
+  private case class Index(enums: Map[String, Enumeration], imports: Set[(String, Option[String])]) {
     val declaring: Map[String, List[Enumeration]] =
       enums.values.toList.flatMap(owner => owner.variants.map(_.name -> owner)).groupMap(_._1)(_._2)
   }
 
-  private final case class Entry(key: Any, owner: Enumeration, variant: Variant)
+  private case class Entry(key: Any, owner: Enumeration, variant: Variant)
 
   private def enumeration(definition: Defn.Enum): Enumeration = {
     val name     = definition.name.value
@@ -84,8 +84,8 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
   }
 
   private def table(index: Index, tree: Tree, values: List[Term]): Option[Patch] = {
-    val pairs = values.flatMap(pair)
-    Option.when(pairs.sizeIs == values.size)(pairs).flatMap(resolved(index, _)).flatMap(restatedNamed)
+    val pairs = values.flatMap(pair(_))
+    Option.when(pairs.sizeIs == values.size)(pairs).flatMap(resolved(index, _)).flatMap(restatedNamed(_))
       .map { case (owner, accessor) => lint("restated-map", mapMessage(owner, accessor), tree.pos) }
   }
 
@@ -104,7 +104,7 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
       case _ => None
     }
     Option.when(arms.sizeIs == cases.size && arms.map(_._1).distinct.sizeIs == 1)(arms.map(_._2))
-      .flatMap(restatedNamed).map { case (owner, accessor) =>
+      .flatMap(restatedNamed(_)).map { case (owner, accessor) =>
         lint("restated-match", lookupMessage(owner, accessor), lookup.pos)
       }
   }
@@ -128,7 +128,7 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
             } yield Entry(key, target, variant)
           case _ => None
         }
-        Option.when(arms.sizeIs == lookup.casesBlock.cases.size)(arms).flatMap(restated).map {
+        Option.when(arms.sizeIs == lookup.casesBlock.cases.size)(arms).flatMap(restated(_)).map {
           case (target, accessor) => lint("restated-reverse", reverseMessage(target, accessor), lookup.pos)
         }
       }
@@ -224,7 +224,7 @@ class RestatedLookup extends SyntacticRule("RestatedLookup") {
 
   private def restates(entry: Entry, accessor: Option[Int]): Boolean = accessor match {
     case None        => entry.key == entry.variant.name
-    case Some(index) => entry.variant.args.lift(index).flatMap(literal).contains(entry.key)
+    case Some(index) => entry.variant.args.lift(index).flatMap(literal(_)).contains(entry.key)
   }
 
   private def member(owner: Enumeration, accessor: Option[Int]): String = accessor.fold("toString")(owner.params(_))

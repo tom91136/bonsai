@@ -5,7 +5,7 @@ import dotty.tools.dotc.reporting.Reporter
 import dotty.tools.dotc.reporting.StoreReporter
 import java.nio.file.Files
 import java.nio.file.Path
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 object Compilations {
 

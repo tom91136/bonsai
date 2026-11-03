@@ -3,7 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.file.Files
 import java.nio.file.Path
 import net.kurobako.bonsai.java.{Model => JavaModel}
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 
 class ModulesSuite extends munit.FunSuite {
 

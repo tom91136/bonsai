@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.java
 
-import net.kurobako.bonsai.collections.Laws
+import net.kurobako.bonsai.collections.*
 
 /** The lints the Java code is checked for, which the plugin finds in the code it compiles and the analysis reports the
   * findings of them under.

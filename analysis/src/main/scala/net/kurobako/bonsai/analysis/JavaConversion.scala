@@ -87,7 +87,7 @@ private[analysis] object JavaConversion {
           // The builds that depend on a library construct its public types, so the constructions in this build do not
           // settle the shape of one, as with a case class of Scala code.
           val exportedConstructible =
-            if published then
+            if (published)
               collected.nodes.collect {
                 case node if node.constructible && nodes.get(node.name).exists(_.exported) => node.name
               }.toSet
@@ -137,7 +137,7 @@ private[analysis] object JavaConversion {
             products += productOf(
               product.name,
               product.node,
-              product.fields.map(field),
+              product.fields.map(field(_)),
               product.parents,
               exportedConstructible(product.node),
               returns = returning.getOrElse(product.node, Set.empty),
@@ -149,7 +149,7 @@ private[analysis] object JavaConversion {
           val declared = collected.methods.map(method => method.key -> method).toMap
           collected.preconditions.foreach { precondition =>
             declared.get(precondition.method).foreach { method =>
-              val fields = method.parameters.map(field)
+              val fields = method.parameters.map(field(_))
               required += method.key -> productOf(
                 s"${method.name}(${method.parameters.map(_.name).mkString(", ")})",
                 method.owner,
@@ -171,7 +171,7 @@ private[analysis] object JavaConversion {
           collected.sites.foreach { site =>
             val callee = site.callee
             sites.getOrElseUpdate(callee, mutable.ArrayBuffer.empty) += Algebra.Site(
-              site.arguments.map(argument),
+              site.arguments.map(argument(_)),
               test = test,
               own = isOwn(site.caller, callee),
               site.location
@@ -214,15 +214,15 @@ private[analysis] object JavaConversion {
             )
           ): Unit
           collected.writes.foreach { write =>
-            written += write.owner                            -> write.name
-            if !write.constructor then outside += write.owner -> write.name
+            written += write.owner                         -> write.name
+            if (!write.constructor) outside += write.owner -> write.name
           }
           reflections ++= collected.reflections: Unit
           collected.costs.foreach(cost => costs.getOrElseUpdate(cost.key, cost)): Unit
       }
     }
     instances.foreach { (instance, test) =>
-      if constructed(instance.owner) then
+      if (constructed(instance.owner))
         members.get(instance.owner).foreach { fields =>
           val values = JavaModel.aligned(
             fields,
@@ -230,7 +230,7 @@ private[analysis] object JavaConversion {
             instance.arguments
           )
           sites.getOrElseUpdate(instance.owner, mutable.ArrayBuffer.empty) +=
-            Algebra.Site(values.map(argument), test, isOwn(instance.caller, instance.owner), instance.location)
+            Algebra.Site(values.map(argument(_)), test, isOwn(instance.caller, instance.owner), instance.location)
         }
     }
     lints ++= JavaLints.unwritten(reassigned.toVector, written.toSet, outside.toSet, nodes.toMap)

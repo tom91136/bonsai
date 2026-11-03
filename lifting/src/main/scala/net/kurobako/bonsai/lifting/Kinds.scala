@@ -4,7 +4,7 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.collections.Kind
+import net.kurobako.bonsai.collections.*
 
 /** What the laws need to know of a type, read from the type itself. */
 private[lifting] class Kinds(using Context) {

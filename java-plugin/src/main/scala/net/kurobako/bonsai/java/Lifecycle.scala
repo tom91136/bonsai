@@ -26,7 +26,7 @@ private[java] object Lifecycle {
     "org.junit.After"
   )
 
-  private val cache = new java.util.WeakHashMap[Element, java.lang.Boolean]
+  private val cache = java.util.WeakHashMap[Element, java.lang.Boolean]()
 
   def isTeardown(method: Element): Boolean = teardown.exists(Nullness.hasAnnotation(method, _))
 
@@ -69,8 +69,8 @@ private[java] object Lifecycle {
         case holder: ClassTree =>
           holder.getMembers.asScala.exists {
             case method: MethodTree =>
-              val methodPath = new TreePath(path, method)
-              Option(trees.getElement(methodPath)).exists(isSetup) && assignments(trees, methodPath, field).nonEmpty
+              val methodPath = TreePath(path, method)
+              Option(trees.getElement(methodPath)).exists(isSetup(_)) && assignments(trees, methodPath, field).nonEmpty
             case _ => false
           }
         case _ => false
@@ -86,8 +86,8 @@ private[java] object Lifecycle {
           case select: MemberSelectTree   => select.getIdentifier.contentEquals(field.getSimpleName)
           case _                          => false
         }
-        if named && Option(trees.getElement(new TreePath(getCurrentPath, assignment.getVariable))).forall(_ == field)
-        then
+        if (named && Option(trees.getElement(TreePath(getCurrentPath, assignment.getVariable))).forall(_ == field))
+
           found += assignment
         super.visitAssignment(assignment, unused)
       }

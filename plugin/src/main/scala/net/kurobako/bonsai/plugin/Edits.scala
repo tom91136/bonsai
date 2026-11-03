@@ -28,7 +28,7 @@ private object Edits {
     if (alone && (after < 0 || content.charAt(after) == '\n'))
       replace(lineStart, if (after < 0) content.length else after + 1, "")
     else {
-      val next = content.indexWhere(visible, end)
+      val next = content.indexWhere(visible(_), end)
       replace(start, if (next >= 0 && content.charAt(next) == ';') next + 1 else end, "")
     }
   }

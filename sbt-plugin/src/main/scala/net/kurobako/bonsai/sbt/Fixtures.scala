@@ -9,7 +9,7 @@ object Fixtures {
   /** The projects that every dependant uses only from its test configurations, from (project, mapping) edges. */
   def fixtures(dependencies: Seq[(String, Option[String])]): Set[String] =
     dependencies.groupMap(_._1)(_._2).collect {
-      case (project, mappings) if mappings.forall(testMapping) => project
+      case (project, mappings) if mappings.forall(testMapping(_)) => project
     }.toSet
 
   def fixtures(structure: BuildStructure): Set[String] =

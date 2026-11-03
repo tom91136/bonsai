@@ -6,6 +6,7 @@ import com.sun.source.util.TreePathScanner
 import com.sun.source.util.Trees
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.element.*
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
@@ -25,7 +26,7 @@ class Collector(trees: Trees) {
   private val methods       = mutable.LinkedHashMap.empty[String, Model.Method]
   private val fields        = mutable.LinkedHashMap.empty[String, Vector[Model.Field]]
   private val sites         = mutable.ArrayBuffer.empty[Model.Site]
-  private val clones        = new Clones(trees)
+  private val clones        = Clones(trees)
   private val products      = mutable.LinkedHashMap.empty[String, Model.Product]
   private val sums          = mutable.LinkedHashMap.empty[String, Model.Sum]
   private val lints         = mutable.ArrayBuffer.empty[Model.Lint]
@@ -45,7 +46,7 @@ class Collector(trees: Trees) {
       nodes.values.toVector,
       methods.values.toVector,
       fields.values.toVector.flatten,
-      sites.toVector ++ instances.toVector.flatMap(aligned),
+      sites.toVector ++ instances.toVector.flatMap(aligned(_)),
       found,
       clones.fragments,
       products.values.toVector,
@@ -111,7 +112,7 @@ class Collector(trees: Trees) {
         val path    = getCurrentPath
         val element = trees.getElement(path)
         val name    = Collector.qualified(element)
-        if name.isEmpty then {
+        if (name.isEmpty) {
           unnamed += 1
           try super.visitClass(node, unused)
           finally unnamed -= 1
@@ -131,10 +132,10 @@ class Collector(trees: Trees) {
           )
           val _ = edges.getOrElseUpdate(name, mutable.LinkedHashSet.empty)
           // A record is a product of its components, which the analysis reads alike with a case class.
-          if element.getKind == ElementKind.RECORD then
+          if (element.getKind == ElementKind.RECORD)
             products.update(name, Model.Product(name, name, Collector.components(element), Set.empty)): Unit
           // A sealed type is a sum of the types that extend it, which the analysis reads alike with a sealed trait.
-          if element.getModifiers.contains(Modifier.SEALED) then
+          if (element.getModifiers.contains(Modifier.SEALED))
             sums.update(name, Model.Sum(name, name, Collector.variants(element))): Unit
           Guards.construction(trees, path).foreach(constructions.update(name, _))
           preconditions ++= Guards.preconditions(trees, path)
@@ -155,14 +156,14 @@ class Collector(trees: Trees) {
         // The owner of a method is the type that holds it, while the stack of owners holds the methods.
         val owner = types.headOption.getOrElse("")
         val name  = Collector.qualified(element)
-        if name.isEmpty then super.visitMethod(node, unused)
+        if (name.isEmpty) super.visitMethod(node, unused)
         else {
           val executable = element.asInstanceOf[ExecutableElement]
           // A native method is called by the native code, which names it, and a main method is called by the code that
           // runs the build, so the type that holds either is entered from outside the build.
-          if Collector.enters(element) then
+          if (Collector.enters(element))
             nodes.get(owner).foreach(found => nodes.update(owner, found.copy(entry = true)))
-          val parameters = executable.getParameters.asScala.toVector.map(Collector.parameter)
+          val parameters = executable.getParameters.asScala.toVector.map(Collector.parameter(_))
           val key        = CostTrees.key(executable)
           val _          = methods.getOrElseUpdate(
             key,
@@ -181,7 +182,7 @@ class Collector(trees: Trees) {
           )
           // The body of the method is what recurs, so the fragments are taken of it.
           val body = node.getBody
-          if body != null then clones.add(body, path, owner, executable, Collector.overriding(executable))
+          if (body != null) clones.add(body, path, owner, executable, Collector.overriding(executable))
           CostTrees.of(compilation, path, owner).foreach(costs += _)
           owners.push(key)
           try super.visitMethod(node, unused)
@@ -195,14 +196,14 @@ class Collector(trees: Trees) {
         // An instance field of the type is a field of the product the analysis makes of it; a parameter of a method is
         // one of the parameters of the method, which the method itself holds.
 
-        if unnamed == 0 && Collector.instanceField(element) then {
+        if (unnamed == 0 && Collector.instanceField(element)) {
           val owner = owners.headOption.getOrElse("")
           fields.update(
             owner,
             fields.getOrElse(owner, Vector.empty) :+ Model.Field(owner, Collector.parameter(element))
           ): Unit
         }
-        if unnamed == 0 && Collector.reassignable(node, element, Constructors.assigned(trees, path)) then
+        if (unnamed == 0 && Collector.reassignable(node, element, Constructors.assigned(trees, path)))
           reassignables += Model.Reassignable(
             Collector.qualified(element.getEnclosingElement),
             element.getSimpleName.toString,
@@ -226,15 +227,16 @@ class Collector(trees: Trees) {
       }
 
       override def visitUnary(node: UnaryTree, unused: Unit): Unit = {
-        if Collector.Steps(node.getKind) then written(node.getExpression, plain = false)
+        if (Collector.Steps(node.getKind)) written(node.getExpression, plain = false)
         super.visitUnary(node, unused)
       }
 
+      @tailrec
       private def written(target: ExpressionTree, plain: Boolean): Unit = target match {
         case parenthesized: ParenthesizedTree       => written(parenthesized.getExpression, plain = false)
         case _: (IdentifierTree | MemberSelectTree) =>
-          val element = trees.getElement(new TreePath(getCurrentPath, target))
-          if Collector.field(element) then {
+          val element = trees.getElement(TreePath(getCurrentPath, target))
+          if (Collector.field(element)) {
             val owner       = element.getEnclosingElement
             val constructor = plain && Constructors.direct(target) && Constructors.within(trees, getCurrentPath, owner)
             writes += Model.Write(Collector.qualified(owner), element.getSimpleName.toString, constructor): Unit
@@ -246,7 +248,7 @@ class Collector(trees: Trees) {
         val path   = getCurrentPath
         val caller = owners.headOption.getOrElse("")
         Call.of(trees, path).filter(_.method.getKind == ElementKind.METHOD).foreach { call =>
-          if Collector.qualified(call.method).nonEmpty then {
+          if (Collector.qualified(call.method).nonEmpty) {
             val callee    = CostTrees.key(call.method)
             val values    = call.arguments
             val arguments = values.map(Collector.argument(trees, path, _))
@@ -255,8 +257,8 @@ class Collector(trees: Trees) {
             sites += Model.Site(caller, callee, arguments, location(compilation, node), discarded, negated): Unit
             // A class the code looks up by name is not read by the compiler, so a module build has to require its module
             // for the code to work at run time, which the analysis checks over the whole build.
-            if Collector.forName(call.method) then
-              values.headOption.flatMap(Collector.text).foreach { target =>
+            if (Collector.forName(call.method))
+              values.headOption.flatMap(Collector.text(_)).foreach { target =>
                 reflections += Model.Reflection(caller, target, location(compilation, node)): Unit
               }
           }
@@ -292,9 +294,8 @@ class Collector(trees: Trees) {
         val path    = getCurrentPath
         val element = trees.getElement(path)
         val caller  = owners.headOption.getOrElse("")
-        if element != null && (element.getKind == ElementKind.METHOD || element.getKind == ElementKind.CONSTRUCTOR)
-        then {
-          if Collector.qualified(element).nonEmpty then {
+        if (element != null && (element.getKind == ElementKind.METHOD || element.getKind == ElementKind.CONSTRUCTOR)) {
+          if (Collector.qualified(element).nonEmpty) {
             val executable = element.asInstanceOf[ExecutableElement]
             val arguments  = Vector.fill(executable.getParameters.size)("unknown")
             sites += Model.Site(caller, CostTrees.key(executable), arguments, location(compilation, node)): Unit
@@ -306,7 +307,7 @@ class Collector(trees: Trees) {
       private def link(path: TreePath): Unit = {
         val owner  = types.headOption.getOrElse("")
         val target = Collector.reference(trees, path)
-        if target.isDefined && target.get != owner then
+        if (target.isDefined && target.get != owner)
           edges.getOrElseUpdate(owner, mutable.LinkedHashSet.empty) += target.get: Unit
       }
 
@@ -314,19 +315,19 @@ class Collector(trees: Trees) {
         val path    = getCurrentPath
         val element = trees.getElement(path)
         // a type named through the type that holds it, as in a class literal of an annotation
-        if element != null && (element.getKind.isClass || element.getKind.isInterface) then link(path)
+        if (element != null && (element.getKind.isClass || element.getKind.isInterface)) link(path)
         super.visitMemberSelect(node, unused)
       }
 
       override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
         val path = getCurrentPath
-        if trees.getElement(path) != null then link(path)
+        if (trees.getElement(path) != null) link(path)
         super.visitIdentifier(node, unused)
       }
     }
     // The walk begins at the declaration, which the compilation unit holds, so that the paths of the code are the
     // ones the compiler attributed.
-    scanner.scan(new TreePath(new TreePath(compilation), declaration), ())
+    scanner.scan(TreePath(TreePath(compilation), declaration), ())
   }
 }
 
@@ -370,14 +371,14 @@ object Collector {
           visible(member) && signature(member) == signature(element)
         case _ => false
       }
-    visible(element) && supertypes(element.getEnclosingElement).exists(overrides)
+    visible(element) && supertypes(element.getEnclosingElement).exists(overrides(_))
   }
 
   /** The types a type extends, which the methods of it may override. */
   private def supertypes(element: Element): Vector[TypeElement] = {
     val visited                                                = mutable.Set.empty[TypeElement]
     def collect(typeElement: TypeElement): Vector[TypeElement] =
-      if visited(typeElement) then Vector.empty
+      if (visited(typeElement)) Vector.empty
       else {
         visited += typeElement
         val parents = Option(typeElement.getSuperclass).toVector ++ typeElement.getInterfaces.asScala.toVector
@@ -433,7 +434,7 @@ object Collector {
   /** The qualified name of the element, which is the package, the types that hold it and its own name joined by dots.
     */
   def qualified(element: Element)(using trees: Trees): String =
-    if element == null then ""
+    if (element == null) ""
     else
       element match {
         case e: TypeElement if e.getNestingKind == NestingKind.LOCAL      => local(e)
@@ -441,7 +442,7 @@ object Collector {
         case e: PackageElement                                            => e.getQualifiedName.toString
         case e: ExecutableElement if e.getKind == ElementKind.CONSTRUCTOR =>
           val owner = qualified(e.getEnclosingElement)
-          if owner.isEmpty then e.getSimpleName.toString else s"$owner.${e.getEnclosingElement.getSimpleName}"
+          if (owner.isEmpty) e.getSimpleName.toString else s"$owner.${e.getEnclosingElement.getSimpleName}"
         case e: (ExecutableElement | VariableElement) => member(e)
         case other                                    => other.getSimpleName.toString
       }
@@ -465,42 +466,42 @@ object Collector {
                 if found.getNestingKind == NestingKind.LOCAL && found.getSimpleName == element.getSimpleName &&
                   found.getEnclosingElement == element.getEnclosingElement =>
               seen += 1
-              if found == element then position = seen
+              if (found == element) position = seen
             case _ =>
           }
           super.visitClass(node, unused)
         }
       }.scan(root, ())
     }
-    if position == 1 then member(element) else s"${member(element)}$$$position"
+    if (position == 1) member(element) else s"${member(element)}$$$position"
   }
 
   /** The qualified name of a member, which is the name of the type that holds it and its own name joined by dots. */
   private def member(element: Element)(using trees: Trees): String = {
     val owner = qualified(element.getEnclosingElement)
-    if owner.isEmpty then element.getSimpleName.toString else s"$owner.${element.getSimpleName}"
+    if (owner.isEmpty) element.getSimpleName.toString else s"$owner.${element.getSimpleName}"
   }
 
   /** The enclosing type of the element, if it has one. */
   private def outer(element: Element)(using trees: Trees): Option[String] =
-    if element == null then None
+    if (element == null) None
     else
       Option(element.getEnclosingElement)
         .filter(_.getKind.isClass)
-        .map(qualified)
+        .map(qualified(_))
         .filter(_.nonEmpty)
 
   /** The name a reference to the element at the path has. */
   private def reference(trees: Trees, path: TreePath): Option[String] = {
     val element = trees.getElement(path)
-    if element == null then None
+    if (element == null) None
     else
       element.getKind match {
         case ElementKind.PACKAGE   => None
         case ElementKind.PARAMETER => None
         case _                     =>
           val name = qualified(element)(using trees)
-          if name.isEmpty then None else Some(name)
+          if (name.isEmpty) None else Some(name)
       }
   }
 
@@ -545,7 +546,7 @@ object Collector {
     * a package is not in Scala.
     */
   private def exported(element: Element): Boolean =
-    if element == null then false
+    if (element == null) false
     else {
       val modifiers = element.getModifiers
       modifiers.contains(Modifier.PUBLIC) || modifiers.contains(Modifier.PROTECTED)
@@ -574,7 +575,7 @@ object Collector {
   private def components(element: Element): Vector[Model.Parameter] =
     element match {
       case typeElement: TypeElement =>
-        typeElement.getRecordComponents.asScala.toVector.map(Collector.parameter)
+        typeElement.getRecordComponents.asScala.toVector.map(Collector.parameter(_))
       case _ => Vector.empty
     }
 
@@ -617,7 +618,7 @@ object Collector {
       case _                      => Option(element).filter(_.getKind == ElementKind.ENUM)
     }
     val cases =
-      if kind == "other" then
+      if (kind == "other")
         enumType.fold(Vector.empty[String])(
           _.getEnclosedElements.asScala.toVector.collect {
             case constant: VariableElement if constant.getSimpleName.toString != "$VALUES" =>
@@ -626,7 +627,7 @@ object Collector {
         )
       else Vector.empty
     val primitive = kind == "number" || kind == "flag"
-    Shape(if cases.nonEmpty then "tag" else kind, name, cases, primitive)
+    Shape(if (cases.nonEmpty) "tag" else kind, name, cases, primitive)
   }
 
   /** The values of the `java.util` types that hold at most one, which are optionals like an option in Scala. */
@@ -701,11 +702,11 @@ object Collector {
           }
 
           override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
-            if Option(trees.getElement(getCurrentPath)).exists(_.getKind == ElementKind.CONSTRUCTOR) then
+            if (Option(trees.getElement(getCurrentPath)).exists(_.getKind == ElementKind.CONSTRUCTOR))
               pass(node.getArguments)
             super.visitMethodInvocation(node, unused)
           }
-        }.scan(new TreePath(method, body), ())
+        }.scan(TreePath(method, body), ())
         trees.getElement(method).asInstanceOf[ExecutableElement].getParameters.asScala.zipWithIndex.collect {
           case (parameter, index) if uses(parameter) > 0 && uses(parameter) == passes(parameter) => index
         }.toSet
@@ -713,7 +714,7 @@ object Collector {
 
   /** The argument a call passes, with the constants and the enum cases it names read as their symbols. */
   private[java] def argument(trees: Trees, call: TreePath, tree: ExpressionTree): String = {
-    val path = new TreePath(call, tree)
+    val path = TreePath(call, tree)
     tree match {
       case literal: LiteralTree       => literalArgument(literal)
       case identifier: IdentifierTree =>
@@ -722,7 +723,7 @@ object Collector {
           case "this" => "present:this"
           case name   =>
             Option(trees.getElement(path)).fold("unknown") { element =>
-              symbol(element)(using trees).getOrElse(if present(element) then s"present:$name" else "unknown")
+              symbol(element)(using trees).getOrElse(if (present(element)) s"present:$name" else "unknown")
             }
         }
       case _: MemberSelectTree =>
@@ -762,7 +763,7 @@ object Collector {
 
   /** The argument a call passes when it is a literal, which the analysis reads the values the callers pass by. */
   private def literalArgument(literal: LiteralTree): String = literal.getValue match {
-    case value: java.lang.Boolean                                       => if value then "true" else "false"
+    case value: java.lang.Boolean                                       => if (value) "true" else "false"
     case value: (java.lang.Integer | java.lang.Long | java.lang.Double) => s"number:$value"
     case value: String                                                  => s"text:$value"
     case null                                                           => "absent"
@@ -771,13 +772,13 @@ object Collector {
 
   /** The checks the element suppresses, which the annotations name. */
   def suppressed(element: Element): Set[String] =
-    if element == null then Set.empty
+    if (element == null) Set.empty
     else
       element.getAnnotationMirrors.asScala.view.flatMap { mirror =>
-        if mirror.getAnnotationType.toString != "java.lang.SuppressWarnings" then Vector.empty
+        if (mirror.getAnnotationType.toString != "java.lang.SuppressWarnings") Vector.empty
         else
           mirror.getElementValues.asScala.toVector.flatMap { case (key, value) =>
-            if key.getSimpleName.toString != "value" then Vector.empty
+            if (key.getSimpleName.toString != "value") Vector.empty
             else
               value.getValue match {
                 case items: java.util.List[?] =>
@@ -801,12 +802,12 @@ object Collector {
   def source(compilation: CompilationUnitTree): String =
     sources.computeIfAbsent(compilation, _ => Option(compilation.getSourceFile).map(_.toUri.getPath).getOrElse(""))
 
-  private val sources = java.util.Collections.synchronizedMap(new java.util.WeakHashMap[CompilationUnitTree, String])
+  private val sources = java.util.Collections.synchronizedMap(java.util.WeakHashMap[CompilationUnitTree, String]())
 
   /** The line the node is defined on. */
   private def line(trees: Trees, compilation: CompilationUnitTree, node: Tree): Int = {
     val position = trees.getSourcePositions.getStartPosition(compilation, node)
-    if position < 0 then 0 else compilation.getLineMap.getLineNumber(position).toInt
+    if (position < 0) 0 else compilation.getLineMap.getLineNumber(position).toInt
   }
 
 }

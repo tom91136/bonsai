@@ -13,7 +13,7 @@ import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.ConstantType
 import dotty.tools.dotc.util.Spans.Span
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private[analysis] object StructureObserver {
@@ -56,10 +56,7 @@ private[analysis] object StructureObserver {
   */
 private[analysis] class StructureObserver(symbols: Symbols, classes: () => Iterable[Symbol], lines: Lines) {
   import StructureObserver.*
-  import symbols.key
-  import symbols.nodeOf
-  import symbols.nodes
-  import symbols.qualifiedName
+  import symbols.*
 
   private val stuttering = mutable.Map.empty[Symbol, (String, String)]
   private val echoes     = mutable.Map.empty[Symbol, Int]

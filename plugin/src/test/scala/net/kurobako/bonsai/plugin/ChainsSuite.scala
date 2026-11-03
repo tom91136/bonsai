@@ -3,7 +3,7 @@ package net.kurobako.bonsai.plugin
 import java.nio.file.Files
 import java.nio.file.Path
 import munit.FunSuite
-import net.kurobako.bonsai.collections.Laws
+import net.kurobako.bonsai.collections.*
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 

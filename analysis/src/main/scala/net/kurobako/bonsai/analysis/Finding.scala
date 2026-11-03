@@ -2,14 +2,15 @@ package net.kurobako.bonsai.analysis
 
 import java.nio.charset.StandardCharsets.UTF_8
 import java.security.MessageDigest
-import net.kurobako.bonsai.java.JavaLint
+import net.kurobako.bonsai.java.*
+import scala.collection.mutable
 
 object Finding {
   private[analysis] val Numbers = "[0-9]+".r
 
   /** `text` with every run of digits replaced by `#`. */
   private[analysis] def numberless(text: String): String = {
-    val out = StringBuilder(text.length)
+    val out = mutable.StringBuilder(text.length)
     var i   = 0
     while (i < text.length) {
       val c = text.charAt(i)
@@ -28,7 +29,7 @@ object Finding {
   /** A rule of the analysis. Rules are in reporting priority: evidence from references and constructions first,
     * structural observations last. Warnings of `strict` rules fail the ci mode.
     */
-  final class Rule private[Finding] (val id: String, val strict: Boolean, val ordinal: Int) {
+  class Rule private[Finding] (val id: String, val strict: Boolean, val ordinal: Int) {
     def suppressedBy(ids: Set[String]): Boolean =
       ids("*") || ids(id) || ids.exists(other => JavaLint.IntelliJ.get(other).exists(_(id)))
 
@@ -36,86 +37,86 @@ object Finding {
   }
 
   object Rule {
-    private val declared = scala.collection.mutable.ArrayBuffer.empty[Rule]
+    private val declared = mutable.ArrayBuffer.empty[Rule]
 
     private def rule(id: String, strict: Boolean = false): Rule = {
-      val found = new Rule(id, strict, declared.size)
+      val found = Rule(id, strict, declared.size)
       declared += found
       found
     }
 
-    val Unused                  = rule("unused", strict = true)
-    val TestOnly                = rule("test-only", strict = true)
-    val UnusedMember            = rule("unused-member", strict = true)
-    val UnreadField             = rule("unread-field", strict = true)
-    val TestOnlyMember          = rule("test-only-member", strict = true)
-    val DuplicateCode           = rule("duplicate-code", strict = true)
-    val NearDuplicateCode       = rule("near-duplicate-code")
-    val InlinedHelper           = rule("inlined-helper")
-    val InvariantViolation      = rule("invariant-violation", strict = true)
-    val InvariantSum            = rule("invariant-sum")
-    val InvariantRedundant      = rule("invariant-redundant")
-    val InvariantConstant       = rule("invariant-constant")
-    val BypassedFactory         = rule("bypassed-factory")
-    val ParallelCollections     = rule("parallel-collections")
-    val ExclusiveOptions        = rule("exclusive-options")
-    val RedundantFlag           = rule("redundant-flag")
-    val ConstantField           = rule("constant-field")
-    val ConstantArgument        = rule("constant-argument")
-    val FlagArgument            = rule("flag-argument")
-    val IgnoredResult           = rule("ignored-result")
-    val InvertedBoolean         = rule("inverted-boolean")
-    val UnusedReturnValue       = rule("unused-return-value")
-    val ModuleRequirement       = rule("module-requirement")
-    val DataClump               = rule("data-clump")
-    val SingleImplementation    = rule("single-implementation")
-    val FixedTypeParameter      = rule("fixed-type-parameter")
-    val RedundantDefault        = rule("redundant-default", strict = true)
-    val UnusedDefault           = rule("unused-default")
-    val WeakerAccess            = rule("weaker-access")
-    val VarCouldBeVal           = rule("var-could-be-val", strict = true)
-    val RegistryDrift           = rule("registry-drift")
-    val AnonymousGiven          = rule("anonymous-given")
-    val CommonFactor            = rule("common-factor")
-    val DuplicateShape          = rule("duplicate-shape")
-    val IdenticalCases          = rule("identical-cases")
-    val EnumCandidate           = rule("enum-candidate")
-    val HugeMethod              = rule("huge-method", strict = true)
-    val MethodLimit             = rule("method-limit", strict = true)
-    val Complexity              = rule("complexity")
-    val SpaceComplexity         = rule("space-complexity")
-    val UnusedBound             = rule("unused-bound")
-    val IntermediateCollections = rule("intermediate-collections", strict = true)
-    val MegamorphicCall         = rule("megamorphic-call")
-    val PurityRegression        = rule("purity-regression", strict = true)
-    val EffectPolicy            = rule("effect-policy", strict = true)
-    val ImpureContract          = rule("impure-contract")
-    val SharedWrite             = rule("shared-write")
-    val PureDiscard             = rule("pure-discard")
-    val EffectfulTransform      = rule("effectful-transform")
-    val WarningsNotFatal        = rule("warnings-not-fatal")
-    val PlatformDuplicate       = rule("platform-duplicate-source")
-    val DetachedCompanion       = rule("detached-companion")
-    val AliasWithOperations     = rule("alias-with-operations")
-    val ReceiverParameter       = rule("receiver-parameter")
-    val NumberedFamily          = rule("numbered-family")
-    val FieldStutter            = rule("field-stutter")
-    val StaleNameString         = rule("stale-name-string")
-    val ParameterAliasFamily    = rule("parameter-alias-family")
-    val PackageSplitCandidate   = rule("package-split-candidate")
-    val BaseClassSingleSubclass = rule("base-class-single-subclass")
-    val DisjointObject          = rule("disjoint-object")
-    val MisplacedMember         = rule("misplaced-member")
-    val SatelliteType           = rule("satellite-type")
-    val EnumDispatchFunction    = rule("enum-dispatch-function")
-    val Nesting                 = rule("nesting")
-    val ForbiddenTerm           = rule("forbidden-term")
-    val ForbiddenPattern        = rule("forbidden-pattern")
-    val BinaryFile              = rule("binary-file")
-    val LicenceNotice           = rule("licence-notice")
-    val ExcludedSource          = rule("excluded-source")
-    val BlankLineBefore         = rule("blank-line-before")
-    val BlankLineAfter          = rule("blank-line-after")
+    val Unused: Rule                  = rule("unused", strict = true)
+    val TestOnly: Rule                = rule("test-only", strict = true)
+    val UnusedMember: Rule            = rule("unused-member", strict = true)
+    val UnreadField: Rule             = rule("unread-field", strict = true)
+    val TestOnlyMember: Rule          = rule("test-only-member", strict = true)
+    val DuplicateCode: Rule           = rule("duplicate-code", strict = true)
+    val NearDuplicateCode: Rule       = rule("near-duplicate-code")
+    val InlinedHelper: Rule           = rule("inlined-helper")
+    val InvariantViolation: Rule      = rule("invariant-violation", strict = true)
+    val InvariantSum: Rule            = rule("invariant-sum")
+    val InvariantRedundant: Rule      = rule("invariant-redundant")
+    val InvariantConstant: Rule       = rule("invariant-constant")
+    val BypassedFactory: Rule         = rule("bypassed-factory")
+    val ParallelCollections: Rule     = rule("parallel-collections")
+    val ExclusiveOptions: Rule        = rule("exclusive-options")
+    val RedundantFlag: Rule           = rule("redundant-flag")
+    val ConstantField: Rule           = rule("constant-field")
+    val ConstantArgument: Rule        = rule("constant-argument")
+    val FlagArgument: Rule            = rule("flag-argument")
+    val IgnoredResult: Rule           = rule("ignored-result")
+    val InvertedBoolean: Rule         = rule("inverted-boolean")
+    val UnusedReturnValue: Rule       = rule("unused-return-value")
+    val ModuleRequirement: Rule       = rule("module-requirement")
+    val DataClump: Rule               = rule("data-clump")
+    val SingleImplementation: Rule    = rule("single-implementation")
+    val FixedTypeParameter: Rule      = rule("fixed-type-parameter")
+    val RedundantDefault: Rule        = rule("redundant-default", strict = true)
+    val UnusedDefault: Rule           = rule("unused-default")
+    val WeakerAccess: Rule            = rule("weaker-access")
+    val VarCouldBeVal: Rule           = rule("var-could-be-val", strict = true)
+    val RegistryDrift: Rule           = rule("registry-drift")
+    val AnonymousGiven: Rule          = rule("anonymous-given")
+    val CommonFactor: Rule            = rule("common-factor")
+    val DuplicateShape: Rule          = rule("duplicate-shape")
+    val IdenticalCases: Rule          = rule("identical-cases")
+    val EnumCandidate: Rule           = rule("enum-candidate")
+    val HugeMethod: Rule              = rule("huge-method", strict = true)
+    val MethodLimit: Rule             = rule("method-limit", strict = true)
+    val Complexity: Rule              = rule("complexity")
+    val SpaceComplexity: Rule         = rule("space-complexity")
+    val UnusedBound: Rule             = rule("unused-bound")
+    val IntermediateCollections: Rule = rule("intermediate-collections", strict = true)
+    val MegamorphicCall: Rule         = rule("megamorphic-call")
+    val PurityRegression: Rule        = rule("purity-regression", strict = true)
+    val EffectPolicy: Rule            = rule("effect-policy", strict = true)
+    val ImpureContract: Rule          = rule("impure-contract")
+    val SharedWrite: Rule             = rule("shared-write")
+    val PureDiscard: Rule             = rule("pure-discard")
+    val EffectfulTransform: Rule      = rule("effectful-transform")
+    val WarningsNotFatal: Rule        = rule("warnings-not-fatal")
+    val PlatformDuplicate: Rule       = rule("platform-duplicate-source")
+    val DetachedCompanion: Rule       = rule("detached-companion")
+    val AliasWithOperations: Rule     = rule("alias-with-operations")
+    val ReceiverParameter: Rule       = rule("receiver-parameter")
+    val NumberedFamily: Rule          = rule("numbered-family")
+    val FieldStutter: Rule            = rule("field-stutter")
+    val StaleNameString: Rule         = rule("stale-name-string")
+    val ParameterAliasFamily: Rule    = rule("parameter-alias-family")
+    val PackageSplitCandidate: Rule   = rule("package-split-candidate")
+    val BaseClassSingleSubclass: Rule = rule("base-class-single-subclass")
+    val DisjointObject: Rule          = rule("disjoint-object")
+    val MisplacedMember: Rule         = rule("misplaced-member")
+    val SatelliteType: Rule           = rule("satellite-type")
+    val EnumDispatchFunction: Rule    = rule("enum-dispatch-function")
+    val Nesting: Rule                 = rule("nesting")
+    val ForbiddenTerm: Rule           = rule("forbidden-term")
+    val ForbiddenPattern: Rule        = rule("forbidden-pattern")
+    val BinaryFile: Rule              = rule("binary-file")
+    val LicenceNotice: Rule           = rule("licence-notice")
+    val ExcludedSource: Rule          = rule("excluded-source")
+    val BlankLineBefore: Rule         = rule("blank-line-before")
+    val BlankLineAfter: Rule          = rule("blank-line-after")
 
     // The lints the javac plugin finds in the Java code of a build, which the analysis reports as findings of their own,
     // and the laws of the chains of calls it finds there.

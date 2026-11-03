@@ -10,8 +10,8 @@ import dotty.tools.dotc.core.Types.JavaArrayType
 import dotty.tools.dotc.core.Types.MethodType
 import dotty.tools.dotc.core.Types.PolyType
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.java.Descriptors
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.java.*
+import net.kurobako.bonsai.lifting.*
 
 /** The key of a method as the javac plugin writes it: the qualified owner, the name and the erased JVM descriptor, so
   * that overloads do not collide and a Java caller and a Scala callee agree on a method.
@@ -22,8 +22,13 @@ private object Keys {
   def of(method: Symbol)(using Context): Option[String] =
     try {
       val (parameters, result) = signature(TypeErasure.transformInfo(method, method.info), Vector.empty)
-      val returned             = if method.isConstructor then Descriptors.primitive("void") else field(result)
-      Some(Descriptors.key(Calls.qualified(Calls.owner(method)), method.name.toString, parameters.map(field), returned))
+      val returned             = if (method.isConstructor) Descriptors.primitive("void") else field(result)
+      Some(Descriptors.key(
+        Calls.qualified(Calls.owner(method)),
+        method.name.toString,
+        parameters.map(field(_)),
+        returned
+      ))
     } catch { case _: TypeError => None }
 
   @annotation.tailrec

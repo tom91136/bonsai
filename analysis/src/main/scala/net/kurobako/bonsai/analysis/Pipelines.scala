@@ -3,9 +3,9 @@ package net.kurobako.bonsai.analysis
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Symbols.Symbol
-import net.kurobako.bonsai.collections.Laws
+import net.kurobako.bonsai.*
+import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.collections as core
-import net.kurobako.bonsai.lifting
 
 /** Chains of collection calls in one method, whose intermediate collections and passes the laws of the shared algebra
   * find fewer of.
@@ -54,7 +54,7 @@ object Pipelines {
     ): Vector[Pipelines.Lifted] =
       if (body.source.content().isEmpty) Vector.empty
       else
-        lifter.chains(body, method, descend).map { found =>
+        lifter.chains(body, method, descend(_)).map { found =>
           Pipelines.Lifted(
             name,
             node,

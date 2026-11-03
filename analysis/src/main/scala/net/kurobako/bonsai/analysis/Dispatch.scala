@@ -6,8 +6,7 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.lifting.Calls
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 /** The classes of the build, what implements each abstraction, and the calls that dispatch to more than one class.
@@ -88,7 +87,7 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
         (test || !nodeOf(cls).exists(_.test)) && reaches(cls, callee.owner, receiver)
       ).flatMap(concreteMember(callee, _)).toVector.distinct
       Option.when(
-        implementations.size > MaximumInlinedReceivers && !implementations.forall(stableRead)
+        implementations.size > MaximumInlinedReceivers && !implementations.forall(stableRead(_))
       )(Megamorphic.Site(
         qualifiedName(caller),
         node,

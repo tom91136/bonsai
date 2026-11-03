@@ -1,7 +1,7 @@
 package net.kurobako.bonsai.analysis
 
-import Polynomial.Factor.Named
-import Polynomial.Naming
+import Polynomial.*
+import Polynomial.Factor.*
 
 /** The atoms of a bound: sizes of collections by access path, logarithms of those, and the unknown `?`.
   *

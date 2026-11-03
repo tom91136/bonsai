@@ -14,7 +14,7 @@ import dotty.tools.dotc.core.Types.MethodType
 import dotty.tools.dotc.core.Types.PolyType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeRef
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 
 /** Definitions and calls that opaque and refined types make mean something other than they read: extensions a member of
   * the underlying type replaces, methods that only call themselves, checked operations a conversion bypasses, equality

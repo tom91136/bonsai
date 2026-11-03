@@ -15,7 +15,7 @@ import dotty.tools.dotc.core.Types.ConstantType
 import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeParamRef
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 /** A construction or call kept until every precondition, binding and default argument of the build is known. */

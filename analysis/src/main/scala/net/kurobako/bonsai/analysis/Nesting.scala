@@ -123,7 +123,7 @@ object Nesting {
     def settle(): Unit = {
       var changed = false
       order.tail.foreach { node =>
-        val candidate = predecessors(node).filter(dominator(_) >= 0).reduce(meet)
+        val candidate = predecessors(node).filter(dominator(_) >= 0).reduce(meet(_, _))
         if (dominator(node) != candidate) changed = true
         dominator(node) = candidate
       }
@@ -139,7 +139,7 @@ object Nesting {
     case Under(owner: String)
   }
 
-  private final class Planner(model: Model, config: Config) {
+  private class Planner(model: Model, config: Config) {
     private val declarations: Map[String, Declaration] = model.declarations.map(d => d.name -> d).toMap
     private val names: Vector[String]                  = declarations.keys.toVector.sorted
     private val units: Vector[String]                  = names.filter(declarations(_).unit)
@@ -196,7 +196,7 @@ object Nesting {
         if (declarations(user).unit) Some(user) else placed.getOrElse(user, outer(user))
       order.foreach { member =>
         val declaration = declarations(member)
-        placed(member) = usersOf(member).map(home).distinct match {
+        placed(member) = usersOf(member).map(home(_)).distinct match {
           case Vector(Some(owner))
               if declaration.movable && !rooted(member) && !outer(member).contains(owner) &&
                 canOwn(owner, declaration) =>
@@ -254,7 +254,7 @@ object Nesting {
       units.map(unit => unit -> target(unit)).toMap ++
         members.map(member => member -> Place(owners(member), inside = false))
 
-    private final class Tree(placed: Map[String, Place]) {
+    private class Tree(placed: Map[String, Place]) {
       private val kids: Map[String, Vector[String]] =
         names.flatMap(name => placed(name).owner.map(_ -> name)).groupMap(_._1)(_._2)
 
@@ -348,7 +348,7 @@ object Nesting {
       val outside     = members.flatMap(usersOf(_)).filterNot(bundle).toVector.distinct
       val reached     = members.flatMap(uses(_)).filterNot(bundle).toVector.distinct
       val landing     = to.fold(0)(parent => tree.depth(parent) + 1)
-      val oldFile     = from.fold(name)(tree.top)
+      val oldFile     = from.fold(name)(tree.top(_))
       val crossing    = to.exists(parent => tree.top(parent) != oldFile)
       val tooDeep     = landing + tree.height(name, moved) > config.depth || deepCrossing(crossing, landing)
       // moving up out of a unit that is already inside the owner would only flatten it

@@ -12,7 +12,8 @@ private class Analysis {
   // (from file, to file, through macro expansion) -> first reference
   private val references = mutable.Map.empty[(String, String, Boolean), SourcePosition]
   // The definitions of each source annotated with the checks they suppress, read from the source's own unit.
-  val suppressions = mutable.Map.empty[SourceFile, List[(Span, Set[String])]]
+  val suppressions: mutable.Map[SourceFile, List[(Span, Set[String])]] =
+    mutable.Map.empty[SourceFile, List[(Span, Set[String])]]
 
   def paths: collection.Set[String] = files
 

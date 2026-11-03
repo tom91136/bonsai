@@ -3,7 +3,7 @@ package net.kurobako.bonsai.analysis
 import dotty.tools.dotc.util.SourceFile
 import dotty.tools.io.PlainFile
 import java.nio.file.Files
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 import scala.io.Codec
 
 class LinesSuite extends munit.FunSuite {

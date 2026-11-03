@@ -8,7 +8,7 @@ import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 
 /** Parameters of inline methods. A by-value parameter is bound once at each expansion, so a function it receives is
   * allocated as a closure and called through `apply`; an inline one is substituted at every use, so its argument runs

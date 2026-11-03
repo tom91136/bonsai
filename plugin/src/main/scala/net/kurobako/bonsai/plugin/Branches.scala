@@ -7,7 +7,7 @@ import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object Branches {
@@ -31,7 +31,7 @@ private class Branches(checks: Checks)(using Context) {
     case Free(pieces: List[tpd.Tree])
   }
 
-  private final case class Invocation(
+  private case class Invocation(
       method: Symbol,
       receiver: Option[tpd.Tree],
       types: List[Type],
@@ -339,7 +339,7 @@ private class Branches(checks: Checks)(using Context) {
             shared.size >= MinimumShared && differing.nonEmpty && shared.size * SharedShare >= positions.size &&
             differing.forall(index => !Trees.byName(first.parameters(index))) &&
             varying.forall(_.forall(argument => Calls.lambda(argument).isEmpty)) &&
-            !varying.forall(_.forall(trivial))
+            !varying.forall(_.forall(trivial(_)))
           )
             checks(
               Check.RepeatedBranchCall,

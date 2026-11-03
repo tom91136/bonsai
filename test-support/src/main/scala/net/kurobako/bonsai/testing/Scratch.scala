@@ -9,7 +9,7 @@ object Scratch {
 
   private val root = {
     val root = Files.createTempDirectory("bonsai-tests-")
-    Runtime.getRuntime.addShutdownHook(Thread(() => delete(root)))
+    sys.runtime.addShutdownHook(Thread(() => delete(root)))
     root
   }
 

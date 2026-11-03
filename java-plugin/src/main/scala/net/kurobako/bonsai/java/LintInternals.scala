@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
+import com.sun.source.tree.Tree.Kind
 import javax.lang.model.element.Element
 import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.TypeElement
@@ -29,8 +30,8 @@ object LintInternals {
 
   /** A type or member the code names. */
   private object JdkInternalApi extends Lint {
-    val id    = JavaLint.JdkInternalApi.id
-    val kinds = Set(Tree.Kind.IDENTIFIER, Tree.Kind.MEMBER_SELECT, Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.JdkInternalApi.id
+    val kinds: Set[Kind] = Set(Tree.Kind.IDENTIFIER, Tree.Kind.MEMBER_SELECT, Tree.Kind.METHOD_INVOCATION)
 
     private def reason(context: Context, declared: Element): Option[String] =
       JdkPackages.unsupported(context.elements.getPackageOf(declared).getQualifiedName.toString)
@@ -123,8 +124,8 @@ object LintInternals {
 
   /** The imports of a file, which name a package or a type the JDK does not support. */
   private object JdkImports extends Lint {
-    val id    = JavaLint.JdkInternalApi.id
-    val kinds = Set.empty[Tree.Kind]
+    val id               = JavaLint.JdkInternalApi.id
+    val kinds: Set[Kind] = Set.empty[Tree.Kind]
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
       case unit: CompilationUnitTree =>

@@ -3,9 +3,7 @@ package net.kurobako.bonsai.configuration
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
-import net.kurobako.bonsai.configuration.BonsaiConfiguration.Analysis
-import net.kurobako.bonsai.configuration.BonsaiConfiguration.Configuration
-import net.kurobako.bonsai.configuration.BonsaiConfiguration.ConfigurationError
+import net.kurobako.bonsai.configuration.BonsaiConfiguration.*
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 

@@ -62,8 +62,8 @@ class PatternShadow extends SyntacticRule("PatternShadow") {
   private def variables(pattern: Pat): List[String] = pattern.collect { case variable: Pat.Var => variable.name.value }
 
   private def values(stats: List[Stat]): List[String] = stats.flatMap {
-    case value: Defn.Val    => value.pats.flatMap(variables)
-    case variable: Defn.Var => variable.pats.flatMap(variables)
+    case value: Defn.Val    => value.pats.flatMap(variables(_))
+    case variable: Defn.Var => variable.pats.flatMap(variables(_))
     case owner: Defn.Object => List(owner.name.value)
     case _                  => Nil
   }

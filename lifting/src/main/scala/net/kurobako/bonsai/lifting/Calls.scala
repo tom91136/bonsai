@@ -7,13 +7,10 @@ import dotty.tools.dotc.core.NameKinds.DefaultGetterName
 import dotty.tools.dotc.core.Symbols.NoSymbol
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import net.kurobako.bonsai.effects.Axioms
-import net.kurobako.bonsai.effects.Effect
-import net.kurobako.bonsai.effects.Kind
-import net.kurobako.bonsai.effects.Receiver
+import net.kurobako.bonsai.effects.*
 
 /** Presents the calls of typed trees to the effect axioms. */
-final class Calls(using Context) {
+class Calls(using Context) {
 
   /** `method` called on `qualifier`, if it has one. */
   def of(method: Symbol, qualifier: Option[tpd.Tree]): Axioms.Call = {
@@ -80,7 +77,7 @@ object Calls {
 
   @annotation.tailrec
   private def peelWith(tree: tpd.Tree, extra: PartialFunction[tpd.Tree, tpd.Tree])(using Context): tpd.Tree =
-    if extra.isDefinedAt(tree) then peelWith(extra(tree), extra)
+    if (extra.isDefinedAt(tree)) peelWith(extra(tree), extra)
     else
       tree match {
         case tpd.Typed(expression, _)   => peelWith(expression, extra)
@@ -125,7 +122,7 @@ object Calls {
 
   /** What a call on `qualifier` acts on; `fresh` holds for the locals of the method that hold a value it allocated. */
   def receiver(qualifier: Option[tpd.Tree], fresh: Symbol => Boolean)(using Context): Receiver[Symbol] =
-    qualifier.map(unconverted) match {
+    qualifier.map(unconverted(_)) match {
       case None | Some(tpd.This(_))                              => Receiver.This
       case Some(reference: tpd.Ident) if fresh(reference.symbol) => Receiver.Fresh
       case Some(reference: tpd.Ident)                            => Receiver.Other(Some(reference.symbol))

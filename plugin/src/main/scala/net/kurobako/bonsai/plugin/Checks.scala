@@ -21,7 +21,7 @@ import dotty.tools.dotc.util.SourcePosition
 import dotty.tools.dotc.util.Spans.Span
 import dotty.tools.dotc.util.SrcPos
 import java.nio.file.Path
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 /** Reports each check at its severity unless it is disabled, escalated to an error, kept as a warning by `lenient`, or
@@ -46,7 +46,7 @@ private class Checks(
     * skipped. Reporting any other check through it fails, so the set cannot drift from the code.
     */
   def owning(owned: Iterable[Check]): Checks =
-    new Checks(disabled, errors, lenient, instrumented, suppressions, patched, Some(owned.toSet))
+    Checks(disabled, errors, lenient, instrumented, suppressions, patched, Some(owned.toSet))
 
   /** Whether some check this view owns is enabled. */
   def active: Boolean = reported.forall(_.exists(!disabled(_)))
@@ -101,7 +101,7 @@ private class Checks(
 
   private def suppressed(check: Check, position: SrcPos)(using Context): Boolean = {
     val source = position.sourcePos.source
-    val spans  = suppressions.get(source).orElse(ctx.run.nn.units.find(_.source == source).map(remember))
+    val spans  = suppressions.get(source).orElse(ctx.run.nn.units.find(_.source == source).map(remember(_)))
     spans.getOrElse(Nil).exists((span, ids) => span.contains(position.span) && (ids("*") || ids(check.id)))
   }
 
@@ -144,7 +144,7 @@ private class Checks(
 /** A message with code actions for editors to offer. `-rewrite` applies them for lint warnings in some compilers only,
   * so the checks apply them themselves.
   */
-private final class Fixable(text: String, fixes: List[CodeAction])(using Context)
+private class Fixable(text: String, fixes: List[CodeAction])(using Context)
     extends Message(ErrorMessageID.NoExplanationID) {
   def kind: MessageKind                                 = MessageKind.NoKind
   def msg(using Context): String                        = text

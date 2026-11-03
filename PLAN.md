@@ -57,6 +57,7 @@ All of these pass on JDK 25 with sbt 2.0.10 and Maven 3.9; the Maven plugin buil
 - `sbt scriptedAll`.
 - `scripts/publish-maven-local.sh`, then `mvn -B verify` in `maven-plugin`.
 - `sbt analyse`: bonsai on itself, failing on any finding.
+- `sbt scalafixAll --check`: the scalafix rules of bonsai on every module of the build except the rule fixtures, failing on any finding.
 
 ### Gaps
 

@@ -4,9 +4,8 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Contexts.ctx
 import dotty.tools.dotc.plugins.PluginPhase
 import dotty.tools.dotc.plugins.StandardPlugin
-import net.kurobako.bonsai.effects.Partials
-import net.kurobako.bonsai.effects.Throwing
-import net.kurobako.bonsai.lifting.Globs
+import net.kurobako.bonsai.effects.*
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 class BonsaiPlugin extends StandardPlugin {

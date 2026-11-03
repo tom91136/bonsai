@@ -9,10 +9,8 @@ import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Symbols.requiredModule
 import dotty.tools.dotc.util.SourceFile
 import dotty.tools.dotc.util.Spans.Span
-import net.kurobako.bonsai.collections.Arg
-import net.kurobako.bonsai.collections.Chain
-import net.kurobako.bonsai.collections.Kind
-import net.kurobako.bonsai.collections.Step
+import net.kurobako.bonsai.collections.*
+import scala.annotation.tailrec
 import scala.collection.mutable
 
 /** A chain of calls as the laws see it, with where its steps are written: `ends(i)` is the extent of the expression
@@ -20,7 +18,7 @@ import scala.collection.mutable
   * builds from the receiver before `from`. `standalone` when the chain is a statement, a definition or an argument,
   * where a receiver needs no parentheses once nothing follows it.
   */
-final case class Lifted(chain: Chain, file: SourceFile, source: Span, ends: Vector[Span], standalone: Boolean) {
+case class Lifted(chain: Chain, file: SourceFile, source: Span, ends: Vector[Span], standalone: Boolean) {
 
   /** The extent a rewrite of the steps up to `until` replaces. */
   def span(until: Int): Span = ends(until - 1)
@@ -158,6 +156,7 @@ class Lifter(purity: Purity)(using Context) {
     case _ => false
   }
 
+  @tailrec
   private def visible(tree: tpd.Tree): tpd.Tree = tree match {
     case tpd.Apply(function, _) if function.tpe.widen.isImplicitMethod => visible(function)
     case other                                                         => other

@@ -1,5 +1,8 @@
 package net.kurobako.bonsai.plugin
 
+import dotty.tools.dotc.ast.Trees.Apply
+import dotty.tools.dotc.ast.Trees.DefDef
+import dotty.tools.dotc.ast.Trees.ValDef
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.ast.tpd.TreeOps
 import dotty.tools.dotc.core.Contexts.Context
@@ -7,7 +10,8 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.NoSymbol
 import dotty.tools.dotc.core.Symbols.Symbol
-import net.kurobako.bonsai.lifting.Calls
+import dotty.tools.dotc.core.Types.Type
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object Bundles {
@@ -77,10 +81,11 @@ private class Bundles(checks: Checks)(using Context) {
   }
 
   private class Scan(candidates: Set[Symbol]) extends tpd.TreeTraverser {
-    val constructions = mutable.Map.empty[Symbol, List[tpd.Apply]]
-    val consumers     = mutable.Map.empty[Symbol, List[(tpd.DefDef, tpd.ValDef)]]
-    val mentions      = mutable.Map.empty[Symbol, Int]
-    val passed        = mutable.Map.empty[tpd.Apply, Symbol]
+    val constructions: mutable.Map[Symbol, List[Apply[Type]]]              = mutable.Map.empty[Symbol, List[tpd.Apply]]
+    val consumers: mutable.Map[Symbol, List[(DefDef[Type], ValDef[Type])]] =
+      mutable.Map.empty[Symbol, List[(tpd.DefDef, tpd.ValDef)]]
+    val mentions: mutable.Map[Symbol, Int]       = mutable.Map.empty[Symbol, Int]
+    val passed: mutable.Map[Apply[Type], Symbol] = mutable.Map.empty[tpd.Apply, Symbol]
 
     private def built(application: tpd.Apply)(using Context): Symbol = {
       val function = application.fun.symbol

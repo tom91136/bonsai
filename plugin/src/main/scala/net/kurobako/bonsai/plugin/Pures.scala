@@ -7,8 +7,7 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.lifting.Calls
-import net.kurobako.bonsai.lifting.Purity
+import net.kurobako.bonsai.lifting.*
 
 /** Expressions that read immutable values and call the standard library without effects, which evaluating later, once
   * or not at all changes nothing: no variable, mutable collection or iterator is involved, and no method that fails on
@@ -77,7 +76,7 @@ private object Pures {
     "java."
   )
 
-  def apply(tree: tpd.Tree)(using Context): Boolean = !tree.existsSubTree(volatile) && pure(tree)
+  def apply(tree: tpd.Tree)(using Context): Boolean = !tree.existsSubTree(volatile(_)) && pure(tree)
 
   private def volatile(tree: tpd.Tree)(using Context): Boolean = tree.isTerm && outside(tree.tpe.widen)
 
@@ -85,7 +84,7 @@ private object Pures {
     val symbol = tpe.dealias.classSymbol
     symbol.exists && {
       val name = Calls.qualified(symbol)
-      name != "java.lang.String" && Outside.exists(name.startsWith) || Purity.stateful(tpe)
+      name != "java.lang.String" && Outside.exists(name.startsWith(_)) || Purity.stateful(tpe)
     }
   }
 
@@ -108,7 +107,7 @@ private object Pures {
   }
 
   private def reference(tree: tpd.Tree)(using Context): Boolean = tree match {
-    case tpd.Apply(function, arguments)    => reference(function) && arguments.forall(pure)
+    case tpd.Apply(function, arguments)    => reference(function) && arguments.forall(pure(_))
     case tpd.TypeApply(function, _)        => reference(function)
     case select @ tpd.Select(qualifier, _) =>
       (if (select.symbol.is(Flags.Method)) allowed(select.symbol) else field(select.symbol)) &&
@@ -129,7 +128,7 @@ private object Pures {
     symbol.exists && !symbol.info.finalResultType.isRef(defn.UnitClass) && !Output(name) &&
     (if (owner == "java.lang.String") Strings(name)
      else
-       owner.startsWith("scala.") && !Outside.exists(owner.startsWith) &&
+       owner.startsWith("scala.") && !Outside.exists(owner.startsWith(_)) &&
        (!Failing(name) || name == "apply" && symbol.owner.is(Flags.ModuleClass)))
   }
 }

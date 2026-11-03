@@ -6,8 +6,7 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.ClassSymbol
 import dotty.tools.dotc.core.Symbols.Symbol
-import net.kurobako.bonsai.lifting.Calls
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object Concurrency {
@@ -141,7 +140,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
       case _ => None
     }
     val counted = winner.filterSubTrees(_.isInstanceOf[tpd.Try]).flatMap {
-      case tpd.Try(_, _, finalizer) => finalizer.filterSubTrees(countsDown(_).isDefined).flatMap(countsDown)
+      case tpd.Try(_, _, finalizer) => finalizer.filterSubTrees(countsDown(_).isDefined).flatMap(countsDown(_))
       case _                        => Nil
     }.toSet
     loser.filterSubTrees {
@@ -156,7 +155,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
     val name                       = symbol.name.toString
     def member(owner: ClassSymbol) = symbol.owner.derivesFrom(owner)
     Option.when(
-      BlockingMembers.exists((owners, blocks) => owners.exists(member) && blocks(name)) ||
+      BlockingMembers.exists((owners, blocks) => owners.exists(member(_)) && blocks(name)) ||
         Waiters.exists((owner, methods) => member(owner) && methods(name)) ||
         Blocking(Calls.qualified(symbol))
     )(name)

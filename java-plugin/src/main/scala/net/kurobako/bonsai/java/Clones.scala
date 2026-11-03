@@ -12,7 +12,8 @@ import javax.lang.model.element.NestingKind
 import javax.lang.model.element.PackageElement
 import javax.lang.model.element.TypeElement
 import javax.lang.model.element.VariableElement
-import net.kurobako.bonsai.collections.CloneCost
+import net.kurobako.bonsai.collections.*
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.hashing.MurmurHash3
@@ -33,7 +34,7 @@ class Clones(trees: Trees) {
   /** The fragments of the body of a method, which the type that holds the method names. */
   def add(body: Tree, path: TreePath, owner: String, method: ExecutableElement, overriding: Boolean): Unit = {
     val nodes = mutable.ArrayBuffer.empty[Clones.Node]
-    Clones.collect(nodes, trees, new TreePath(path, body))
+    Clones.collect(nodes, trees, TreePath(path, body))
     val context = Clones.Context(owner, method, overriding)
     val entire  = Clones.entire(nodes, 0)
     nodes.indices.foreach { index =>
@@ -41,9 +42,9 @@ class Clones(trees: Trees) {
         case _: BlockTree =>
           // A block of statements is a fragment of its own, as a copy of a block of code is what recurs.
           val statements = nodes(index).children
-          if statements.size >= 2 then {
+          if (statements.size >= 2) {
             val total = Clones.cost(nodes, index)
-            if total >= CloneCost.Expression then
+            if (total >= CloneCost.Expression)
               found += Clones.fragment(
                 nodes,
                 statements,
@@ -57,7 +58,7 @@ class Clones(trees: Trees) {
           }
         case _ => ()
       }
-      if Clones.call(nodes(index).tree) || entire.contains(index) then
+      if (Clones.call(nodes(index).tree) || entire.contains(index))
         Clones.expression(nodes, index, entire, context).foreach(found += _)
     }
   }
@@ -78,10 +79,10 @@ object Clones {
 
   /** What a fragment is told apart by, besides its tree: the locals its code defines, and the parameters of its method.
     */
-  private final class Scope(val declared: Set[Element], val parameters: Vector[Element]) {
-    val variables = mutable.ArrayBuffer.empty[Variable]
-    val inside    = mutable.LinkedHashMap.empty[Element, Int]
-    val outside   = mutable.LinkedHashMap.empty[Element, Int]
+  private class Scope(val declared: Set[Element], val parameters: Vector[Element]) {
+    val variables: mutable.ArrayBuffer[Variable]     = mutable.ArrayBuffer.empty[Variable]
+    val inside: mutable.LinkedHashMap[Element, Int]  = mutable.LinkedHashMap.empty[Element, Int]
+    val outside: mutable.LinkedHashMap[Element, Int] = mutable.LinkedHashMap.empty[Element, Int]
   }
 
   /** The node of the single expression that the body of a method consists of, if it consists of one. */
@@ -121,9 +122,9 @@ object Clones {
       total >= CloneCost.Helper &&
       total <= CloneCost.MaximumHelper
     val roles =
-      (if small then Model.Roles.Small else 0) | (if tiny then Model.Roles.Tiny else 0) |
-        (if whole then Model.Roles.Entire else 0) | (if call(tree) && calls == 1 then Model.Roles.Direct else 0) |
-        (if helper then Model.Roles.Helper else 0)
+      (if (small) Model.Roles.Small else 0) | (if (tiny) Model.Roles.Tiny else 0) |
+        (if (whole) Model.Roles.Entire else 0) | (if (call(tree) && calls == 1) Model.Roles.Direct else 0) |
+        (if (helper) Model.Roles.Helper else 0)
     Option.when(applied && (small || whole || total >= CloneCost.Helper))(fragment(
       nodes,
       Vector(index),
@@ -134,7 +135,7 @@ object Clones {
 
   /** The number of calls and constructions in the code of a node. */
   private def invocations(nodes: mutable.ArrayBuffer[Node], index: Int): Int =
-    (if call(nodes(index).tree) then 1 else 0) + nodes(index).children.map(child => invocations(nodes, child)).sum
+    (if (call(nodes(index).tree)) 1 else 0) + nodes(index).children.map(child => invocations(nodes, child)).sum
 
   /** The steps of the chain an expression ends in, a call or a selection from a result, as `a.b(c).d` holds three. */
   private def steps(tree: Tree): Int = Lint.unwrapped(tree) match {
@@ -144,7 +145,7 @@ object Clones {
         case _                        => 1
       }
     case _: NewClassTree          => 1
-    case select: MemberSelectTree => if path(select.getExpression) then 0 else 1 + steps(select.getExpression)
+    case select: MemberSelectTree => if (path(select.getExpression)) 0 else 1 + steps(select.getExpression)
     case _                        => 0
   }
 
@@ -155,6 +156,7 @@ object Clones {
   }
 
   /** Whether a tree names a variable through a chain of selections, which a copy may refer to another of. */
+  @tailrec
   private def path(tree: Tree): Boolean = tree match {
     case _: IdentifierTree        => true
     case select: MemberSelectTree => path(select.getExpression)
@@ -166,8 +168,8 @@ object Clones {
     def names(element: Element): Boolean =
       element.isInstanceOf[VariableElement] || element.isInstanceOf[TypeElement] && qualifies(node)
     node.tree match {
-      case identifier: IdentifierTree => identifier.getName.toString != "this" && node.symbol.exists(names)
-      case select: MemberSelectTree   => path(select.getExpression) && node.symbol.exists(names)
+      case identifier: IdentifierTree => identifier.getName.toString != "this" && node.symbol.exists(names(_))
+      case select: MemberSelectTree   => path(select.getExpression) && node.symbol.exists(names(_))
       case _                          => false
     }
   }
@@ -207,10 +209,10 @@ object Clones {
       loose,
       literals.toVector,
       member = context.method.getSimpleName.toString,
-      broad = if items.size == 1 then broad else 0L,
+      broad = if (items.size == 1) broad else 0L,
       variables = scope.variables.toVector,
       roles = roles,
-      reach = if everywhere(context.method) then "" else context.owner
+      reach = if (everywhere(context.method)) "" else context.owner
     )
   }
 
@@ -254,11 +256,11 @@ object Clones {
     val node                    = nodes(index)
     val (valued, ignored, wide) = own(node, locals, literals)
     val named                   = !covered && reference(node)
-    if named then scope.variables += variable(nodes, index, scope)
-    else if !covered then
+    if (named) scope.variables += variable(nodes, index, scope)
+    else if (!covered)
       node.literal.foreach(literal =>
         scope.variables += Variable(
-          if literal.kind == "String" then 'S' else 'L',
+          if (literal.kind == "String") 'S' else 'L',
           literal.value,
           literal.value,
           -1,
@@ -268,7 +270,7 @@ object Clones {
     val (exact, loose, broad) = node.children.foldLeft((valued, ignored, wide))((seed, child) =>
       chained(seed, numbered(nodes, child, locals, literals, scope, covered || named))
     )
-    (exact, loose, if named || node.literal.isDefined then Reference else broad)
+    (exact, loose, if (named || node.literal.isDefined) Reference else broad)
   }
 
   private def chained(seed: (Long, Long, Long), next: (Long, Long, Long)): (Long, Long, Long) =
@@ -286,7 +288,7 @@ object Clones {
           node.symbol match {
             case Some(element) if Clones.local(element) =>
               val (prefix, numbers) =
-                if scope.declared.contains(element) then ("bound#", scope.inside) else ("free#", scope.outside)
+                if (scope.declared.contains(element)) ("bound#", scope.inside) else ("free#", scope.outside)
               (prefix + numbers.getOrElseUpdate(element, numbers.size + 1), identifier.getName.toString)
             case Some(element) => (Clones.name(element), identifier.getName.toString)
             case None          => (identifier.getName.toString, identifier.getName.toString)
@@ -294,6 +296,7 @@ object Clones {
         case other => (other.toString, other.toString)
       }
     }
+    @tailrec
     def head(at: Int): Int = nodes(at).tree match {
       case _: MemberSelectTree => head(nodes(at).children.head)
       case _                   => at
@@ -304,7 +307,7 @@ object Clones {
     }
     val (key, shown) = text(index)
     val parameter    = nodes(head(index)).symbol.map(scope.parameters.indexOf(_)).getOrElse(-1)
-    Variable('R', key, shown, parameter, if parameter >= 0 then selections(index) else "")
+    Variable('R', key, shown, parameter, if (parameter >= 0) selections(index) else "")
   }
 
   /** The part of a node the hash takes, which the local definitions are anonymised in. The last hash leaves out what a
@@ -319,7 +322,7 @@ object Clones {
     val shared = node.symbol match {
       case None          => 0L
       case Some(element) =>
-        if Clones.local(element) then Local else identities.getOrElseUpdate(element, nameHash(name(element)))
+        if (Clones.local(element)) Local else identities.getOrElseUpdate(element, nameHash(name(element)))
     }
     val reference = node.symbol match {
       case Some(element) if Clones.local(element) => locals.getOrElseUpdate(element, locals.size.toLong + 1L)
@@ -335,14 +338,14 @@ object Clones {
         )
     }
     val base = mix(kind * 31 + reference)
-    val wide = if Clones.call(node.tree) then mix(kind * 31) else mix(kind * 31 + shared)
+    val wide = if (Clones.call(node.tree)) mix(kind * 31) else mix(kind * 31 + shared)
     (mix(base * 31 + literal._1), mix(base * 31 + literal._2), wide)
   }
 
   /** The cost of the code of a node on the scale of `CloneCost`, which is what makes it worth reporting. */
   private def cost(nodes: mutable.ArrayBuffer[Node], index: Int): Int = {
     val node = nodes(index)
-    if node.cost < 0 then node.cost = weight(node) + node.children.map(child => cost(nodes, child)).sum
+    if (node.cost < 0) node.cost = weight(node) + node.children.map(child => cost(nodes, child)).sum
     node.cost
   }
 
@@ -403,9 +406,9 @@ object Clones {
     val stack   = mutable.Stack.empty[Int]
     val scanner = new TreePathScanner[Unit, Unit] {
       override def scan(tree: Tree, unused: Unit): Unit =
-        if tree != null then {
+        if (tree != null) {
           val index = nodes.size
-          nodes += new Node(trees, tree, new TreePath(getCurrentPath(), tree))
+          nodes += Node(trees, tree, TreePath(getCurrentPath(), tree))
           stack.headOption.foreach(parent => nodes(parent).children = nodes(parent).children :+ index)
           stack.push(index)
           try super.scan(tree, unused)
@@ -413,7 +416,7 @@ object Clones {
         }
     }
     val rootIndex = nodes.size
-    nodes += new Node(trees, root.getLeaf, root)
+    nodes += Node(trees, root.getLeaf, root)
     stack.push(rootIndex)
     try scanner.scan(root, ())
     finally { val _ = stack.pop() }
@@ -466,7 +469,7 @@ object Clones {
     hashes.foldLeft(seed)((hash, child) => mix(hash * 31 + child))
 
   /** A node of the code, which the hashes take. */
-  private final class Node(val trees: Trees, val tree: Tree, val path: TreePath) {
+  private class Node(val trees: Trees, val tree: Tree, val path: TreePath) {
     var children: Vector[Int] = Vector.empty
     var cost: Int             = -1
 
@@ -486,7 +489,7 @@ object Clones {
     private def endOffset: Long = trees.getSourcePositions.getEndPosition(path.getCompilationUnit, tree)
 
     private def lineOf(offset: Long): Int =
-      if offset < 0 then 0 else path.getCompilationUnit.getLineMap.getLineNumber(offset).toInt
+      if (offset < 0) 0 else path.getCompilationUnit.getLineMap.getLineNumber(offset).toInt
 
     /** The line the code of the node begins on. */
     def startLine: Int = lineOf(startOffset)

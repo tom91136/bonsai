@@ -23,9 +23,8 @@ import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import dotty.tools.dotc.typer.Applications
 import dotty.tools.dotc.util.NoSourcePosition
 import dotty.tools.dotc.util.Spans.Span
-import net.kurobako.bonsai.effects.Partials
-import net.kurobako.bonsai.lifting.Calls
-import net.kurobako.bonsai.lifting.Classes
+import net.kurobako.bonsai.effects.*
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 /** Lints that need the types of expressions, which SemanticDB does not record: array comparisons, conversions to the

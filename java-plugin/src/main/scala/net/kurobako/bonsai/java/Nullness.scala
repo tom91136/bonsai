@@ -36,7 +36,7 @@ private[java] object Nullness {
         (tpe match {
           case variable: TypeVariable         => nullableType(variable.getUpperBound)
           case wildcard: WildcardType         => nullableType(wildcard.getExtendsBound)
-          case intersection: IntersectionType => intersection.getBounds.asScala.exists(nullableType)
+          case intersection: IntersectionType => intersection.getBounds.asScala.exists(nullableType(_))
           case _                              => false
         }))
 
@@ -44,8 +44,8 @@ private[java] object Nullness {
     * the array is the one on its type.
     */
   def nullableElement(element: Element): Boolean =
-    if hasSimpleName(element, Boundary) then true
-    else if element.asType.getKind == TypeKind.ARRAY then nullableType(element.asType)
+    if (hasSimpleName(element, Boundary)) true
+    else if (element.asType.getKind == TypeKind.ARRAY) nullableType(element.asType)
     else hasAnnotation(element, Nullable) || nullableType(element.asType)
 
   /** Whether the method says its result is never null. */
@@ -64,7 +64,7 @@ private[java] object Nullness {
   def marked(element: Element): Boolean =
     element != null && {
       val known = markings.get(element)
-      if known != null then known.booleanValue
+      if (known != null) known.booleanValue
       else {
         val found = scope(element).getOrElse(marked(element.getEnclosingElement))
         markings.put(element, found)
@@ -72,19 +72,19 @@ private[java] object Nullness {
       }
     }
 
-  private val markings = java.util.Collections.synchronizedMap(new java.util.WeakHashMap[Element, java.lang.Boolean])
+  private val markings = java.util.Collections.synchronizedMap(java.util.WeakHashMap[Element, java.lang.Boolean]())
 
   /** Whether the element settles the marking of its code itself: a boundary and an unmarked scope do not mark it. */
   private def scope(element: Element): Option[Boolean] =
-    if hasSimpleName(element, Boundary) then Some(false)
-    else if hasAnnotation(element, NullMarked) then Some(true)
-    else if hasAnnotation(element, NullUnmarked) then Some(false)
+    if (hasSimpleName(element, Boundary)) Some(false)
+    else if (hasAnnotation(element, NullMarked)) Some(true)
+    else if (hasAnnotation(element, NullUnmarked)) Some(false)
     else None
 
   def hasBoundary(element: Element): Boolean = {
     var current = element
     while current != null do {
-      if hasSimpleName(current, Boundary) then return true
+      if (hasSimpleName(current, Boundary)) return true
       current = current.getEnclosingElement
     }
     false

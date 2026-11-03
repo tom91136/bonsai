@@ -36,7 +36,7 @@ object Parallel {
   /** A pool of `threads` workers, or `sequential` for one thread. Closing it stops the workers. */
   def apply(threads: Int): Parallel = if (threads <= 1) sequential else Pool(threads)
 
-  private final class Pool(threads: Int) extends Parallel {
+  private class Pool(threads: Int) extends Parallel {
     private val counter  = AtomicInteger()
     private val executor = ThreadPoolExecutor(
       threads,

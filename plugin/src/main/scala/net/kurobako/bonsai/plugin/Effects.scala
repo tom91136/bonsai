@@ -8,11 +8,8 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.MethodicType
-import net.kurobako.bonsai.effects.Axioms
-import net.kurobako.bonsai.effects.Effect
-import net.kurobako.bonsai.effects.Kind
-import net.kurobako.bonsai.effects.Receiver
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.effects.*
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object Effects {

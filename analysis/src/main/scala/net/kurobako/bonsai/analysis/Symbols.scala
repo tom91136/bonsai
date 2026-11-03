@@ -12,12 +12,12 @@ import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.io.AbstractFile
 import java.nio.file.Path
 import java.nio.file.PathMatcher
-import net.kurobako.bonsai.lifting.Globs
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 import scala.util.matching.Regex
 
 /** The nodes of the build that its symbols name, and the references between them. */
-private[analysis] final class Symbols(
+private[analysis] class Symbols(
     outputs: Vector[Output],
     libraries: Set[String],
     generated: Vector[PathMatcher],
@@ -205,7 +205,7 @@ private[analysis] final class Symbols(
     }
 
   @annotation.tailrec
-  def node(symbol: Symbol)(using Context): Symbol =
+  final def node(symbol: Symbol)(using Context): Symbol =
     if (!symbol.exists || symbol.is(Flags.Package) || symbol.isTopLevelDefinitionsObject) NoSymbol
     else if (symbol.owner.isTopLevelDefinitionsObject)
       if (symbol.is(Flags.Synthetic) || symbol.isConstructor) NoSymbol else symbol

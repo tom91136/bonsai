@@ -764,7 +764,7 @@ object Purity {
       case site
           if {
             val summary = resolve(site.facts, frame(site.method, None), None, keepFresh = true)
-            !runsUnknown(summary) && summary.effects.forall(id =>
+            runsOnlyKnown(summary) && summary.effects.forall(id =>
               effectTable(id).kind == Kind.Reads && !effectTable(id).assumed
             )
           } =>
@@ -794,9 +794,9 @@ object Purity {
     /** Whether calling `method` has no effect at all, not even throwing, and runs nothing that is unknown. */
     def silent(method: Symbol): Boolean = summaries.get(Key(method, None)).exists(quiet)
 
-    private def runsUnknown(summary: Summary): Boolean = summary.invokes.nonEmpty || summary.captures.nonEmpty
+    private def runsOnlyKnown(summary: Summary): Boolean = summary.invokes.isEmpty && summary.captures.isEmpty
 
-    private def quiet(summary: Summary): Boolean = summary.effects.isEmpty && !runsUnknown(summary)
+    private def quiet(summary: Summary): Boolean = summary.effects.isEmpty && runsOnlyKnown(summary)
 
     /** Assignments to shared variables by functions other threads run, by enclosing method, with the variable, the
       * method running the function and the assignment.
@@ -1399,7 +1399,7 @@ object Purity {
 
     // A local of the method, or of a function inside it, that holds a value it allocated or is a variable.
     private def local(symbol: Symbol, method: Symbol): Boolean =
-      !symbol.owner.isClass && (symbol.is(Flags.Mutable) || fresh(symbol)) && ownedBy(symbol.owner, method)
+      !symbol.owner.isClass && (symbol.is(Flags.Mutable) || fresh(symbol)) && within(symbol, method)
 
     private def within(symbol: Symbol, owner: Symbol): Boolean = ownedBy(symbol.owner, owner)
 

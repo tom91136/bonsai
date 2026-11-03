@@ -6,7 +6,7 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
-import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object JdkInternals {
@@ -40,7 +40,7 @@ private class JdkInternals(checks: Checks) extends tpd.TreeTraverser {
       case imported: tpd.Import =>
         val expression = imported.expr
         val reason     =
-          if expression.symbol.is(Flags.Package) then JdkPackages.unsupported(expression.symbol.fullName.toString)
+          if (expression.symbol.is(Flags.Package)) JdkPackages.unsupported(expression.symbol.fullName.toString)
           else unsupported(expression.symbol)
         reason.foreach(why => report(s"the ${imported.show} is $why", imported))
       case select: tpd.Select if select.name != nme.CONSTRUCTOR && !named(select.qualifier) =>
@@ -70,7 +70,7 @@ private class JdkInternals(checks: Checks) extends tpd.TreeTraverser {
     unsupported(symbol).foreach(why => report(s"the ${kind(symbol)} ${symbol.showFullName} is $why", tree))
 
   private def kind(symbol: Symbol)(using Context): String =
-    if symbol.isClass || symbol.isType then "type" else "member"
+    if (symbol.isClass || symbol.isType) "type" else "member"
 
   private def packageOf(symbol: Symbol)(using Context): Option[String] =
     Option.when(symbol.exists && !symbol.is(Flags.Package) && (symbol.isClass || symbol.owner.isClass))(
@@ -84,7 +84,7 @@ private class JdkInternals(checks: Checks) extends tpd.TreeTraverser {
 
   private def named(tree: tpd.Tree)(using Context): Boolean = unsupported(tree.symbol).isDefined
 
-  private def constantName(arguments: List[tpd.Tree]): Option[String] = arguments.headOption.flatMap(constantOf)
+  private def constantName(arguments: List[tpd.Tree]): Option[String] = arguments.headOption.flatMap(constantOf(_))
 
   /** The class a receiver names, by a class literal or a lookup of a constant name, and why it is unsupported. */
   private def receiver(tree: tpd.Tree)(using Context): Option[(String, String)] = tree match {
@@ -109,7 +109,7 @@ private class JdkInternals(checks: Checks) extends tpd.TreeTraverser {
           if function.symbol.name.toString.startsWith("find") && function.symbol.name.toString != "findClass" &&
             function.symbol.owner.fullName.toString == "java.lang.invoke.MethodHandles.Lookup" =>
         arguments.headOption.flatMap(argument => receiver(argument)).map((owner, why) =>
-          (arguments.lift(1).flatMap(constantOf).getOrElse(function.symbol.name.toString), owner, why)
+          (arguments.lift(1).flatMap(constantOf(_)).getOrElse(function.symbol.name.toString), owner, why)
         )
       case _ => None
     }

@@ -7,10 +7,8 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.MethodicType
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.effects.Axioms
-import net.kurobako.bonsai.effects.Kind
-import net.kurobako.bonsai.lifting.Calls
-import net.kurobako.bonsai.lifting.Purity
+import net.kurobako.bonsai.effects.*
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 private object Repeats {
@@ -232,7 +230,7 @@ private class Repeats(checks: Checks)(using Context) {
 
   private def library(symbol: Symbol, qualifier: tpd.Tree): Boolean = symbol.exists && symbol.is(Flags.Method) && {
     val owner = symbol.owner.fullName.toString
-    (owner.startsWith("scala.") || owner == "java.lang.String") && !Foreign.exists(owner.startsWith) &&
+    (owner.startsWith("scala.") || owner == "java.lang.String") && !Foreign.exists(owner.startsWith(_)) &&
     !Axioms.effects(axioms.of(symbol, Some(qualifier))).exists(effect => Impure(effect.kind))
   }
 

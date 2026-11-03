@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
+import com.sun.source.tree.Tree.Kind
 import com.sun.source.util.TreeScanner
 import javax.lang.model.`type`.ArrayType
 import javax.lang.model.`type`.DeclaredType
@@ -25,8 +26,8 @@ object LintErrors {
 
   /** An exception that is caught and never looked at. */
   private object SwallowedException extends Lint {
-    val id    = JavaLint.SwallowedException.id
-    val kinds = Set(Tree.Kind.CATCH)
+    val id               = JavaLint.SwallowedException.id
+    val kinds: Set[Kind] = Set(Tree.Kind.CATCH)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val catchTree = tree.asInstanceOf[CatchTree]
@@ -36,7 +37,7 @@ object LintErrors {
       val ignored   = name == "ignored" || name.contains("ignored")
       if (ignored) Vector.empty
       else {
-        val throws = scala.collection.mutable.ArrayBuffer.empty[ThrowTree]
+        val throws = mutable.ArrayBuffer.empty[ThrowTree]
         new TreeScanner[Unit, Unit] {
           override def visitThrow(node: ThrowTree, unused: Unit): Unit = {
             throws += node
@@ -48,14 +49,16 @@ object LintErrors {
         }.scan(catchTree.getBlock, ())
 
         val derived = derivedElements(context, catchTree.getBlock, element, carries(context))
-        if throws.nonEmpty && !callsInitCause(context, catchTree.getBlock, derived) &&
+        if (
+          throws.nonEmpty && !callsInitCause(context, catchTree.getBlock, derived) &&
           throws.exists(t => !mentionsAny(context, t.getExpression, derived))
-        then
+        )
+
           Vector(context.found("the exception thrown from the catch block drops the caught exception as its cause"))
         else {
           val restored = Lints.isType(context.typeOf(parameter), "java.lang.InterruptedException") &&
             LintErrors.callsInterrupt(catchTree.getBlock)
-          if mentionsAny(context, catchTree.getBlock, Set(element)) || restored then Vector.empty
+          if (mentionsAny(context, catchTree.getBlock, Set(element)) || restored) Vector.empty
           else Vector(context.found("the exception is caught and never looked at"))
         }
       }
@@ -66,7 +69,7 @@ object LintErrors {
     var found = false
     new TreeScanner[Unit, Unit] {
       override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
-        if elements.contains(context.elementOf(node)) then found = true
+        if (elements.contains(context.elementOf(node))) found = true
         super.visitIdentifier(node, unused)
       }
     }.scan(tree, ())
@@ -85,13 +88,14 @@ object LintErrors {
       val before = derived.size
       new TreeScanner[Unit, Unit] {
         override def visitVariable(node: VariableTree, unused: Unit): Unit = {
-          if node.getInitializer != null && mentionsAny(context, node.getInitializer, derived) &&
+          if (
+            node.getInitializer != null && mentionsAny(context, node.getInitializer, derived) &&
             carries(node.getInitializer)
-          then derived += context.elementOf(node)
+          ) derived += context.elementOf(node)
           super.visitVariable(node, unused)
         }
         override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
-          if mentionsAny(context, node.getExpression, derived) && carries(node.getExpression) then
+          if (mentionsAny(context, node.getExpression, derived) && carries(node.getExpression))
             node.getVariable match {
               case id: IdentifierTree => derived += context.elementOf(id)
               case _                  => ()
@@ -99,10 +103,10 @@ object LintErrors {
           super.visitAssignment(node, unused)
         }
         override def visitInstanceOf(node: InstanceOfTree, unused: Unit): Unit = {
-          if mentionsAny(context, node.getExpression, derived) && node.getPattern != null then
+          if (mentionsAny(context, node.getExpression, derived) && node.getPattern != null)
             new TreeScanner[Unit, Unit] {
               override def visitBindingPattern(pat: BindingPatternTree, u: Unit): Unit = {
-                if pat.getVariable != null then derived += context.elementOf(pat.getVariable)
+                if (pat.getVariable != null) derived += context.elementOf(pat.getVariable)
                 super.visitBindingPattern(pat, u)
               }
               override def visitVariable(v: VariableTree, u: Unit): Unit = {
@@ -194,27 +198,27 @@ object LintErrors {
     var found = false
     new TreeScanner[Unit, Unit] {
       override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
-        if Lints.arguments(node).exists(passes) then found = true
+        if (Lints.arguments(node).exists(passes(_))) found = true
         super.visitMethodInvocation(node, unused)
       }
       override def visitNewClass(node: NewClassTree, unused: Unit): Unit = {
-        if Lints.arguments(node).exists(passes) then found = true
+        if (Lints.arguments(node).exists(passes(_))) found = true
         super.visitNewClass(node, unused)
       }
       override def visitThrow(node: ThrowTree, unused: Unit): Unit = {
-        if passes(node.getExpression) then found = true
+        if (passes(node.getExpression)) found = true
         super.visitThrow(node, unused)
       }
       override def visitReturn(node: ReturnTree, unused: Unit): Unit = {
-        if node.getExpression != null && passes(node.getExpression) then found = true
+        if (node.getExpression != null && passes(node.getExpression)) found = true
         super.visitReturn(node, unused)
       }
       override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
-        if passes(node.getExpression) then found = true
+        if (passes(node.getExpression)) found = true
         super.visitAssignment(node, unused)
       }
       override def visitVariable(node: VariableTree, unused: Unit): Unit = {
-        if node.getInitializer != null && passes(node.getInitializer) then found = true
+        if (node.getInitializer != null && passes(node.getInitializer)) found = true
         super.visitVariable(node, unused)
       }
     }.scan(block, ())
@@ -223,17 +227,19 @@ object LintErrors {
 
   /** An exception that is caught so generally that the failures of the program are hidden. */
   private object CatchThrowable extends Lint {
-    val id    = JavaLint.CatchThrowable.id
-    val kinds = Set(Tree.Kind.CATCH)
+    val id               = JavaLint.CatchThrowable.id
+    val kinds: Set[Kind] = Set(Tree.Kind.CATCH)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val catchTree = tree.asInstanceOf[CatchTree]
       val caught    = context.typeOf(catchTree.getParameter)
       val generic   = Lints.isType(caught, "java.lang.Throwable") || Lints.isType(caught, "java.lang.Error")
       val element   = context.elementOf(catchTree.getParameter)
-      if generic &&
+      if (
+        generic &&
         !handsOn(context, catchTree.getBlock, derivedElements(context, catchTree.getBlock, element, carries(context)))
-      then
+      )
+
         Vector(context.found("the exception is caught so generally that the failures of the program are hidden"))
       else Vector.empty
     }
@@ -241,8 +247,8 @@ object LintErrors {
 
   /** A stack trace that is written to the output of the program instead of being reported. */
   private object PrintStackTrace extends Lint {
-    val id    = JavaLint.PrintStackTrace.id
-    val kinds = Set(Tree.Kind.METHOD_INVOCATION)
+    val id               = JavaLint.PrintStackTrace.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val invocation = tree.asInstanceOf[MethodInvocationTree]
@@ -251,7 +257,7 @@ object LintErrors {
         case identifier: IdentifierTree => identifier.getName.toString == "printStackTrace"
         case _                          => false
       }
-      if printed then
+      if (printed)
         Vector(context.found("the stack trace is written to the output of the program instead of being reported"))
       else Vector.empty
     }
@@ -259,8 +265,8 @@ object LintErrors {
 
   /** A checked exception a method declares but never throws. */
   private object RedundantThrows extends Lint {
-    val id    = JavaLint.RedundantThrows.id
-    val kinds = Set(Tree.Kind.METHOD)
+    val id               = JavaLint.RedundantThrows.id
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
       case method: MethodTree if method.getBody != null =>
@@ -293,7 +299,7 @@ object LintErrors {
       new TreeScanner[Unit, Unit] {
         override def visitThrow(node: ThrowTree, unused: Unit): Unit = {
           val tpe = context.mirrorOf(node.getExpression).orNull
-          if Lints.subtype(context, tpe, declared) then found = true
+          if (Lints.subtype(context, tpe, declared)) found = true
           super.visitThrow(node, unused)
         }
 
@@ -308,7 +314,7 @@ object LintErrors {
             case Some(executable: ExecutableType) => executable.getThrownTypes.asScala.toVector
             case _                                => Vector.empty
           }
-          if (declares ++ inferred).exists(tpe => Lints.subtype(context, tpe, declared)) then found = true
+          if ((declares ++ inferred).exists(tpe => Lints.subtype(context, tpe, declared))) found = true
           super.visitMethodInvocation(node, unused)
         }
 
@@ -329,15 +335,15 @@ object LintErrors {
 
   /** A catch parameter named as ignored that the catch block reads, which says the code meant to handle it. */
   private object CatchMayIgnoreException extends Lint {
-    val id    = JavaLint.CatchMayIgnoreException.id
-    val kinds = Set(Tree.Kind.CATCH)
+    val id               = JavaLint.CatchMayIgnoreException.id
+    val kinds: Set[Kind] = Set(Tree.Kind.CATCH)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val catchTree = tree.asInstanceOf[CatchTree]
       val name      = catchTree.getParameter.getName.toString
-      if !ignored(name) then Vector.empty
+      if (!ignored(name)) Vector.empty
       else {
-        if mentionsAny(context, catchTree.getBlock, Set(context.elementOf(catchTree.getParameter))) then
+        if (mentionsAny(context, catchTree.getBlock, Set(context.elementOf(catchTree.getParameter))))
           Vector(context.found(s"the catch parameter '$name' is named as ignored but the block reads it"))
         else Vector.empty
       }

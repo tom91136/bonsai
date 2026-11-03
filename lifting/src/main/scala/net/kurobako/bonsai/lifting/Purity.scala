@@ -7,7 +7,7 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.core.Types.Type
-import net.kurobako.bonsai.effects.Axioms
+import net.kurobako.bonsai.effects.*
 
 /** What a front end knows of the effects of the functions a chain passes. `lambda` and `method` hold when calling the
   * function has no effect a rewrite could reorder, repeat or drop, and `value` when evaluating a plain expression has

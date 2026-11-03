@@ -4,7 +4,7 @@ package net.kurobako.bonsai.effects
   * comes through, `library` when a library body it reaches performs it, and `assumed` when nothing but the method's
   * name suggests it.
   */
-final case class Effect[+T](
+case class Effect[+T](
     kind: Kind,
     cause: String,
     onThis: Boolean = false,
@@ -41,4 +41,4 @@ enum Receiver[+T] {
 }
 
 /** A method's effects and the indices of the function and by-name parameters it runs. */
-final case class Summary[+T](effects: Iterable[Effect[T]], invokes: Set[Int])
+case class Summary[+T](effects: Iterable[Effect[T]], invokes: Set[Int])

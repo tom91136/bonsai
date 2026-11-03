@@ -6,7 +6,7 @@ import com.sun.source.util.TreePathScanner
 import com.sun.source.util.TreeScanner
 import com.sun.source.util.Trees
 import javax.lang.model.element.*
-import net.kurobako.bonsai.java.Lints.child
+import net.kurobako.bonsai.java.Lints.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
@@ -40,7 +40,7 @@ private[java] object Constructors {
   /** What the jumps pending at a point of the walk carry: for `return`, `break`, `continue` and `yield`, the counts at
     * each, the innermost target first, and for the labelled ones, by label.
     */
-  private final case class Exits(
+  private case class Exits(
       returned: Counts,
       breaks: List[Counts],
       continues: List[Counts],
@@ -141,18 +141,18 @@ private[java] object Constructors {
       !(write.plain && direct(write.target) && within(trees, write.at, field.getEnclosingElement))
     }
 
-  private final class Assignments(trees: Trees, field: Element, constructors: Map[ExecutableElement, TreePath]) {
+  private class Assignments(trees: Trees, field: Element, constructors: Map[ExecutableElement, TreePath]) {
 
     private val settled = mutable.Map.empty[ExecutableElement, Boolean]
     private val running = mutable.Set.empty[ExecutableElement]
 
-    def everywhere: Boolean = constructors.keys.forall(assigns)
+    def everywhere: Boolean = constructors.keys.forall(assigns(_))
 
     private def assigns(constructor: ExecutableElement): Boolean =
       settled.get(constructor).getOrElse {
         val found = !running(constructor) && {
           running += constructor
-          try new Walk(constructors(constructor)).once
+          try Walk(constructors(constructor)).once
           finally running -= constructor
         }
         settled.update(constructor, found)
@@ -162,26 +162,26 @@ private[java] object Constructors {
     private def names(path: TreePath): Boolean = trees.getElement(path) == field
 
     private def shift(counts: Counts): Counts =
-      if counts.isEmpty then Once else counts.map(count => (count + 1).min(2))
+      if (counts.isEmpty) Once else counts.map(count => (count + 1).min(2))
 
     /** Whether the code reads or writes the field. */
     private def touches(path: TreePath): (Boolean, Boolean) = {
       var read = false
       new TreePathScanner[Unit, Unit] {
         override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
-          if names(getCurrentPath) then read = true
+          if (names(getCurrentPath)) read = true
           super.visitIdentifier(node, unused)
         }
 
         override def visitMemberSelect(node: MemberSelectTree, unused: Unit): Unit = {
-          if names(getCurrentPath) then read = true
+          if (names(getCurrentPath)) read = true
           super.visitMemberSelect(node, unused)
         }
       }.scan(path, ())
       (read, Effects.writes(path).exists(write => names(child(write.at, write.target))))
     }
 
-    private final class Walk(constructor: TreePath) {
+    private class Walk(constructor: TreePath) {
 
       private var exits  = Exits.none
       private var failed = false
@@ -255,8 +255,8 @@ private[java] object Constructors {
         */
       private def expression(path: TreePath, counts: Counts): Counts = {
         val (read, wrote) = touches(path)
-        if counts.isEmpty then if wrote then Once else counts
-        else if !wrote && (!read || counts == Once) then counts
+        if (counts.isEmpty) if (wrote) Once else counts
+        else if (!wrote && (!read || counts == Once)) counts
         else bad
       }
 
@@ -424,7 +424,7 @@ private[java] object Constructors {
         * leave the loop.
         */
       private def guard(path: TreePath, condition: ExpressionTree)(from: Counts): (Counts, Counts) =
-        if condition == null then pass(from) else test(child(path, condition), from)
+        if (condition == null) pass(from) else test(child(path, condition), from)
 
       /** A loop assigns once only if nothing it assigns reaches the start of the next round, as the compiler refuses a
         * final field assigned in a loop. The condition comes before the body for `while` and `for`, and after it for
@@ -452,11 +452,11 @@ private[java] object Constructors {
         val (again, finished) = after(block(path, updates, rejoined))
         val broken            = exits.breaks.head
         exits = exits.copy(breaks = exits.breaks.tail, continues = exits.continues.tail)
-        skipped ++ finished ++ broken ++ (if again.subsetOf(counts) then Set.empty[Int] else bad)
+        skipped ++ finished ++ broken ++ (if (again.subsetOf(counts)) Set.empty[Int] else bad)
       }
 
       private def proceed(tree: ContinueTree, counts: Counts): Counts = {
-        if tree.getLabel != null then repeating(tree.getLabel.toString, counts) else continuing(counts)
+        if (tree.getLabel != null) repeating(tree.getLabel.toString, counts) else continuing(counts)
         Set.empty
       }
 
@@ -467,7 +467,7 @@ private[java] object Constructors {
         var ended   = Set.empty[Int]
         tree.getCases.asScala.foreach { arm =>
           val armPath = child(path, arm)
-          if arm.getCaseKind == CaseTree.CaseKind.RULE then
+          if (arm.getCaseKind == CaseTree.CaseKind.RULE)
             ended ++=
               (arm.getBody match {
                 case value: ExpressionTree => valued(child(armPath, value), value, selected)
@@ -481,7 +481,7 @@ private[java] object Constructors {
       }
 
       private def leave(tree: BreakTree, counts: Counts): Counts = {
-        if tree.getLabel != null then leaving(tree.getLabel.toString, counts) else breaking(counts)
+        if (tree.getLabel != null) leaving(tree.getLabel.toString, counts) else breaking(counts)
         Set.empty
       }
 
@@ -494,7 +494,7 @@ private[java] object Constructors {
         tree.getCases.asScala.foreach { arm =>
           val armPath = child(path, arm)
           covered ||= arm.getLabels.asScala.exists(_.isInstanceOf[DefaultCaseLabelTree])
-          if arm.getCaseKind == CaseTree.CaseKind.RULE then
+          if (arm.getCaseKind == CaseTree.CaseKind.RULE)
             ended ++=
               (arm.getBody match {
                 case value: ExpressionTree => plain(child(armPath, value), value, selected)
@@ -504,7 +504,7 @@ private[java] object Constructors {
         }
         val broken = exits.breaks.head
         exits = exits.copy(breaks = exits.breaks.tail)
-        ended ++ through ++ broken ++ (if covered then Set.empty[Int] else selected)
+        ended ++ through ++ broken ++ (if (covered) Set.empty[Int] else selected)
       }
 
       /** The jumps out of the try and catch blocks run the `finally` block on the way, so they carry what it does to
@@ -535,12 +535,12 @@ private[java] object Constructors {
             val entry   = handlers.foldLeft(entered ++ finished)(_ ++ _._2) ++ pending.all
             val after   = statement(closing, entry)
             val through =
-              if touches(closing)._2 then Some(if entry.subsetOf(Set(0)) then after else bad)
-              else if after == entry then None
-              else if after.isEmpty then Some(after)
+              if (touches(closing)._2) Some(if (entry.subsetOf(Set(0))) after else bad)
+              else if (after == entry) None
+              else if (after.isEmpty) Some(after)
               else Some(bad)
             exits = exits ++ through.fold(pending)(settled =>
-              pending.map(jumped => if jumped.isEmpty then jumped else settled)
+              pending.map(jumped => if (jumped.isEmpty) jumped else settled)
             )
             through.getOrElse(finished)
         }
@@ -550,7 +550,7 @@ private[java] object Constructors {
         * start when the code assigns the field.
         */
       private def midway(path: TreePath, start: Counts): Counts =
-        if touches(path)._2 then shift(start) else Set.empty
+        if (touches(path)._2) shift(start) else Set.empty
 
       /** A statement the walk does not follow: it leaves the field alone, and the exits it holds are taken as they are.
         */
@@ -560,11 +560,11 @@ private[java] object Constructors {
           override def visitReturn(node: ReturnTree, unused: Unit): Unit     = returning(kept)
           override def visitYield(node: YieldTree, unused: Unit): Unit       = yielding(kept)
           override def visitContinue(node: ContinueTree, unused: Unit): Unit =
-            if node.getLabel != null then repeating(node.getLabel.toString, kept)
+            if (node.getLabel != null) repeating(node.getLabel.toString, kept)
           override def visitLambdaExpression(node: LambdaExpressionTree, unused: Unit): Unit = ()
           override def visitClass(node: ClassTree, unused: Unit): Unit                       = ()
           override def visitBreak(node: BreakTree, unused: Unit): Unit                       =
-            if node.getLabel != null then leaving(node.getLabel.toString, kept)
+            if (node.getLabel != null) leaving(node.getLabel.toString, kept)
         }.scan(path.getLeaf, ())
         kept
       }

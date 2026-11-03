@@ -14,9 +14,9 @@ import javax.tools.JavaFileObject
 import javax.tools.StandardLocation
 import javax.tools.ToolProvider
 import munit.FunSuite
-import net.kurobako.bonsai.java.Collector
+import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.java.Model as JavaModel
-import net.kurobako.bonsai.testing.Scratch
+import net.kurobako.bonsai.testing.*
 import scala.jdk.CollectionConverters.*
 
 /** Compiles test sources into throwaway main and test outputs and analyses them as one build. */
@@ -145,7 +145,7 @@ trait AnalysisSuite extends FunSuite {
   /** Compiles Java files into `classes` with the class path `path`, and returns the model the javac plugin collects. */
   protected def javac(files: Seq[Path], classes: Path, path: Seq[Path]): JavaModel.Model = {
     val compiler    = ToolProvider.getSystemJavaCompiler
-    val diagnostics = new java.util.ArrayList[String]()
+    val diagnostics = java.util.ArrayList[String]()
     val manager     = compiler.getStandardFileManager(null, null, null)
     manager.setLocation(StandardLocation.CLASS_OUTPUT, java.util.List.of(classes.toFile))
     manager.setLocation(StandardLocation.CLASS_PATH, path.map(_.toFile).asJava)

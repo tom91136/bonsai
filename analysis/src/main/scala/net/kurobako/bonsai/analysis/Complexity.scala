@@ -1,6 +1,6 @@
 package net.kurobako.bonsai.analysis
 
-import net.kurobako.bonsai.lifting.Globs
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 /** Methods whose time or allocation grows faster than linearly in the sizes of collections they reach. */
