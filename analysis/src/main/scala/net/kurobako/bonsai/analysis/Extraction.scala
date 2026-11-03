@@ -55,7 +55,7 @@ object Extraction {
     * threads, beside the standard ones, `reflective` globs the types the build names only in strings, and `hot` the
     * classes whose code runs hot, with `!` before a glob leaving out what it matches, and `bounded` the members and
     * parameters whose collections hold a declared number of elements; `facts` hold the bounds of methods the build
-    * holds no code of.
+    * holds no code of. The stages that read files and touch no compiler state run on `parallel`.
     */
   def read(
       manifest: Manifest,
@@ -63,12 +63,13 @@ object Extraction {
       concurrent: Set[String] = Set.empty,
       reflective: Vector[String] = Vector.empty,
       hot: Vector[String] = Vector.empty,
-      bounded: Vector[Complexity.Bounded] = Vector.empty
+      bounded: Vector[Complexity.Bounded] = Vector.empty,
+      parallel: Parallel = Parallel.sequential
   ): Either[Vector[String], Result] = {
     val result = Promise[Either[Vector[String], Result]]()
     val thread = Thread(
       Thread.currentThread.getThreadGroup,
-      () => result.complete(Try(extract(manifest, generated, concurrent, reflective, hot, bounded))): Unit,
+      () => result.complete(Try(extract(manifest, generated, concurrent, reflective, hot, bounded, parallel))): Unit,
       "bonsai-extraction",
       StackSize
     )
@@ -92,7 +93,8 @@ object Extraction {
       concurrent: Set[String],
       reflective: Vector[String],
       hot: Vector[String],
-      bounded: Vector[Complexity.Bounded]
+      bounded: Vector[Complexity.Bounded],
+      parallel: Parallel
   ): Either[Vector[String], Result] = {
     // The compiler aborts the whole run on a file whose names or sections it cannot index, so those are set aside.
     // A platform twin compiles the shared sources again, so only the classes the JVM modules lack are its own. The
@@ -106,13 +108,16 @@ object Extraction {
     val (copies, kept) = listed.flatMap((output, files) =>
       files.collect { case file if file.toString.endsWith(".tasty") => output -> file }
     ).partition((output, file) => manifest.platforms(output.module) && shared(output.path.relativize(file)))
-    val (tasty, unreadable) = kept.map(_._2).partition(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess)
-    val replacements        = Twins.replacing(manifest, copies)
-    val skipped             =
+    val files        = kept.map(_._2)
+    val checked      = files.zip(parallel.map(files)(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess))
+    val tasty        = checked.collect { case (file, true) => file }
+    val unreadable   = checked.collect { case (file, false) => file }
+    val replacements = Twins.replacing(manifest, copies)
+    val skipped      =
       unreadable.map(file => s"class file ${file.getFileName.toString.stripSuffix(".tasty")} could not be read")
     val roots                = manifest.outputs.flatMap(output => Outputs.entryPoints(output.path)).toSet
     val matchers             = generated.map(FileSystems.getDefault.getPathMatcher(_))
-    val (java, javaProblems) = JavaConversion.collected(manifest, matchers)
+    val (java, javaProblems) = JavaConversion.collected(manifest, matchers, parallel)
     val moduleUses           = Modules.uses(manifest, java.nodes, java.reflections)
     val javaCosts            = JavaCosts(java.costs, Complexity.Declared(bounded))
     if (tasty.isEmpty && (skipped ++ javaProblems).nonEmpty) Left(skipped ++ javaProblems)
@@ -137,6 +142,8 @@ object Extraction {
         Vector.empty
       ))
     else {
+      // The class files are read beside the compiler, and joined where the result needs them.
+      val bytecode                                 = Bytecode.reading(primary.map(_.path), parallel)
       def collector(costs: Vector[JavaModel.Cost]) =
         Collector(
           manifest.outputs,
@@ -218,7 +225,7 @@ object Extraction {
         structures,
         phase.memberships,
         phase.duplicates ++ java.clones,
-        Bytecode.read(primary.map(_.path)),
+        bytecode(),
         phase.complexities,
         phase.unusedBounds,
         phase.pipelines,

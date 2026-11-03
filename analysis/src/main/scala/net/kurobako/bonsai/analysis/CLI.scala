@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+import scala.util.Using
 
 object CLI {
   private val usage =
@@ -15,7 +16,7 @@ object CLI {
       "[--reflective <glob>]... [--hot <glob>]... [--intended <glob>=<glob>]... " +
       "[--bounded <member> <max> <reason>]... " +
       "[--nesting-depth <levels>] [--nesting-damping <users>] " +
-      "[--nesting] [--nesting-size <lines>]"
+      "[--nesting] [--nesting-size <lines>] [--parallelism <threads>]"
 
   /** The ci mode fails on the warnings of strict rules. */
   enum Mode(val id: String) {
@@ -25,7 +26,8 @@ object CLI {
 
   // The only constructions are the defaults and a test setting every field, which reads as the flags moving together.
   /** `record` names the file `--write-baseline` writes the reported warnings to, and `relock` the file
-    * `--write-purity-lock` writes the pure methods to.
+    * `--write-purity-lock` writes the pure methods to. `parallelism` is the number of threads the stages that touch no
+    * compiler state may use, which is the parallelism of the build that runs the analysis.
     */
   @SuppressWarnings(Array("bonsai:redundant-flag"))
   case class Options(
@@ -47,7 +49,8 @@ object CLI {
       hot: Vector[String] = Vector.empty,
       intended: Vector[(String, String)] = Vector.empty,
       bounded: Vector[Complexity.Bounded] = Vector.empty,
-      nesting: Nesting.Config = Nesting.Config()
+      nesting: Nesting.Config = Nesting.Config(),
+      parallelism: Int = 1
   ) {
 
     /** The rules whose warnings fail: those named, every rule with `*`, and the strict rules in the ci mode, except
@@ -68,8 +71,21 @@ object CLI {
     Report.Disable(if (rule == "*") Report.Selector.All else Report.Selector.Named(rule), scope)
 
   def main(args: Array[String]): Unit = {
-    val result = for {
-      options  <- parse(args.toList)
+    val result = parse(args.toList).flatMap(options =>
+      Using.resource(Parallel(options.parallelism))(parallel => analyse(options, parallel))
+    )
+    result match {
+      case Left(error) =>
+        Console.err.println(error)
+        sys.exit(1)
+      case Right(lines) =>
+        lines.foreach(line => println(line.show))
+        if (lines.exists(_.failing)) sys.exit(1)
+    }
+  }
+
+  private def analyse(options: Options, parallel: Parallel): Either[String, Vector[Report.Line]] =
+    for {
       path     <- options.manifest.toRight(usage)
       manifest <- Manifest.read(path)
       scanned = scanning(manifest)
@@ -80,7 +96,8 @@ object CLI {
           options.concurrent,
           options.reflective,
           options.hot,
-          options.bounded
+          options.bounded,
+          parallel
         ).left.map(_.mkString("\n"))
     } yield {
       result.problems.foreach(problem => Console.err.println(s"problem: $problem"))
@@ -96,7 +113,7 @@ object CLI {
         },
         identity
       )
-      val findings = Report.findings(result, Intended(options.intended), options.nesting) ++
+      val findings = Report.findings(result, Intended(options.intended), options.nesting, parallel) ++
         Build.duplicates(manifest) ++
         Build.unused(result.unusedBounds) ++ texts ++
         excluded ++
@@ -113,15 +130,6 @@ object CLI {
       )
       Report(findings, result.graph.nodes, report)
     }
-    result match {
-      case Left(error) =>
-        Console.err.println(error)
-        sys.exit(1)
-      case Right(lines) =>
-        lines.foreach(line => println(line.show))
-        if (lines.exists(_.failing)) sys.exit(1)
-    }
-  }
 
   // The sources are read apart from the build's classes, so the scan runs while those are extracted.
   private def scanning(manifest: Manifest): () => (Either[String, Vector[Finding]], Vector[Finding]) =
@@ -201,6 +209,11 @@ object CLI {
       positive("nesting damping", users, 0) match {
         case Left(error)    => Left(error)
         case Right(damping) => parse(rest, options.copy(nesting = options.nesting.copy(damping = damping)))
+      }
+    case "--parallelism" :: threads :: rest =>
+      positive("parallelism", threads, 1) match {
+        case Left(error)  => Left(error)
+        case Right(count) => parse(rest, options.copy(parallelism = count))
       }
     case "--nesting-size" :: lines :: rest =>
       positive("nesting size", lines, 1) match {

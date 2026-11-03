@@ -52,24 +52,35 @@ object Report {
     }
   }
 
-  /** Every finding of every rule over an extracted build. */
+  /** Every finding of every rule over an extracted build, the rules read on `parallel` and the findings joined in the
+    * order of the rules.
+    */
   def findings(
       result: Extraction.Result,
       intended: Intended = Intended(),
-      nesting: Nesting.Config = Nesting.Config()
-  ): Vector[Finding] =
-    Liveness.findings(result.graph) ++ Algebra.findings(result.algebra, result.graph.nodes, intended) ++
-      Invariants.findings(result.algebra, result.graph.nodes) ++
-      Smells.findings(result.smells, result.algebra.products, result.graph.nodes, result.hot, result.graph.edges) ++
-      Designs.findings(result.designs, result.graph.nodes) ++ Structures.findings(result.structures, result.graph) ++
-      Clones.findings(result.clones, result.graph.nodes, intended) ++
-      Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph)) ++
-      Bytecode.findings(result.bytecode, result.graph.nodes, result.hot) ++
-      Complexity.findings(result.complexities, result.graph.nodes, result.hot) ++
-      Pipelines.findings(result.pipelines, result.graph.nodes) ++
-      Megamorphic.findings(result.megamorphic, result.graph.nodes) ++
-      Purity.findings(result.purity, result.graph.nodes) ++
-      JavaLints.findings(result.lints, result.graph.nodes) ++ Nesting.findings(result.nesting, nesting)
+      nesting: Nesting.Config = Nesting.Config(),
+      parallel: Parallel = Parallel.sequential
+  ): Vector[Finding] = {
+    val nodes = result.graph.nodes
+    val rules = Vector[() => Vector[Finding]](
+      () => Liveness.findings(result.graph),
+      () => Algebra.findings(result.algebra, nodes, intended),
+      () => Invariants.findings(result.algebra, nodes),
+      () => Smells.findings(result.smells, result.algebra.products, nodes, result.hot, result.graph.edges),
+      () => Designs.findings(result.designs, nodes),
+      () => Structures.findings(result.structures, result.graph),
+      () => Clones.findings(result.clones, nodes, intended),
+      () => Members.findings(result.members, nodes, Liveness.live(result.graph)),
+      () => Bytecode.findings(result.bytecode, nodes, result.hot),
+      () => Complexity.findings(result.complexities, nodes, result.hot),
+      () => Pipelines.findings(result.pipelines, nodes),
+      () => Megamorphic.findings(result.megamorphic, nodes),
+      () => Purity.findings(result.purity, nodes),
+      () => JavaLints.findings(result.lints, nodes),
+      () => Nesting.findings(result.nesting, nesting)
+    )
+    parallel.map(rules)(_()).flatten
+  }
 
   def apply(findings: Vector[Finding], nodes: Map[String, Node], options: Options): Vector[Line] = {
     // numbered over every finding, so hiding some does not renumber the others

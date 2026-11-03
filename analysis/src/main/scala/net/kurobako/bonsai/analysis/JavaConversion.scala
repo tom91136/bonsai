@@ -32,7 +32,7 @@ private[analysis] object JavaConversion {
   /** The graph of the Java code the javac plugin collected, which holds the nodes it found and the references between
     * them, and the methods, the fields and the calls it found.
     */
-  def collected(manifest: Manifest, generated: Vector[PathMatcher]): (Collected, Vector[String]) = {
+  def collected(manifest: Manifest, generated: Vector[PathMatcher], parallel: Parallel): (Collected, Vector[String]) = {
     val nodes       = mutable.LinkedHashMap.empty[String, Node]
     val edges       = mutable.LinkedHashMap.empty[String, mutable.LinkedHashSet[String]]
     val roots       = mutable.LinkedHashSet.empty[String]
@@ -55,8 +55,9 @@ private[analysis] object JavaConversion {
     val members     = mutable.Map.empty[String, Vector[JavaModel.Field]]
     val kept        = mutable.Map.empty[(String, String), Map[String, JavaModel.Stored]]
     val problems    = Vector.newBuilder[String]
-    manifest.models.foreach { model =>
-      JavaModel.read(model.path) match {
+    val reads       = parallel.map(manifest.models)(model => JavaModel.read(model.path))
+    manifest.models.zip(reads).foreach { (model, read) =>
+      read match {
         case Left(problem)    => problems += problem
         case Right(collected) =>
           // The code of the test sources is marked as such, which lowers the findings that concern it.

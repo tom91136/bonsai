@@ -17,10 +17,16 @@ object Bytecode {
   private val Limit      = 65535
   private val NearLimit  = 0.8
 
-  def read(directories: Vector[Path]): Vector[Method] = directories.view.filter(Files.isDirectory(_)).flatMap {
-    directory =>
-      Outputs.files(directory).filter(_.toString.endsWith(".class")).flatMap(file => methods(Files.readAllBytes(file)))
-  }.toVector
+  def read(directories: Vector[Path]): Vector[Method] = reading(directories, Parallel.sequential)()
+
+  /** Starts reading the class files under `directories` on `parallel`, and returns what joins the methods, in the order
+    * of the files.
+    */
+  def reading(directories: Vector[Path], parallel: Parallel): () => Vector[Method] = {
+    val files = directories.filter(Files.isDirectory(_)).flatMap(Outputs.files(_)).filter(_.toString.endsWith(".class"))
+    val read  = files.map(file => parallel.spawn(() => methods(Files.readAllBytes(file))))
+    () => read.flatMap(_())
+  }
 
   /** Methods near the 64 KB limit, and those HotSpot only interprets, which matter in the `hot` nodes when the build
     * marks any.

@@ -18,6 +18,18 @@ class CLISuite extends FunSuite {
     assert(thrown(CLI.background(() => throw OutOfMemoryError("heap"))).isInstanceOf[OutOfMemoryError])
   }
 
+  test("the parallelism defaults to one, and is a positive integer") {
+    assertEquals(CLI.parse(Nil).map(_.parallelism), Right(1))
+    assertEquals(CLI.parse(List("--parallelism", "8")).map(_.parallelism), Right(8))
+    for (text <- Seq("0", "-2", "many", "2.5", "")) {
+      val parsed = CLI.parse(List("--parallelism", text))
+      assert(
+        parsed.left.exists(_.startsWith(s"a parallelism is an integer of at least 1, not $text\nusage:")),
+        parsed.toString
+      )
+    }
+  }
+
   test("options select, escalate and baseline rules by id") {
     val parsed = CLI.parse(List(
       "--manifest",

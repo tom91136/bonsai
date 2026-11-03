@@ -4,9 +4,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
-import java.util.stream.Stream;
 
 /**
  * The manifest of the build the analysis reads the compiled output of.
@@ -64,18 +64,23 @@ public final class Analysis {
   }
 
   /**
-   * The manifest of the whole build, which is the fragments of every module of it.
+   * The manifest of the whole build, which is the fragments of the modules of it.
    *
-   * <p>The root of the build is the same for every fragment, so the manifest names it once, at the end.
+   * <p>Only the fragments of the modules named are read, so a fragment left in the directory by another build is not
+   * part of this one. The fragments are read in the order of their names, whatever order the modules are named in.
+   * The root of the build is the same for every fragment, so the manifest names it once, at the end.
    */
-  public static List<String> merge(Path fragments, String root) throws IOException {
+  public static List<String> merge(Path fragments, Collection<String> modules, String root) throws IOException {
     List<String> manifest = new ArrayList<>();
-    try (Stream<Path> files = Files.list(fragments)) {
-      for (Path file : files.sorted(Comparator.comparing(Path::toString)).toList()) {
-        for (String line : Files.readAllLines(file)) {
-          if (!line.startsWith("root\t")) {
-            manifest.add(line);
-          }
+    List<Path> files = modules.stream()
+      .distinct()
+      .map(module -> fragments.resolve(module + ".tsv"))
+      .sorted(Comparator.comparing(Path::toString))
+      .toList();
+    for (Path file : files) {
+      for (String line : Files.readAllLines(file)) {
+        if (!line.startsWith("root\t")) {
+          manifest.add(line);
         }
       }
     }

@@ -4,6 +4,7 @@ import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.ResolutionScope;
+import org.apache.maven.project.MavenProject;
 
 import java.io.File;
 import java.io.IOException;
@@ -18,11 +19,13 @@ import java.util.List;
  * <p>The analysis reads the whole build at once, because what it reports is a judgement about the build: a class
  * nothing refers to in any module is dead, and a public API another module uses is not. So every module writes a fragment
  * of the manifest, which names its output, its model, its classpath, its sources and its compiler options, and the
- * analysis runs when the last module of the reactor has written its fragment.
+ * analysis runs in the module that completes the set of the fragments.
  *
- * <p>The last module of the reactor is the last one the build reaches, so the fragments of the others are all there by
- * the time it runs. A build that runs its modules in parallel reaches them in another order, so the analysis of a build
- * that does is not the analysis of the whole build; the build says so when it does.
+ * <p>A build that runs its modules in parallel reaches them in any order, so the module that completes the set is not
+ * always the last one of the reactor. Each module records its fragment in the session once it has written it, and the
+ * module whose record completes the set merges the fragments of the modules of this build and runs the analysis, which
+ * it does once. A module that fails never records its fragment, so the analysis of a build with a failed module does
+ * not run.
  */
 @Mojo(
   name = "analyse",
@@ -61,23 +64,19 @@ public class AnalyseMojo extends BonsaiMojo {
     Path root = root();
     List<String> fragment = Analysis.manifest(root, List.of(module), configuration.text());
 
-    // The fragments of the modules are kept apart, and the manifest of the whole build is made of all of them.
     Path fragments = fragments();
     Path file = fragments.resolve(project.getArtifactId() + ".tsv");
     write(file, fragment);
     getLog().info("bonsai: the analysis reads the fragment of " + project.getArtifactId());
 
-    if (!lastOfTheReactor()) {
+    List<String> modules = modules();
+    if (!Roster.of(repositorySystemSession).record(project.getId(), modules.size())) {
       return;
-    }
-    if (session.getRequest().getDegreeOfConcurrency() > 1 && analysers() > 1) {
-      getLog().warn("bonsai: the build runs its modules in parallel, so the analysis may not have the fragment of " +
-        "every module of the build; the analysis of the whole build needs a build that runs them one after another");
     }
 
     List<String> manifest;
     try {
-      manifest = Analysis.merge(fragments, root.toString());
+      manifest = Analysis.merge(fragments, modules, root.toString());
     } catch (IOException error) {
       throw new MojoExecutionException("bonsai: cannot read the fragments of the modules", error);
     }
@@ -96,6 +95,8 @@ public class AnalyseMojo extends BonsaiMojo {
     command.add(merged.toString());
     command.add("--mode");
     command.add(mode);
+    command.add("--parallelism");
+    command.add(Integer.toString(session.getRequest().getDegreeOfConcurrency()));
     command.addAll(configuration.options());
     String baseline = writeBaseline();
     if (baseline != null) {
@@ -110,25 +111,14 @@ public class AnalyseMojo extends BonsaiMojo {
     return directory(root().resolve("target").resolve("bonsai").resolve("manifests"));
   }
 
-  /**
-   * Whether this module is the last one the build reaches that analyses the build.
-   *
-   * <p>The modules that do not analyse the build are left out, so that a build whose analysis is bound in some of its
-   * modules alone still runs the analysis of the whole build in the last of them.
-   */
-  private boolean lastOfTheReactor() {
-    List<org.apache.maven.project.MavenProject> projects = session.getProjects();
-    return projects.subList(projects.indexOf(project) + 1, projects.size()).stream().noneMatch(this::analyses);
-  }
-
   /** Whether the module analyses the build. */
-  private boolean analyses(org.apache.maven.project.MavenProject other) {
+  private boolean analyses(MavenProject other) {
     return other.getBuildPlugins().stream()
       .anyMatch(plugin -> plugin.getArtifactId().equals("bonsai-maven-plugin"));
   }
 
-  /** How many modules of the build analyse it, which is how many fragments the analysis reads. */
-  private long analysers() {
-    return session.getProjects().stream().filter(this::analyses).count();
+  /** The modules of this build that analyse it, which are the ones whose fragments the analysis reads. */
+  private List<String> modules() {
+    return session.getProjects().stream().filter(this::analyses).map(MavenProject::getArtifactId).toList();
   }
 }

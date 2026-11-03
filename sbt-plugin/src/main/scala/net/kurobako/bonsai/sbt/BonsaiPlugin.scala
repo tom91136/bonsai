@@ -453,7 +453,8 @@ object BonsaiPlugin extends AutoPlugin {
           .all(analysed).value.toSet
       val versions = Def.task(scalaVersion.value).all(analysed).value.distinct
       val tool     = analysisClasspath(dependencyResolution.value, versions, target.value, log)
-      val options  = Seq("--mode", bonsaiModeId.value) ++
+      val threads  = Parallelism.of(concurrentRestrictions.value)
+      val options  = Seq("--mode", bonsaiModeId.value, "--parallelism", threads.toString) ++
         BonsaiConfiguration.Analysis(
           bonsaiDisabled.value,
           bonsaiErrors.value,
