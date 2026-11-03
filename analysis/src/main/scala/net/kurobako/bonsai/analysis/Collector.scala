@@ -240,6 +240,7 @@ private[analysis] class Collector(
   private def inference(library: Library)(using Context): Purity.Inference = {
     val effects = Purity.Inference(bodies, templates, dispatching.implementations(_), concurrent, library)
     effects.run()
+    effects.unreadable.foreach(problem(_))
     effects
   }
 

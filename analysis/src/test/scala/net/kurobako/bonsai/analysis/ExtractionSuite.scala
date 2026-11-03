@@ -138,6 +138,59 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
+  test("a library body that refers to a package the classpath lacks is one problem, not a failed extraction") {
+    Scratch.using("bonsai-") { directory =>
+      val missing = compile(
+        directory.resolve("missing"),
+        Seq(
+          "Result.scala" ->
+            """package missing
+            |sealed abstract class Result[+A] { def toEither: Either[String, A] }
+            |object Result {
+            |  final case class Ok[+A](value: A) extends Result[A] { def toEither: Either[String, A] = Right(value) }
+            |  final case class No(error: String) extends Result[Nothing] { def toEither: Either[String, Nothing] = Left(error) }
+            |  def error(message: String): Result[Nothing] = No(message)
+            |}
+            |trait Decoder[A] { def read(default: Option[A], text: String): Result[A] }""".stripMargin
+        ),
+        Vector.empty
+      )
+      val helper = archive(
+        compile(
+          directory.resolve("helper"),
+          Seq(
+            "Helper.scala" ->
+              """package helper
+                |import missing.*
+                |object Helper {
+                |  val decoder: Decoder[Int] = (default, text) => if (text.isEmpty) Result.No("empty") else Result.Ok(text.length)
+                |  def parse(text: String, default: Int): Result[Int] = decoder.read(Option(default), text) match {
+                |    case Result.Ok(value) if value > default => Result.error(s"too long: $value")
+                |    case other                               => other
+                |  }
+                |}""".stripMargin
+          ),
+          Vector(missing)
+        ),
+        directory.resolve("helper-1.0.jar"),
+        "helper",
+        "1.0"
+      )
+      val sources = Seq(
+        "Use.scala" ->
+          """object Use {
+          |  private lazy val parsed = helper.Helper.parse("x", 1).toEither.fold(error => throw IllegalStateException(error), identity)
+          |  def apply(value: Int): Int = value + parsed
+          |}""".stripMargin
+      )
+      val output   = Output("m", Output.Scope.Main, compile(directory.resolve("use"), sources, Vector(helper, missing)))
+      val manifest = Manifest(Vector(output), Map("m" -> (helper +: classpath)), Set.empty)
+      val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      assert(result.graph.nodes.keySet.exists(_.contains("Use")), result.graph.nodes.keySet.toString)
+      assert(result.problems.exists(_.contains("helper.Helper.parse")), result.problems.toString)
+    }
+  }
+
   test("eviction keeps the newest version of an artifact where its first copy was") {
     val older  = Path.of("/cache/org/example/tool/1.9.0/tool-1.9.0.jar")
     val other  = Path.of("/cache/org/example/other/2.0.0/other-2.0.0.jar")

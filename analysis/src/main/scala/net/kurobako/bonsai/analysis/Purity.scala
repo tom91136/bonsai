@@ -561,6 +561,7 @@ object Purity {
     private val tracing    = mutable.Set.empty[Symbol]
     private val pending    = mutable.Queue.empty[(Symbol, Int)]
     private val explored   = mutable.Set.empty[Symbol]
+    private val unread     = mutable.LinkedHashMap.empty[Symbol, String]
     private val facts      = mutable.Map.empty[Symbol, Facts]
     private val fresh      = mutable.Set.empty[Symbol]
     private val transforms = mutable.ArrayBuffer.empty[TransformSite]
@@ -616,6 +617,10 @@ object Purity {
 
     /** How many library bodies the inference read. */
     def library: Int = explored.size
+
+    /** The library bodies that could not be read, as one line each. */
+    def unreadable: Vector[String] =
+      unread.toVector.map((symbol, error) => s"could not read the body of ${qualified(symbol)}: $error")
 
     /** Infers every summary, settling recursion at the least fixpoint, from which effects only grow. */
     def run(): Unit = {
@@ -1205,7 +1210,7 @@ object Purity {
     private def stable(symbol: Symbol, owner: Option[Value]): Value = {
       val holder = owner.filter(_.isInstanceOf[Value.Object])
       val member = overriding(symbol, holder)
-      member.defTree match {
+      unpickled(member) match {
         case value: tpd.ValDef if !value.rhs.isEmpty => evaluate(value.rhs, frame(member.owner, holder))
         case _ if member.is(Flags.ParamAccessor)     =>
           terms(member.owner.primaryConstructor).find(_.name == member.name).fold(Value.Opaque)(passed(_))
@@ -1320,7 +1325,7 @@ object Purity {
         else
           returning.getOrElse(
             key,
-            target.defTree match {
+            unpickled(target) match {
               case definition: tpd.DefDef
                   if !definition.rhs.isEmpty &&
                     (target.isEffectivelyFinal || key.receiver.isDefined || !target.owner.isClass) =>
@@ -1385,7 +1390,7 @@ object Purity {
     /** Whether `method` has a library body the inference reads, queueing it on first sight within the limits. */
     private def explore(method: Symbol, depth: Int): Boolean =
       explored(method) || facts.contains(method) || depth <= MaximumDepth && explored.size < MaximumLibrary &&
-        (method.defTree match {
+        (unpickled(method) match {
           case definition: tpd.DefDef if !definition.rhs.isEmpty =>
             explored += method
             pending.enqueue(method -> depth)
@@ -1415,6 +1420,19 @@ object Purity {
     private val pureOwners = mutable.HashMap.empty[Symbol, Boolean]
 
     private def qualified(symbol: Symbol): String = Calls.qualified(symbol)
+
+    // A library body is unpickled on first read, and a reference in it to a class the classpath lacks can fail that.
+    private def unpickled(symbol: Symbol): tpd.Tree =
+      try
+        symbol.defTree match {
+          case tree: tpd.ValOrDefDef => tree.rhs: Unit; tree
+          case tree                  => tree
+        }
+      catch {
+        case NonFatal(error) =>
+          unread.getOrElseUpdate(symbol, error.toString): Unit
+          tpd.EmptyTree
+      }
 
     private def pure(owner: Symbol): Boolean =
       pureOwners.getOrElseUpdate(owner, Axioms.Pure.exists(qualified(owner).startsWith(_)))
