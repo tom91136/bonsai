@@ -2,10 +2,10 @@ package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
-import com.sun.source.util.TreeScanner
 import javax.lang.model.`type`.*
 import javax.lang.model.element.*
 import javax.tools.JavaFileObject
+import net.kurobako.bonsai.java.Javac.*
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters.*
 
@@ -19,12 +19,12 @@ object LintFlow {
   val lints: Vector[Lint] = Vector(NullableUse, ConstantValue, DataFlowNull, NullableProblem, NullableReturn)
 
   private def facts(context: Context, tree: Tree): Option[(MethodTree, DataFlow.Facts)] = tree match {
-    case method: MethodTree if method.getBody != null => Some(method -> DataFlow.of(context, method))
-    case _                                            => None
+    case method: MethodTree if method.body.isDefined => Some(method -> DataFlow.of(context, method))
+    case _                                           => None
   }
 
   private def enclosingMethod(context: Context): Option[MethodTree] =
-    context.enclosing(Set(Tree.Kind.METHOD)).collect { case method: MethodTree if method.getBody != null => method }
+    context.enclosing(Set(Tree.Kind.METHOD)).collect { case method: MethodTree if method.body.isDefined => method }
 
   /** Whether the data flow of the method that holds the code shows the expression is known to be non-null. */
   def nonNull(context: Context, expression: ExpressionTree): Boolean =
@@ -38,13 +38,13 @@ object LintFlow {
   }
 
   private def executable(context: Context, method: MethodTree): Option[ExecutableElement] =
-    Option(context.elementOf(method)).collect {
+    context.namedElement(method).collect {
       case executable: ExecutableElement => executable
     }
 
   /** A nullable value used where a non-null one is required. */
   private object NullableUse extends Lint {
-    val id               = JavaLint.NullableUse.id
+    val id               = LintId.NullableUse.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     def check(context: Context, tree: Tree): Vector[Found] =
@@ -92,14 +92,14 @@ object LintFlow {
 
   /** A method whose result can be null, however its result is annotated: an Optional result says that instead. */
   private object NullableReturn extends Lint {
-    val id               = JavaLint.NullableReturn.id
+    val id               = LintId.NullableReturn.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     private val Message =
       "the method can return null: return Optional<T> (or OptionalInt, OptionalLong, OptionalDouble) instead"
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
-      case method: MethodTree if method.getReturnType != null =>
+      case method: MethodTree if method.returnType.isDefined =>
         executable(context, method).toVector.flatMap { element =>
           if (!returnsReference(element) || fixedByLibrary(context, element)) Vector.empty
           else if (declaredNullable(element)) Vector(context.found(Message, method))
@@ -159,7 +159,7 @@ object LintFlow {
       try Option(context.elements.getFileObjectOf(element)).exists(_.getKind == JavaFileObject.Kind.SOURCE)
       catch {
         // older compilers do not say which file declares an element; their trees hold the code still being compiled
-        case _: NoSuchMethodError => context.trees.getTree(element) != null
+        case _: NoSuchMethodError => Option(context.trees.getTree(element)).isDefined
       }
 
     /** Whether the method or its result type carries an annotation named `Nullable`, from whichever library. */
@@ -169,7 +169,7 @@ object LintFlow {
 
   /** A condition that is always the same, by the declarations and the checks the code has made. */
   private object ConstantValue extends Lint {
-    val id               = JavaLint.ConstantValue.id
+    val id               = LintId.ConstantValue.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     def check(context: Context, tree: Tree): Vector[Found] =
@@ -206,7 +206,7 @@ object LintFlow {
       val leaf = Lints.unparenthesised(subject)
       if (leaf.isInstanceOf[ArrayAccessTree]) false
       else {
-        val elementOpt = Option(context.elementOf(leaf))
+        val elementOpt = context.namedElement(leaf)
         elementOpt match {
           case Some(field: VariableElement) if field.getKind == ElementKind.FIELD =>
             val isMarkedNonNull = Nullness.marked(field) && !Nullness.nullableElement(field)
@@ -218,29 +218,24 @@ object LintFlow {
                 val fieldDecl = classTree.getMembers.asScala.collectFirst {
                   case v: VariableTree if v.getName.contentEquals(field.getSimpleName) => v
                 }
-                val hasInit = fieldDecl.exists(_.getInitializer != null)
+                val hasInit = fieldDecl.exists(_.initializer.isDefined)
                 if (hasInit) false
                 else {
                   val bodies = classTree.getMembers.asScala.flatMap {
-                    case m: MethodTree if m.getName.contentEquals("<init>") => Option(m.getBody)
+                    case m: MethodTree if m.getName.contentEquals("<init>") => m.body
                     case b: BlockTree                                       => Some(b)
                     case _                                                  => None
                   }
-                  var assigned = false
-                  bodies.foreach { body =>
-                    new TreeScanner[Unit, Unit] {
-                      override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
-                        val target = Lints.unparenthesised(node.getVariable) match {
+                  !bodies.exists { body =>
+                    Scan.exists(body) {
+                      case node: AssignmentTree =>
+                        Lints.unparenthesised(node.getVariable) match {
                           case id: IdentifierTree if id.getName.contentEquals(field.getSimpleName)           => true
                           case sel: MemberSelectTree if sel.getIdentifier.contentEquals(field.getSimpleName) => true
                           case _                                                                             => false
                         }
-                        if (target) assigned = true
-                        super.visitAssignment(node, unused)
-                      }
-                    }.scan(body, ())
+                    }
                   }
-                  !assigned
                 }
               }
             } else false
@@ -252,7 +247,7 @@ object LintFlow {
 
   /** A null that reaches a parameter or an array of non-null elements. */
   private object DataFlowNull extends Lint {
-    val id               = JavaLint.DataFlowNull.id
+    val id               = LintId.DataFlowNull.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     def check(context: Context, tree: Tree): Vector[Found] =
@@ -265,7 +260,7 @@ object LintFlow {
         val stored = flow.stores.flatMap { store =>
           if (
             flow.value(store.expression).definitelyNull && !Nullness.nullableType(store.component) &&
-            Nullness.marked(context.element)
+            context.namedElement.exists(Nullness.marked)
           ) Some(context.found("null is stored in an array of elements that are not nullable", store.expression))
           else None
         }
@@ -277,7 +272,7 @@ object LintFlow {
     * that breaks the nullness of the method it overrides.
     */
   private object NullableProblem extends Lint {
-    val id               = JavaLint.NullableProblem.id
+    val id               = LintId.NullableProblem.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     def check(context: Context, tree: Tree): Vector[Found] =

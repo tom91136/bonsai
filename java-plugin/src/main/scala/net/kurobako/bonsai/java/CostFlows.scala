@@ -7,13 +7,9 @@ import com.sun.source.util.Trees
 import javax.lang.model.`type`.*
 import javax.lang.model.element.*
 import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.java.Javac.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
-
-/** The sinks of the expressions of a method. */
-private[java] class CostFlow(sinks: collection.Map[Tree, Sink]) {
-  def of(tree: Tree): Sink = sinks.getOrElse(tree, Sink.Returned)
-}
 
 /** Escape analysis over the body of a Java method: for each expression, whether its value is kept past the point it is
   * built at. A value is kept when the method returns it, stores it in a field or a variable of an outer method, or
@@ -25,7 +21,9 @@ private[java] class CostFlow(sinks: collection.Map[Tree, Sink]) {
   * reference, such as a number or a string, holds nothing. The stages of a stream are lazy, so what a function of a
   * stage returns goes where the result of the stage does, rather than being held until the traversal ends.
   */
-private[java] class CostFlows(
+// The state is updated as the walk proceeds.
+@SuppressWarnings(Array("scalafix:DisableSyntax.var"))
+private class CostFlows(
     trees: Trees,
     root: TreePath,
     assigned: collection.Set[Element]
@@ -89,10 +87,14 @@ private[java] class CostFlows(
     element
   }
 
+  // A javac visitor is an abstract class, so it is written inline.
+  @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation"))
   private def children(tree: Tree, sink: Sink, depth: Int): Unit =
     tree.accept(
       new TreeScanner[Unit, Unit] {
-        override def scan(node: Tree, unused: Unit): Unit = if (node != null) flow(node, sink, depth)
+        // The scan reaches every node, so the missing children are tested for null rather than wrapped.
+        @SuppressWarnings(Array("scalafix:DisableSyntax.null"))
+        override def scan(node: Tree, unused: Unit): Unit = if (node ne null) flow(node, sink, depth)
       },
       ()
     )
@@ -106,13 +108,13 @@ private[java] class CostFlows(
       case block: BlockTree       => flows(block.getStatements, Sink.Dropped, depth)
       case variable: VariableTree =>
         val element = declare(variable, depth)
-        Option(variable.getInitializer).foreach(flow(_, held(element), depth))
+        variable.initializer.foreach(flow(_, held(element), depth))
       case _: ClassTree                       => ()
       case statement: ExpressionStatementTree => flow(statement.getExpression, Sink.Dropped, depth)
       case branch: IfTree                     =>
         flow(branch.getCondition, Sink.Dropped, depth)
         flow(branch.getThenStatement, Sink.Dropped, depth)
-        Option(branch.getElseStatement).foreach(flow(_, Sink.Dropped, depth))
+        branch.elseStatement.foreach(flow(_, Sink.Dropped, depth))
       case loop: (WhileLoopTree | DoWhileLoopTree) => children(loop, Sink.Dropped, depth + 1)
       case loop: ForLoopTree                       =>
         flows(loop.getInitializer, Sink.Dropped, depth)
@@ -130,10 +132,10 @@ private[java] class CostFlows(
           declare(branch.getParameter, depth): Unit
           flow(branch.getBlock, Sink.Dropped, depth)
         }
-        Option(attempt.getFinallyBlock).foreach(flow(_, Sink.Dropped, depth))
+        attempt.finallyBlock.foreach(flow(_, Sink.Dropped, depth))
       case choice: SwitchTree           => switched(choice.getExpression, choice.getCases, Sink.Dropped, depth)
       case choice: SwitchExpressionTree => switched(choice.getExpression, choice.getCases, sink, depth)
-      case leave: ReturnTree            => Option(leave.getExpression).foreach(flow(_, returns, depth))
+      case leave: ReturnTree            => leave.returned.foreach(flow(_, returns, depth))
       case leave: YieldTree             => flow(leave.getValue, yields, depth)
       case leave: ThrowTree             => flow(leave.getExpression, Sink.Returned, depth)
       case lock: SynchronizedTree       =>
@@ -151,7 +153,7 @@ private[java] class CostFlows(
       case wrapped: ParenthesizedTree => flow(wrapped.getExpression, sink, depth)
       case cast: TypeCastTree         => flow(cast.getExpression, carried(cast, sink), depth)
       case test: InstanceOfTree       =>
-        flow(test.getExpression, if (test.getPattern != null) Sink.Returned else Sink.Dropped, depth)
+        flow(test.getExpression, if (test.pattern.isDefined) Sink.Returned else Sink.Dropped, depth)
       case choice: ConditionalExpressionTree =>
         flow(choice.getCondition, Sink.Dropped, depth)
         flow(choice.getTrueExpression, sink, depth)
@@ -163,7 +165,7 @@ private[java] class CostFlows(
         flow(access.getIndex, Sink.Dropped, depth)
       case array: NewArrayTree =>
         flows(array.getDimensions, Sink.Dropped, depth)
-        Option(array.getInitializers).foreach(flows(_, sink, depth))
+        array.initializers.foreach(flows(_, sink, depth))
       case function: LambdaExpressionTree => lambda(function, sink, depth)
       case reference: MemberReferenceTree => flow(reference.getQualifierExpression, sink, depth)
       case call: MethodInvocationTree     => applied(call, sink, depth)
@@ -192,11 +194,11 @@ private[java] class CostFlows(
     try {
       flow(selector, if (matching) Sink.Returned else Sink.Dropped, depth)
       cases.forEach { branch =>
-        Option(branch.getGuard).foreach(flow(_, Sink.Dropped, depth))
-        branch.getBody match {
-          case body: ExpressionTree => flow(body, sink, depth)
-          case null                 => Option(branch.getStatements).foreach(flows(_, Sink.Dropped, depth))
-          case body                 => flow(body, Sink.Dropped, depth)
+        branch.guard.foreach(flow(_, Sink.Dropped, depth))
+        branch.body match {
+          case Some(body: ExpressionTree) => flow(body, sink, depth)
+          case None                       => branch.statements.foreach(flows(_, Sink.Dropped, depth))
+          case Some(body)                 => flow(body, Sink.Dropped, depth)
         }
       }
     } finally yields = saved

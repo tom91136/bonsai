@@ -2,10 +2,11 @@ package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
-import com.sun.source.util.TreeScanner
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.`type`.TypeKind
 import javax.lang.model.element.TypeElement
+import net.kurobako.bonsai.java.Javac.*
+import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
 /** The lints of the `Optional` values of the Java code.
@@ -28,7 +29,7 @@ object LintOptionals {
 
   /** A call of `Optional.get()` that the code does not guard with a check that the value is present. */
   private object Get extends Lint {
-    val id               = JavaLint.OptionalGet.id
+    val id               = LintId.OptionalGet.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -44,7 +45,7 @@ object LintOptionals {
 
   /** An `isPresent` check whose branch calls `get`, which a functional expression states in one step. */
   private object IsPresent extends Lint {
-    val id               = JavaLint.OptionalIsPresent.id
+    val id               = LintId.OptionalIsPresent.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -53,7 +54,7 @@ object LintOptionals {
         val present = invocation.getMethodSelect.asInstanceOf[MemberSelectTree].getIdentifier.contentEquals("isPresent")
         context.ancestors.collectFirst {
           case ifTree: IfTree if within(context, ifTree.getCondition) =>
-            (ifTree.getThenStatement, Option(ifTree.getElseStatement))
+            (ifTree.getThenStatement, ifTree.elseStatement)
           case conditional: ConditionalExpressionTree if within(context, conditional.getCondition) =>
             (conditional.getTrueExpression, Some(conditional.getFalseExpression))
         }.flatMap { (whenTrue, whenFalse) =>
@@ -98,7 +99,7 @@ object LintOptionals {
     context.ancestors.exists {
       case ifTree: IfTree =>
         (present(ifTree.getCondition, true, value) && within(context, ifTree.getThenStatement)) ||
-        (present(ifTree.getCondition, false, value) && Option(ifTree.getElseStatement).exists(within(context, _)))
+        (present(ifTree.getCondition, false, value) && ifTree.elseStatement.exists(within(context, _)))
       case conditional: ConditionalExpressionTree =>
         (present(conditional.getCondition, true, value) && within(context, conditional.getTrueExpression)) ||
         (present(conditional.getCondition, false, value) && within(context, conditional.getFalseExpression))
@@ -144,7 +145,7 @@ object LintOptionals {
       if (index < 0) false
       else
         statements.take(index).exists {
-          case ifTree: IfTree if ifTree.getElseStatement == null =>
+          case ifTree: IfTree if ifTree.elseStatement.isEmpty =>
             present(ifTree.getCondition, false, value) && exits(ifTree.getThenStatement)
           case _ => false
         }
@@ -155,45 +156,37 @@ object LintOptionals {
     case _: ReturnTree | _: ThrowTree | _: BreakTree | _: ContinueTree => true
     case block: BlockTree => block.getStatements.asScala.lastOption.exists(exits(_))
     case ifTree: IfTree   =>
-      Option(ifTree.getElseStatement).exists(other => exits(ifTree.getThenStatement) && exits(other))
+      ifTree.elseStatement.exists(other => exits(ifTree.getThenStatement) && exits(other))
     case _ => false
   }
 
   /** Whether the code of the branch calls a getter of the optional whose text is `value`. */
-  private def called(branch: Tree, value: String): Boolean = {
-    var found = false
-    new TreeScanner[Unit, Unit] {
-      override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
+  private def called(branch: Tree, value: String): Boolean =
+    Scan.exists(branch) {
+      case node: MethodInvocationTree =>
         node.getMethodSelect match {
-          case select: MemberSelectTree
-              if Getters(select.getIdentifier.toString) && node.getArguments.isEmpty &&
-                select.getExpression.toString == value =>
-            found = true
-          case _ => ()
+          case select: MemberSelectTree =>
+            Getters(select.getIdentifier.toString) && node.getArguments.isEmpty &&
+            select.getExpression.toString == value
+          case _ => false
         }
-        super.visitMethodInvocation(node, unused)
-      }
-    }.scan(branch, ())
-    found
-  }
+    }
 
   /** The getter the branch calls, which the detail names. */
   private def getter(context: Context, value: String): String =
-    context.ancestors.iterator.collectFirst {
+    context.ancestors.view.collectFirst {
       case method: MethodTree =>
-        var name = "get()"
-        new TreeScanner[Unit, Unit] {
-          override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
+        val names = mutable.ArrayBuffer.empty[String]
+        Scan.foreach(method) {
+          case node: MethodInvocationTree =>
             node.getMethodSelect match {
               case select: MemberSelectTree
                   if Getters(select.getIdentifier.toString) && select.getExpression.toString == value =>
-                name = s"${select.getIdentifier}()"
+                names += s"${select.getIdentifier}()"
               case _ => ()
             }
-            super.visitMethodInvocation(node, unused)
-          }
-        }.scan(method, ())
-        name
+        }
+        names.lastOption.getOrElse("get()")
     }.getOrElse("get()")
 
   /** Whether the source of the code lies within the source of the tree. */

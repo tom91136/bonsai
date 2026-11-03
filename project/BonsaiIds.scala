@@ -13,7 +13,7 @@ object BonsaiIds {
   val Findings: Regex = """= rule\("([a-z0-9-]+)"""".r
 
   /** The ids the lints of the Java code have, which the analysis reports as findings of their own. */
-  val Lints: Regex = """extends JavaLint\("([a-z0-9-]+)"""".r
+  val Lints: Regex = """extends LintId\("([a-z0-9-]+)"""".r
 
   /** The names the scalafix rules have, by the class the service file names, one a line. */
   val Rules: Regex = """(?m)\.([A-Za-z]+)$""".r

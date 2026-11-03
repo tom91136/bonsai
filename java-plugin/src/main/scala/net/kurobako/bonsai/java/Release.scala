@@ -1,5 +1,7 @@
 package net.kurobako.bonsai.java
 
+import net.kurobako.bonsai.java.Javac.*
+
 /** The Java release the code is compiled for, which decides what a lint may suggest: a call or a construct that a newer
   * release introduced is no advice for a module that compiles for an older one.
   *
@@ -28,7 +30,7 @@ object Release {
   private def probe(context: Context): Int =
     Markers.foldLeft(8) { case (found, (release, marker)) =>
       val (name, member) = marker.span(_ != '#')
-      val present        = Option(context.elements.getTypeElement(name)).exists { tpe =>
+      val present        = context.elements.typeNamed(name).exists { tpe =>
         member.isEmpty ||
         tpe.getEnclosedElements.stream().anyMatch(element => element.getSimpleName.contentEquals(member.drop(1)))
       }

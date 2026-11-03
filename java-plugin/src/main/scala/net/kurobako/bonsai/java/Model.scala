@@ -8,15 +8,6 @@ import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
 
-/** A reference from one type to another, which the graph of the build holds.
-  *
-  * @param from
-  *   the type that makes the reference
-  * @param to
-  *   the type the reference names
-  */
-case class Edge(from: String, to: String)
-
 /** The model the javac plugin collects, which the analysis reads: the types of the code, the methods and the fields
   * they hold, and the calls between them.
   *
@@ -151,6 +142,34 @@ object Model {
     case And, Or
   }
 
+  object Guard {
+
+    /** The guard the text holds, if it holds one. */
+    def parse(text: String): Option[Guard] = {
+      val tokens = text.replace("(", " ( ").replace(")", " ) ").trim.split("\\s+").toList.filter(_.nonEmpty)
+      def one(rest: List[String]): Option[(Guard, List[String])] = rest match {
+        case "T" :: tail                                                   => Some((Known(true), tail))
+        case "F" :: tail                                                   => Some((Known(false), tail))
+        case "?" :: tail                                                   => Some((Unknown, tail))
+        case "(" :: "present" :: field :: ")" :: tail                      => Some((Holds(field, Probe.Present), tail))
+        case "(" :: "flag" :: field :: ")" :: tail                         => Some((Holds(field, Probe.Flag), tail))
+        case "(" :: "is" :: field :: value :: ")" :: tail                  => Some((Is(field, value), tail))
+        case "(" :: "compare" :: field :: operator :: value :: ")" :: tail =>
+          value.toDoubleOption.map(_ => (Compare(field, operator, BigDecimal(value)), tail))
+        case "(" :: "not" :: tail =>
+          one(tail).collect { case (inner, ")" :: after) => (Not(inner), after) }
+        case "(" :: (name @ ("and" | "or")) :: tail =>
+          one(tail).flatMap { (left, afterLeft) =>
+            one(afterLeft).collect { case (right, ")" :: after) =>
+              (Connective(if (name == "and") Junction.And else Junction.Or, left, right), after)
+            }
+          }
+        case _ => None
+      }
+      one(tokens).collect { case (guard, Nil) => guard }
+    }
+  }
+
   /** What a constructor of a type requires of the values it is given, over the names of the fields they are stored in.
     * The parts the analysis has no vocabulary for are `Unknown`.
     */
@@ -178,34 +197,6 @@ object Model {
 
     def and(that: Guard): Guard = Connective(Junction.And, this, that)
     def or(that: Guard): Guard  = Connective(Junction.Or, this, that)
-  }
-
-  object Guard {
-
-    /** The guard the text holds, if it holds one. */
-    def parse(text: String): Option[Guard] = {
-      val tokens = text.replace("(", " ( ").replace(")", " ) ").trim.split("\\s+").toList.filter(_.nonEmpty)
-      def one(rest: List[String]): Option[(Guard, List[String])] = rest match {
-        case "T" :: tail                                                   => Some((Known(true), tail))
-        case "F" :: tail                                                   => Some((Known(false), tail))
-        case "?" :: tail                                                   => Some((Unknown, tail))
-        case "(" :: "present" :: field :: ")" :: tail                      => Some((Holds(field, Probe.Present), tail))
-        case "(" :: "flag" :: field :: ")" :: tail                         => Some((Holds(field, Probe.Flag), tail))
-        case "(" :: "is" :: field :: value :: ")" :: tail                  => Some((Is(field, value), tail))
-        case "(" :: "compare" :: field :: operator :: value :: ")" :: tail =>
-          value.toDoubleOption.map(_ => (Compare(field, operator, BigDecimal(value)), tail))
-        case "(" :: "not" :: tail =>
-          one(tail).collect { case (inner, ")" :: after) => (Not(inner), after) }
-        case "(" :: (name @ ("and" | "or")) :: tail =>
-          one(tail).flatMap { (left, afterLeft) =>
-            one(afterLeft).collect { case (right, ")" :: after) =>
-              (Connective(if (name == "and") Junction.And else Junction.Or, left, right), after)
-            }
-          }
-        case _ => None
-      }
-      one(tokens).collect { case (guard, Nil) => guard }
-    }
   }
 
   /** How a type is constructed: who may call its constructors (`open`, `private` for a type whose constructors are all
@@ -292,33 +283,6 @@ object Model {
     val Whole  = 32
   }
 
-  /** The unevaluated cost of a method with a body: the loops it runs, the library work it does and the calls it makes,
-    * which the analysis evaluates against the bounds of the callees. The `key` is the qualified owner, the name and the
-    * erased JVM descriptor, which tells overloads apart and is the key the analysis finds a Scala method by.
-    *
-    * A tree is written as nodes in braces, separated by spaces: `{loop line extent nodes...}` for a loop of that many
-    * turns that holds the nodes, `{each line extent nodes...}` for a function run once per element of a collection,
-    * `{op line kind extent}` for library work over a collection, and `{call line key receiver arguments...}` for a call
-    * of a method of the build. A branch of a method that calls itself and holds no such call is `{exit line nodes...}`:
-    * it ends the recursion, so it runs once rather than in every frame. An extent is a path of positions and fields,
-    * such as `$0`, `$1.items` or `this.items`, and `?` where the collection is not one. In a call of a method to
-    * itself, an argument that is a strictly smaller part of the parameter in its position (a sublist, a substring) is
-    * `$i<`, and an integer parameter less a positive constant is `$i-`.
-    *
-    * An op or a call ends with the sink of what it builds or returns unless that is returned: `@` and the number of the
-    * outermost loop the value stays live across, or `-` for a value no loop keeps, then `r` if the method returns it
-    * and `s` if it stores it in a field or a variable of an outer method. Such as `@-` for a value that is dropped.
-    */
-  case class Cost(
-      owner: String,
-      name: String,
-      key: String,
-      line: Int,
-      suppressed: Set[String],
-      parameters: Vector[String],
-      body: Vector[Cost.Node]
-  )
-
   object Cost {
     val Unknown = "?"
     val Static  = "-"
@@ -327,6 +291,17 @@ object Model {
     def smaller(index: Int): String = s"$$$index<"
 
     def stepped(index: Int): String = s"$$$index-"
+
+    object Kind {
+      def parse(text: String): Option[Kind] = text match {
+        case "search"                               => Some(Search)
+        case "sort"                                 => Some(Sort)
+        case "copy"                                 => Some(Copy)
+        case "shift"                                => Some(Shift)
+        case concat if concat.startsWith("concat:") => concat.drop(7).toIntOption.map(Concat(_))
+        case _                                      => None
+      }
+    }
 
     /** The library work an operation does: a linear search, a sort, a copy of a collection, a shift of the elements of
       * a list, or the growth of a text over `depth` loops.
@@ -338,17 +313,6 @@ object Model {
       def render: String = this match {
         case Concat(depth) => s"concat:$depth"
         case other         => other.toString.toLowerCase
-      }
-    }
-
-    object Kind {
-      def parse(text: String): Option[Kind] = text match {
-        case "search"                               => Some(Search)
-        case "sort"                                 => Some(Sort)
-        case "copy"                                 => Some(Copy)
-        case "shift"                                => Some(Shift)
-        case concat if concat.startsWith("concat:") => concat.drop(7).toIntOption.map(Concat(_))
-        case _                                      => None
       }
     }
 
@@ -442,6 +406,33 @@ object Model {
       nodes(tokens, Vector.empty).collect { case (found, Nil) => found }
     }
   }
+
+  /** The unevaluated cost of a method with a body: the loops it runs, the library work it does and the calls it makes,
+    * which the analysis evaluates against the bounds of the callees. The `key` is the qualified owner, the name and the
+    * erased JVM descriptor, which tells overloads apart and is the key the analysis finds a Scala method by.
+    *
+    * A tree is written as nodes in braces, separated by spaces: `{loop line extent nodes...}` for a loop of that many
+    * turns that holds the nodes, `{each line extent nodes...}` for a function run once per element of a collection,
+    * `{op line kind extent}` for library work over a collection, and `{call line key receiver arguments...}` for a call
+    * of a method of the build. A branch of a method that calls itself and holds no such call is `{exit line nodes...}`:
+    * it ends the recursion, so it runs once rather than in every frame. An extent is a path of positions and fields,
+    * such as `$0`, `$1.items` or `this.items`, and `?` where the collection is not one. In a call of a method to
+    * itself, an argument that is a strictly smaller part of the parameter in its position (a sublist, a substring) is
+    * `$i<`, and an integer parameter less a positive constant is `$i-`.
+    *
+    * An op or a call ends with the sink of what it builds or returns unless that is returned: `@` and the number of the
+    * outermost loop the value stays live across, or `-` for a value no loop keeps, then `r` if the method returns it
+    * and `s` if it stores it in a field or a variable of an outer method. Such as `@-` for a value that is dropped.
+    */
+  case class Cost(
+      owner: String,
+      name: String,
+      key: String,
+      line: Int,
+      suppressed: Set[String],
+      parameters: Vector[String],
+      body: Vector[Cost.Node]
+  )
 
   private case class Codec[A](
       tag: String,
@@ -916,6 +907,8 @@ object Model {
   /** A text, escaped so that the format holds it whole: the characters that end a field, a list item or a line, the
     * escape itself, and the surrogates that have no pair, which UTF-8 cannot encode.
     */
+  // The state is updated as the walk proceeds.
+  @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
   private def escape(value: String): String = {
     var index = 0
     while index < value.length && !needsEscape(value.charAt(index)) do index += 1
@@ -955,6 +948,8 @@ object Model {
   private def needsEscape(char: Char): Boolean = replacement(char).isDefined || Character.isSurrogate(char)
 
   /** A text the format held whole. */
+  // The state is updated as the walk proceeds.
+  @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
   private def unescape(value: String): String = {
     val text  = mutable.StringBuilder()
     var index = 0

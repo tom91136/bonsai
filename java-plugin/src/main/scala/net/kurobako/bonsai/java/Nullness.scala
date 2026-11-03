@@ -3,10 +3,11 @@ package net.kurobako.bonsai.java
 import javax.lang.model.AnnotatedConstruct
 import javax.lang.model.`type`.*
 import javax.lang.model.element.*
+import net.kurobako.bonsai.java.Javac.*
 import scala.jdk.CollectionConverters.*
 
 /** What the JSpecify annotations of the code say about the nullness of its declarations and types. */
-private[java] object Nullness {
+private object Nullness {
 
   val Nullable             = "org.jspecify.annotations.Nullable"
   private val NullMarked   = "org.jspecify.annotations.NullMarked"
@@ -31,14 +32,13 @@ private[java] object Nullness {
 
   /** Whether a value of the type may be null: the type is annotated, or is a variable or a wildcard bounded by one. */
   def nullableType(tpe: TypeMirror): Boolean =
-    tpe != null &&
-      (hasAnnotation(tpe, Nullable) ||
-        (tpe match {
-          case variable: TypeVariable         => nullableType(variable.getUpperBound)
-          case wildcard: WildcardType         => nullableType(wildcard.getExtendsBound)
-          case intersection: IntersectionType => intersection.getBounds.asScala.exists(nullableType(_))
-          case _                              => false
-        }))
+    hasAnnotation(tpe, Nullable) ||
+      (tpe match {
+        case variable: TypeVariable         => nullableType(variable.getUpperBound)
+        case wildcard: WildcardType         => Option(wildcard.getExtendsBound).exists(nullableType(_))
+        case intersection: IntersectionType => intersection.getBounds.asScala.exists(nullableType(_))
+        case _                              => false
+      })
 
   /** Whether the declaration says its value may be null. The annotation of an array declares its elements, so that of
     * the array is the one on its type.
@@ -62,17 +62,9 @@ private[java] object Nullness {
     * only, not those of its subpackages, and a module marks all of its packages, which the enclosing elements reach.
     */
   def marked(element: Element): Boolean =
-    element != null && {
-      val known = markings.get(element)
-      if (known != null) known.booleanValue
-      else {
-        val found = scope(element).getOrElse(marked(element.getEnclosingElement))
-        markings.put(element, found)
-        found
-      }
-    }
+    Memo(markings, element)(scope(element).getOrElse(element.enclosing.exists(marked(_))))
 
-  private val markings = java.util.Collections.synchronizedMap(java.util.WeakHashMap[Element, java.lang.Boolean]())
+  private val markings = java.util.Collections.synchronizedMap(java.util.WeakHashMap[Element, Boolean]())
 
   /** Whether the element settles the marking of its code itself: a boundary and an unmarked scope do not mark it. */
   private def scope(element: Element): Option[Boolean] =
@@ -81,14 +73,13 @@ private[java] object Nullness {
     else if (hasAnnotation(element, NullUnmarked)) Some(false)
     else None
 
-  def hasBoundary(element: Element): Boolean = {
-    var current = element
-    while current != null do {
-      if (hasSimpleName(current, Boundary)) return true
-      current = current.getEnclosingElement
-    }
-    false
-  }
+  @annotation.tailrec
+  def hasBoundary(element: Element): Boolean =
+    hasSimpleName(element, Boundary) ||
+      (element.enclosing match {
+        case Some(outer) => hasBoundary(outer)
+        case None        => false
+      })
 
   /** Whether a parameter of a null-marked scope must be given a value that is not null. */
   def nonNullParameter(parameter: VariableElement): Boolean =

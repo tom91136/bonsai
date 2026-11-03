@@ -5,6 +5,7 @@ import com.sun.source.tree.Tree.Kind
 import javax.lang.model.element.Element
 import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.TypeElement
+import net.kurobako.bonsai.java.Javac.*
 import scala.jdk.CollectionConverters.*
 
 /** Uses of JDK types and members that the JDK does not support, named in the code or by a reflective lookup of a name.
@@ -30,7 +31,7 @@ object LintInternals {
 
   /** A type or member the code names. */
   private object JdkInternalApi extends Lint {
-    val id               = JavaLint.JdkInternalApi.id
+    val id               = LintId.JdkInternalApi.id
     val kinds: Set[Kind] = Set(Tree.Kind.IDENTIFIER, Tree.Kind.MEMBER_SELECT, Tree.Kind.METHOD_INVOCATION)
 
     private def reason(context: Context, declared: Element): Option[String] =
@@ -68,14 +69,14 @@ object LintInternals {
 
     private def reference(context: Context, tree: Tree): Vector[Found] = {
       val qualifier = tree match {
-        case select: MemberSelectTree => Option(context.elementOf(select.getExpression))
+        case select: MemberSelectTree => context.namedElement(select.getExpression)
         case _                        => None
       }
       val qualifierUnsupported = qualifier.exists {
         case declared: TypeElement => reason(context, declared).isDefined
         case _                     => false
       }
-      Option(context.element).toVector.flatMap {
+      context.namedElement.toVector.flatMap {
         case declared: TypeElement =>
           reason(context, declared).map { why =>
             context.found(detail(s"the type ${declared.getQualifiedName}", why))
@@ -124,7 +125,7 @@ object LintInternals {
 
   /** The imports of a file, which name a package or a type the JDK does not support. */
   private object JdkImports extends Lint {
-    val id               = JavaLint.JdkInternalApi.id
+    val id               = LintId.JdkInternalApi.id
     val kinds: Set[Kind] = Set.empty[Tree.Kind]
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {

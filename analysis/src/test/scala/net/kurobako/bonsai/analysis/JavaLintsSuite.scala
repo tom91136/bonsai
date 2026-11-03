@@ -192,7 +192,7 @@ class JavaLintsSuite extends AnalysisSuite {
   }
 
   test("no id of a lint is the id of a rule of the Scala code") {
-    val lints = JavaLint.ids
+    val lints = LintId.ids
     val rules = Finding.Rule.values.map(_.id)
     // Every lint has a rule of its own, and no other rule carries the id of a lint.
     assertEquals(rules.count(lints.contains), lints.size)

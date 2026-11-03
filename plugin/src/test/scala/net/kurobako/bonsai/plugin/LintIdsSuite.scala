@@ -10,13 +10,13 @@ import net.kurobako.bonsai.java.*
 class LintIdsSuite extends FunSuite {
 
   test("the ids of the checks are not the ids of the lints of the Java code") {
-    val lintIds = JavaLint.ids -- Laws.ids
+    val lintIds = LintId.ids -- Laws.ids
     val clashes = Check.all.map(_.id).filter(lintIds.contains)
     assert(clashes.isEmpty, s"the checks ${clashes.mkString(", ")} have the ids of the lints")
   }
 
   test("the lints of the laws of chains in the Java code are laws of the compiler plugin") {
-    val missing = JavaLint.chains.filterNot(id => Check.all.exists(_.id == id))
+    val missing = LintId.chains.filterNot(id => Check.all.exists(_.id == id))
     assert(missing.isEmpty, s"the laws ${missing.mkString(", ")} are no checks")
   }
 }

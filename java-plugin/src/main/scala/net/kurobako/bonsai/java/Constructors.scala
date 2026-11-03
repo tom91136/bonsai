@@ -6,6 +6,7 @@ import com.sun.source.util.TreePathScanner
 import com.sun.source.util.TreeScanner
 import com.sun.source.util.Trees
 import javax.lang.model.element.*
+import net.kurobako.bonsai.java.Javac.*
 import net.kurobako.bonsai.java.Lints.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
@@ -22,7 +23,7 @@ import scala.jdk.CollectionConverters.*
   * block does on the way. Any other statement must leave the field alone, and a read of the field before the assignment
   * makes it unfit, as the compiler would refuse a final field read there.
   */
-private[java] object Constructors {
+private object Constructors {
 
   private val Steps = Set(
     Tree.Kind.PREFIX_INCREMENT,
@@ -36,6 +37,15 @@ private[java] object Constructors {
 
   private val Once: Counts = Set(1)
   private val Bad: Counts  = Set(2)
+
+  private object Exits {
+    val none: Exits = Exits(Set.empty, Nil, Nil, Nil, Map.empty, Map.empty)
+
+    def merge(left: Map[String, Counts], right: Map[String, Counts]): Map[String, Counts] =
+      right.foldLeft(left)((merged, entry) =>
+        merged.updated(entry._1, merged.getOrElse(entry._1, Set.empty) ++ entry._2)
+      )
+  }
 
   /** What the jumps pending at a point of the walk carry: for `return`, `break`, `continue` and `yield`, the counts at
     * each, the innermost target first, and for the labelled ones, by label.
@@ -76,22 +86,13 @@ private[java] object Constructors {
         repeating.values.toList).flatten.toSet
   }
 
-  private object Exits {
-    val none: Exits = Exits(Set.empty, Nil, Nil, Nil, Map.empty, Map.empty)
-
-    def merge(left: Map[String, Counts], right: Map[String, Counts]): Map[String, Counts] =
-      right.foldLeft(left)((merged, entry) =>
-        merged.updated(entry._1, merged.getOrElse(entry._1, Set.empty) ++ entry._2)
-      )
-  }
-
   /** Whether the declaration at the path is of an instance field with no initialiser that every constructor of its
     * class assigns once, which the compiler would accept as final if nothing else wrote it.
     */
   def assigned(trees: Trees, path: TreePath): Boolean =
-    (path.getLeaf, trees.getElement(path), path.getParentPath) match {
-      case (variable: VariableTree, field: VariableElement, parent)
-          if parent != null && variable.getInitializer == null && field.getKind == ElementKind.FIELD &&
+    (path.getLeaf, trees.getElement(path), path.parent) match {
+      case (variable: VariableTree, field: VariableElement, Some(parent))
+          if variable.initializer.isEmpty && field.getKind == ElementKind.FIELD &&
             Set(Modifier.STATIC, Modifier.FINAL, Modifier.VOLATILE).forall(!field.getModifiers.contains(_)) =>
         (parent.getLeaf, trees.getElement(parent)) match {
           case (declaration: ClassTree, owner: TypeElement)
@@ -123,7 +124,7 @@ private[java] object Constructors {
 
   /** Whether the code at the path is in a constructor of the owner, and not in a lambda or class inside it. */
   def within(trees: Trees, path: TreePath, owner: Element): Boolean =
-    Iterator.iterate(path.getParentPath)(_.getParentPath).takeWhile(_ != null).collectFirst {
+    path.parents.collectFirst {
       case enclosing if enclosing.getLeaf.isInstanceOf[MethodTree | LambdaExpressionTree | ClassTree] => enclosing
     }.exists { enclosing =>
       enclosing.getLeaf.isInstanceOf[MethodTree] &&
@@ -165,6 +166,9 @@ private[java] object Constructors {
       if (counts.isEmpty) Once else counts.map(count => (count + 1).min(2))
 
     /** Whether the code reads or writes the field. */
+    // A javac visitor is an abstract class, so it is written inline.
+    // The state is updated as the walk proceeds.
+    @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation", "scalafix:DisableSyntax.var"))
     private def touches(path: TreePath): (Boolean, Boolean) = {
       var read = false
       new TreePathScanner[Unit, Unit] {
@@ -183,7 +187,11 @@ private[java] object Constructors {
 
     private class Walk(constructor: TreePath) {
 
-      private var exits  = Exits.none
+      // The state is updated as the walk proceeds.
+      @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
+      private var exits = Exits.none
+      // The state is updated as the walk proceeds.
+      @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
       private var failed = false
 
       private def bad: Counts = {
@@ -326,7 +334,7 @@ private[java] object Constructors {
 
       private def constant(path: TreePath): Option[Any] = path.getLeaf match {
         case tree: ParenthesizedTree => constant(child(path, tree.getExpression))
-        case tree: LiteralTree       => Option(tree.getValue)
+        case tree: LiteralTree       => tree.value
         case tree: UnaryTree if tree.getKind == Tree.Kind.LOGICAL_COMPLEMENT =>
           constant(child(path, tree.getExpression)).collect { case value: Boolean => !value }
         case tree: BinaryTree =>
@@ -337,19 +345,19 @@ private[java] object Constructors {
           } yield value
         case _: (IdentifierTree | MemberSelectTree) =>
           trees.getElement(path) match {
-            case variable: VariableElement => Option(variable.getConstantValue)
+            case variable: VariableElement => variable.constant
             case _                         => None
           }
         case _ => None
       }
 
       private def integral(value: Any): Option[Long] = value match {
-        case n: Int       => Some(n.toLong)
-        case n: Long      => Some(n)
-        case n: Short     => Some(n.toLong)
-        case n: Byte      => Some(n.toLong)
-        case c: Character => Some(c.toLong)
-        case _            => None
+        case n: Int   => Some(n.toLong)
+        case n: Long  => Some(n)
+        case n: Short => Some(n.toLong)
+        case n: Byte  => Some(n.toLong)
+        case c: Char  => Some(c.toLong)
+        case _        => None
       }
 
       private def fold(kind: Tree.Kind, left: Any, right: Any): Option[Any] = (left, right) match {
@@ -381,7 +389,7 @@ private[java] object Constructors {
         case tree: BlockTree               => block(path, tree.getStatements.asScala.toList, counts)
         case tree: ExpressionStatementTree => plain(child(path, tree.getExpression), tree.getExpression, counts)
         case tree: VariableTree            =>
-          Option(tree.getInitializer).fold(counts)(value => valued(child(path, value), value, counts))
+          tree.initializer.fold(counts)(value => valued(child(path, value), value, counts))
         case tree: IfTree     => conditional(path, tree, counts)
         case tree: ReturnTree =>
           returning(Option(tree.getExpression).fold(counts)(value => expression(child(path, value), counts)))
@@ -402,20 +410,22 @@ private[java] object Constructors {
           ended ++ left
         case tree: SynchronizedTree =>
           statement(child(path, tree.getBlock), expression(child(path, tree.getExpression), counts))
-        case tree: SwitchTree      => switched(path, tree, counts)
-        case tree: TryTree         => attempted(path, tree, counts)
-        case tree: WhileLoopTree   => cycle(path, counts, tree.getStatement, Nil, guard(path, tree.getCondition), pass)
-        case tree: DoWhileLoopTree => cycle(path, counts, tree.getStatement, Nil, pass, guard(path, tree.getCondition))
-        case tree: ForLoopTree     =>
+        case tree: SwitchTree    => switched(path, tree, counts)
+        case tree: TryTree       => attempted(path, tree, counts)
+        case tree: WhileLoopTree =>
+          cycle(path, counts, tree.getStatement, Nil, guard(path, Some(tree.getCondition)), pass)
+        case tree: DoWhileLoopTree =>
+          cycle(path, counts, tree.getStatement, Nil, pass, guard(path, Some(tree.getCondition)))
+        case tree: ForLoopTree =>
           val started = block(path, tree.getInitializer.asScala.toList, counts)
-          cycle(path, started, tree.getStatement, tree.getUpdate.asScala.toList, guard(path, tree.getCondition), pass)
+          cycle(path, started, tree.getStatement, tree.getUpdate.asScala.toList, guard(path, tree.condition), pass)
         case _ => other(path, counts)
       }
 
       private def conditional(path: TreePath, tree: IfTree, counts: Counts): Counts = {
         val (whenTrue, whenFalse) = test(child(path, tree.getCondition), counts)
         val taken                 = statement(child(path, tree.getThenStatement), whenTrue)
-        taken ++ Option(tree.getElseStatement).fold(whenFalse)(other => statement(child(path, other), whenFalse))
+        taken ++ tree.elseStatement.fold(whenFalse)(other => statement(child(path, other), whenFalse))
       }
 
       private val pass: Counts => (Counts, Counts) = from => (from, Set.empty)
@@ -423,8 +433,8 @@ private[java] object Constructors {
       /** The counts of a loop condition, which holds when there is none, as the counts that go on and the ones that
         * leave the loop.
         */
-      private def guard(path: TreePath, condition: ExpressionTree)(from: Counts): (Counts, Counts) =
-        if (condition == null) pass(from) else test(child(path, condition), from)
+      private def guard(path: TreePath, condition: Option[ExpressionTree])(from: Counts): (Counts, Counts) =
+        condition.fold(pass(from))(found => test(child(path, found), from))
 
       /** A loop assigns once only if nothing it assigns reaches the start of the next round, as the compiler refuses a
         * final field assigned in a loop. The condition comes before the body for `while` and `for`, and after it for
@@ -438,7 +448,7 @@ private[java] object Constructors {
           before: Counts => (Counts, Counts),
           after: Counts => (Counts, Counts)
       ): Counts = {
-        val label = Option(path.getParentPath).map(_.getLeaf).collect { case tree: LabeledStatementTree =>
+        val label = path.parent.map(_.getLeaf).collect { case tree: LabeledStatementTree =>
           tree.getLabel.toString
         }
         exits = exits.copy(
@@ -456,10 +466,12 @@ private[java] object Constructors {
       }
 
       private def proceed(tree: ContinueTree, counts: Counts): Counts = {
-        if (tree.getLabel != null) repeating(tree.getLabel.toString, counts) else continuing(counts)
+        if (tree.label.isDefined) repeating(tree.getLabel.toString, counts) else continuing(counts)
         Set.empty
       }
 
+      // The state is updated as the walk proceeds.
+      @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
       private def selection(path: TreePath, tree: SwitchExpressionTree, counts: Counts): Counts = {
         val selected = expression(child(path, tree.getExpression), counts)
         exits = exits.copy(yields = Set.empty[Int] :: exits.yields)
@@ -481,10 +493,12 @@ private[java] object Constructors {
       }
 
       private def leave(tree: BreakTree, counts: Counts): Counts = {
-        if (tree.getLabel != null) leaving(tree.getLabel.toString, counts) else breaking(counts)
+        if (tree.label.isDefined) leaving(tree.getLabel.toString, counts) else breaking(counts)
         Set.empty
       }
 
+      // The state is updated as the walk proceeds.
+      @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
       private def switched(path: TreePath, tree: SwitchTree, counts: Counts): Counts = {
         val selected = expression(child(path, tree.getExpression), counts)
         exits = exits.copy(breaks = Set.empty[Int] :: exits.breaks)
@@ -526,7 +540,7 @@ private[java] object Constructors {
         val finished = handlers.foldLeft(body)(_ ++ _._1)
         val pending  = exits
         exits = outer
-        Option(tree.getFinallyBlock) match {
+        tree.finallyBlock match {
           case None =>
             exits = exits ++ pending
             finished
@@ -554,17 +568,19 @@ private[java] object Constructors {
 
       /** A statement the walk does not follow: it leaves the field alone, and the exits it holds are taken as they are.
         */
+      // A javac visitor is an abstract class, so it is written inline.
+      @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation"))
       private def other(path: TreePath, counts: Counts): Counts = {
         val kept = expression(path, counts)
         new TreeScanner[Unit, Unit] {
           override def visitReturn(node: ReturnTree, unused: Unit): Unit     = returning(kept)
           override def visitYield(node: YieldTree, unused: Unit): Unit       = yielding(kept)
           override def visitContinue(node: ContinueTree, unused: Unit): Unit =
-            if (node.getLabel != null) repeating(node.getLabel.toString, kept)
+            if (node.label.isDefined) repeating(node.getLabel.toString, kept)
           override def visitLambdaExpression(node: LambdaExpressionTree, unused: Unit): Unit = ()
           override def visitClass(node: ClassTree, unused: Unit): Unit                       = ()
           override def visitBreak(node: BreakTree, unused: Unit): Unit                       =
-            if (node.getLabel != null) leaving(node.getLabel.toString, kept)
+            if (node.label.isDefined) leaving(node.getLabel.toString, kept)
         }.scan(path.getLeaf, ())
         kept
       }

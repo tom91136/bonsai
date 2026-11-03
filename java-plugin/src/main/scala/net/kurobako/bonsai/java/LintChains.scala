@@ -3,6 +3,7 @@ package net.kurobako.bonsai.java
 import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
 import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.java.Javac.*
 
 /** The lints of the chains of calls on the collections, streams and optionals of the Java code.
   *
@@ -42,12 +43,12 @@ object LintChains {
   }
 
   private def generated(context: Context): Boolean = {
-    val holder = Iterator.iterate(context.path)(_.getParentPath).takeWhile(_ != null).find { path =>
+    val holder = context.path.withParents.find { path =>
       path.getLeaf match {
         case _: ClassTree | _: MethodTree => true
         case _                            => false
       }
     }
-    holder.exists(path => Collector.generated(context.trees.getElement(path)))
+    holder.exists(path => context.trees.namedElement(path).exists(Collector.generated))
   }
 }

@@ -2,7 +2,6 @@ package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
-import com.sun.source.util.TreeScanner
 import javax.lang.model.`type`.ArrayType
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.`type`.ExecutableType
@@ -10,6 +9,7 @@ import javax.lang.model.`type`.TypeKind
 import javax.lang.model.`type`.TypeMirror
 import javax.lang.model.element.Element
 import javax.lang.model.element.ExecutableElement
+import net.kurobako.bonsai.java.Javac.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
@@ -26,7 +26,7 @@ object LintErrors {
 
   /** An exception that is caught and never looked at. */
   private object SwallowedException extends Lint {
-    val id               = JavaLint.SwallowedException.id
+    val id               = LintId.SwallowedException.id
     val kinds: Set[Kind] = Set(Tree.Kind.CATCH)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -38,15 +38,9 @@ object LintErrors {
       if (ignored) Vector.empty
       else {
         val throws = mutable.ArrayBuffer.empty[ThrowTree]
-        new TreeScanner[Unit, Unit] {
-          override def visitThrow(node: ThrowTree, unused: Unit): Unit = {
-            throws += node
-            super.visitThrow(node, unused)
-          }
-          override def visitCatch(node: CatchTree, unused: Unit): Unit                       = ()
-          override def visitClass(node: ClassTree, unused: Unit): Unit                       = ()
-          override def visitLambdaExpression(node: LambdaExpressionTree, unused: Unit): Unit = ()
-        }.scan(catchTree.getBlock, ())
+        Scan.foreach(catchTree.getBlock, !_.isInstanceOf[CatchTree | ClassTree | LambdaExpressionTree]) {
+          case node: ThrowTree => throws += node
+        }
 
         val derived = derivedElements(context, catchTree.getBlock, element, carries(context))
         if (
@@ -56,7 +50,7 @@ object LintErrors {
 
           Vector(context.found("the exception thrown from the catch block drops the caught exception as its cause"))
         else {
-          val restored = Lints.isType(context.typeOf(parameter), "java.lang.InterruptedException") &&
+          val restored = context.attributedType(parameter).exists(Lints.isType(_, "java.lang.InterruptedException")) &&
             LintErrors.callsInterrupt(catchTree.getBlock)
           if (mentionsAny(context, catchTree.getBlock, Set(element)) || restored) Vector.empty
           else Vector(context.found("the exception is caught and never looked at"))
@@ -65,16 +59,8 @@ object LintErrors {
     }
   }
 
-  private def mentionsAny(context: Context, tree: Tree, elements: scala.collection.Set[Element]): Boolean = {
-    var found = false
-    new TreeScanner[Unit, Unit] {
-      override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
-        if (elements.contains(context.elementOf(node))) found = true
-        super.visitIdentifier(node, unused)
-      }
-    }.scan(tree, ())
-    found
-  }
+  private def mentionsAny(context: Context, tree: Tree, elements: scala.collection.Set[Element]): Boolean =
+    Scan.exists(tree) { case node: IdentifierTree => elements.contains(context.elementOf(node)) }
 
   private def derivedElements(
       context: Context,
@@ -83,40 +69,29 @@ object LintErrors {
       carries: Tree => Boolean
   ): Set[Element] = {
     val derived = mutable.Set[Element](caught)
-    var changed = true
-    while changed do {
+
+    @annotation.tailrec
+    def settle(): Unit = {
       val before = derived.size
-      new TreeScanner[Unit, Unit] {
-        override def visitVariable(node: VariableTree, unused: Unit): Unit = {
+      Scan.foreach(block, !_.isInstanceOf[CatchTree | ClassTree]) {
+        case node: VariableTree =>
           if (
-            node.getInitializer != null && mentionsAny(context, node.getInitializer, derived) &&
+            node.initializer.isDefined && mentionsAny(context, node.getInitializer, derived) &&
             carries(node.getInitializer)
           ) derived += context.elementOf(node)
-          super.visitVariable(node, unused)
-        }
-        override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
+        case node: AssignmentTree =>
           if (mentionsAny(context, node.getExpression, derived) && carries(node.getExpression))
             node.getVariable match {
               case id: IdentifierTree => derived += context.elementOf(id)
               case _                  => ()
             }
-          super.visitAssignment(node, unused)
-        }
-        override def visitInstanceOf(node: InstanceOfTree, unused: Unit): Unit = {
-          if (mentionsAny(context, node.getExpression, derived) && node.getPattern != null)
-            new TreeScanner[Unit, Unit] {
-              override def visitBindingPattern(pat: BindingPatternTree, u: Unit): Unit = {
-                if (pat.getVariable != null) derived += context.elementOf(pat.getVariable)
-                super.visitBindingPattern(pat, u)
-              }
-              override def visitVariable(v: VariableTree, u: Unit): Unit = {
-                derived += context.elementOf(v)
-                super.visitVariable(v, u)
-              }
-            }.scan(node.getPattern, ())
-          super.visitInstanceOf(node, unused)
-        }
-        override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
+        case node: InstanceOfTree =>
+          if (mentionsAny(context, node.getExpression, derived) && node.pattern.isDefined)
+            Scan.foreach(node.getPattern) {
+              case pat: BindingPatternTree => derived += context.elementOf(pat.getVariable)
+              case variable: VariableTree  => derived += context.elementOf(variable)
+            }
+        case node: MethodInvocationTree =>
           node.getMethodSelect match {
             case select: MemberSelectTree
                 if (select.getIdentifier.contentEquals("initCause") ||
@@ -128,29 +103,22 @@ object LintErrors {
               }
             case _ => ()
           }
-          super.visitMethodInvocation(node, unused)
-        }
-        override def visitCatch(node: CatchTree, unused: Unit): Unit = ()
-        override def visitClass(node: ClassTree, unused: Unit): Unit = ()
-      }.scan(block, ())
-      changed = derived.size > before
+      }
+      if (derived.size > before) settle()
     }
+
+    settle()
     derived.toSet
   }
 
-  private def callsMethod(body: Tree, name: String, takes: MethodInvocationTree => Boolean): Boolean = {
-    var called = false
-    new TreeScanner[Unit, Unit] {
-      override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
+  private def callsMethod(body: Tree, name: String, takes: MethodInvocationTree => Boolean): Boolean =
+    Scan.exists(body) {
+      case node: MethodInvocationTree =>
         node.getMethodSelect match {
-          case select: MemberSelectTree if select.getIdentifier.contentEquals(name) && takes(node) => called = true
-          case _                                                                                   => ()
+          case select: MemberSelectTree => select.getIdentifier.contentEquals(name) && takes(node)
+          case _                        => false
         }
-        super.visitMethodInvocation(node, unused)
-      }
-    }.scan(body, ())
-    called
-  }
+    }
 
   private def callsInitCause(context: Context, block: BlockTree, elements: scala.collection.Set[Element]): Boolean =
     callsMethod(block, "initCause", call => Lints.arguments(call).exists(arg => mentionsAny(context, arg, elements)))
@@ -160,23 +128,16 @@ object LintErrors {
 
   /** The names the code of a block uses, which the lints that care of what the code catches read. */
   private[java] def named(body: Tree): Set[String] = {
-    val names   = mutable.Set.empty[String]
-    val scanner = new TreeScanner[Unit, Unit] {
-      override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
-        names += node.getName.toString
-        super.visitIdentifier(node, unused)
-      }
-      override def visitMemberSelect(node: MemberSelectTree, unused: Unit): Unit = {
-        names += node.getIdentifier.toString
-        super.visitMemberSelect(node, unused)
-      }
+    val names = mutable.Set.empty[String]
+    Scan.foreach(body) {
+      case node: IdentifierTree   => names += node.getName.toString
+      case node: MemberSelectTree => names += node.getIdentifier.toString
     }
-    scanner.scan(body, ())
     names.toSet
   }
 
   private def carries(context: Context): Tree => Boolean = {
-    val throwable = Option(context.elements.getTypeElement("java.lang.Throwable")).map(_.asType())
+    val throwable = context.elements.typeNamed("java.lang.Throwable").map(_.asType())
     def contains(base: TypeMirror, tpe: TypeMirror): Boolean = Lints.subtype(context, tpe, base) ||
       (tpe match {
         case declared: DeclaredType => declared.getTypeArguments.asScala.exists(contains(base, _))
@@ -185,8 +146,7 @@ object LintErrors {
       })
     tree =>
       throwable.exists { base =>
-        val typed = context.typeOf(tree)
-        Lints.subtype(context, base, typed) || contains(base, typed)
+        context.attributedType(tree).exists(typed => Lints.subtype(context, base, typed) || contains(base, typed))
       }
   }
 
@@ -195,46 +155,27 @@ object LintErrors {
       case id: IdentifierTree => elements.contains(context.elementOf(id))
       case _                  => false
     }
-    var found = false
-    new TreeScanner[Unit, Unit] {
-      override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
-        if (Lints.arguments(node).exists(passes(_))) found = true
-        super.visitMethodInvocation(node, unused)
-      }
-      override def visitNewClass(node: NewClassTree, unused: Unit): Unit = {
-        if (Lints.arguments(node).exists(passes(_))) found = true
-        super.visitNewClass(node, unused)
-      }
-      override def visitThrow(node: ThrowTree, unused: Unit): Unit = {
-        if (passes(node.getExpression)) found = true
-        super.visitThrow(node, unused)
-      }
-      override def visitReturn(node: ReturnTree, unused: Unit): Unit = {
-        if (node.getExpression != null && passes(node.getExpression)) found = true
-        super.visitReturn(node, unused)
-      }
-      override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
-        if (passes(node.getExpression)) found = true
-        super.visitAssignment(node, unused)
-      }
-      override def visitVariable(node: VariableTree, unused: Unit): Unit = {
-        if (node.getInitializer != null && passes(node.getInitializer)) found = true
-        super.visitVariable(node, unused)
-      }
-    }.scan(block, ())
-    found
+    Scan.exists(block) {
+      case node: MethodInvocationTree => Lints.arguments(node).exists(passes(_))
+      case node: NewClassTree         => Lints.arguments(node).exists(passes(_))
+      case node: ThrowTree            => passes(node.getExpression)
+      case node: ReturnTree           => node.returned.exists(passes(_))
+      case node: AssignmentTree       => passes(node.getExpression)
+      case node: VariableTree         => node.initializer.exists(passes(_))
+    }
   }
 
   /** An exception that is caught so generally that the failures of the program are hidden. */
   private object CatchThrowable extends Lint {
-    val id               = JavaLint.CatchThrowable.id
+    val id               = LintId.CatchThrowable.id
     val kinds: Set[Kind] = Set(Tree.Kind.CATCH)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val catchTree = tree.asInstanceOf[CatchTree]
-      val caught    = context.typeOf(catchTree.getParameter)
-      val generic   = Lints.isType(caught, "java.lang.Throwable") || Lints.isType(caught, "java.lang.Error")
-      val element   = context.elementOf(catchTree.getParameter)
+      val caught    = context.attributedType(catchTree.getParameter)
+      val generic   =
+        caught.exists(tpe => Lints.isType(tpe, "java.lang.Throwable") || Lints.isType(tpe, "java.lang.Error"))
+      val element = context.elementOf(catchTree.getParameter)
       if (
         generic &&
         !handsOn(context, catchTree.getBlock, derivedElements(context, catchTree.getBlock, element, carries(context)))
@@ -247,7 +188,7 @@ object LintErrors {
 
   /** A stack trace that is written to the output of the program instead of being reported. */
   private object PrintStackTrace extends Lint {
-    val id               = JavaLint.PrintStackTrace.id
+    val id               = LintId.PrintStackTrace.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -265,11 +206,11 @@ object LintErrors {
 
   /** A checked exception a method declares but never throws. */
   private object RedundantThrows extends Lint {
-    val id               = JavaLint.RedundantThrows.id
+    val id               = LintId.RedundantThrows.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
-      case method: MethodTree if method.getBody != null =>
+      case method: MethodTree if method.body.isDefined =>
         context.element match {
           case executable: ExecutableElement
               if Hierarchy.hidden(executable) && Hierarchy.fixed(executable) &&
@@ -286,56 +227,40 @@ object LintErrors {
     }
 
     /** Whether the declared type is one the compiler does not require the method to declare. */
-    private def unchecked(context: Context, tpe: TypeMirror): Boolean = {
-      val runtime = context.elements.getTypeElement("java.lang.RuntimeException")
-      val error   = context.elements.getTypeElement("java.lang.Error")
-      Lints.subtype(context, tpe, Option(runtime).map(_.asType()).orNull) ||
-      Lints.subtype(context, tpe, Option(error).map(_.asType()).orNull)
-    }
+    private def unchecked(context: Context, tpe: TypeMirror): Boolean =
+      Seq("java.lang.RuntimeException", "java.lang.Error").exists { name =>
+        context.elements.typeNamed(name).exists(unchecked => Lints.subtype(context, tpe, unchecked.asType()))
+      }
 
     /** Whether the body throws the declared type, or calls something that declares it. */
-    private def thrown(context: Context, body: BlockTree, declared: TypeMirror): Boolean = {
-      var found = false
-      new TreeScanner[Unit, Unit] {
-        override def visitThrow(node: ThrowTree, unused: Unit): Unit = {
-          val tpe = context.mirrorOf(node.getExpression).orNull
-          if (Lints.subtype(context, tpe, declared)) found = true
-          super.visitThrow(node, unused)
-        }
-
-        override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
+    private def thrown(context: Context, body: BlockTree, declared: TypeMirror): Boolean =
+      Scan.exists(body) {
+        case node: ThrowTree => context.mirrorOf(node.getExpression).exists(Lints.subtype(context, _, declared))
+        case node: MethodInvocationTree =>
           val select   = node.getMethodSelect
           val declares = context.elementOf(select) match {
             case executable: ExecutableElement => executable.getThrownTypes.asScala.toVector
             case _                             => Vector.empty
           }
           // the type the call infers for a thrown type variable, as orElseThrow does
-          val inferred = Option(context.typeOf(select)) match {
+          val inferred = context.attributedType(select) match {
             case Some(executable: ExecutableType) => executable.getThrownTypes.asScala.toVector
             case _                                => Vector.empty
           }
-          if ((declares ++ inferred).exists(tpe => Lints.subtype(context, tpe, declared))) found = true
-          super.visitMethodInvocation(node, unused)
-        }
-
-        override def visitNewClass(node: NewClassTree, unused: Unit): Unit = {
+          (declares ++ inferred).exists(tpe => Lints.subtype(context, tpe, declared))
+        case node: NewClassTree =>
           context.elementOf(node) match {
-            case executable: ExecutableElement
-                if executable.getThrownTypes.asScala.exists(tpe => Lints.subtype(context, tpe, declared)) =>
-              found = true
-            case _ => ()
+            case executable: ExecutableElement =>
+              executable.getThrownTypes.asScala.exists(tpe => Lints.subtype(context, tpe, declared))
+            case _ => false
           }
-          super.visitNewClass(node, unused)
-        }
-      }.scan(body, ())
-      found
-    }
+      }
 
   }
 
   /** A catch parameter named as ignored that the catch block reads, which says the code meant to handle it. */
   private object CatchMayIgnoreException extends Lint {
-    val id               = JavaLint.CatchMayIgnoreException.id
+    val id               = LintId.CatchMayIgnoreException.id
     val kinds: Set[Kind] = Set(Tree.Kind.CATCH)
 
     def check(context: Context, tree: Tree): Vector[Found] = {

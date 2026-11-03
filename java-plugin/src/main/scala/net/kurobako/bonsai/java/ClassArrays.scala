@@ -3,7 +3,21 @@ package net.kurobako.bonsai.java
 import com.sun.source.tree.*
 import javax.lang.model.`type`.*
 import javax.lang.model.element.*
+import net.kurobako.bonsai.java.Javac.*
 import scala.jdk.CollectionConverters.*
+
+private object ClassArrays {
+  def apply(context: Context): ClassArrays = new ClassArrays(context)
+
+  private type Env = Map[Element, Known]
+
+  /** What the evaluation knows of a value. */
+  private enum Known {
+    case Item(tpe: TypeMirror)
+    case Items(types: Vector[Option[TypeMirror]])
+    case Count(value: Int)
+  }
+}
 
 /** Evaluates the arrays of class literals that code builds to name a reflected signature, through the local variables
   * that hold them and the helper methods of the build that extend them.
@@ -11,7 +25,7 @@ import scala.jdk.CollectionConverters.*
   * The evaluation runs the statements of a helper over values it knows: arrays of classes, a class, a length. It gives
   * up, and the signature stays unknown, at any statement it does not read.
   */
-private[java] class ClassArrays(context: Context) {
+private class ClassArrays(context: Context) {
   import ClassArrays.*
   import Known.*
 
@@ -27,9 +41,9 @@ private[java] class ClassArrays(context: Context) {
       tree match {
         case parenthesized: ParenthesizedTree => evaluate(parenthesized.getExpression, env, depth)
         case literal: LiteralTree             =>
-          literal.getValue match {
-            case number: java.lang.Integer => Some(Count(number))
-            case _                         => None
+          (literal.getValue: Any) match {
+            case number: Int => Some(Count(number))
+            case _           => None
           }
         case select: MemberSelectTree if select.getIdentifier.contentEquals("class") =>
           classOf(tree).map(Item(_))
@@ -45,7 +59,7 @@ private[java] class ClassArrays(context: Context) {
             }
           } yield sum
         case array: NewArrayTree =>
-          if (array.getInitializers != null) {
+          if (array.initializers.isDefined) {
             val items = array.getInitializers.asScala.toVector.map(evaluate(_, env, depth))
             Option.when(items.forall(_.exists(_.isInstanceOf[Item])))(
               Items(items.flatMap(_.collect { case Item(tpe) => Some(tpe) }))
@@ -83,30 +97,24 @@ private[java] class ClassArrays(context: Context) {
     * assigns again.
     */
   private def lookup(identifier: IdentifierTree, env: Env, depth: Int): Option[Known] =
-    Option(context.elementOf(identifier)).flatMap { element =>
+    context.namedElement(identifier).flatMap { element =>
       env.get(element).orElse {
         Option(context.trees.getTree(element)).collect { case variable: VariableTree => variable }
-          .filter(_.getInitializer != null).filter(_ => element.getKind == ElementKind.LOCAL_VARIABLE)
+          .filter(_.initializer.isDefined).filter(_ => element.getKind == ElementKind.LOCAL_VARIABLE)
           .filter(_ => !reassigned(element))
           .flatMap(variable => evaluate(variable.getInitializer, Map.empty, depth + 1))
       }
     }
 
-  private def reassigned(element: Element): Boolean = {
-    var found = false
-    context.ancestors.collectFirst { case method: MethodTree => method }.foreach { method =>
-      new com.sun.source.util.TreeScanner[Unit, Unit] {
-        override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
-          if (Option(context.elementOf(node.getVariable)).contains(element)) found = true
-          super.visitAssignment(node, unused)
-        }
-      }.scan(method, ())
+  private def reassigned(element: Element): Boolean =
+    context.ancestors.collectFirst { case method: MethodTree => method }.exists { method =>
+      Scan.exists(method) {
+        case node: AssignmentTree => context.namedElement(node.getVariable).contains(element)
+      }
     }
-    found
-  }
 
   private def invokedMethod(invocation: MethodInvocationTree): Option[ExecutableElement] =
-    Option(context.elementOf(invocation.getMethodSelect)).collect { case method: ExecutableElement => method }
+    context.namedElement(invocation.getMethodSelect).collect { case method: ExecutableElement => method }
 
   /** The value a call of a helper of the build gives: its statements run over the values of the arguments. */
   private def call(invocation: MethodInvocationTree, env: Env, depth: Int): Option[Known] =
@@ -127,7 +135,7 @@ private[java] class ClassArrays(context: Context) {
             case _ => None
           }
         else
-          Option(context.trees.getTree(method)).filter(_.getBody != null).flatMap { source =>
+          Option(context.trees.getTree(method)).filter(_.body.isDefined).flatMap { source =>
             val arguments = Lints.arguments(invocation).map(evaluate(_, env, depth))
             if (arguments.exists(_.isEmpty) || arguments.size != method.getParameters.size) None
             else {
@@ -143,11 +151,11 @@ private[java] class ClassArrays(context: Context) {
       case Nil          => None
       case head :: rest =>
         head match {
-          case ret: ReturnTree        => Option(ret.getExpression).flatMap(evaluate(_, env, depth))
+          case ret: ReturnTree        => ret.returned.flatMap(evaluate(_, env, depth))
           case variable: VariableTree =>
             for {
-              element <- Option(context.elementOf(variable))
-              initial <- Option(variable.getInitializer).flatMap(evaluate(_, env, depth))
+              element <- context.namedElement(variable)
+              initial <- variable.initializer.flatMap(evaluate(_, env, depth))
               result  <- run(rest, env + (element -> initial), depth)
             } yield result
           case statement: ExpressionStatementTree =>
@@ -164,7 +172,7 @@ private[java] class ClassArrays(context: Context) {
                           Some(Items(items.updated(at, Some(tpe))))
                         case _ => None
                       }
-                      target <- Option(context.elementOf(access.getExpression))
+                      target <- context.namedElement(access.getExpression)
                       result <- run(rest, env + (target -> updated), depth)
                     } yield result
                   case _ => None
@@ -190,7 +198,7 @@ private[java] class ClassArrays(context: Context) {
               target  <- evaluate(to, env, depth)
               b       <- evaluate(toAt, env, depth)
               n       <- evaluate(length, env, depth)
-              element <- Option(context.elementOf(to))
+              element <- context.namedElement(to)
               result  <- (source, a, target, b, n) match {
                 case (Items(copied), Count(i), Items(into), Count(j), Count(count))
                     if i + count <= copied.size && j + count <= into.size =>
@@ -201,17 +209,4 @@ private[java] class ClassArrays(context: Context) {
           case _ => None
         }
       }
-}
-
-private[java] object ClassArrays {
-  def apply(context: Context): ClassArrays = new ClassArrays(context)
-
-  private type Env = Map[Element, Known]
-
-  /** What the evaluation knows of a value. */
-  private enum Known {
-    case Item(tpe: TypeMirror)
-    case Items(types: Vector[Option[TypeMirror]])
-    case Count(value: Int)
-  }
 }

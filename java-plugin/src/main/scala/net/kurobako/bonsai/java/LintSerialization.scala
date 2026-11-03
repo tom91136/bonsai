@@ -4,6 +4,7 @@ import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
 import javax.lang.model.element.ElementKind
 import javax.lang.model.element.TypeElement
+import net.kurobako.bonsai.java.Javac.*
 import scala.jdk.CollectionConverters.*
 
 /** The lints of the serialization of the Java code, which the code of a type holds.
@@ -18,18 +19,19 @@ object LintSerialization {
 
   /** A serial version field that can carry the `@Serial` annotation. */
   private object MissingSerialAnnotation extends Lint {
-    val id               = JavaLint.MissingSerialAnnotation.id
+    val id               = LintId.MissingSerialAnnotation.id
     val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val variable = tree.asInstanceOf[VariableTree]
-      val element  = context.element
+      val element  = context.namedElement
       // `java.io.Serial` arrived in Java 14; a build that targets an older API cannot write the annotation.
-      lazy val supported = context.elements.getTypeElement("java.io.Serial") != null
-      val field          = element != null && element.getKind == ElementKind.FIELD &&
-        Lints.constant(element) &&
-        variable.getName.contentEquals("serialVersionUID")
-      lazy val annotated = element != null && Nullness.hasAnnotation(element, "java.io.Serial")
+      lazy val supported = context.elements.typeNamed("java.io.Serial").isDefined
+      val field          = element.exists(found =>
+        found.getKind == ElementKind.FIELD && Lints.constant(found) &&
+          variable.getName.contentEquals("serialVersionUID")
+      )
+      lazy val annotated = element.exists(Nullness.hasAnnotation(_, "java.io.Serial"))
       if (field && supported && !annotated)
         Vector(context.found("the serialVersionUID field can be annotated with @Serial"))
       else Vector.empty
@@ -38,7 +40,7 @@ object LintSerialization {
 
   /** A type that is serialized and does not name the version of its form. */
   private object MissingSerialVersionUid extends Lint {
-    val id               = JavaLint.MissingSerialVersionUid.id
+    val id               = LintId.MissingSerialVersionUid.id
     val kinds: Set[Kind] = Set(Tree.Kind.CLASS, Tree.Kind.ENUM, Tree.Kind.RECORD)
 
     def check(context: Context, tree: Tree): Vector[Found] =

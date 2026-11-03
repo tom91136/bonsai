@@ -30,11 +30,11 @@ object JavaLints {
             candidate.field.owner,
             candidate.field.name
           )) &&
-            !candidate.field.suppressed(JavaLint.CanBeFinal.id) &&
+            !candidate.field.suppressed(LintId.CanBeFinal.id) &&
             !(candidate.field.exported && nodes.get(candidate.field.owner).exists(_.exported)) =>
         val field = candidate.field
         val lint  = JavaModel.Lint(
-          JavaLint.CanBeFinal.id,
+          LintId.CanBeFinal.id,
           field.owner,
           "",
           field.path,
@@ -48,10 +48,10 @@ object JavaLints {
     * plugin found and the analysis does not know yet.
     */
   private val rules: Map[String, Finding.Rule] =
-    Finding.Rule.values.collect { case rule if JavaLint.ids(rule.id) => rule.id -> rule }.toMap
+    Finding.Rule.values.collect { case rule if LintId.ids(rule.id) => rule.id -> rule }.toMap
 
   /** The lints whose inspection the IDE reports as a weak warning, so that their findings inform without failing. */
-  private val informational: Set[String] = Set(JavaLint.ExtractMethod.id, JavaLint.LoggingSimilar.id)
+  private val informational: Set[String] = Set(LintId.ExtractMethod.id, LintId.LoggingSimilar.id)
 
   /** The findings of the lints, on the nodes of the types that hold the code they are of. */
   def findings(founds: Vector[Found], nodes: Map[String, Node]): Vector[Finding] =

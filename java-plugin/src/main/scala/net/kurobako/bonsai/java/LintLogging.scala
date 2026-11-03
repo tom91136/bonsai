@@ -2,9 +2,9 @@ package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
-import com.sun.source.util.TreeScanner
 import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.TypeElement
+import net.kurobako.bonsai.java.Javac.*
 import scala.collection.mutable
 
 /** Lints of the log messages of a file. */
@@ -14,19 +14,19 @@ object LintLogging {
 
   /** Two log calls whose messages say nearly the same thing. */
   private object SimilarMessages extends Lint {
-    val id               = JavaLint.LoggingSimilar.id
+    val id               = LintId.LoggingSimilar.id
     val kinds: Set[Kind] = Set.empty[Tree.Kind]
 
     private val Levels = Set("trace", "debug", "info", "warn", "error")
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val messages = mutable.ArrayBuffer.empty[(String, Tree)]
-      new TreeScanner[Unit, Unit] {
-        override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
+      Scan.foreach(context.unit) {
+        case node: MethodInvocationTree =>
           context.elementOf(node) match {
             case method: ExecutableElement
                 if Levels(method.getSimpleName.toString) &&
-                  Option(method.getEnclosingElement).exists {
+                  method.enclosing.exists {
                     case owner: TypeElement => owner.getQualifiedName.contentEquals("org.slf4j.Logger")
                     case _                  => false
                   } =>
@@ -35,9 +35,7 @@ object LintLogging {
               )
             case _ => ()
           }
-          super.visitMethodInvocation(node, unused)
-        }
-      }.scan(context.unit, ())
+      }
 
       val tokenised = messages.map { case (text, node) => (text, node, words(text)) }
       tokenised.zipWithIndex.flatMap { case ((_, node, mine), index) =>

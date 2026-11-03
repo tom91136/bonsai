@@ -6,6 +6,7 @@ import javax.lang.model.element.ElementKind
 import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.Modifier
 import javax.lang.model.element.TypeElement
+import net.kurobako.bonsai.java.Javac.*
 
 /** The lints of the threading of the Java code, which the code of a type holds.
   *
@@ -19,7 +20,7 @@ object LintThreading {
 
   /** A lock of a field that may be replaced while the code waits for it. */
   private object SynchronizedOnNonFinal extends Lint {
-    val id               = JavaLint.SynchronizedOnNonFinal.id
+    val id               = LintId.SynchronizedOnNonFinal.id
     val kinds: Set[Kind] = Set(Tree.Kind.SYNCHRONIZED)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -27,11 +28,12 @@ object LintThreading {
       val lock         = synchronized.getExpression
       // A lock of a field that may be replaced is a lock of two things at once.
       val element = LintThreading.expression(lock) match {
-        case identifier: IdentifierTree => context.elementOf(identifier)
-        case _                          => null
+        case identifier: IdentifierTree => context.namedElement(identifier)
+        case _                          => None
       }
-      val replaceable = element != null && element.getKind == ElementKind.FIELD &&
-        !element.getModifiers.contains(Modifier.FINAL)
+      val replaceable = element.exists(found =>
+        found.getKind == ElementKind.FIELD && !found.getModifiers.contains(Modifier.FINAL)
+      )
       if (replaceable)
         Vector(context.found("the lock is a field that may be replaced while the code waits for it"))
       else Vector.empty
@@ -46,7 +48,7 @@ object LintThreading {
 
   /** A wait that is not in a loop, which can miss the notification that wakes the thread. */
   private object WaitNotInLoop extends Lint {
-    val id               = JavaLint.WaitNotInLoop.id
+    val id               = LintId.WaitNotInLoop.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -61,14 +63,14 @@ object LintThreading {
 
   /** A sleep in a loop, which waits for a condition by polling instead of being notified of it. */
   private object BusyWait extends Lint {
-    val id               = JavaLint.BusyWait.id
+    val id               = LintId.BusyWait.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val sleeping = context.element match {
         case method: ExecutableElement =>
           method.getSimpleName.contentEquals("sleep") &&
-          Option(method.getEnclosingElement).exists {
+          method.enclosing.exists {
             case owner: TypeElement => owner.getQualifiedName.contentEquals("java.lang.Thread")
             case _                  => false
           }

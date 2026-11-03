@@ -63,7 +63,7 @@ def classpathOf(entries: Classpath, converter: xsbti.FileConverter, extra: Seq[S
 
 lazy val checkSource   = "plugin/src/main/scala/net/kurobako/bonsai/plugin/Check.scala"
 lazy val findingSource = "analysis/src/main/scala/net/kurobako/bonsai/analysis/Finding.scala"
-lazy val lintSource    = "java-plugin/src/main/scala/net/kurobako/bonsai/java/JavaLint.scala"
+lazy val lintSource    = "java-plugin/src/main/scala/net/kurobako/bonsai/java/LintId.scala"
 lazy val ruleSource    = "scalafix/rules/src/main/resources/META-INF/services/scalafix.v1.Rule"
 
 lazy val lawIds =

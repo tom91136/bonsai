@@ -4,11 +4,11 @@ import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
 import com.sun.source.util.TreePath
 import com.sun.source.util.TreePathScanner
-import com.sun.source.util.TreeScanner
 import javax.lang.model.`type`.ArrayType
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.`type`.TypeMirror
 import javax.lang.model.element.Element
+import net.kurobako.bonsai.java.Javac.*
 import scala.jdk.CollectionConverters.*
 
 /** The lints of the loops of the Java code whose work a stream, a single loop, or the code before the loop states
@@ -25,14 +25,14 @@ object LintLoops {
 
   /** A loop that returns on the first element that matches and a literal otherwise, which a stream match states. */
   private object LoopToMatch extends Lint {
-    val id               = JavaLint.LoopToMatch.id
+    val id               = LintId.LoopToMatch.id
     val kinds: Set[Kind] = Set(Tree.Kind.ENHANCED_FOR_LOOP, Tree.Kind.FOR_LOOP)
 
     def check(context: Context, tree: Tree): Vector[Found] =
       (for {
         following <- context.sibling(1).flatMap(Lint.booleanReturn)
-        guard <- body(tree).map(single(_)).collect { case branch: IfTree if branch.getElseStatement == null => branch }
-        exit  <- Lint.booleanReturn(guard.getThenStatement)
+        guard     <- body(tree).map(single(_)).collect { case branch: IfTree if branch.elseStatement.isEmpty => branch }
+        exit      <- Lint.booleanReturn(guard.getThenStatement)
         condition = Lints.unparenthesised(guard.getCondition)
         if following == !exit && matchable(context, tree, condition)
       } yield {
@@ -70,10 +70,10 @@ object LintLoops {
     private def indexed(context: Context, plain: ForLoopTree, condition: ExpressionTree): Option[Element] =
       for {
         index <- plain.getInitializer.asScala.toVector match {
-          case Vector(variable: VariableTree) if variable.getInitializer != null => Some(variable)
-          case _                                                                 => None
+          case Vector(variable: VariableTree) if variable.initializer.isDefined => Some(variable)
+          case _                                                                => None
         }
-        bound <- Option(plain.getCondition).map(Lints.unparenthesised).collect {
+        bound <- plain.condition.map(Lints.unparenthesised).collect {
           case binary: BinaryTree if binary.getKind == Tree.Kind.LESS_THAN => binary
         }
         if named(bound.getLeftOperand, index.getName.toString)
@@ -109,28 +109,25 @@ object LintLoops {
 
     /** Whether the condition uses the index only to read the list. */
     private def readsBy(condition: ExpressionTree, index: String, list: String): Boolean = {
-      var reads = 0
-      var other = false
-      new TreeScanner[Unit, Unit] {
-        override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit =
-          node.getMethodSelect match {
-            case select: MemberSelectTree
-                if select.getIdentifier.contentEquals("get") && select.getExpression.toString == list &&
-                  node.getArguments.size == 1 && named(node.getArguments.get(0), index) =>
-              reads += 1
-            case _ => super.visitMethodInvocation(node, unused)
+      def read(node: Tree): Boolean = node match {
+        case call: MethodInvocationTree =>
+          call.getMethodSelect match {
+            case select: MemberSelectTree =>
+              select.getIdentifier.contentEquals("get") && select.getExpression.toString == list &&
+              call.getArguments.size == 1 && named(call.getArguments.get(0), index)
+            case _ => false
           }
-
-        override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit =
-          if (node.getName.contentEquals(index)) other = true
-      }.scan(condition, ())
-      reads > 0 && !other
+        case _ => false
+      }
+      val reads = Scan.exists(condition, !read(_)) { case node => read(node) }
+      val other = Scan.exists(condition, !read(_)) { case node: IdentifierTree => node.getName.contentEquals(index) }
+      reads && !other
     }
   }
 
   /** A loop that has the same body as the loop before it, which one loop over both sources runs. */
   private object ConsecutiveIdenticalLoops extends Lint {
-    val id               = JavaLint.ConsecutiveIdenticalLoops.id
+    val id               = LintId.ConsecutiveIdenticalLoops.id
     val kinds: Set[Kind] = Set(Tree.Kind.ENHANCED_FOR_LOOP)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -159,7 +156,7 @@ object LintLoops {
 
   /** A list that one loop fills and the next loop iterates once, which the first loop can use directly. */
   private object TemporaryListIteratedOnce extends Lint {
-    val id               = JavaLint.TemporaryListIteratedOnce.id
+    val id               = LintId.TemporaryListIteratedOnce.id
     val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     private val lists = Set("java.util.ArrayList", "java.util.LinkedList")
@@ -168,8 +165,8 @@ object LintLoops {
       val declaration = tree.asInstanceOf[VariableTree]
       val found       = for {
         (statements, index) <- context.siblings
-        created             <- Option(declaration.getInitializer).collect {
-          case created: NewClassTree if created.getArguments.isEmpty && created.getClassBody == null => created
+        created             <- declaration.initializer.collect {
+          case created: NewClassTree if created.getArguments.isEmpty && created.classBody.isEmpty => created
         }
         if context.typeOf(created) match {
           case declared: DeclaredType => lists(declared.asElement.toString)
@@ -191,6 +188,8 @@ object LintLoops {
       found.toVector
     }
 
+    // A javac visitor is an abstract class, so it is written inline.
+    @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation"))
     private def uses(context: Context, tree: Tree, element: Element): Vector[TreePath] = {
       val paths = Vector.newBuilder[TreePath]
       new TreePathScanner[Unit, Unit] {
@@ -246,7 +245,7 @@ object LintLoops {
     * outside the loop.
     */
   private object LoopInvariantCondition extends Lint {
-    val id               = JavaLint.LoopInvariantCondition.id
+    val id               = LintId.LoopInvariantCondition.id
     val kinds: Set[Kind] = Set(Tree.Kind.IF)
 
     private val boundaries = Set(
@@ -264,7 +263,7 @@ object LintLoops {
       val condition = guard.getCondition
       (for {
         loop <- context.ancestors.takeWhile(ancestor => !boundaries(ancestor.getKind)).find(a => Lints.loops(a.getKind))
-        if guard.getElseStatement == null && body(loop).map(single(_)).exists(_ eq guard)
+        if guard.elseStatement.isEmpty && body(loop).map(single(_)).exists(_ eq guard)
         reads <- Effects.reads(context, condition)
         if reads.variables.nonEmpty && reads.variables.forall(Effects.local) &&
           !Effects.changes(context, loop, reads.all)
@@ -276,13 +275,8 @@ object LintLoops {
   }
 
   /** Whether the code of the tree holds no statement of the kinds. */
-  private def lacks(body: Tree, kinds: Set[Tree.Kind]): Boolean = {
-    var found = false
-    new TreeScanner[Unit, Unit] {
-      override def scan(tree: Tree, unused: Unit): Unit =
-        if (tree != null && kinds(tree.getKind)) found = true else super.scan(tree, unused)
-    }.scan(body, ())
-    !found
+  private def lacks(body: Tree, kinds: Set[Tree.Kind]): Boolean = !Scan.exists(body) {
+    case node => kinds(node.getKind)
   }
 
   private def single(statement: StatementTree): StatementTree = statement match {
@@ -300,7 +294,7 @@ object LintLoops {
 
   private def derives(context: Context, tpe: TypeMirror, name: String): Boolean = tpe match {
     case declared: DeclaredType =>
-      Option(context.elements.getTypeElement(name)).exists { element =>
+      context.elements.typeNamed(name).exists { element =>
         Lints.subtype(context, context.types.erasure(declared), context.types.erasure(element.asType))
       }
     case _ => false

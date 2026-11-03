@@ -3,11 +3,12 @@ package net.kurobako.bonsai.java
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.`type`.TypeMirror
 import javax.lang.model.element.*
+import net.kurobako.bonsai.java.Javac.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
 /** What the types of the code say about which methods override which. */
-private[java] object Hierarchy {
+private object Hierarchy {
 
   /** The methods of the supertypes that the method overrides, which the compiler can see. */
   def overridden(context: Context, method: ExecutableElement): Vector[ExecutableElement] =
@@ -57,7 +58,7 @@ private[java] object Hierarchy {
     }
 
   private def enclosingTypes(element: Element): Iterator[TypeElement] =
-    Iterator.iterate(element.getEnclosingElement)(_.getEnclosingElement).takeWhile(_ != null).collect {
+    element.enclosings.collect {
       case tpe: TypeElement => tpe
     }
 }

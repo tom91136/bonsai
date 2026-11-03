@@ -3,12 +3,18 @@ package net.kurobako.bonsai.java
 import javax.lang.model.element.ExecutableElement
 import scala.collection.mutable
 
+object Registry {
+  val Returns = "returns"
+  val Empty   = "empty"
+}
+
 /** What the lints of one compilation leave for each other: a lint that needs the whole hierarchy of a method records
   * what it saw as the compiler attributes the types, and reports at the end of the compilation, when it has seen them
   * all.
   */
 class Registry(named: Option[Int] = None) {
 
+  @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
   private var probed = Option.empty[Int]
 
   /** The release the code is compiled for: the one the build names, or else the one `find` reads off the platform. */
@@ -52,8 +58,8 @@ class Registry(named: Option[Int] = None) {
     * reports.
     */
   def agreed(kind: String, detail: String => String): Vector[Model.Lint] = {
-    val kindId = if (kind == Registry.Empty) JavaLint.EmptyMethod.id else JavaLint.SameReturnValue.id
-    declared.view.filter(d => d.kind == kind && !d.suppressed(JavaLint.Wildcard) && !d.suppressed(kindId)).flatMap {
+    val kindId = if (kind == Registry.Empty) LintId.EmptyMethod.id else LintId.SameReturnValue.id
+    declared.view.filter(d => d.kind == kind && !d.suppressed(LintId.Wildcard) && !d.suppressed(kindId)).flatMap {
       found =>
         val others = overriders.get((kind, found.method)).fold(Vector.empty[Option[String]])(_.toVector)
         (found.value.toVector.map(Option(_)) ++ others).distinct match {
@@ -62,9 +68,4 @@ class Registry(named: Option[Int] = None) {
         }
     }.toVector
   }
-}
-
-object Registry {
-  val Returns = "returns"
-  val Empty   = "empty"
 }

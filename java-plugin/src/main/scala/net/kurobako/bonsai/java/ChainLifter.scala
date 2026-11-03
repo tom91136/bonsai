@@ -13,100 +13,8 @@ import javax.lang.model.element.VariableElement
 import javax.lang.model.util.Elements
 import javax.lang.model.util.Types
 import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.java.Javac.*
 import scala.jdk.CollectionConverters.*
-
-/** A chain of calls as the laws see it, with the expression that runs each step: `ends(i)` is the call, or the
-  * comparison or negation of one, that completes step `i`. A chain whose first call names no receiver runs on `this`,
-  * which `chain.source` then stands for.
-  */
-case class Lifted(chain: Chain, ends: Vector[ExpressionTree], implicitThis: Boolean = false) {
-
-  /** The text of the expression the step `from` runs on. */
-  def receiver(from: Int): String = if (from == 0) chain.source.text else ends(from - 1).toString
-}
-
-/** An argument of a step, which is a function written in place, a reference to a method or a plain expression. */
-private class JavaArg(
-    val text: String,
-    val pure: Boolean,
-    override val identity: Boolean,
-    override val literal: Option[Any],
-    override val comparison: Option[Comparison] = None
-) extends Arg {
-  def applied(value: String): String = if (identity) value else s"($text).apply($value)"
-}
-
-/** The names of the Java methods the lifter reads as steps of the algebra, by the receiver they are called on and the
-  * number of their arguments. The steps they lower to are the methods the algebra knows, `Ops` giving their costs.
-  */
-object ChainMethods {
-
-  val Streams: Map[(String, Int), String] = Map(
-    ("filter", 1)      -> "filter",
-    ("map", 1)         -> "map",
-    ("mapToInt", 1)    -> "map",
-    ("mapToLong", 1)   -> "map",
-    ("mapToDouble", 1) -> "map",
-    ("mapToObj", 1)    -> "map",
-    ("flatMap", 1)     -> "flatMap",
-    ("sorted", 0)      -> "sorted",
-    ("sorted", 1)      -> "sortWith",
-    ("distinct", 0)    -> "distinct",
-    ("limit", 1)       -> "take",
-    ("skip", 1)        -> "drop",
-    ("takeWhile", 1)   -> "takeWhile",
-    ("dropWhile", 1)   -> "dropWhile",
-    ("findFirst", 0)   -> "headOption",
-    ("findAny", 0)     -> "headOption",
-    ("anyMatch", 1)    -> "exists",
-    ("allMatch", 1)    -> "forall",
-    ("noneMatch", 1)   -> "noneMatch",
-    ("count", 0)       -> "size",
-    ("min", 0)         -> "min",
-    ("min", 1)         -> "min",
-    ("max", 0)         -> "max",
-    ("max", 1)         -> "max",
-    ("toList", 0)      -> "toList"
-  )
-
-  val Collections: Map[(String, Int), String] = Map(
-    ("size", 0)     -> "size",
-    ("isEmpty", 0)  -> "isEmpty",
-    ("contains", 1) -> "contains",
-    ("stream", 0)   -> "stream"
-  )
-
-  val Maps: Map[(String, Int), String] = Map(("size", 0) -> "size", ("isEmpty", 0) -> "isEmpty")
-
-  val Optionals: Map[(String, Int), String] = Map(
-    ("isPresent", 0)   -> "isDefined",
-    ("isEmpty", 0)     -> "isEmpty",
-    ("get", 0)         -> "get",
-    ("getAsInt", 0)    -> "get",
-    ("getAsLong", 0)   -> "get",
-    ("getAsDouble", 0) -> "get",
-    ("map", 1)         -> "map",
-    ("filter", 1)      -> "filter",
-    ("flatMap", 1)     -> "flatMap",
-    ("orElse", 1)      -> "getOrElse",
-    ("orElseGet", 1)   -> "getOrElse"
-  )
-
-  /** The static factories whose result a chain starts from, by the class that has them. */
-  val Factories: Map[String, Set[String]] = Map("java.util.List" -> Set("of"), "java.util.Arrays" -> Set("asList"))
-
-  /** The unmodifiable views of a copy, by the method of `Collections`, with the type of the collection each copies. */
-  val Unmodifiable: Map[String, String] = Map(
-    "unmodifiableList" -> "java.util.Collection",
-    "unmodifiableSet"  -> "java.util.Collection",
-    "unmodifiableMap"  -> "java.util.Map"
-  )
-
-  private[java] val Names
-      : Set[String] = (Streams.keySet ++ Collections.keySet ++ Maps.keySet ++ Optionals.keySet).map(_._1) ++
-    Factories.values.flatten ++
-    Unmodifiable.keySet ++ Set("collect", "reduce", "orElseThrow")
-}
 
 /** Lifts the calls of the Java collections, streams and optionals in attributed trees to the chains the laws work on.
   *
@@ -136,7 +44,7 @@ object ChainLifter {
 
   private class Roots(elements: Elements, val types: Types) {
     private def erased(name: String): Option[TypeMirror] =
-      Option(elements.getTypeElement(name)).map(element => types.erasure(element.asType))
+      elements.typeNamed(name).map(element => types.erasure(element.asType))
 
     private val stream     = erased("java.util.stream.BaseStream")
     private val map        = erased("java.util.Map")
@@ -208,7 +116,7 @@ object ChainLifter {
       parent.getLeaf match {
         case select: MemberSelectTree
             if bareOf(TreePath(parent, select.getExpression)).getLeaf eq path.getLeaf =>
-          Option(parent.getParentPath).filter(_.getLeaf match {
+          parent.parent.filter(_.getLeaf match {
             case invocation: MethodInvocationTree => invocation.getMethodSelect eq select
             case _                                => false
           })
@@ -252,7 +160,7 @@ object ChainLifter {
       val steps  = merged.map(link => Step(link.method, link.args, link.from, link.to, link.typed))
       val onThis = merged.head.implicitThis
       Option.when(steps.exists(_.receiver.library)) {
-        val source = JavaArg(if (onThis) "this" else origin.toString, false, false, None)
+        val source = ChainArg(if (onThis) "this" else origin.toString, false, false, None)
         Lifted(Chain(source, steps), merged.map(_.end), onThis)
       }
     }
@@ -313,7 +221,7 @@ object ChainLifter {
     * method as a member.
     */
   private def own(site: Site): Option[(Family, Kind)] =
-    Iterator.iterate(site.path)(_.getParentPath).takeWhile(_ != null).find(_.getLeaf.isInstanceOf[ClassTree])
+    site.path.withParents.find(_.getLeaf.isInstanceOf[ClassTree])
       .flatMap(path => Option(site.context.trees.getElement(path)))
       .collect {
         case holder: TypeElement if site.context.elements.getAllMembers(holder).contains(site.method) => holder
@@ -353,7 +261,7 @@ object ChainLifter {
       copied =>
         site.invocation.getArguments.asScala.toList match {
           case List(construction: NewClassTree)
-              if construction.getClassBody == null && construction.getArguments.size == 1 &&
+              if construction.classBody.isEmpty && construction.getArguments.size == 1 &&
                 Release.atLeast(site.context, 10) =>
             val source = TreePath(TreePath(site.path, construction), construction.getArguments.get(0))
             for {
@@ -476,22 +384,16 @@ object ChainLifter {
       case _ => None
     }
 
-  private def independent(tree: Tree, names: Set[String]): Boolean = {
-    var free = true
-    new com.sun.source.util.TreeScanner[Unit, Unit] {
-      override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit =
-        if (names(node.getName.toString)) free = false
-    }.scan(tree, ())
-    free
-  }
+  private def independent(tree: Tree, names: Set[String]): Boolean =
+    !Scan.exists(tree) { case node: IdentifierTree => names(node.getName.toString) }
 
   private def number(tree: ExpressionTree): Option[Int] =
     Lints.unparenthesised(tree) match {
       case literal: LiteralTree =>
-        literal.getValue match {
-          case value: java.lang.Integer => Some(value.intValue)
-          case value: java.lang.Long    => Some(value.intValue).filter(_.toLong == value.longValue)
-          case _                        => None
+        (literal.getValue: Any) match {
+          case value: Int  => Some(value)
+          case value: Long => Some(value.toInt).filter(_.toLong == value)
+          case _           => None
         }
       case _ => None
     }
@@ -534,7 +436,7 @@ object ChainLifter {
     }
 
   private def argument(context: Context, path: TreePath, tree: Tree): Arg =
-    JavaArg(tree.toString, pure(context, path), identity(context, path), literal(tree), comparison(context, path))
+    ChainArg(tree.toString, pure(context, path), identity(context, path), literal(tree), comparison(context, path))
 
   private def parameterTypeIsArray(context: Context, path: TreePath, parameter: VariableTree): Boolean =
     Option(context.trees.getTypeMirror(TreePath(path, parameter))).exists(_.getKind == TypeKind.ARRAY)
@@ -608,7 +510,7 @@ object ChainLifter {
   private def constant(context: Context, path: TreePath, parameter: String): Option[String] = {
     val tree   = path.getLeaf
     val isNull = Lints.unparenthesised(tree.asInstanceOf[ExpressionTree]) match {
-      case literal: LiteralTree => literal.getValue == null
+      case literal: LiteralTree => literal.value.isEmpty
       case _                    => false
     }
     Option.when(
@@ -619,7 +521,7 @@ object ChainLifter {
 
   private def literal(tree: Tree): Option[Any] =
     tree match {
-      case literal: LiteralTree => Option(literal.getValue)
+      case literal: LiteralTree => literal.value
       case _                    => None
     }
 
@@ -683,9 +585,9 @@ object ChainLifter {
       case lambda: LambdaExpressionTree =>
         lambda.getBodyKind == LambdaExpressionTree.BodyKind.EXPRESSION && sub(lambda.getBody)
       case parenthesized: ParenthesizedTree => sub(parenthesized.getExpression)
-      case _: IdentifierTree                => Option(context.trees.getElement(path)).exists(variable(_))
+      case _: IdentifierTree                => context.trees.namedElement(path).exists(variable(_))
       case select: MemberSelectTree         =>
-        Option(context.trees.getElement(path)).exists(variable(_)) &&
+        context.trees.namedElement(path).exists(variable(_)) &&
         (context.trees.getElement(TreePath(path, select.getExpression)) match {
           case _: TypeElement => true
           case _              => sub(select.getExpression)

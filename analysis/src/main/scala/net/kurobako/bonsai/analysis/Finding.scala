@@ -112,8 +112,8 @@ object Finding {
 
     // The lints the javac plugin finds in the Java code of a build, which the analysis reports as findings of their own,
     // and the laws of the chains of calls it finds there.
-    JavaLint.values.foreach(lint => rule(lint.id))
-    JavaLint.chains.foreach(rule(_, strict = true))
+    LintId.values.foreach(lint => rule(lint.id))
+    LintId.chains.foreach(rule(_, strict = true))
 
     /** Every rule, in reporting priority. */
     val values: Vector[Rule] = declared.toVector
@@ -124,7 +124,7 @@ object Finding {
     */
   class Rule private (val id: String, val strict: Boolean, val ordinal: Int) {
     def suppressedBy(ids: Set[String]): Boolean =
-      ids("*") || ids(id) || ids.exists(other => JavaLint.IntelliJ.get(other).exists(_(id)))
+      ids("*") || ids(id) || ids.exists(other => LintId.IntelliJ.get(other).exists(_(id)))
 
     override def toString: String = id
   }

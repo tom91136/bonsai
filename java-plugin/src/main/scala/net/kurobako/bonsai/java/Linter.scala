@@ -7,80 +7,18 @@ import com.sun.source.util.Trees
 import javax.lang.model.element.TypeElement
 import javax.lang.model.util.Elements
 import javax.lang.model.util.Types
+import net.kurobako.bonsai.java.Javac.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
-
-/** The linter of the Java code: it walks the trees the compiler gives it and asks the lints about the code they read.
-  *
-  * The compiler attributes one type at a time, so the linter is given the type it has just attributed, and the lints of
-  * the code of that type are the ones it asks about. The lints of the file as a whole are asked once, when the compiler
-  * reads the file the first time, as the code of the file is whole then.
-  */
-class Linter(trees: Trees, elements: Elements, types: Types, enabled: Set[String] = Set.empty) {
-
-  private val read          = mutable.Set.empty[CompilationUnitTree]
-  private val registry      = Registry(Linter.release(enabled))
-  private val noinspections = mutable.Map.empty[CompilationUnitTree, Map[Int, Set[String]]]
-  private val active = Linter.byKind.view.mapValues(_.filter(lint => lint.enabledByDefault || enabled(lint.id))).toMap
-
-  private def suppressed(compilation: CompilationUnitTree): Map[Int, Set[String]] =
-    noinspections.getOrElseUpdate(compilation, Linter.noinspections(compilation))
-
-  /** The findings that need every type of the compilation, which the end of it reports. */
-  def finished(): Vector[Model.Lint] =
-    registry.agreed(Registry.Returns, value => s"the method always returns $value") ++
-      registry.agreed(Registry.Empty, _ => "the method is empty")
-
-  /** The findings of the lints in the code of the type the compiler has just attributed. */
-  def attributed(compilation: CompilationUnitTree, typeElement: TypeElement): Vector[Model.Lint] =
-    Lints.declaration(trees, compilation, typeElement) match {
-      case None              => Vector.empty
-      case Some(declaration) =>
-        Linter.walk(
-          trees,
-          elements,
-          types,
-          active,
-          compilation,
-          TreePath(compilation),
-          declaration,
-          suppressed(compilation),
-          registry
-        )
-    }
-
-  /** The findings of the lints of the file as a whole, which the compiler reads once. */
-  def file(compilation: CompilationUnitTree): Vector[Model.Lint] =
-    if (!read.add(compilation)) Vector.empty
-    else {
-      val root          = TreePath(compilation)
-      val noinspections = suppressed(compilation)
-      val imports       = compilation.getImports.asScala.toSet[Tree]
-      val declared      = declarations(compilation)
-      val context       = Context(trees, elements, types, compilation, root, "", None, List.empty, registry)
-      Linter.fileLints.view.filter(lint => lint.enabledByDefault || enabled(lint.id)).flatMap { lint =>
-        lint.check(context, compilation).view.filterNot { finding =>
-          val lines = noinspections.getOrElse(Linter.line(trees, compilation, finding), Set.empty[String])
-          val id    = finding.reportedAs(lint)
-          lines(JavaLint.Wildcard) || lines(id) || imports(finding.at) && (declared(JavaLint.Wildcard) || declared(id))
-        }.map(finding => Linter.found(lint, context, finding))
-      }.toVector
-    }
-
-  /** The checks every top-level type of the file suppresses, which an import takes as it cannot carry an annotation. */
-  private def declarations(compilation: CompilationUnitTree): Set[String] = {
-    val root = TreePath(compilation)
-    compilation.getTypeDecls.asScala.toVector.collect { case tree: ClassTree =>
-      Collector.suppressed(trees.getElement(TreePath(root, tree)))
-    }.reduceOption(_ intersect _).getOrElse(Set.empty)
-  }
-}
 
 /** The walk of the code of a type, which asks the lints about the trees they read.
   *
   * The walk keeps the paths of the code itself, so that the lints read the elements and the types of the code the
   * compiler attributed, whichever compiler the build runs.
   */
+// A javac visitor is an abstract class, so it is written inline.
+// The state is updated as the walk proceeds.
+@SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation", "scalafix:DisableSyntax.var"))
 object Linter {
 
   /** The line a finding is on, which is the one of its offset, or the one of its code. */
@@ -94,7 +32,7 @@ object Linter {
     // may be on lines above it
     val positions = trees.getSourcePositions
     val offset    = tree match {
-      case method: MethodTree if method.getReturnType != null =>
+      case method: MethodTree if method.returnType.isDefined =>
         positions.getStartPosition(unit, method.getReturnType)
       case _ => positions.getStartPosition(unit, tree)
     }
@@ -124,23 +62,21 @@ object Linter {
       for (m <- NoInspectionPattern.findAllMatchIn(charContent)) {
         val namesStr = m.group(1).trim
         val names    = namesStr.split("[,\\s]+").filter(_.nonEmpty)
-        val resolved = names.flatMap(JavaLint.resolve).toSet
+        val resolved = names.flatMap(LintId.resolve).toSet
         if (resolved.nonEmpty) {
           val pos  = m.start
           val line = lineMap.getLineNumber(pos).toInt
           // Applies to the comment's line and the next non-empty, non-comment line
           result.getOrElseUpdate(line, mutable.Set.empty) ++= resolved
           result.getOrElseUpdate(line + 1, mutable.Set.empty) ++= resolved
-          var next = line
-          while (
-            next < lines.size &&
-            (lines(next).trim.isEmpty || lines(next).trim.startsWith("//") || lines(next).trim.startsWith("/*") ||
-              lines(next).trim.startsWith("*"))
+          val next = lines.indexWhere(
+            text => {
+              val trimmed = text.trim
+              !(trimmed.isEmpty || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*"))
+            },
+            line
           )
-            next += 1
-          if (next < lines.size) {
-            result.getOrElseUpdate(next + 1, mutable.Set.empty) ++= resolved
-          }
+          if (next >= 0) result.getOrElseUpdate(next + 1, mutable.Set.empty) ++= resolved
         }
       }
       result.view.mapValues(_.toSet).toMap
@@ -167,20 +103,22 @@ object Linter {
     var ancestors    = List.empty[Tree]
 
     val scanner = new TreeScanner[Unit, Unit] {
+      // The scan reaches every node, so the missing children are tested for null rather than wrapped.
+      @SuppressWarnings(Array("scalafix:DisableSyntax.null"))
       override def scan(tree: Tree, unused: Unit): Unit =
-        if (tree != null) {
+        if (tree ne null) {
           val path       = TreePath(paths.headOption.getOrElse(root), tree)
           val kind       = tree.getKind
           val isType     = owners.contains(kind)
           val isMethod   = kind == Tree.Kind.METHOD
           val isVariable = kind == Tree.Kind.VARIABLE
-          val typeName   = if (isType) Collector.qualified(trees.getElement(path))(using trees) else ""
-          val methodName = if (isMethod) Collector.qualified(trees.getElement(path))(using trees) else ""
+          val typeName   = if (isType) Collector.qualified(trees, path) else ""
+          val methodName = if (isMethod) Collector.qualified(trees, path) else ""
           if (isType) typeNames.push(typeName)
           if (isMethod) methods.push(methodName)
 
-          val element           = if (isType || isMethod || isVariable) trees.getElement(path) else null
-          val elementSuppressed = if (element != null) Collector.suppressed(element) else Set.empty[String]
+          val element           = Option.when(isType || isMethod || isVariable)(trees.namedElement(path)).flatten
+          val elementSuppressed = element.fold(Set.empty[String])(Collector.suppressed)
           val lineSuppressed    =
             if (noinspections.isEmpty) Set.empty[String]
             else noinspections.getOrElse(Linter.line(trees, compilation, tree), Set.empty[String])
@@ -192,7 +130,7 @@ object Linter {
 
           val candidates = lints.getOrElse(kind, Vector.empty)
           val applicable =
-            candidates.filterNot(lint => activeSuppressed(JavaLint.Wildcard) || activeSuppressed(lint.id))
+            candidates.filterNot(lint => activeSuppressed(LintId.Wildcard) || activeSuppressed(lint.id))
           if (applicable.nonEmpty) {
             val context = Context(
               trees,
@@ -213,7 +151,7 @@ object Linter {
                 val findingLine      = Linter.line(trees, compilation, finding)
                 val atLineSuppressed = noinspections.getOrElse(findingLine, Set.empty[String])
                 val id               = finding.reportedAs(lint)
-                if (!atLineSuppressed(JavaLint.Wildcard) && !atLineSuppressed(id) && !activeSuppressed(id)) {
+                if (!atLineSuppressed(LintId.Wildcard) && !atLineSuppressed(id) && !activeSuppressed(id)) {
                   found += Linter.found(lint, context, finding)
                 }
               }
@@ -274,4 +212,70 @@ object Linter {
       Linter.line(context.trees, context.unit, finding),
       finding.detail
     )
+}
+
+/** The linter of the Java code: it walks the trees the compiler gives it and asks the lints about the code they read.
+  *
+  * The compiler attributes one type at a time, so the linter is given the type it has just attributed, and the lints of
+  * the code of that type are the ones it asks about. The lints of the file as a whole are asked once, when the compiler
+  * reads the file the first time, as the code of the file is whole then.
+  */
+class Linter(trees: Trees, elements: Elements, types: Types, enabled: Set[String] = Set.empty) {
+
+  private val read          = mutable.Set.empty[CompilationUnitTree]
+  private val registry      = Registry(Linter.release(enabled))
+  private val noinspections = mutable.Map.empty[CompilationUnitTree, Map[Int, Set[String]]]
+  private val active = Linter.byKind.view.mapValues(_.filter(lint => lint.enabledByDefault || enabled(lint.id))).toMap
+
+  private def suppressed(compilation: CompilationUnitTree): Map[Int, Set[String]] =
+    noinspections.getOrElseUpdate(compilation, Linter.noinspections(compilation))
+
+  /** The findings that need every type of the compilation, which the end of it reports. */
+  def finished(): Vector[Model.Lint] =
+    registry.agreed(Registry.Returns, value => s"the method always returns $value") ++
+      registry.agreed(Registry.Empty, _ => "the method is empty")
+
+  /** The findings of the lints in the code of the type the compiler has just attributed. */
+  def attributed(compilation: CompilationUnitTree, typeElement: TypeElement): Vector[Model.Lint] =
+    Lints.declaration(trees, compilation, typeElement) match {
+      case None              => Vector.empty
+      case Some(declaration) =>
+        Linter.walk(
+          trees,
+          elements,
+          types,
+          active,
+          compilation,
+          TreePath(compilation),
+          declaration,
+          suppressed(compilation),
+          registry
+        )
+    }
+
+  /** The findings of the lints of the file as a whole, which the compiler reads once. */
+  def file(compilation: CompilationUnitTree): Vector[Model.Lint] =
+    if (!read.add(compilation)) Vector.empty
+    else {
+      val root          = TreePath(compilation)
+      val noinspections = suppressed(compilation)
+      val imports       = compilation.getImports.asScala.toSet[Tree]
+      val declared      = declarations(compilation)
+      val context       = Context(trees, elements, types, compilation, root, "", None, List.empty, registry)
+      Linter.fileLints.view.filter(lint => lint.enabledByDefault || enabled(lint.id)).flatMap { lint =>
+        lint.check(context, compilation).view.filterNot { finding =>
+          val lines = noinspections.getOrElse(Linter.line(trees, compilation, finding), Set.empty[String])
+          val id    = finding.reportedAs(lint)
+          lines(LintId.Wildcard) || lines(id) || imports(finding.at) && (declared(LintId.Wildcard) || declared(id))
+        }.map(finding => Linter.found(lint, context, finding))
+      }.toVector
+    }
+
+  /** The checks every top-level type of the file suppresses, which an import takes as it cannot carry an annotation. */
+  private def declarations(compilation: CompilationUnitTree): Set[String] = {
+    val root = TreePath(compilation)
+    compilation.getTypeDecls.asScala.toVector.collect { case tree: ClassTree =>
+      Collector.suppressed(trees.getElement(TreePath(root, tree)))
+    }.reduceOption(_ intersect _).getOrElse(Set.empty)
+  }
 }

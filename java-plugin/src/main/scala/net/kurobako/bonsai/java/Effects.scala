@@ -12,6 +12,7 @@ import javax.lang.model.element.Modifier
 import javax.lang.model.element.TypeElement
 import javax.lang.model.element.VariableElement
 import javax.lang.model.util.Elements
+import net.kurobako.bonsai.java.Javac.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
@@ -66,7 +67,7 @@ object Effects {
   )
 
   /** Whether the element is a variable of a method rather than a field. */
-  def local(element: Element): Boolean = element != null && Variables.contains(element.getKind)
+  def local(element: Element): Boolean = Variables.contains(element.getKind)
 
   /** The variables a tree reads if it changes nothing, or nothing when it may change something. */
   def reads(context: Context, tree: Tree): Option[Reads] = {
@@ -80,22 +81,23 @@ object Effects {
 
     def all(trees: java.util.List[? <: Tree]): Boolean = trees.asScala.forall(go(_))
 
-    def go(tree: Tree): Boolean = Lint.unwrapped(tree) match {
-      case null                       => true
+    def go(tree: Tree): Boolean = Option(tree).map(Lint.unwrapped(_)).forall(step(_))
+
+    def step(tree: Tree): Boolean = tree match {
       case _: LiteralTree             => true
       case identifier: IdentifierTree =>
         Call.isThis(identifier) || identifier.getName.contentEquals("super") ||
-        (context.elementOf(identifier) match {
-          case element: VariableElement => variable(element)
-          case null                     => false
-          case _                        => true
+        (context.namedElement(identifier) match {
+          case Some(element: VariableElement) => variable(element)
+          case None                           => false
+          case _                              => true
         })
       case select: MemberSelectTree =>
         select.getIdentifier.contentEquals("class") ||
-        (context.elementOf(select) match {
-          case element: VariableElement => variable(element) && go(select.getExpression)
-          case null                     => false
-          case _                        => go(select.getExpression)
+        (context.namedElement(select) match {
+          case Some(element: VariableElement) => variable(element) && go(select.getExpression)
+          case None                           => false
+          case _                              => go(select.getExpression)
         })
       case test: InstanceOfTree                   => go(test.getExpression)
       case unary: UnaryTree                       => !stepping(unary) && go(unary.getExpression)
@@ -156,7 +158,7 @@ object Effects {
       context.elements,
       elements =>
         Containers.flatMap(name =>
-          Option(elements.getTypeElement(name)).map(element => context.types.erasure(element.asType))
+          elements.typeNamed(name).map(element => context.types.erasure(element.asType))
         )
     )
 
@@ -200,13 +202,13 @@ object Effects {
   }
 
   private def returned(context: Context, method: MethodTree): Option[Element] =
-    Option(method.getBody).map(_.getStatements.asScala.toVector).collect {
+    method.body.map(_.getStatements.asScala.toVector).collect {
       case Vector(statement: ReturnTree) => Lints.unparenthesised(statement.getExpression)
     }.flatMap { expression =>
       val field = expression match {
-        case identifier: IdentifierTree => Option(context.elementOf(identifier))
+        case identifier: IdentifierTree                                          => context.namedElement(identifier)
         case select: MemberSelectTree if select.getExpression.toString == "this" =>
-          Option(context.elementOf(select))
+          context.namedElement(select)
         case _ => None
       }
       field.collect {
@@ -216,8 +218,8 @@ object Effects {
       }
     }
 
-  private def immutable(tpe: TypeMirror): Boolean = tpe != null &&
-    (tpe.getKind.isPrimitive ||
+  private def immutable(tpe: TypeMirror): Boolean =
+    tpe.getKind.isPrimitive ||
       (tpe match {
         case declared: DeclaredType =>
           declared.asElement match {
@@ -226,20 +228,23 @@ object Effects {
             case _ => false
           }
         case _ => false
-      }))
+      })
 
   /** Whether any of the elements may change, or be declared anew, within the tree. */
+  // A javac visitor is an abstract class, so it is written inline.
+  // The state is updated as the walk proceeds.
+  @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation", "scalafix:DisableSyntax.var"))
   def changes(context: Context, scope: Tree, elements: Set[Element]): Boolean = {
     var changed = false
     val shared  = elements.filterNot(element => immutable(element.asType))
     val root    = TreePath(context.path, scope)
     val targets = written(root)
-    val mention = (path: TreePath) => {
-      val element = context.trees.getElement(path)
-      if (!changed && element != null && elements(element))
-        changed = (path.getLeaf ne scope) && targets.contains(path.getLeaf) ||
-          (shared(element) && escapes(context, path, scope))
-    }
+    val mention = (path: TreePath) =>
+      if (!changed)
+        context.trees.namedElement(path).filter(elements).foreach { element =>
+          changed = (path.getLeaf ne scope) && targets.contains(path.getLeaf) ||
+            (shared(element) && escapes(context, path, scope))
+        }
     new TreePathScanner[Unit, Unit] {
       override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = mention(getCurrentPath)
 
@@ -249,8 +254,7 @@ object Effects {
       }
 
       override def visitVariable(node: VariableTree, unused: Unit): Unit = {
-        val element = context.trees.getElement(getCurrentPath)
-        if (element != null && elements(element)) changed = true
+        if (context.trees.namedElement(getCurrentPath).exists(elements)) changed = true
         super.visitVariable(node, unused)
       }
     }.scan(TreePath(context.path, scope), ())
@@ -295,6 +299,8 @@ object Effects {
   case class Write(at: TreePath, target: ExpressionTree, plain: Boolean)
 
   /** The writes the code under the path makes, in source order. */
+  // A javac visitor is an abstract class, so it is written inline.
+  @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation"))
   def writes(root: TreePath): List[Write] = {
     val found = mutable.ListBuffer.empty[Write]
     new TreePathScanner[Unit, Unit] {
@@ -317,10 +323,13 @@ object Effects {
   }
 
   /** Whether the code of the tree calls a method or a constructor that declares a checked exception. */
+  // A javac visitor is an abstract class, so it is written inline.
+  // The state is updated as the walk proceeds.
+  @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation", "scalafix:DisableSyntax.var"))
   def throwsChecked(context: Context, tree: Tree): Boolean = {
     var thrown    = false
     val unchecked = Vector("java.lang.RuntimeException", "java.lang.Error").flatMap(name =>
-      Option(context.elements.getTypeElement(name)).map(_.asType)
+      context.elements.typeNamed(name).map(_.asType)
     )
     def check(path: TreePath): Unit =
       context.trees.getElement(path) match {
@@ -344,6 +353,8 @@ object Effects {
   }
 
   /** The variables the code of the tree names. */
+  // A javac visitor is an abstract class, so it is written inline.
+  @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation"))
   def variables(context: Context, tree: Tree): Set[Element] = {
     val named = mutable.Set.empty[Element]
     new TreePathScanner[Unit, Unit] {
@@ -366,11 +377,13 @@ object Effects {
   def locals(context: Context, tree: Tree): Set[Element] = variables(context, tree).filter(local(_))
 
   /** The variables the code of the tree declares. */
+  // A javac visitor is an abstract class, so it is written inline.
+  @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation"))
   def declared(context: Context, tree: Tree): Set[Element] = {
     val declared = mutable.Set.empty[Element]
     new TreePathScanner[Unit, Unit] {
       override def visitVariable(node: VariableTree, unused: Unit): Unit = {
-        Option(context.trees.getElement(getCurrentPath)).foreach(declared += _)
+        context.trees.namedElement(getCurrentPath).foreach(declared += _)
         super.visitVariable(node, unused)
       }
     }.scan(TreePath(context.path, tree), ())
@@ -378,7 +391,7 @@ object Effects {
   }
 
   private def written(scope: TreePath): java.util.Set[Tree] = {
-    val trees = java.util.Collections.newSetFromMap(java.util.IdentityHashMap[Tree, java.lang.Boolean]())
+    val trees = Identities.trees
     @annotation.tailrec
     def mark(target: Tree): Unit = {
       trees.add(target)
@@ -398,27 +411,28 @@ object Effects {
   private def escapes(context: Context, path: TreePath, scope: Tree): Boolean = {
     @annotation.tailrec
     def climb(below: TreePath): Boolean = {
-      val child  = below.getLeaf
-      val parent = below.getParentPath
-      if (parent == null || (child eq scope)) false
-      else
-        parent.getLeaf match {
-          case _: ParenthesizedTree | _: TypeCastTree | _: BinaryTree | _: ArrayAccessTree => climb(parent)
-          case unary: UnaryTree                       => stepping(unary) || climb(parent)
-          case conditional: ConditionalExpressionTree =>
-            (conditional.getCondition ne child) && climb(parent)
-          case select: MemberSelectTree if select.getExpression eq child => climb(parent)
-          case call: MethodInvocationTree                                =>
-            context.trees.getElement(parent) match {
-              case method: ExecutableElement if readOnly(context, call, method).isDefined => climb(parent)
-              case _ => (call.getMethodSelect eq child) || !immutable(context.typeOf(child))
-            }
-          case _: InstanceOfTree | _: IfTree | _: WhileLoopTree | _: DoWhileLoopTree | _: ForLoopTree |
-              _: EnhancedForLoopTree | _: SwitchTree | _: ReturnTree | _: ThrowTree | _: AssertTree |
-              _: ExpressionStatementTree =>
-            false
-          case _ => !immutable(context.typeOf(child))
-        }
+      val child = below.getLeaf
+      below.parent.filter(_ => child ne scope) match {
+        case None         => false
+        case Some(parent) =>
+          parent.getLeaf match {
+            case _: ParenthesizedTree | _: TypeCastTree | _: BinaryTree | _: ArrayAccessTree => climb(parent)
+            case unary: UnaryTree                       => stepping(unary) || climb(parent)
+            case conditional: ConditionalExpressionTree =>
+              (conditional.getCondition ne child) && climb(parent)
+            case select: MemberSelectTree if select.getExpression eq child => climb(parent)
+            case call: MethodInvocationTree                                =>
+              context.trees.getElement(parent) match {
+                case method: ExecutableElement if readOnly(context, call, method).isDefined => climb(parent)
+                case _ => (call.getMethodSelect eq child) || !context.attributedType(child).exists(immutable(_))
+              }
+            case _: InstanceOfTree | _: IfTree | _: WhileLoopTree | _: DoWhileLoopTree | _: ForLoopTree |
+                _: EnhancedForLoopTree | _: SwitchTree | _: ReturnTree | _: ThrowTree | _: AssertTree |
+                _: ExpressionStatementTree =>
+              false
+            case _ => !context.attributedType(child).exists(immutable(_))
+          }
+      }
     }
     climb(path)
   }

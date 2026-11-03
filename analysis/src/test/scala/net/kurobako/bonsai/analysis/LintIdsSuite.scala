@@ -7,7 +7,7 @@ import net.kurobako.bonsai.java.*
 class LintIdsSuite extends FunSuite {
 
   /** The ids of the lints of the Java code, which the analysis holds a rule of every one of them. */
-  private val lintIds: Set[String] = JavaLint.ids
+  private val lintIds: Set[String] = LintId.ids
 
   /** The ids of the rules of the analysis. */
   private val ruleIds: Vector[String] = Finding.Rule.values.map(_.id)

@@ -2,7 +2,7 @@ package net.kurobako.bonsai.java
 
 import net.kurobako.bonsai.testing.*
 
-class JavaPluginSuite extends munit.FunSuite {
+class BonsaiPluginSuite extends munit.FunSuite {
 
   private val fixture =
     """

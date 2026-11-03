@@ -13,59 +13,11 @@ import javax.lang.model.element.PackageElement
 import javax.lang.model.element.TypeElement
 import javax.lang.model.element.VariableElement
 import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.java.Javac.*
 import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.hashing.MurmurHash3
-
-/** Finds the code of the Java build that recurs elsewhere, the way a duplicate locator does: the statements of the
-  * method bodies are hashed with the local definitions anonymised, and the fragments that share a hash are confirmed
-  * with a hash that numbers the locals by their first occurrence, so `a + a` and `a + b` differ while the consistent
-  * renamings match. The fragments that also match once the values of the literals are ignored are near duplicates,
-  * reported with the literals that differ as holes.
-  *
-  * The fragments are gathered here, as the trees the compiler gives are of the code of one compilation only; the copies
-  * they make are grouped by the analysis, which holds the code of the whole build.
-  */
-class Clones(trees: Trees) {
-
-  private val found = mutable.ArrayBuffer.empty[Model.Fragment]
-
-  /** The fragments of the body of a method, which the type that holds the method names. */
-  def add(body: Tree, path: TreePath, owner: String, method: ExecutableElement, overriding: Boolean): Unit = {
-    val nodes = mutable.ArrayBuffer.empty[Clones.Node]
-    Clones.collect(nodes, trees, TreePath(path, body))
-    val context = Clones.Context(owner, method, overriding)
-    val entire  = Clones.entire(nodes, 0)
-    nodes.indices.foreach { index =>
-      nodes(index).tree match {
-        case _: BlockTree =>
-          // A block of statements is a fragment of its own, as a copy of a block of code is what recurs.
-          val statements = nodes(index).children
-          if (statements.size >= 2) {
-            val total = Clones.cost(nodes, index)
-            if (total >= CloneCost.Expression)
-              found += Clones.fragment(
-                nodes,
-                statements,
-                context,
-                Model.Roles.Whole,
-                total - statements.map(Clones.cost(nodes, _)).sum
-              )
-            CloneCost.windows(statements.map(Clones.cost(nodes, _))).foreach((start, end) =>
-              found += Clones.fragment(nodes, statements.slice(start, end), context, Model.Roles.Whole)
-            )
-          }
-        case _ => ()
-      }
-      if (Clones.call(nodes(index).tree) || entire.contains(index))
-        Clones.expression(nodes, index, entire, context).foreach(found += _)
-    }
-  }
-
-  /** The fragments of the code of the build, which the analysis groups into the copies that recur. */
-  def fragments: Vector[Model.Fragment] = found.toVector
-}
 
 object Clones {
 
@@ -175,7 +127,7 @@ object Clones {
   }
 
   private def qualifies(node: Node): Boolean =
-    Option(node.path.getParentPath).map(_.getLeaf).exists {
+    node.path.parent.map(_.getLeaf).exists {
       case select: MemberSelectTree => select.getExpression eq node.tree
       case _                        => false
     }
@@ -372,7 +324,7 @@ object Clones {
     * arguments of a call write as a tree, and the names within that name do.
     */
   private def named(path: TreePath): Boolean =
-    Option(path.getParentPath).exists { parent =>
+    path.parent.exists { parent =>
       val tree = path.getLeaf
       parent.getLeaf match {
         case variable: VariableTree           => variable.getType eq tree
@@ -390,11 +342,11 @@ object Clones {
 
   /** Whether a return statement is the last of the body of a method or a lambda, which Scala writes as the value. */
   private def last(path: TreePath): Boolean =
-    Option(path.getParentPath).exists { block =>
+    path.parent.exists { block =>
       block.getLeaf match {
         case body: BlockTree =>
           body.getStatements.asScala.lastOption.exists(_ eq path.getLeaf) &&
-          Option(block.getParentPath).exists(owner =>
+          block.parent.exists(owner =>
             owner.getLeaf.isInstanceOf[MethodTree] || owner.getLeaf.isInstanceOf[LambdaExpressionTree]
           )
         case _ => false
@@ -402,11 +354,15 @@ object Clones {
     }
 
   /** Gathers the nodes of the code of a body, with the paths they are at, which the elements are read from. */
+  // A javac visitor is an abstract class, so it is written inline.
+  @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation"))
   private def collect(nodes: mutable.ArrayBuffer[Node], trees: Trees, root: TreePath): Unit = {
     val stack   = mutable.Stack.empty[Int]
     val scanner = new TreePathScanner[Unit, Unit] {
+      // The scan reaches every node, so the missing children are tested for null rather than wrapped.
+      @SuppressWarnings(Array("scalafix:DisableSyntax.null"))
       override def scan(tree: Tree, unused: Unit): Unit =
-        if (tree != null) {
+        if (tree ne null) {
           val index = nodes.size
           nodes += Node(trees, tree, TreePath(getCurrentPath(), tree))
           stack.headOption.foreach(parent => nodes(parent).children = nodes(parent).children :+ index)
@@ -442,7 +398,7 @@ object Clones {
   }
 
   /** The name of the type that holds an element. */
-  private def owner(element: Element): String = Option(element.getEnclosingElement) match {
+  private def owner(element: Element): String = element.enclosing match {
     case Some(e: TypeElement)    => e.getQualifiedName.toString
     case Some(e: PackageElement) => e.getQualifiedName.toString
     case Some(other)             => other.getSimpleName.toString
@@ -470,17 +426,21 @@ object Clones {
 
   /** A node of the code, which the hashes take. */
   private class Node(val trees: Trees, val tree: Tree, val path: TreePath) {
+    // The state is updated as the walk proceeds.
+    @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
     var children: Vector[Int] = Vector.empty
-    var cost: Int             = -1
+    // The state is updated as the walk proceeds.
+    @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
+    var cost: Int = -1
 
     /** The element the node names, which is the variable or the method it holds. */
-    lazy val symbol: Option[Element] = Option(trees.getElement(path))
+    lazy val symbol: Option[Element] = trees.namedElement(path)
 
     /** The literal the node holds, if it holds one. */
     def literal: Option[Clones.Literal] =
       tree match {
         case literalTree: LiteralTree =>
-          Option(literalTree.getValue).map(value => Clones.Literal(value.getClass.getSimpleName, String.valueOf(value)))
+          literalTree.value.map(value => Clones.Literal(value.getClass.getSimpleName, String.valueOf(value)))
         case _ => None
       }
 
@@ -506,4 +466,53 @@ object Clones {
 
   /** A literal of the code, which the near duplicates differ in. */
   case class Literal(kind: String, value: String)
+}
+
+/** Finds the code of the Java build that recurs elsewhere, the way a duplicate locator does: the statements of the
+  * method bodies are hashed with the local definitions anonymised, and the fragments that share a hash are confirmed
+  * with a hash that numbers the locals by their first occurrence, so `a + a` and `a + b` differ while the consistent
+  * renamings match. The fragments that also match once the values of the literals are ignored are near duplicates,
+  * reported with the literals that differ as holes.
+  *
+  * The fragments are gathered here, as the trees the compiler gives are of the code of one compilation only; the copies
+  * they make are grouped by the analysis, which holds the code of the whole build.
+  */
+class Clones(trees: Trees) {
+
+  private val found = mutable.ArrayBuffer.empty[Model.Fragment]
+
+  /** The fragments of the body of a method, which the type that holds the method names. */
+  def add(body: Tree, path: TreePath, owner: String, method: ExecutableElement, overriding: Boolean): Unit = {
+    val nodes = mutable.ArrayBuffer.empty[Clones.Node]
+    Clones.collect(nodes, trees, TreePath(path, body))
+    val context = Clones.Context(owner, method, overriding)
+    val entire  = Clones.entire(nodes, 0)
+    nodes.indices.foreach { index =>
+      nodes(index).tree match {
+        case _: BlockTree =>
+          // A block of statements is a fragment of its own, as a copy of a block of code is what recurs.
+          val statements = nodes(index).children
+          if (statements.size >= 2) {
+            val total = Clones.cost(nodes, index)
+            if (total >= CloneCost.Expression)
+              found += Clones.fragment(
+                nodes,
+                statements,
+                context,
+                Model.Roles.Whole,
+                total - statements.map(Clones.cost(nodes, _)).sum
+              )
+            CloneCost.windows(statements.map(Clones.cost(nodes, _))).foreach((start, end) =>
+              found += Clones.fragment(nodes, statements.slice(start, end), context, Model.Roles.Whole)
+            )
+          }
+        case _ => ()
+      }
+      if (Clones.call(nodes(index).tree) || entire.contains(index))
+        Clones.expression(nodes, index, entire, context).foreach(found += _)
+    }
+  }
+
+  /** The fragments of the code of the build, which the analysis groups into the copies that recur. */
+  def fragments: Vector[Model.Fragment] = found.toVector
 }

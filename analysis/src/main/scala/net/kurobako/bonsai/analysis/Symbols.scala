@@ -161,7 +161,7 @@ private[analysis] class Symbols(
     }.toSet
   }
 
-  private def rules(id: String): Set[String] = JavaLint.resolve(id)
+  private def rules(id: String): Set[String] = LintId.resolve(id)
 
   /** The line `symbol` is declared at, or 0 when unknown. */
   def lineOf(symbol: Symbol)(using Context): Int =

@@ -2,7 +2,6 @@ package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
-import com.sun.source.util.TreeScanner
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.`type`.TypeKind
 import javax.lang.model.`type`.TypeMirror
@@ -11,6 +10,7 @@ import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.Modifier
 import javax.lang.model.element.TypeElement
 import javax.lang.model.element.VariableElement
+import net.kurobako.bonsai.java.Javac.*
 import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
@@ -44,7 +44,7 @@ object LintControlFlow {
 
   /** A switch of an enumeration that does not handle every case of it. */
   private object MissingDefaultInSwitch extends Lint {
-    val id               = JavaLint.MissingDefaultInSwitch.id
+    val id               = LintId.MissingDefaultInSwitch.id
     val kinds: Set[Kind] = Set(Tree.Kind.SWITCH)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -94,7 +94,7 @@ object LintControlFlow {
 
   /** A case of a switch that falls through to the case after it. */
   private object FallthroughInSwitch extends Lint {
-    val id               = JavaLint.FallthroughInSwitch.id
+    val id               = LintId.FallthroughInSwitch.id
     val kinds: Set[Kind] = Set(Tree.Kind.SWITCH)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -123,7 +123,7 @@ object LintControlFlow {
 
   /** An if chain that compares one value with constants, which a switch states more directly. */
   private object IfCanBeSwitch extends Lint {
-    val id               = JavaLint.IfCanBeSwitch.id
+    val id               = LintId.IfCanBeSwitch.id
     val kinds: Set[Kind] = Set(Tree.Kind.IF)
 
     // Two branches are a choice, which a switch of two cases does not state more directly.
@@ -157,17 +157,18 @@ object LintControlFlow {
     private case class Comparison(expression: ExpressionTree, name: String, constant: String, equalsKind: Boolean)
 
     private def chain(head: IfTree): Vector[(ExpressionTree, StatementTree)] = {
-      val branches        = Vector.newBuilder[(ExpressionTree, StatementTree)]
-      var current: IfTree = head
-      var more            = true
-      while more do {
-        branches += ((current.getCondition, current.getThenStatement))
+      @tailrec
+      def branches(
+          current: IfTree,
+          found: Vector[(ExpressionTree, StatementTree)]
+      ): Vector[(ExpressionTree, StatementTree)] = {
+        val branch = found :+ ((current.getCondition, current.getThenStatement))
         current.getElseStatement match {
-          case next: IfTree => current = next
-          case _            => more = false
+          case next: IfTree => branches(next, branch)
+          case _            => branch
         }
       }
-      branches.result()
+      branches(head, Vector.empty)
     }
 
     @tailrec
@@ -210,13 +211,10 @@ object LintControlFlow {
       case parenthesized: ParenthesizedTree => constant(context, parenthesized.getExpression)
       case literal: LiteralTree if literal.getKind != Tree.Kind.NULL_LITERAL => Some(literal.toString)
       case select: MemberSelectTree                                          =>
-        val element = context.elementOf(select)
-        if (element == null) None
-        else if (
+        context.namedElement(select).filter { element =>
           element.getKind == ElementKind.ENUM_CONSTANT ||
           (element.getKind == ElementKind.FIELD && Lints.constant(element))
-        ) Some(select.toString)
-        else None
+        }.map(_ => select.toString)
       case _ => None
     }
 
@@ -241,13 +239,13 @@ object LintControlFlow {
 
   /** The branches of an if that hold the same code, or end or start with it. */
   private object IdenticalBranches extends Lint {
-    val id               = JavaLint.IdenticalBranches.id
+    val id               = LintId.IdenticalBranches.id
     val kinds: Set[Kind] = Set(Tree.Kind.IF)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val ifTree     = tree.asInstanceOf[IfTree]
       val thenBranch = statements(ifTree.getThenStatement)
-      val elseBranch = Option(ifTree.getElseStatement).map(statements(_)).getOrElse(Vector.empty)
+      val elseBranch = ifTree.elseStatement.map(statements(_)).getOrElse(Vector.empty)
       if (thenBranch.isEmpty || elseBranch.isEmpty) Vector.empty
       else if (
         thenBranch.size == elseBranch.size && thenBranch.zip(elseBranch).forall((s1, s2) => same(context, s1, s2))
@@ -276,21 +274,15 @@ object LintControlFlow {
                   if v1.getKind == ElementKind.LOCAL_VARIABLE || v2.getKind == ElementKind.LOCAL_VARIABLE =>
                 val t1 = v1.asType()
                 val t2 = v2.asType()
-                t1 != null && t2 != null && context.types.isSameType(t1, t2)
+                context.types.isSameType(t1, t2)
               case _ => true
             }
           }
       }
 
     private def identifiers(tree: Tree): Vector[IdentifierTree] = {
-      val result  = mutable.ArrayBuffer.empty[IdentifierTree]
-      val scanner = new TreeScanner[Unit, Unit] {
-        override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
-          result += node
-          super.visitIdentifier(node, unused)
-        }
-      }
-      scanner.scan(tree, ())
+      val result = mutable.ArrayBuffer.empty[IdentifierTree]
+      Scan.foreach(tree) { case node: IdentifierTree => result += node }
       result.toVector
     }
 
@@ -303,13 +295,13 @@ object LintControlFlow {
 
   /** An if that returns two boolean literals, which a return of the condition says in one statement. */
   private object TrivialIf extends Lint {
-    val id               = JavaLint.TrivialIf.id
+    val id               = LintId.TrivialIf.id
     val kinds: Set[Kind] = Set(Tree.Kind.IF)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val ifTree     = tree.asInstanceOf[IfTree]
       val thenReturn = Lint.booleanReturn(ifTree.getThenStatement)
-      Option(ifTree.getElseStatement).flatMap(Lint.booleanReturn) match {
+      ifTree.elseStatement.flatMap(Lint.booleanReturn) match {
         case Some(other) =>
           if (thenReturn.exists(_ != other)) Vector(context.found("the if statement can be simplified"))
           else Vector.empty
@@ -326,12 +318,12 @@ object LintControlFlow {
 
   /** A return that is unnecessary as the last statement of a void method. */
   private object UnnecessaryReturn extends Lint {
-    val id               = JavaLint.UnnecessaryReturn.id
+    val id               = LintId.UnnecessaryReturn.id
     val kinds: Set[Kind] = Set(Tree.Kind.RETURN)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val ret = tree.asInstanceOf[ReturnTree]
-      if (ret.getExpression != null) Vector.empty
+      if (ret.returned.isDefined) Vector.empty
       else
         context.ancestors.collectFirst { case method: MethodTree => method } match {
           case Some(method) if voidMethod(method) =>
@@ -344,16 +336,16 @@ object LintControlFlow {
         }
     }
 
-    private def voidMethod(method: MethodTree): Boolean = method.getReturnType match {
-      case null                         => method.getName.contentEquals("<init>")
-      case primitive: PrimitiveTypeTree => primitive.getPrimitiveTypeKind == TypeKind.VOID
-      case _                            => false
+    private def voidMethod(method: MethodTree): Boolean = method.returnType match {
+      case None                               => method.getName.contentEquals("<init>")
+      case Some(primitive: PrimitiveTypeTree) => primitive.getPrimitiveTypeKind == TypeKind.VOID
+      case _                                  => false
     }
   }
 
   /** An arithmetic expression with the identity of its operator, which the other operand alone says. */
   private object PointlessArithmetic extends Lint {
-    val id               = JavaLint.PointlessArithmetic.id
+    val id               = LintId.PointlessArithmetic.id
     val kinds: Set[Kind] = Set(
       Tree.Kind.PLUS,
       Tree.Kind.MINUS,
@@ -404,22 +396,23 @@ object LintControlFlow {
 
     /** Whether the type of the expression is one the arithmetic operators work on. */
     private def numeric(context: Context, tree: ExpressionTree): Boolean =
-      context.typeOf(tree) != null && Set(
-        TypeKind.BYTE,
-        TypeKind.SHORT,
-        TypeKind.INT,
-        TypeKind.LONG,
-        TypeKind.FLOAT,
-        TypeKind.DOUBLE,
-        TypeKind.CHAR
-      ).contains(context.typeOf(tree).getKind)
+      context.attributedType(tree).exists(tpe =>
+        Set(
+          TypeKind.BYTE,
+          TypeKind.SHORT,
+          TypeKind.INT,
+          TypeKind.LONG,
+          TypeKind.FLOAT,
+          TypeKind.DOUBLE,
+          TypeKind.CHAR
+        ).contains(tpe.getKind)
+      )
 
     private def number(tree: ExpressionTree): Option[Double] = tree match {
       case literal: LiteralTree =>
-        literal.getValue match {
-          case number: java.lang.Number       => Some(number.doubleValue)
-          case character: java.lang.Character => Some(character.charValue.toDouble)
-          case _                              => None
+        (literal.getValue: Any) match {
+          case character: Char => Some(character.toDouble)
+          case _               => Lints.numeric(literal)
         }
       case unary: UnaryTree if unary.getKind == Tree.Kind.UNARY_MINUS =>
         number(unary.getExpression).map(-_)
@@ -434,7 +427,7 @@ object LintControlFlow {
 
   /** A boolean expression with the identity of its operator, which the other operand alone says. */
   private object PointlessBoolean extends Lint {
-    val id               = JavaLint.PointlessBoolean.id
+    val id               = LintId.PointlessBoolean.id
     val kinds: Set[Kind] = Set(
       Tree.Kind.METHOD_INVOCATION,
       Tree.Kind.CONDITIONAL_AND,
@@ -455,7 +448,6 @@ object LintControlFlow {
 
     /** `Boolean.TRUE.equals(value)` and `Boolean.FALSE.equals(value)`, which the value alone says. */
     private def boxed(context: Context, invocation: MethodInvocationTree): Vector[Found] = {
-      val element  = context.element
       val constant = invocation.getMethodSelect match {
         case select: MemberSelectTree
             if select.getIdentifier.contentEquals("equals") &&
@@ -467,19 +459,16 @@ object LintControlFlow {
           }
         case _ => None
       }
-      if (element == null || element.getEnclosingElement == null) Vector.empty
-      else
-        element.getEnclosingElement match {
-          case owner: TypeElement if owner.getQualifiedName.contentEquals("java.lang.Boolean") =>
-            constant.filter { (argument, _) =>
-              val mirror      = context.typeOf(argument)
-              val isPrimitive = mirror != null && mirror.getKind.isPrimitive
-              isPrimitive || LintFlow.nonNull(context, argument)
-            }.map((argument, negated) =>
-              context.found(s"$invocation can be simplified to ${if (negated) "!" else ""}$argument")
-            ).toVector
-          case _ => Vector.empty
-        }
+      context.namedElement.flatMap(_.enclosing) match {
+        case Some(owner: TypeElement) if owner.getQualifiedName.contentEquals("java.lang.Boolean") =>
+          constant.filter { (argument, _) =>
+            val isPrimitive = context.attributedType(argument).exists(_.getKind.isPrimitive)
+            isPrimitive || LintFlow.nonNull(context, argument)
+          }.map((argument, negated) =>
+            context.found(s"$invocation can be simplified to ${if (negated) "!" else ""}$argument")
+          ).toVector
+        case _ => Vector.empty
+      }
     }
 
     /** `true && x`, `false || x` and the comparisons with the boolean literals, which the other operand alone says. */
@@ -528,22 +517,22 @@ object LintControlFlow {
     }
 
     private def boolean(tree: ExpressionTree): Option[Boolean] =
-      value(tree).collect { case flag: java.lang.Boolean => flag.booleanValue }
+      value(tree).collect { case flag: Boolean => flag }
   }
 
   /** A method whose body is empty, and so is that of every method that overrides it. */
   private object EmptyMethod extends Lint {
-    val id               = JavaLint.EmptyMethod.id
+    val id               = LintId.EmptyMethod.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       tree match {
         case method: MethodTree if !method.getName.contentEquals("<init>") =>
-          Option(context.element).collect { case executable: ExecutableElement => executable }.foreach { element =>
-            val empty  = Option.when(method.getBody != null && method.getBody.getStatements.isEmpty)(Registry.Empty)
+          context.namedElement.collect { case executable: ExecutableElement => executable }.foreach { element =>
+            val empty  = Option.when(method.body.isDefined && method.getBody.getStatements.isEmpty)(Registry.Empty)
             val parent = Hierarchy.overridden(context, element)
             if (parent.nonEmpty) context.registry.overrides(Registry.Empty, parent, empty)
-            else if (Hierarchy.closed(element) && (empty.isDefined || method.getBody == null))
+            else if (Hierarchy.closed(element) && (empty.isDefined || method.body.isEmpty))
               context.registry.declares(
                 Registry.Empty,
                 element,
@@ -560,7 +549,7 @@ object LintControlFlow {
 
   /** A loop or conditional whose body is the empty statement. */
   private object EmptyStatementBody extends Lint {
-    val id               = JavaLint.EmptyStatementBody.id
+    val id               = LintId.EmptyStatementBody.id
     val kinds: Set[Kind] = Set(
       Tree.Kind.IF,
       Tree.Kind.WHILE_LOOP,
@@ -591,7 +580,7 @@ object LintControlFlow {
 
   /** A conditional expression that a call or a boolean states more directly. */
   private object SimplifiableConditional extends Lint {
-    val id               = JavaLint.SimplifiableConditional.id
+    val id               = LintId.SimplifiableConditional.id
     val kinds: Set[Kind] = Set(Tree.Kind.CONDITIONAL_EXPRESSION)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
@@ -612,7 +601,7 @@ object LintControlFlow {
 
   /** A check for null that picks a default, which `Objects.requireNonNullElse` states in one call. */
   private object NullDefault extends Lint {
-    val id               = JavaLint.NullDefault.id
+    val id               = LintId.NullDefault.id
     val kinds: Set[Kind] = Set(Tree.Kind.CONDITIONAL_EXPRESSION, Tree.Kind.IF)
 
     private val Factories =
@@ -628,7 +617,7 @@ object LintControlFlow {
           case ifTree: IfTree =>
             for {
               whenTrue  <- returned(ifTree.getThenStatement)
-              otherwise <- Option(ifTree.getElseStatement).orElse(context.sibling(1))
+              otherwise <- ifTree.elseStatement.orElse(context.sibling(1))
               whenFalse <- returned(otherwise)
               chosen    <- choice(ifTree.getCondition, whenTrue, whenFalse)
             } yield chosen
@@ -636,7 +625,7 @@ object LintControlFlow {
         }).flatMap((kept, fallback) => suggestion(context, kept, fallback)).map(context.found(_)).toVector
 
     private def returned(statement: StatementTree): Option[ExpressionTree] = Lint.single(statement) match {
-      case ret: ReturnTree => Option(ret.getExpression)
+      case ret: ReturnTree => ret.returned
       case _               => None
     }
 
@@ -684,7 +673,7 @@ object LintControlFlow {
       Lints.unparenthesised(fallback) match {
         case literal: LiteralTree => Option.when(literal.getKind != Tree.Kind.NULL_LITERAL)(false)
         case created: NewClassTree
-            if created.getClassBody == null && jdk(context.typeOf(created)) &&
+            if created.classBody.isEmpty && jdk(context.typeOf(created)) &&
               Lints.arguments(created).forall(Effects.reads(context, _).isDefined) =>
           Some(true)
         case call: MethodInvocationTree if call.getArguments.isEmpty && factory(context, call) => Some(false)
@@ -725,27 +714,27 @@ object LintControlFlow {
       context.elementOf(call) match {
         case method: ExecutableElement =>
           method.getModifiers.contains(Modifier.STATIC) && Empties(method.getSimpleName.toString) &&
-          Option(method.getEnclosingElement).exists(owner => Factories(owner.toString))
+          method.enclosing.exists(owner => Factories(owner.toString))
         case _ => false
       }
   }
 
   /** A condition that is always the same. */
   private object ConstantCondition extends Lint {
-    val id               = JavaLint.ConstantCondition.id
+    val id               = LintId.ConstantCondition.id
     val kinds: Set[Kind] = Set(Tree.Kind.IF, Tree.Kind.WHILE_LOOP, Tree.Kind.DO_WHILE_LOOP)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val (condition, loop) = tree match {
-        case ifTree: IfTree           => (ifTree.getCondition, false)
-        case whileTree: WhileLoopTree => (whileTree.getCondition, true)
-        case doTree: DoWhileLoopTree  => (doTree.getCondition, true)
-        case _                        => (null, false)
+        case ifTree: IfTree           => (Some(ifTree.getCondition), false)
+        case whileTree: WhileLoopTree => (Some(whileTree.getCondition), true)
+        case doTree: DoWhileLoopTree  => (Some(doTree.getCondition), true)
+        case _                        => (None, false)
       }
-      LintControlFlow.value(condition) match {
+      condition.flatMap(LintControlFlow.value(_)) match {
         // A loop whose condition is true is how the code writes a loop that runs until something in it leaves, so only
         // a condition that is false, or an if whose condition is a constant, is a condition that is always the same.
-        case Some(value: java.lang.Boolean) if !(loop && value) =>
+        case Some(value: Boolean) if !(loop && value) =>
           Vector(context.found(s"the condition is always $value"))
         case _ => Vector.empty
       }
@@ -755,20 +744,20 @@ object LintControlFlow {
   /** The value of a literal, which the parentheses of the code hold as a tree of their own. */
   private def value(tree: Tree): Option[Any] = tree match {
     case parenthesized: ParenthesizedTree => LintControlFlow.value(parenthesized.getExpression)
-    case literal: LiteralTree             => Option(literal.getValue)
+    case literal: LiteralTree             => literal.value
     case _                                => None
   }
 
   /** A method that returns from its `finally` block, which hides the exception the method was to report. */
   private object ReturnInFinally extends Lint {
-    val id               = JavaLint.ReturnInFinally.id
+    val id               = LintId.ReturnInFinally.id
     val kinds: Set[Kind] = Set(Tree.Kind.RETURN)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       // The blocks the code of the return is in, the finally block of a try being one of them when it holds the code.
       val blocks    = context.ancestors.collect { case block: BlockTree => block }.toSet
       val inFinally = context.ancestors.exists {
-        case tryTree: TryTree => tryTree.getFinallyBlock != null && blocks.contains(tryTree.getFinallyBlock)
+        case tryTree: TryTree => tryTree.finallyBlock.isDefined && blocks.contains(tryTree.getFinallyBlock)
         case _                => false
       }
       if (inFinally)
@@ -779,42 +768,38 @@ object LintControlFlow {
 
   /** A resource that the finally block closes, which the try statement can close instead. */
   private object CloseInFinally extends Lint {
-    val id               = JavaLint.CloseInFinally.id
+    val id               = LintId.CloseInFinally.id
     val kinds: Set[Kind] = Set(Tree.Kind.TRY)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
-      val tryTree      = tree.asInstanceOf[TryTree]
-      val finallyBlock = tryTree.getFinallyBlock
+      val tryTree = tree.asInstanceOf[TryTree]
       // A try that already holds its resources closes them in the order it lists them, which the finally block does
       // not, so the code that closes a resource there is only the code of a try without resources.
-      if (finallyBlock == null || !tryTree.getResources.isEmpty) Vector.empty
-      else
-        finallyBlock.getStatements.asScala.toVector.flatMap {
-          case statement: ExpressionStatementTree => statement.getExpression match {
-              case call: MethodInvocationTree => call.getMethodSelect match {
-                  case select: MemberSelectTree
-                      if select.getIdentifier.toString == "close" && call.getArguments.isEmpty =>
-                    resource(context, tryTree, select.getExpression) match {
-                      case Some(name) => Vector(Found(
-                          s"the resource $name is closed in a finally block; let the try statement close it",
-                          statement
-                        ))
-                      case None => Vector.empty
-                    }
-                  case _ => Vector.empty
-                }
-              case _ => Vector.empty
-            }
-          case _ => Vector.empty
-        }
+      val finallyBlock = tryTree.finallyBlock.filter(_ => tryTree.getResources.isEmpty)
+      finallyBlock.toVector.flatMap(_.getStatements.asScala.toVector).flatMap {
+        case statement: ExpressionStatementTree => statement.getExpression match {
+            case call: MethodInvocationTree => call.getMethodSelect match {
+                case select: MemberSelectTree
+                    if select.getIdentifier.toString == "close" && call.getArguments.isEmpty =>
+                  resource(context, tryTree, select.getExpression) match {
+                    case Some(name) => Vector(Found(
+                        s"the resource $name is closed in a finally block; let the try statement close it",
+                        statement
+                      ))
+                    case None => Vector.empty
+                  }
+                case _ => Vector.empty
+              }
+            case _ => Vector.empty
+          }
+        case _ => Vector.empty
+      }
     }
 
     /** The name of the resource the code closes, when it is a closeable variable that the code does not give a value.
       */
-    private def resource(context: Context, tryTree: TryTree, expression: ExpressionTree): Option[String] = {
-      val element = context.elementOf(expression)
-      if (element == null) None
-      else
+    private def resource(context: Context, tryTree: TryTree, expression: ExpressionTree): Option[String] =
+      context.namedElement(expression).flatMap { element =>
         element.getKind match {
           // a variable the try declared elsewhere is a resource of the try from Java 9 on
           case ElementKind.LOCAL_VARIABLE | ElementKind.PARAMETER
@@ -829,7 +814,7 @@ object LintControlFlow {
             Some(expression.toString)
           case _ => None
         }
-    }
+      }
 
     /** Whether the type is a closeable one, which the try statement can hold as a resource. */
     private def closeable(tpe: TypeMirror): Boolean = tpe match {
@@ -843,34 +828,19 @@ object LintControlFlow {
 
     /** Whether the code gives the variable a value, which the try statement cannot hold as a resource then. */
     private def assigned(context: Context, tree: Tree, element: javax.lang.model.element.Element): Boolean = {
-      var found                     = false
-      def same(node: Tree): Boolean = {
-        val path = context.trees.getPath(context.unit, node)
-        path != null && context.trees.getElement(path) == element
-      }
-      val scanner = new TreeScanner[Unit, Unit] {
-        override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
-          if (same(node.getVariable)) found = true
-          super.visitAssignment(node, unused)
-        }
-
-        override def visitCompoundAssignment(node: CompoundAssignmentTree, unused: Unit): Unit = {
-          if (same(node.getVariable)) found = true
-          super.visitCompoundAssignment(node, unused)
-        }
-
-        override def visitUnary(node: UnaryTree, unused: Unit): Unit = {
+      def same(node: Tree): Boolean =
+        Option(context.trees.getPath(context.unit, node)).exists(path => context.trees.getElement(path) == element)
+      Scan.exists(tree) {
+        case node: AssignmentTree         => same(node.getVariable)
+        case node: CompoundAssignmentTree => same(node.getVariable)
+        case node: UnaryTree              =>
           node.getKind match {
-            case Tree.Kind.PREFIX_INCREMENT | Tree.Kind.PREFIX_DECREMENT |
-                Tree.Kind.POSTFIX_INCREMENT | Tree.Kind.POSTFIX_DECREMENT =>
-              if (same(node.getExpression)) found = true
-            case _ => ()
+            case Tree.Kind.PREFIX_INCREMENT | Tree.Kind.PREFIX_DECREMENT | Tree.Kind.POSTFIX_INCREMENT |
+                Tree.Kind.POSTFIX_DECREMENT =>
+              same(node.getExpression)
+            case _ => false
           }
-          super.visitUnary(node, unused)
-        }
       }
-      scanner.scan(tree, ())
-      found
     }
   }
 }

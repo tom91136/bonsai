@@ -50,12 +50,12 @@ class LintSuite extends munit.FunSuite {
     val units = fileManager.getJavaFileObjectsFromFiles(files.map(_.toFile).asJava)
     val task  =
       compiler.getTask(
-        null,
+        Fixtures.omitted,
         fileManager,
         Fixtures.listener(diagnostics),
         ((Seq("-proc:full", "-processorpath", processorPath) ++ options) :+
           ("-Xplugin:bonsai " + output + (if (enabled.nonEmpty) " " + enabled.mkString(",") else ""))).asJava,
-        null,
+        Fixtures.omitted,
         units
       )
 
@@ -245,7 +245,7 @@ class LintSuite extends munit.FunSuite {
 
   test("the file of the model is the argument of the plugin, not a property the modules of a build share") {
     val stale = Scratch.directory("bonsai-stale").resolve("model.tsv")
-    sys.props.update(JavaPlugin.Output, stale.toString)
+    sys.props.update(BonsaiPlugin.Output, stale.toString)
     try {
       val model = compile("Quiet" -> """
         |package demo;
@@ -257,7 +257,7 @@ class LintSuite extends munit.FunSuite {
 
       assert(model.nodes.exists(_.name == "demo.Quiet"))
       assert(!Files.exists(stale), s"the model was written to the property $stale")
-    } finally sys.props.remove(JavaPlugin.Output): Unit
+    } finally sys.props.remove(BonsaiPlugin.Output): Unit
   }
 
   test("a modifier the code around it implies is of no use") {
@@ -3292,7 +3292,7 @@ class LintSuite extends munit.FunSuite {
         "find-to-exists"
       )
     )
-    assert(ids.subsetOf(JavaLint.chains.toSet), ids.mkString(", "))
+    assert(ids.subsetOf(LintId.chains.toSet), ids.mkString(", "))
   }
 
   test("an unnecessary unboxing is reported") {

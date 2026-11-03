@@ -11,6 +11,7 @@ import javax.tools.JavaFileObject
 import javax.tools.SimpleJavaFileObject
 import javax.tools.ToolProvider
 import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.java.Javac.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
@@ -19,11 +20,19 @@ class ChainLifterSuite extends munit.FunSuite {
   private val imports = "import java.util.*; import java.util.function.*; import java.util.stream.*;"
 
   private def lifts(members: String, release: Int = 17): Map[String, Vector[Lifted]] = {
-    val source = new SimpleJavaFileObject(URI.create("string:///T.java"), JavaFileObject.Kind.SOURCE) {
+    class Source extends SimpleJavaFileObject(URI.create("string:///T.java"), JavaFileObject.Kind.SOURCE) {
       override def getCharContent(ignoreEncodingErrors: Boolean): CharSequence = s"$imports\nclass T {\n$members\n}"
     }
+    val source   = Source()
     val compiler = ToolProvider.getSystemJavaCompiler
-    val task     = compiler.getTask(null, null, null, Seq("-proc:none").asJava, null, Seq(source).asJava)
+    val task     = compiler.getTask(
+      Fixtures.omitted,
+      Fixtures.omitted,
+      Fixtures.omitted,
+      Seq("-proc:none").asJava,
+      Fixtures.omitted,
+      Seq(source).asJava
+    )
       .asInstanceOf[JavacTask]
     val units = task.parse().asScala.toVector
     task.analyze()
@@ -31,17 +40,18 @@ class ChainLifterSuite extends munit.FunSuite {
     val registry = Registry(Some(release))
     val found    = mutable.LinkedHashMap.empty[String, Vector[Lifted]]
     units.foreach { unit =>
-      new TreePathScanner[Unit, Unit] {
+      class Lifter extends TreePathScanner[Unit, Unit] {
         override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
           val path      = getCurrentPath
           val ancestors =
-            Iterator.iterate(path.getParentPath)(_.getParentPath).takeWhile(_ != null).map(_.getLeaf).toList
+            path.parents.map(_.getLeaf).toList
           val context = Context(trees, task.getElements, task.getTypes, unit, path, "T", None, ancestors, registry)
           val method  = ancestors.collectFirst { case method: MethodTree => method.getName.toString }.getOrElse("")
           ChainLifter.lift(context).foreach(lifted => found(method) = found.getOrElse(method, Vector.empty) :+ lifted)
           super.visitMethodInvocation(node, unused)
         }
-      }.scan(TreePath(unit), ())
+      }
+      Lifter().scan(TreePath(unit), ())
     }
     val unknown = found.values.flatten.flatMap(_.chain.steps.map(_.method)).filter(Ops(_).isEmpty)
     assertEquals(unknown.toSet, Set.empty[String])

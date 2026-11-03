@@ -12,6 +12,7 @@ import javax.lang.model.element.ElementKind
 import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.Modifier
 import javax.lang.model.element.TypeElement
+import net.kurobako.bonsai.java.Javac.*
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
@@ -41,13 +42,11 @@ object LintRedundant {
 
   /** A modifier that the code around it already implies. */
   private object RedundantModifier extends Lint {
-    val id               = JavaLint.RedundantModifier.id
+    val id               = LintId.RedundantModifier.id
     val kinds: Set[Kind] = Set(Tree.Kind.CLASS, Tree.Kind.INTERFACE, Tree.Kind.METHOD, Tree.Kind.VARIABLE)
 
-    def check(context: Context, tree: Tree): Vector[Found] = {
-      val element = context.element
-      if (element == null) Vector.empty
-      else {
+    def check(context: Context, tree: Tree): Vector[Found] =
+      context.namedElement.fold(Vector.empty[Found]) { element =>
         // The modifiers of the element hold the ones the code around it implies (the members of an interface are public
         // and abstract already), so the ones the code writes are read of the tree.
         val modifiers = tree match {
@@ -57,7 +56,7 @@ object LintRedundant {
           case _                      => Set.empty[Modifier]
         }
         // The members of an interface are public and abstract already, and the fields of one are static and final.
-        val inInterface = Option(element.getEnclosingElement).exists(_.getKind == ElementKind.INTERFACE)
+        val inInterface = element.enclosing.exists(_.getKind == ElementKind.INTERFACE)
         val redundant   = if (inInterface)
           element.getKind match {
             case ElementKind.METHOD => modifiers.contains(Modifier.PUBLIC) || modifiers.contains(Modifier.ABSTRACT)
@@ -71,12 +70,11 @@ object LintRedundant {
         if (redundant) Vector(context.found("the modifier is already implied by the code around it"))
         else Vector.empty
       }
-    }
   }
 
   /** A qualifier of a member that the code around it already holds. */
   private object RedundantThis extends Lint {
-    val id               = JavaLint.RedundantThis.id
+    val id               = LintId.RedundantThis.id
     val kinds: Set[Kind] = Set(Tree.Kind.MEMBER_SELECT)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -89,15 +87,14 @@ object LintRedundant {
         val name  = select.getIdentifier.toString
         val hides = context.enclosing(Set(Tree.Kind.METHOD)).exists { method =>
           val methodTree = method.asInstanceOf[MethodTree]
-          val body       = methodTree.getBody
           methodTree.getParameters.asScala.exists(_.getName.toString == name) ||
-          (body != null && LintRedundant.locals(body).contains(name))
+          methodTree.body.exists(LintRedundant.locals(_).contains(name))
         }
         // The block around the qualifier writes its members with the qualifier or without it, and the qualifier it
         // writes is the way of the block: removing it would leave one statement that does not name `this` among the
         // ones that do. The qualifier is the odd one out only when the block writes more than twice as many members
         // without it, or when it names no other member and there is no way of the block to keep.
-        val kind                           = Option(context.element).map(_.getKind).orNull
+        val kind                           = context.namedElement.map(_.getKind)
         val (qualified, unqualified, bare) =
           context.enclosing(Set(Tree.Kind.BLOCK)).fold((0, 0, 0))(block => memberStyle(context, block, kind))
         val odd = (qualified > 0 && unqualified >= 2 * qualified) ||
@@ -110,55 +107,47 @@ object LintRedundant {
   /** The numbers of the members the block writes with the qualifier and without it, which is the way it writes them,
     * and the number of times it names `this` on its own, which shows that it writes the receiver out.
     */
-  private def memberStyle(context: Context, block: Tree, kind: ElementKind): (Int, Int, Int) = {
-    val blockPath = context.trees.getPath(context.unit, block)
-    if (blockPath == null) (0, 0, 0)
-    else {
-      var qualified   = 0
-      var unqualified = 0
-      var bare        = 0
-      val scanner     = new TreeScanner[Unit, Unit] {
-        override def visitMemberSelect(node: MemberSelectTree, unused: Unit): Unit =
-          node.getExpression match {
-            case identifier: IdentifierTree if Call.isThis(identifier) =>
-              qualified += 1
-            // The expression of the select is the receiver, which the scanner would read as a name of its own.
-            case _ => super.visitMemberSelect(node, unused)
+  private def memberStyle(context: Context, block: Tree, kind: Option[ElementKind]): (Int, Int, Int) =
+    Option(context.trees.getPath(context.unit, block)).fold((0, 0, 0)) { blockPath =>
+      def qualifiedSelect(node: Tree): Boolean = node match {
+        case select: MemberSelectTree =>
+          select.getExpression match {
+            case identifier: IdentifierTree => Call.isThis(identifier)
+            case _                          => false
           }
-
-        override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
-          val name = node.getName.toString
-          if (name == "this") bare += 1
-          else {
-            // `super` is not a member of the type, although the compiler models the receiver as a field of it.
-            val element =
-              if (name == "super") null else context.trees.getElement(TreePath(blockPath, node))
-            if (element != null && element.getKind == kind) unqualified += 1
-          }
-          super.visitIdentifier(node, unused)
-        }
+        case _ => false
       }
-      scanner.scan(block, ())
-      (qualified, unqualified, bare)
+      // `super` is not a member of the type, although the compiler models the receiver as a field of it.
+      def member(identifier: IdentifierTree): Boolean =
+        !identifier.getName.contentEquals("super") &&
+          kind.exists(wanted => context.trees.namedElement(TreePath(blockPath, identifier)).exists(_.getKind == wanted))
+      // The expression of a qualified select is the receiver, which the scan would read as a name of its own.
+      val mentions = Scan.collect(block, !qualifiedSelect(_)) {
+        case select if qualifiedSelect(select)                                      => Mention.Qualified
+        case identifier: IdentifierTree if identifier.getName.contentEquals("this") => Mention.Bare
+        case identifier: IdentifierTree if member(identifier)                       => Mention.Unqualified
+      }
+      (
+        mentions.count(_ == Mention.Qualified),
+        mentions.count(_ == Mention.Unqualified),
+        mentions.count(_ == Mention.Bare)
+      )
     }
+
+  private enum Mention {
+    case Qualified, Unqualified, Bare
   }
 
   /** The names the locals of a block have, which the lints that care of what hides a member read. */
   private def locals(body: Tree): Set[String] = {
-    val names   = mutable.Set.empty[String]
-    val scanner = new TreeScanner[Unit, Unit] {
-      override def visitVariable(node: VariableTree, unused: Unit): Unit = {
-        names += node.getName.toString
-        super.visitVariable(node, unused)
-      }
-    }
-    scanner.scan(body, ())
+    val names = mutable.Set.empty[String]
+    Scan.foreach(body) { case node: VariableTree => names += node.getName.toString }
     names.toSet
   }
 
   /** A value that is boxed although the code does not need it. */
   private object UnnecessaryBoxing extends Lint {
-    val id               = JavaLint.UnnecessaryBoxing.id
+    val id               = LintId.UnnecessaryBoxing.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -175,8 +164,9 @@ object LintRedundant {
   private def unneeded(context: Context): Boolean =
     LintRedundant.holder(context) match {
       // A number the code holds does not need the box of the value.
-      case Some(variable: VariableTree)     => LintRedundant.number(context.typeOf(variable))
-      case Some(assignment: AssignmentTree) => LintRedundant.number(context.typeOf(assignment.getVariable))
+      case Some(variable: VariableTree)     => context.attributedType(variable).exists(LintRedundant.number(_))
+      case Some(assignment: AssignmentTree) =>
+        context.attributedType(assignment.getVariable).exists(LintRedundant.number(_))
       // The method returns a number, which the box of the value is of no use to.
       case Some(_: ReturnTree) =>
         context.enclosing(Set(Tree.Kind.METHOD)).exists { method =>
@@ -185,7 +175,7 @@ object LintRedundant {
       // The number the code counts with is a number, which the box of the value is of no use to.
       case Some(binary: BinaryTree) =>
         val other = if (binary.getLeftOperand == context.tree) binary.getRightOperand else binary.getLeftOperand
-        LintRedundant.number(context.typeOf(other))
+        context.attributedType(other).exists(LintRedundant.number(_))
       // The parameter of the call is a number, which the box of the value is of no use to.
       case Some(invocation: MethodInvocationTree) =>
         LintRedundant.parameter(context, invocation).exists(LintRedundant.number(_))
@@ -208,7 +198,7 @@ object LintRedundant {
   }
 
   /** Whether the type is a number or a flag, which the code holds without a box. */
-  private def number(tpe: TypeMirror): Boolean = tpe != null && tpe.getKind.isPrimitive
+  private def number(tpe: TypeMirror): Boolean = tpe.getKind.isPrimitive
 
   /** The types whose values are boxes, which the lints that care of the boxing of a value read. */
   private val boxes: Set[String] = Set("Integer", "Long", "Short", "Byte", "Character", "Boolean", "Double", "Float")
@@ -216,13 +206,13 @@ object LintRedundant {
   /** Whether the call is `valueOf` of one of the boxes. */
   def boxing(context: Context, method: ExpressionTree): Boolean =
     Call.named(method, "valueOf") &&
-      boxes.contains(Option(context.element).map(_.getEnclosingElement).map(_.getSimpleName.toString).getOrElse(""))
+      boxes.contains(context.namedElement.flatMap(_.enclosing).map(_.getSimpleName.toString).getOrElse(""))
 
   val qualifiedBoxes: Set[String] = boxes.map(name => s"java.lang.$name")
 
   /** A method that overrides a method of a supertype and does not say so. */
   private object MissingOverride extends Lint {
-    val id               = JavaLint.MissingOverride.id
+    val id               = LintId.MissingOverride.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     def check(context: Context, tree: Tree): Vector[Found] =
@@ -246,7 +236,7 @@ object LintRedundant {
 
   /** An initializer of a field that gives it the value it has anyway. */
   private object UnusedAssignment extends Lint {
-    val id               = JavaLint.UnusedAssignment.id
+    val id               = LintId.UnusedAssignment.id
     val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -254,11 +244,11 @@ object LintRedundant {
       // A local needs its initializer, and a final field cannot be left without one. The field of a type that is not
       // final starts with the default value of its type, which an initializer that writes that value repeats.
       val field = context.ancestors.headOption.exists(_.isInstanceOf[ClassTree])
-      val fixed = Option(context.element).exists(_.getModifiers.contains(Modifier.FINAL))
+      val fixed = context.namedElement.exists(_.getModifiers.contains(Modifier.FINAL))
       // MissingFieldInitializer asks for the start value of the state of the type to be written.
-      if (!field || fixed || LintBugs.MissingFieldInitializer.required(context.element)) Vector.empty
+      if (!field || fixed || context.namedElement.exists(LintBugs.MissingFieldInitializer.required(_))) Vector.empty
       else
-        Option(variable.getInitializer).filter(default(_)).map { initializer =>
+        variable.initializer.filter(default(_)).map { initializer =>
           context.found(s"the initializer $initializer of the field ${variable.getName} is redundant")
         }.toVector
     }
@@ -268,11 +258,11 @@ object LintRedundant {
       case literal: LiteralTree =>
         literal.getKind match {
           case Tree.Kind.NULL_LITERAL    => true
-          case Tree.Kind.BOOLEAN_LITERAL => literal.getValue == java.lang.Boolean.FALSE
-          case Tree.Kind.CHAR_LITERAL    => literal.getValue == java.lang.Character.valueOf('\u0000')
+          case Tree.Kind.BOOLEAN_LITERAL => literal.getValue == false
+          case Tree.Kind.CHAR_LITERAL    => literal.getValue == '\u0000'
           case Tree.Kind.INT_LITERAL | Tree.Kind.LONG_LITERAL | Tree.Kind.FLOAT_LITERAL |
               Tree.Kind.DOUBLE_LITERAL =>
-            literal.getValue.asInstanceOf[java.lang.Number].doubleValue == 0.0
+            Lints.numeric(literal).contains(0.0)
           case _ => false
         }
       case _ => false
@@ -281,11 +271,11 @@ object LintRedundant {
 
   /** An override that only calls the method it overrides. */
   private object RedundantMethodOverride extends Lint {
-    val id               = JavaLint.RedundantMethodOverride.id
+    val id               = LintId.RedundantMethodOverride.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
-      case method: MethodTree if !method.getName.contentEquals("<init>") && method.getBody != null =>
+      case method: MethodTree if !method.getName.contentEquals("<init>") && method.body.isDefined =>
         called(method) match {
           case Some(invocation) if callsSuper(method, invocation) =>
             Vector(context.found(s"the method ${method.getName} only calls the method it overrides"))
@@ -329,37 +319,32 @@ object LintRedundant {
 
   /** A private field whose every use is in one method where every read is preceded by a write on every path. */
   private object FieldCanBeLocal extends Lint {
-    val id               = JavaLint.FieldCanBeLocal.id
+    val id               = LintId.FieldCanBeLocal.id
     val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
+    // A javac visitor is an abstract class, so it is written inline.
+    @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation"))
     def check(context: Context, tree: Tree): Vector[Found] = {
       val variable = tree.asInstanceOf[VariableTree]
-      val field    = context.element
       val owner    = context.ancestors.collectFirst { case clazz: ClassTree => clazz }
-      if (
-        field == null || owner.isEmpty || variable.getInitializer != null ||
-        !field.getModifiers.contains(Modifier.PRIVATE) ||
-        field.getModifiers.contains(Modifier.STATIC) ||
-        field.getModifiers.contains(Modifier.VOLATILE)
-      ) Vector.empty
-      else {
+      context.namedElement.filter { field =>
+        owner.isDefined && variable.initializer.isEmpty &&
+        field.getModifiers.contains(Modifier.PRIVATE) &&
+        !field.getModifiers.contains(Modifier.STATIC) &&
+        !field.getModifiers.contains(Modifier.VOLATILE)
+      }.fold(Vector.empty[Found]) { field =>
         val uses = mutable.ArrayBuffer.empty[(Option[Long], Boolean, String, Option[MethodTree])]
         val root = TreePath(TreePath(context.unit), owner.get)
         new TreePathScanner[Unit, Unit] {
           private def checkLeaf(): Unit = {
             val path = getCurrentPath
             if (context.trees.getElement(path) == field) {
-              var method: Option[MethodTree] = None
-              var nested                     = false
-              var cursor                     = path.getParentPath
-              while cursor != null && method.isEmpty do {
-                cursor.getLeaf match {
-                  case found: MethodTree                      => method = Some(found)
-                  case _: LambdaExpressionTree                => nested = true
-                  case clazz: ClassTree if clazz ne owner.get => nested = true
-                  case _                                      => ()
-                }
-                cursor = cursor.getParentPath
+              val (inside, outside) = path.parents.map(_.getLeaf).toList.span(!_.isInstanceOf[MethodTree])
+              val method            = outside.headOption.collect { case found: MethodTree => found }
+              val nested            = inside.exists {
+                case _: LambdaExpressionTree => true
+                case clazz: ClassTree        => clazz ne owner.get
+                case _                       => false
               }
               val start = method.flatMap(found =>
                 Option(context.trees.getSourcePositions.getStartPosition(context.unit, found))
@@ -393,7 +378,7 @@ object LintRedundant {
           Vector.empty
         else {
           val targetMethod = uses.head._4
-          if (targetMethod.isEmpty || targetMethod.get.getBody == null) Vector.empty
+          if (targetMethod.isEmpty || targetMethod.get.body.isEmpty) Vector.empty
           else {
             val (readBeforeWrite, readCount) = analyzeMethod(context, field, targetMethod.get.getBody)
             if (!readBeforeWrite && readCount > 0)
@@ -414,6 +399,8 @@ object LintRedundant {
       else if (s2.dead) s1
       else State(written = s1.written && s2.written, dead = false)
 
+    // The state is updated as the walk proceeds.
+    @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
     private def analyzeMethod(context: Context, field: Element, body: BlockTree): (Boolean, Int) = {
       var readBeforeWrite = false
       var readCount       = 0
@@ -422,19 +409,17 @@ object LintRedundant {
         Option(context.trees.getPath(
           context.unit,
           tree
-        )).flatMap(p => Option(context.trees.getElement(p))).contains(field)
+        )).flatMap(p => context.trees.namedElement(p)).contains(field)
 
       def isField(tree: ExpressionTree): Boolean =
-        if (tree == null) false
-        else
-          Lints.unparenthesised(tree) match {
-            case id: IdentifierTree    => id.getName.contentEquals(field.getSimpleName) && names(id)
-            case sel: MemberSelectTree => sel.getIdentifier.contentEquals(field.getSimpleName) && names(sel)
-            case _                     => false
-          }
+        Lints.unparenthesised(tree) match {
+          case id: IdentifierTree    => id.getName.contentEquals(field.getSimpleName) && names(id)
+          case sel: MemberSelectTree => sel.getIdentifier.contentEquals(field.getSimpleName) && names(sel)
+          case _                     => false
+        }
 
       def checkExpr(tree: ExpressionTree, s: State): State =
-        if (tree == null || s.dead) s
+        if (s.dead) s
         else
           Lint.unwrapped(tree) match {
             case assignment: AssignmentTree =>
@@ -473,7 +458,7 @@ object LintRedundant {
               checkExpr(arr.getIndex, sArr)
             case newArr: NewArrayTree =>
               val sDims = newArr.getDimensions.asScala.foldLeft(s)((curr, d) => checkExpr(d, curr))
-              Option(newArr.getInitializers).map(_.asScala).getOrElse(Nil).foldLeft(sDims)((curr, init) =>
+              newArr.initializers.map(_.asScala).getOrElse(Nil).foldLeft(sDims)((curr, init) =>
                 checkExpr(init, curr)
               )
             case sel: MemberSelectTree =>
@@ -492,7 +477,7 @@ object LintRedundant {
           }
 
       def checkStmt(tree: StatementTree, s: State): State =
-        if (tree == null || s.dead) s
+        if (s.dead) s
         else
           tree match {
             case block: BlockTree =>
@@ -500,11 +485,11 @@ object LintRedundant {
             case exprStmt: ExpressionStatementTree =>
               checkExpr(exprStmt.getExpression, s)
             case varTree: VariableTree =>
-              Option(varTree.getInitializer).fold(s)(checkExpr(_, s))
+              varTree.initializer.fold(s)(checkExpr(_, s))
             case ifTree: IfTree =>
               val sCond = checkExpr(ifTree.getCondition, s)
               val sThen = checkStmt(ifTree.getThenStatement, sCond)
-              val sElse = if (ifTree.getElseStatement != null) checkStmt(ifTree.getElseStatement, sCond) else sCond
+              val sElse = ifTree.elseStatement.fold(sCond)(checkStmt(_, sCond))
               join(sThen, sElse)
             case whileLoop: WhileLoopTree =>
               val _ = checkExpr(whileLoop.getCondition, s)
@@ -512,7 +497,7 @@ object LintRedundant {
               s
             case forLoop: ForLoopTree =>
               val sInit = forLoop.getInitializer.asScala.foldLeft(s)((curr, init) => checkStmt(init, curr))
-              if (forLoop.getCondition != null) { val _ = checkExpr(forLoop.getCondition, sInit) }
+              forLoop.condition.foreach(checkExpr(_, sInit))
               val _ = checkStmt(forLoop.getStatement, sInit)
               forLoop.getUpdate.asScala.foreach(up => checkExpr(up.getExpression, sInit))
               s
@@ -527,17 +512,16 @@ object LintRedundant {
             case tryTree: TryTree =>
               val sRes = tryTree.getResources.asScala.foldLeft(s)((curr, res) =>
                 res match {
-                  case v: VariableTree   => Option(v.getInitializer).fold(curr)(checkExpr(_, curr))
+                  case v: VariableTree   => v.initializer.fold(curr)(checkExpr(_, curr))
                   case e: ExpressionTree => checkExpr(e, curr)
                   case _                 => curr
                 }
               )
               val _ = checkStmt(tryTree.getBlock, sRes)
               tryTree.getCatches.asScala.foreach(c => checkStmt(c.getBlock, sRes))
-              if (tryTree.getFinallyBlock != null) checkStmt(tryTree.getFinallyBlock, sRes)
-              else sRes
+              tryTree.finallyBlock.fold(sRes)(checkStmt(_, sRes))
             case returnTree: ReturnTree =>
-              val sRet = Option(returnTree.getExpression).fold(s)(checkExpr(_, s))
+              val sRet = returnTree.returned.fold(s)(checkExpr(_, s))
               sRet.copy(dead = true)
             case throwTree: ThrowTree =>
               val sThrow = checkExpr(throwTree.getExpression, s)
@@ -566,27 +550,27 @@ object LintRedundant {
     * that only the constructors of its class assign, each of them once.
     */
   private object CanBeFinal extends Lint {
-    val id               = JavaLint.CanBeFinal.id
+    val id               = LintId.CanBeFinal.id
     val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val variable = tree.asInstanceOf[VariableTree]
-      val element  = context.element
-      val kind     = if (element == null) ElementKind.OTHER else element.getKind
-      val fixed    = element != null && element.getModifiers.contains(Modifier.FINAL)
-      val volatile = element != null && element.getModifiers.contains(Modifier.VOLATILE)
-      val visible  = kind == ElementKind.FIELD && !element.getModifiers.contains(Modifier.PRIVATE)
-      val valued   = variable.getInitializer != null
-      if (
-        element == null ||
-        (kind != ElementKind.LOCAL_VARIABLE && kind != ElementKind.FIELD) ||
-        visible || fixed || volatile ||
-        !(valued || (kind == ElementKind.FIELD && Constructors.assigned(context.trees, context.path))) ||
-        assigned(context, element, valued)
-      ) Vector.empty
-      else {
-        val noun = if (kind == ElementKind.FIELD) "field" else "local variable"
-        Vector(context.found(s"the $noun ${variable.getName} can be final"))
+      val valued   = variable.initializer.isDefined
+      context.namedElement.fold(Vector.empty[Found]) { element =>
+        val kind     = element.getKind
+        val fixed    = element.getModifiers.contains(Modifier.FINAL)
+        val volatile = element.getModifiers.contains(Modifier.VOLATILE)
+        val visible  = kind == ElementKind.FIELD && !element.getModifiers.contains(Modifier.PRIVATE)
+        if (
+          (kind != ElementKind.LOCAL_VARIABLE && kind != ElementKind.FIELD) ||
+          visible || fixed || volatile ||
+          !(valued || (kind == ElementKind.FIELD && Constructors.assigned(context.trees, context.path))) ||
+          assigned(context, element, valued)
+        ) Vector.empty
+        else {
+          val noun = if (kind == ElementKind.FIELD) "field" else "local variable"
+          Vector(context.found(s"the $noun ${variable.getName} can be final"))
+        }
       }
     }
 
@@ -606,7 +590,7 @@ object LintRedundant {
 
   /** An explicit constructor type argument that the target type already gives, which `<>` says. */
   private object Convert2Diamond extends Lint {
-    val id               = JavaLint.Convert2Diamond.id
+    val id               = LintId.Convert2Diamond.id
     val kinds: Set[Kind] = Set(Tree.Kind.NEW_CLASS)
 
     def check(context: Context, tree: Tree): Vector[Found] = tree match {
@@ -615,7 +599,7 @@ object LintRedundant {
           case parameterized: ParameterizedTypeTree if explicitTypeArguments(context, parameterized) =>
             context.ancestors.headOption.collect {
               case variable: VariableTree
-                  if (newClass.getClassBody == null || Release.atLeast(context, 9)) &&
+                  if (newClass.classBody.isEmpty || Release.atLeast(context, 9)) &&
                     variable.getType.isInstanceOf[ParameterizedTypeTree] &&
                     LintRedundant.rawType(context, variable.getType) ==
                     LintRedundant.rawType(context, newClass.getIdentifier) =>
@@ -653,7 +637,7 @@ object LintRedundant {
 
   /** An explicit unboxing conversion that the context performs anyway. */
   private object UnnecessaryUnboxing extends Lint {
-    val id               = JavaLint.UnnecessaryUnboxing.id
+    val id               = LintId.UnnecessaryUnboxing.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     private val Methods =
@@ -665,7 +649,7 @@ object LintRedundant {
         case method: ExecutableElement if Methods(method.getSimpleName.toString) && invocation.getArguments.isEmpty =>
           invocation.getMethodSelect match {
             case select: MemberSelectTree =>
-              Option(context.typeOf(select.getExpression)).collect {
+              context.attributedType(select.getExpression).collect {
                 case declared: DeclaredType
                     if LintRedundant.qualifiedBoxes(declared.asElement match {
                       case element: TypeElement => element.getQualifiedName.toString
@@ -683,7 +667,7 @@ object LintRedundant {
 
   /** A Unicode escape that the source can hold as the character itself. */
   private object UnnecessaryUnicodeEscape extends Lint {
-    val id               = JavaLint.UnnecessaryUnicodeEscape.id
+    val id               = LintId.UnnecessaryUnicodeEscape.id
     val kinds: Set[Kind] = Set.empty[Tree.Kind]
 
     private val Escape = java.util.regex.Pattern.compile("\\\\u+([0-9a-fA-F]{4})")
@@ -719,7 +703,7 @@ object LintRedundant {
 
   /** A doc comment that documents nothing. */
   private object DanglingDocComment extends Lint {
-    val id               = JavaLint.DanglingDocComment.id
+    val id               = LintId.DanglingDocComment.id
     val kinds: Set[Kind] = Set.empty[Tree.Kind]
 
     def check(context: Context, tree: Tree): Vector[Found] =
@@ -731,6 +715,8 @@ object LintRedundant {
   /** Where the doc comments of the text start that another doc comment, a closing brace or the end of the text follows,
     * with the comments that are no doc comments skipped as well as the literals that hold the marker of one.
     */
+  // The state is updated as the walk proceeds.
+  @SuppressWarnings(Array("scalafix:DisableSyntax.var"))
   private def danglingDocComments(text: String): Vector[Int] = {
     val orphans         = Vector.newBuilder[Int]
     var pending         = -1
@@ -773,13 +759,18 @@ object LintRedundant {
     orphans.result()
   }
 
+  // A javac visitor is an abstract class, so it is written inline.
+  // The state is updated as the walk proceeds.
+  @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation", "scalafix:DisableSyntax.var"))
   private def containing(context: Context, offset: Int): Tree = {
     var best      = context.unit: Tree
     var width     = Int.MaxValue
     val positions = context.trees.getSourcePositions
     new TreeScanner[Unit, Unit] {
+      // The scan reaches every node, so the missing children are tested for null rather than wrapped.
+      @SuppressWarnings(Array("scalafix:DisableSyntax.null"))
       override def scan(node: Tree, unused: Unit): Unit =
-        if (node != null) {
+        if (node ne null) {
           val start = positions.getStartPosition(context.unit, node)
           val end   = positions.getEndPosition(context.unit, node)
           if (start >= 0 && end > start && start <= offset && offset < end && end - start < width) {
@@ -794,7 +785,7 @@ object LintRedundant {
 
   /** An import that the file never uses. */
   private object UnusedImport extends Lint {
-    val id               = JavaLint.UnusedImport.id
+    val id               = LintId.UnusedImport.id
     val kinds: Set[Kind] = Set(Tree.Kind.COMPILATION_UNIT)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
@@ -816,19 +807,11 @@ object LintRedundant {
 
   /** The names the code of the file uses, which the lints that care of the imports of the file read. */
   private def used(unit: CompilationUnitTree): Set[String] = {
-    val names   = mutable.Set.empty[String]
-    val scanner = new TreeScanner[Unit, Unit] {
-      override def visitImport(node: ImportTree, unused: Unit): Unit         = ()
-      override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
-        names += node.getName.toString
-        super.visitIdentifier(node, unused)
-      }
-      override def visitMemberSelect(node: MemberSelectTree, unused: Unit): Unit = {
-        names += node.getIdentifier.toString
-        super.visitMemberSelect(node, unused)
-      }
+    val names = mutable.Set.empty[String]
+    Scan.foreach(unit, !_.isInstanceOf[ImportTree]) {
+      case node: IdentifierTree   => names += node.getName.toString
+      case node: MemberSelectTree => names += node.getIdentifier.toString
     }
-    scanner.scan(unit, ())
     names.toSet
   }
 }

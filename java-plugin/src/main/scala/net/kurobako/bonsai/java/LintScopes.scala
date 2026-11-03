@@ -4,9 +4,9 @@ import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
 import com.sun.source.util.TreePath
 import com.sun.source.util.TreePathScanner
-import com.sun.source.util.TreeScanner
 import javax.lang.model.`type`.TypeMirror
 import javax.lang.model.element.*
+import net.kurobako.bonsai.java.Javac.*
 import scala.jdk.CollectionConverters.*
 
 /** The lints of values whose nullness and lifetime the JSpecify scope and the code that owns them settle. */
@@ -19,21 +19,21 @@ object LintScopes {
 
   /** An AutoCloseable local used outside try-with-resources. */
   private object AutoCloseableResource extends Lint {
-    val id               = JavaLint.AutoCloseableResource.id
+    val id               = LintId.AutoCloseableResource.id
     val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val variable = tree.asInstanceOf[VariableTree]
-      val element  = context.element
-      val local    = element != null && element.getKind == ElementKind.LOCAL_VARIABLE
+      val element  = context.namedElement
+      val local    = element.exists(_.getKind == ElementKind.LOCAL_VARIABLE)
       val resource = context.ancestors.exists {
         case tryTree: TryTree => tryTree.getResources.asScala.exists(_ eq variable)
         case _                => false
       }
-      val closeable     = element != null && subtype(context, element.asType(), "java.lang.AutoCloseable")
-      val owned         = variable.getInitializer != null && ownedResource(context, variable.getInitializer)
+      val closeable     = element.exists(found => subtype(context, found.asType(), "java.lang.AutoCloseable"))
+      val owned         = variable.initializer.exists(ownedResource(context, _))
       val resourceLater = usedAsResource(context, variable.getName)
-      val use           = if (element != null) resourceUse(context, element) else ResourceUse(false, false)
+      val use           = element.fold(ResourceUse(false, false))(resourceUse(context, _))
       if (local && closeable && owned && !resource && !resourceLater && !use.escaped && !use.closed)
         Vector(context.found("the resource is not used in try-with-resources, so it may not be closed"))
       else Vector.empty
@@ -42,16 +42,17 @@ object LintScopes {
 
   /** A non-null field that is not initialized where it is declared. */
   private object NotNullField extends Lint {
-    val id               = JavaLint.NotNullField.id
+    val id               = LintId.NotNullField.id
     val kinds: Set[Kind] = Set(Tree.Kind.VARIABLE)
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val variable = tree.asInstanceOf[VariableTree]
-      val element  = context.element
+      val field    = context.namedElement.filter(_.getKind == ElementKind.FIELD)
       if (
-        element != null && element.getKind == ElementKind.FIELD && variable.getInitializer == null &&
-        !element.asType().getKind.isPrimitive && Nullness.marked(element) && !Nullness.nullableType(element.asType()) &&
-        !assignedInInitializer(context, variable.getName)
+        field.exists(element =>
+          variable.initializer.isEmpty && !element.asType().getKind.isPrimitive && Nullness.marked(element) &&
+            !Nullness.nullableType(element.asType())
+        ) && !assignedInInitializer(context, variable.getName)
       ) Vector(context.found("the field is not initialized where it is declared"))
       else Vector.empty
     }
@@ -61,11 +62,12 @@ object LintScopes {
   private case class ResourceUse(escaped: Boolean, closed: Boolean)
 
   /** Whether the local is passed, returned, captured or stored, or is closed by hand. */
+  // A javac visitor is an abstract class, so it is written inline.
+  // The state is updated as the walk proceeds.
+  @SuppressWarnings(Array("scalafix:BannedSyntax.anonymous-allocation", "scalafix:DisableSyntax.var"))
   private def resourceUse(context: Context, element: Element): ResourceUse = {
     val root =
-      Iterator.iterate(
-        context.path.getParentPath
-      )(_.getParentPath).takeWhile(_ != null).find(_.getLeaf.isInstanceOf[MethodTree])
+      context.path.parents.find(_.getLeaf.isInstanceOf[MethodTree])
     val declaredIn = context.ancestors.collect {
       case declared: (LambdaExpressionTree | ClassTree) => declared
     }.toSet
@@ -74,51 +76,47 @@ object LintScopes {
     root.foreach { methodPath =>
       new TreePathScanner[Unit, Unit] {
         private def use(path: TreePath): Unit = {
-          var holder   = path.getParentPath
-          var captured = false
-          while holder != null && (holder.getLeaf ne methodPath.getLeaf) && !captured do {
+          val captured = path.parents.takeWhile(_.getLeaf ne methodPath.getLeaf).exists { holder =>
             holder.getLeaf match {
-              case lambda: LambdaExpressionTree if !declaredIn(lambda) => captured = true
-              case clazz: ClassTree if !declaredIn(clazz)              => captured = true
-              case _                                                   => ()
+              case lambda: LambdaExpressionTree => !declaredIn(lambda)
+              case clazz: ClassTree             => !declaredIn(clazz)
+              case _                            => false
             }
-            holder = holder.getParentPath
           }
           if (captured) escaped = true
 
-          val parent = path.getParentPath
-          if (parent != null)
+          path.parent.foreach { parent =>
             parent.getLeaf match {
               case ret: ReturnTree if ret.getExpression eq path.getLeaf => escaped = true
               case invocation: MethodInvocationTree                     =>
                 if (Lints.arguments(invocation).exists(_ eq path.getLeaf)) escaped = true
               case select: MemberSelectTree if select.getExpression eq path.getLeaf =>
-                val grandparent = parent.getParentPath
-                if (grandparent != null)
+                parent.parent.foreach { grandparent =>
                   grandparent.getLeaf match {
                     case invocation: MethodInvocationTree
                         if (invocation.getMethodSelect eq select) && Closing(select.getIdentifier.toString) =>
                       closed = true
                     case _ => ()
                   }
+                }
               case newClass: NewClassTree if Lints.arguments(newClass).exists(_ eq path.getLeaf) => escaped = true
               case assignment: AssignmentTree if assignment.getExpression eq path.getLeaf        => escaped = true
               case variable: VariableTree if variable.getInitializer eq path.getLeaf             => escaped = true
               case _: MemberReferenceTree                                                        => escaped = true
-              case array: NewArrayTree
-                  if array.getInitializers != null && array.getInitializers.asScala.exists(_ eq path.getLeaf) =>
+              case array: NewArrayTree if array.initializers.exists(_.asScala.exists(_ eq path.getLeaf)) =>
                 escaped = true
               case _ => ()
             }
+          }
         }
 
         override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
-          if (Option(context.trees.getElement(getCurrentPath)).contains(element)) use(getCurrentPath)
+          if (context.trees.namedElement(getCurrentPath).contains(element)) use(getCurrentPath)
           super.visitIdentifier(node, unused)
         }
 
         override def visitMemberSelect(node: MemberSelectTree, unused: Unit): Unit = {
-          if (Option(context.trees.getElement(getCurrentPath)).contains(element)) use(getCurrentPath)
+          if (context.trees.namedElement(getCurrentPath).contains(element)) use(getCurrentPath)
           super.visitMemberSelect(node, unused)
         }
       }.scan(methodPath, ())
@@ -211,8 +209,8 @@ object LintScopes {
       })
     holds && depth < 3 &&
     (Option(context.trees.getTree(method)) match {
-      case Some(source) if source.getBody != null =>
-        val returned = Lints.returns(source.getBody).flatMap(node => Option(node.getExpression))
+      case Some(source) if source.body.isDefined =>
+        val returned = source.body.toVector.flatMap(Lints.returns(_)).flatMap(_.returned)
         returned.nonEmpty && returned.forall(expression => allocated(context, expression, depth + 1))
       case Some(_) => false
       case None    => Opening.matches(method.getSimpleName.toString)
@@ -231,23 +229,16 @@ object LintScopes {
   }
 
   /** Whether a later try in the enclosing method takes the local as one of its resources. */
-  private def usedAsResource(context: Context, name: CharSequence): Boolean = {
-    var found = false
-    context.ancestors.collectFirst { case method: MethodTree => method }.foreach { method =>
-      new TreeScanner[Unit, Unit] {
-        override def visitTry(node: TryTree, unused: Unit): Unit = {
-          if (
-            node.getResources.asScala.exists {
-              case identifier: IdentifierTree => identifier.getName.contentEquals(name)
-              case _                          => false
-            }
-          ) found = true
-          super.visitTry(node, unused)
-        }
-      }.scan(method.getBody, ())
+  private def usedAsResource(context: Context, name: CharSequence): Boolean =
+    context.ancestors.collectFirst { case method: MethodTree => method }.exists { method =>
+      Scan.exists(method.getBody) {
+        case node: TryTree =>
+          node.getResources.asScala.exists {
+            case identifier: IdentifierTree => identifier.getName.contentEquals(name)
+            case _                          => false
+          }
+      }
     }
-    found
-  }
 
   /** Whether a constructor or an initializer block assigns the field. */
   private def assignedInInitializer(context: Context, name: CharSequence): Boolean = {
@@ -256,32 +247,26 @@ object LintScopes {
       val bodies = classTree.getMembers.asScala.flatMap {
         case method: MethodTree =>
           elementAt(context, method).collect {
-            case constructor: ExecutableElement if constructor.getKind == ElementKind.CONSTRUCTOR => method.getBody
-          }
+            case constructor: ExecutableElement if constructor.getKind == ElementKind.CONSTRUCTOR => constructor
+          }.flatMap(_ => method.body)
         case block: BlockTree => Some(block)
         case _                => None
       }
-      var found = false
-      bodies.foreach { body =>
-        if (body != null)
-          new TreeScanner[Unit, Unit] {
-            override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
-              val target = node.getVariable match {
-                case identifier: IdentifierTree if identifier.getName.contentEquals(name) => true
-                case select: MemberSelectTree if select.getIdentifier.contentEquals(name) => true
-                case _                                                                    => false
-              }
-              if (target) found = true
-              super.visitAssignment(node, unused)
+      bodies.exists { body =>
+        Scan.exists(body) {
+          case node: AssignmentTree =>
+            node.getVariable match {
+              case identifier: IdentifierTree => identifier.getName.contentEquals(name)
+              case select: MemberSelectTree   => select.getIdentifier.contentEquals(name)
+              case _                          => false
             }
-          }.scan(body, ())
+        }
       }
-      found
     }
   }
 
-  private def elementAt(context: Context, tree: Tree): Option[Element] = Option(context.elementOf(tree))
+  private def elementAt(context: Context, tree: Tree): Option[Element] = context.namedElement(tree)
 
   private def subtype(context: Context, tpe: TypeMirror, name: String): Boolean =
-    Option(context.elements.getTypeElement(name)).exists(target => context.types.isSubtype(tpe, target.asType()))
+    context.elements.typeNamed(name).exists(target => context.types.isSubtype(tpe, target.asType()))
 }

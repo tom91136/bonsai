@@ -6,6 +6,7 @@ import com.sun.source.util.Trees
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.`type`.TypeKind
 import javax.lang.model.element.*
+import net.kurobako.bonsai.java.Javac.*
 import net.kurobako.bonsai.java.Model.{Model as _, *}
 import scala.annotation.tailrec
 import scala.collection.mutable
@@ -14,7 +15,7 @@ import scala.jdk.CollectionConverters.*
 /** Reads how a type is constructed: who may call its constructors, and what the constructor requires of its arguments
   * before it stores them, which is the invariant of the values it builds.
   */
-private[java] object Guards {
+private object Guards {
 
   private val Comparisons = Map(
     Tree.Kind.LESS_THAN          -> "<",
@@ -263,7 +264,7 @@ private[java] object Guards {
         first <- statements.headOption.collect { case call: ExpressionStatementTree if Call.isThisCall(call) => call }
         invocation = child(child(root, first), first.getExpression)
         call   <- Option(invocation.getLeaf).collect { case call: MethodInvocationTree => call }
-        target <- Option(trees.getElement(invocation)).collect { case target: ExecutableElement => target }
+        target <- trees.namedElement(invocation).collect { case target: ExecutableElement => target }
       } yield (invocation, call, target)
 
     /** What the constructor keeps when it passes the argument on: its own parameter, or a constant. */
@@ -355,7 +356,7 @@ private[java] object Guards {
       else
         Some(
           bodyPath.fold(Guard.Known(true)) { root =>
-            statements.iterator.map(statement => read(child(root, statement))).takeWhile(_.isDefined).flatten
+            statements.view.map(statement => read(child(root, statement))).takeWhile(_.isDefined).flatten
               .foldLeft[Guard](Guard.Known(true)) {
                 case (Guard.Known(true), next)     => next
                 case (previous, Guard.Known(true)) => previous
@@ -367,7 +368,7 @@ private[java] object Guards {
     /** What a statement at the start of a constructor requires, if it is one that belongs there. */
     private def read(path: TreePath): Option[Guard] = path.getLeaf match {
       case statement: StatementTree if isCall(statement, "super") => Some(Guard.Known(true))
-      case statement: IfTree if statement.getElseStatement == null && throws(statement.getThenStatement) =>
+      case statement: IfTree if statement.elseStatement.isEmpty && throws(statement.getThenStatement) =>
         Some(Guard.Not(condition(child(path, statement.getCondition))))
       case statement: ExpressionStatementTree =>
         val expression = child(path, statement.getExpression)
@@ -406,9 +407,9 @@ private[java] object Guards {
     private def condition(path: TreePath): Guard = path.getLeaf match {
       case parenthesized: ParenthesizedTree => condition(child(path, parenthesized.getExpression))
       case literal: LiteralTree             =>
-        literal.getValue match {
-          case value: java.lang.Boolean => Guard.Known(value)
-          case _                        => Guard.Unknown
+        (literal.getValue: Any) match {
+          case value: Boolean => Guard.Known(value)
+          case _              => Guard.Unknown
         }
       case unary: UnaryTree if unary.getKind == Tree.Kind.LOGICAL_COMPLEMENT =>
         Guard.Not(condition(child(path, unary.getExpression)))
@@ -435,8 +436,8 @@ private[java] object Guards {
               variable(child(path, arguments.head)).fold[Guard](Guard.Unknown)(nonNull(_, false))
             case ("java.util.Objects", "nonNull") if arguments.size == 1 =>
               variable(child(path, arguments.head)).fold[Guard](Guard.Unknown)(nonNull(_, true))
-            case (owner, name @ ("isPresent" | "isEmpty"))
-                if owner.startsWith("java.util.Optional") && arguments.isEmpty =>
+            case (qualifier, name @ ("isPresent" | "isEmpty"))
+                if qualifier.startsWith("java.util.Optional") && arguments.isEmpty =>
               call.getMethodSelect match {
                 case select: MemberSelectTree =>
                   val receiver = child(child(path, select), select.getExpression)
@@ -452,17 +453,17 @@ private[java] object Guards {
       }
 
     @tailrec
-    private def isNull(path: TreePath): Boolean = path.getLeaf match {
-      case parenthesized: ParenthesizedTree => isNull(child(path, parenthesized.getExpression))
-      case literal: LiteralTree             => literal.getValue == null
+    private def nullLiteral(path: TreePath): Boolean = path.getLeaf match {
+      case parenthesized: ParenthesizedTree => nullLiteral(child(path, parenthesized.getExpression))
+      case literal: LiteralTree             => literal.value.isEmpty
       case _                                => false
     }
 
     private def number(path: TreePath): Option[BigDecimal] = path.getLeaf match {
       case parenthesized: ParenthesizedTree => number(child(path, parenthesized.getExpression))
       case literal: LiteralTree             =>
-        literal.getValue match {
-          case value: (java.lang.Integer | java.lang.Long | java.lang.Double | java.lang.Float) =>
+        (literal.getValue: Any) match {
+          case value: (Int | Long | Double | Float) =>
             Some(BigDecimal(value.toString))
           case _ => None
         }
@@ -473,7 +474,7 @@ private[java] object Guards {
 
     private def enumCase(path: TreePath): Option[String] = path.getLeaf match {
       case _: IdentifierTree | _: MemberSelectTree =>
-        Option(trees.getElement(path)).filter(_.getKind == ElementKind.ENUM_CONSTANT).map(_.getSimpleName.toString)
+        trees.namedElement(path).filter(_.getKind == ElementKind.ENUM_CONSTANT).map(_.getSimpleName.toString)
       case _ => None
     }
 
@@ -494,8 +495,8 @@ private[java] object Guards {
           if Collector.parameter(held).kind == "tag"
         } yield negate(Guard.Is(stored(held), name))
       val booleans = trees.getTypeMirror(left).getKind == TypeKind.BOOLEAN
-      if (equality && isNull(right)) parameter(left).fold[Guard](Guard.Unknown)(nonNull(_, operator == "!="))
-      else if (equality && isNull(left)) parameter(right).fold[Guard](Guard.Unknown)(nonNull(_, operator == "!="))
+      if (equality && nullLiteral(right)) parameter(left).fold[Guard](Guard.Unknown)(nonNull(_, operator == "!="))
+      else if (equality && nullLiteral(left)) parameter(right).fold[Guard](Guard.Unknown)(nonNull(_, operator == "!="))
       else if (equality && booleans) negate(same(condition(left), condition(right)))
       else
         comparison(left, right, operator).orElse(comparison(right, left, Flipped(operator))).orElse(
