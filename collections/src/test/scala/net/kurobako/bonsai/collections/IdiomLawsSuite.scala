@@ -532,6 +532,67 @@ class IdiomLawsSuite extends munit.FunSuite {
     )
   }
 
+  private def folding(default: Arg, function: Arg): Chain =
+    chain("option", Step("fold", Vector(default, function), OptionOf, Strict))
+
+  private def spelled(chain: Chain): Vector[String] = Laws.outcomes(chain, OptionFold.MapGetOrElse).map(_.law)
+
+  test("the default spelling reports map then getOrElse and leaves fold alone") {
+    val mapped = chain(
+      "option",
+      Step("map", Vector(fn("_ + 1")), OptionOf, OptionOf),
+      Step("getOrElse", Vector(fn("0")), OptionOf, Strict)
+    )
+    assertEquals(Laws.outcomes(mapped, OptionFold.Fold).map(_.law), Vector("map-get-or-else-to-fold"))
+    assertEquals(Laws.outcomes(mapped).map(_.law), Vector("map-get-or-else-to-fold"))
+    assertEquals(
+      Laws.outcomes(folding(valued("0", "scala.Int"), giving("_ + 1", "scala.Int"))).map(_.law),
+      Vector.empty[String]
+    )
+  }
+
+  test("the map and getOrElse spelling reports fold and leaves map then getOrElse alone") {
+    val mapped = chain(
+      "option",
+      Step("map", Vector(fn("_ + 1")), OptionOf, OptionOf),
+      Step("getOrElse", Vector(fn("0")), OptionOf, Strict)
+    )
+    assertEquals(spelled(mapped), Vector.empty[String])
+  }
+
+  test("fold of a default and a function of the same type becomes map then getOrElse") {
+    val folded = folding(valued("\"\"", "java.lang.String"), giving("_.name", "java.lang.String"))
+    Laws.outcomes(folded, OptionFold.MapGetOrElse).filter(_.lint) match {
+      case Vector(found: Outcome.Rewrite) =>
+        assertEquals(found.law, "fold-to-map-get-or-else")
+        assertEquals(found.message, "use map and getOrElse for fold")
+        assertEquals(found.render("option"), "option.map(_.name).getOrElse(\"\")")
+        assert(!found.analysis)
+        assertEquals(found.java, None)
+      case other => fail(s"expected one rewrite, got $other")
+    }
+  }
+
+  test("fold is only reported where the types of the default and the function differ or are unknown") {
+    def reported(default: Arg, function: Arg): Unit =
+      Laws.outcomes(folding(default, function), OptionFold.MapGetOrElse).filter(_.lint) match {
+        case Vector(found: Outcome.Report) => assertEquals(found.law, "fold-to-map-get-or-else")
+        case other                         => fail(s"expected one report, got $other")
+      }
+    reported(valued("None", "scala.None$"), giving("Some(_)", "scala.Some[scala.Int]"))
+    reported(valued("0", "scala.Long"), giving("_ + 1", "scala.Long"))
+    reported(fn("0"), giving("_ + 1", "scala.Int"))
+    reported(valued("0", "scala.Int"), fn("_ + 1"))
+  }
+
+  test("fold of identity is not rewritten, and fold needs an option") {
+    assertEquals(spelled(folding(valued("0", "scala.Int"), same)), Vector.empty[String])
+    assertEquals(
+      spelled(chain("list", on(ListOf, "fold", valued("0", "scala.Int"), giving("_ + 1", "scala.Int")))),
+      Vector.empty[String]
+    )
+  }
+
   test("map of identity then getOrElse is an identity map, not a fold") {
     val steps = chain(
       "option",

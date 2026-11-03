@@ -10,6 +10,8 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
+import dotty.tools.dotc.core.Types.AppliedType
+import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.collections.*
 import scala.annotation.tailrec
 
@@ -81,6 +83,8 @@ private[lifting] object Argument {
       case (Some(expression), Some(symbol)) => selects(expression, symbol)
       case _                                => false
     }
+    val result = body.filterNot(converted(_)).map(_.tpe)
+      .orElse(Option.when(body.isEmpty && function(bare))(bare.tpe.widen.dealias.argInfos.last))
     new Argument(
       Texts.of(tree),
       pure,
@@ -93,7 +97,9 @@ private[lifting] object Argument {
       destructures,
       selection,
       bare.tpe.widenDealias.isRef(defn.NothingClass),
-      template(body, parameter)
+      template(body, parameter),
+      Option.unless(converted(bare))(typeName(bare.tpe)),
+      result.map(typeName(_))
     )
   }
 
@@ -177,6 +183,23 @@ private[lifting] object Argument {
         tpt.tpe.show :: found
       case _ => foldOver(found, tree)
     }
+  }
+
+  /** Whether the compiler wrote a conversion around `tree` to the type it expected, so that its type is not the type of
+    * the expression as written.
+    */
+  @tailrec
+  private def converted(tree: tpd.Tree): Boolean = tree match {
+    case tpd.Block(_, expression) => converted(expression)
+    case tpd.Apply(function, _)   => function.span.isSynthetic
+    case _                        => false
+  }
+
+  private def typeName(tpe: Type)(using Context): String = tpe.widen.dealias match {
+    case AppliedType(constructor, arguments) =>
+      s"${typeName(constructor)}[${arguments.map(typeName(_)).mkString(", ")}]"
+    case other if other.typeSymbol.exists => other.typeSymbol.fullName.toString
+    case other                            => other.show
   }
 
   /** Whether `value` is accepted where the parameter's type is: it conforms, or it is an integer literal that a wider
@@ -352,7 +375,9 @@ private[lifting] class Argument(
     override val destructures: Option[String],
     override val selection: Boolean,
     override val diverges: Boolean,
-    template: Option[Vector[String]]
+    template: Option[Vector[String]],
+    override val valueType: Option[String],
+    override val resultType: Option[String]
 ) extends Arg {
   def applied(value: String): String =
     if (identity) value

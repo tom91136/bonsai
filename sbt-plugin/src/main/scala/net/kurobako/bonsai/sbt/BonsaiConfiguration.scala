@@ -13,6 +13,7 @@ object BonsaiConfiguration {
   export Reader.Configuration
   export Reader.DefaultBaseline
   export Reader.DefaultPurity
+  export Reader.OptionFolds
   export Reader.Settings
 
   /** The glob of the sources a build generates into `directory`, relative to the `root` sources are named from. */

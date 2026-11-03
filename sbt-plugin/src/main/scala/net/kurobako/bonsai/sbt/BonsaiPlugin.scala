@@ -17,7 +17,8 @@ import scalafix.sbt.ScalafixPlugin.autoImport.*
   * errors     = [local-throw]
   * warnings   = []
   * wildcards  = 2
-  * baseline   = bonsai-baseline.tsv
+  * option-fold = fold
+  * baseline  = bonsai-baseline.tsv
   * purity     = bonsai-purity.tsv
   * effects    { "demo.*.core" = [], "demo.io" = [input, output] }
   * concurrent = [demo.WorkerPool.parallelFor]
@@ -90,7 +91,11 @@ object BonsaiPlugin extends AutoPlugin {
       settingKey[Set[String]]("Compiler plugin checks and analysis rules that fail in every mode, by id")
     val bonsaiWarnings: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks, analysis rules and scalafix rules that never fail, by id")
-    val bonsaiWildcards: SettingKey[Int] = settingKey[Int]("Positional wildcards a case class pattern may carry")
+    val bonsaiWildcards: SettingKey[Int]     = settingKey[Int]("Positional wildcards a case class pattern may carry")
+    val bonsaiOptionFold: SettingKey[String] = settingKey[String](
+      "How the compiler plugin spells the default of an option: fold for o.fold(d)(f), the default, or " +
+        "map-get-or-else for o.map(f).getOrElse(d)"
+    )
     val bonsaiBaseline: SettingKey[File] = settingKey[File]("Analysis findings recorded here report without failing")
     val bonsaiLibrary: TaskKey[Boolean]  = taskKey[Boolean](
       "Whether other builds use this project's public API, so the analysis counts it as used. " +
@@ -195,6 +200,7 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiErrors        := bonsaiConfiguration.value.build.errors.getOrElse(Set.empty),
     bonsaiWarnings      := bonsaiConfiguration.value.build.warnings.getOrElse(Set.empty),
     bonsaiWildcards     := bonsaiConfiguration.value.build.wildcards.getOrElse(2),
+    bonsaiOptionFold    := bonsaiConfiguration.value.build.optionFold.getOrElse(BonsaiConfiguration.OptionFolds.head),
     bonsaiBaseline      :=
       IO.resolve(
         baseDirectory.value,
@@ -220,12 +226,13 @@ object BonsaiPlugin extends AutoPlugin {
   )
 
   override def projectSettings: Seq[Setting[?]] = Seq(
-    bonsaiEnabled   := true,
-    bonsaiDisabled  := ownOr(bonsaiDisabled)(_.disabled).value,
-    bonsaiErrors    := ownOr(bonsaiErrors)(_.errors).value,
-    bonsaiWarnings  := ownOr(bonsaiWarnings)(_.warnings).value,
-    bonsaiWildcards := ownOr(bonsaiWildcards)(_.wildcards).value,
-    bonsaiValidated := {
+    bonsaiEnabled    := true,
+    bonsaiDisabled   := ownOr(bonsaiDisabled)(_.disabled).value,
+    bonsaiErrors     := ownOr(bonsaiErrors)(_.errors).value,
+    bonsaiWarnings   := ownOr(bonsaiWarnings)(_.warnings).value,
+    bonsaiWildcards  := ownOr(bonsaiWildcards)(_.wildcards).value,
+    bonsaiOptionFold := ownOr(bonsaiOptionFold)(_.optionFold).value,
+    bonsaiValidated  := {
       val unknown = (bonsaiDisabled.value ++ bonsaiErrors.value ++ bonsaiWarnings.value) --
         (Checks ++ Findings ++ Rules ++ Bans)
       if (unknown.nonEmpty)
@@ -270,6 +277,7 @@ object BonsaiPlugin extends AutoPlugin {
         (s"-P:bonsai:mode=${bonsaiModeId.value}" +:
           (option("disable", bonsaiDisabled.value) ++ option("error", bonsaiErrors.value) ++
             option("warn", bonsaiWarnings.value) :+ s"-P:bonsai:wildcards=${bonsaiWildcards.value}")) ++
+          Seq(s"-P:bonsai:option-fold=${bonsaiOptionFold.value}") ++
           bonsaiHot.value.toSeq.sorted.map(glob => s"-P:bonsai:hot=$glob") ++
           bonsaiBounded.value.map((member, max, _) => s"-P:bonsai:bounded=$member:$max") ++
           bonsaiChecked.value.toSeq.sorted.map(tpe => s"-P:bonsai:checked=$tpe")

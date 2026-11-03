@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -22,6 +23,7 @@ class ConfigurationTest {
       "warnings\tidentity-token",
       "wildcards\t3",
       "library\ttrue",
+      "option-fold\tmap-get-or-else",
       "hot\tdemo.kernel.**",
       "bounded\tdemo.Encoding.operands:4",
       "checked\tdemo.where",
@@ -37,6 +39,7 @@ class ConfigurationTest {
     assertEquals(Set.of("identity-token"), configuration.warnings());
     assertEquals(3, configuration.wildcards());
     assertTrue(configuration.library());
+    assertEquals(Optional.of("map-get-or-else"), configuration.optionFold());
     assertEquals(Set.of("demo.kernel.**"), configuration.hot());
     assertEquals(List.of("demo.Encoding.operands:4"), configuration.bounded());
     assertEquals(Set.of("demo.where"), configuration.checked());
@@ -59,6 +62,7 @@ class ConfigurationTest {
     assertTrue(configuration.disabled().isEmpty());
     assertEquals(2, configuration.wildcards());
     assertFalse(configuration.library());
+    assertEquals(Optional.empty(), configuration.optionFold());
     assertTrue(configuration.options().isEmpty());
     assertTrue(configuration.text().isEmpty());
   }

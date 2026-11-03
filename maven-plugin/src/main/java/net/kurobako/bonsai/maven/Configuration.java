@@ -3,6 +3,7 @@ package net.kurobako.bonsai.maven;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -24,6 +25,7 @@ public final class Configuration {
   private final List<String> text = new ArrayList<>();
   private int wildcards = 2;
   private boolean library;
+  private String optionFold;
 
   private Configuration() {
   }
@@ -46,6 +48,11 @@ public final class Configuration {
   /** The positional wildcards a case class pattern may carry. */
   public int wildcards() {
     return wildcards;
+  }
+
+  /** The spelling of the default of an option the configuration names, or none for the compiler plugin's default. */
+  public Optional<String> optionFold() {
+    return Optional.ofNullable(optionFold);
   }
 
   /** The globs of the classes whose code runs hot. */
@@ -94,6 +101,7 @@ public final class Configuration {
         case "option" -> configuration.options.add(value);
         case "wildcards" -> configuration.wildcards = Integer.parseInt(value);
         case "library" -> configuration.library = Boolean.parseBoolean(value);
+        case "option-fold" -> configuration.optionFold = value;
         case "text", "text-exclude" -> configuration.text.add(line);
         default -> throw new IOException("bonsai: the configuration reader wrote an unknown entry: " + line);
       }

@@ -3,6 +3,8 @@ package net.kurobako.bonsai.analysis
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import munit.FunSuite
+import net.kurobako.bonsai.collections.*
+import net.kurobako.bonsai.configuration.*
 import net.kurobako.bonsai.testing.*
 
 class ConfigureSuite extends FunSuite {
@@ -64,6 +66,21 @@ class ConfigureSuite extends FunSuite {
         "option\tat most four operands"
       ))
     )
+  }
+
+  test("the option fold is printed for the module that resolves it") {
+    val conf = "option-fold = map-get-or-else\nprojects.demo { option-fold = fold }\n"
+    assertEquals(lines(conf).map(_.filter(_.startsWith("option-fold"))), Right(Vector("option-fold\tfold")))
+    assertEquals(
+      lines(conf, "other").map(_.filter(_.startsWith("option-fold"))),
+      Right(Vector("option-fold\tmap-get-or-else"))
+    )
+    assertEquals(lines("wildcards = 2\n").map(_.filter(_.startsWith("option-fold"))), Right(Vector.empty[String]))
+  }
+
+  test("the spellings the configuration accepts are those the laws know") {
+    assertEquals(BonsaiConfiguration.OptionFolds, OptionFold.values.toSeq.map(_.key))
+    assertEquals(OptionFold.Default.key, BonsaiConfiguration.OptionFolds.head)
   }
 
   test("the text rules are printed as manifest lines") {

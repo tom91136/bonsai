@@ -16,12 +16,17 @@ object Laws {
   private def byFirstMethod(laws: Vector[(Law, Int)]): Index =
     laws.flatMap((law, order) => law.pattern.head.toVector.map(_ -> (law, order))).groupMap(_._1)(_._2)
 
-  private val (adviceLaws, exactLaws) = Catalogue.laws.zipWithIndex.partition(_._1.advice)
-  private val passes                  = Vector(byFirstMethod(exactLaws), byFirstMethod(adviceLaws))
+  private val passes: Map[OptionFold, Vector[Index]] = OptionFold.values.map { fold =>
+    val (adviceLaws, exactLaws) =
+      Catalogue.laws.zipWithIndex.filter(_._1.spelling.forall(_ == fold)).partition(_._1.advice)
+    fold -> Vector(byFirstMethod(exactLaws), byFirstMethod(adviceLaws))
+  }.toMap
 
-  /** What the laws find for `chain`, as non-overlapping outcomes in the order of their steps. */
-  def outcomes(chain: Chain): Vector[Outcome] = {
-    val (_, chosen) = passes.foldLeft((Set.empty[Int], Vector.empty[Found])) { case ((taken, chosen), index) =>
+  /** What the laws find for `chain`, as non-overlapping outcomes in the order of their steps, with the default of an
+    * option spelled as `fold` says.
+    */
+  def outcomes(chain: Chain, fold: OptionFold = OptionFold.Default): Vector[Outcome] = {
+    val (_, chosen) = passes(fold).foldLeft((Set.empty[Int], Vector.empty[Found])) { case ((taken, chosen), index) =>
       val picked = choose(find(chain, index, !taken(_)))
       (taken ++ picked.flatMap(found => found.hit.from until found.hit.until), chosen ++ picked)
     }

@@ -20,7 +20,8 @@ object BonsaiConfiguration {
       errors: Option[Set[String]],
       warnings: Option[Set[String]],
       wildcards: Option[Int],
-      library: Option[Boolean]
+      library: Option[Boolean],
+      optionFold: Option[String]
   )
 
   case class Configuration(
@@ -53,7 +54,8 @@ object BonsaiConfiguration {
         own.errors.orElse(build.errors),
         own.warnings.orElse(build.warnings),
         own.wildcards.orElse(build.wildcards),
-        own.library.orElse(build.library)
+        own.library.orElse(build.library),
+        own.optionFold.orElse(build.optionFold)
       )
     )
 
@@ -75,6 +77,9 @@ object BonsaiConfiguration {
 
   val DefaultBaseline = "bonsai-baseline.tsv"
   val DefaultPurity   = "bonsai-purity.tsv"
+
+  /** The spellings of the default of an option the compiler plugin prefers, the first being the default. */
+  val OptionFolds: Seq[String] = Seq("fold", "map-get-or-else")
 
   /** The settings of the whole-build analysis, which it takes as options. */
   case class Analysis(
@@ -231,7 +236,7 @@ object BonsaiConfiguration {
   }
 
   private def settings(config: Config, where: String, others: Set[String]): Settings = {
-    val keys    = Set("disabled", "errors", "warnings", "wildcards", "library")
+    val keys    = Set("disabled", "errors", "warnings", "wildcards", "library", "option-fold")
     val unknown = config.root.keySet.asScala.toSet -- keys -- others
     rejectUnknown(unknown, where, (keys ++ others).toSeq.sorted)
     Settings(
@@ -239,7 +244,14 @@ object BonsaiConfiguration {
       stringSet(config, "errors"),
       stringSet(config, "warnings"),
       Option.when(config.hasPath("wildcards"))(config.getInt("wildcards")),
-      Option.when(config.hasPath("library"))(config.getBoolean("library"))
+      Option.when(config.hasPath("library"))(config.getBoolean("library")),
+      optionalString(config, "option-fold").map { value =>
+        if (!OptionFolds.contains(value))
+          throw ConfigurationError(
+            s"bonsai: .bonsai.conf ${where}option-fold must be one of ${OptionFolds.mkString(", ")}, not $value"
+          )
+        value
+      }
     )
   }
 }

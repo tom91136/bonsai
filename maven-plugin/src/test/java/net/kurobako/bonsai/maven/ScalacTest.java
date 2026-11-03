@@ -53,6 +53,15 @@ class ScalacTest {
   }
 
   @Test
+  void theOptionFoldIsPassedOnlyWhenTheConfigurationNamesIt() throws IOException {
+    List<String> named = Scalac.options(configuration("option-fold\tmap-get-or-else"), ids(), "dev");
+    List<String> unnamed = Scalac.options(configuration("wildcards\t3"), ids(), "dev");
+
+    assertTrue(named.contains("-P:bonsai:option-fold=map-get-or-else"), named.toString());
+    assertFalse(unnamed.stream().anyMatch(option -> option.contains("option-fold")), unnamed.toString());
+  }
+
+  @Test
   void semanticdbIsWrittenUnderTheOutput() {
     File output = root.resolve("target/classes").toFile();
 

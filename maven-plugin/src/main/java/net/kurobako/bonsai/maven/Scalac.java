@@ -37,6 +37,7 @@ public final class Scalac {
     List<String> options = new ArrayList<>();
     options.add("-P:bonsai:mode=" + mode);
     options.add("-P:bonsai:wildcards=" + configuration.wildcards());
+    configuration.optionFold().ifPresent(fold -> options.add("-P:bonsai:option-fold=" + fold));
     options.add("-Wconf:msg=" + FINDING + ":" + (mode.equals("ci") ? "e" : "i"));
     if (mode.equals("ci")) {
       for (String id : configuration.warnings()) {

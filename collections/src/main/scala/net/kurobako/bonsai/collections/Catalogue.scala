@@ -123,6 +123,18 @@ private[collections] object Catalogue {
 
   private def single(hit: Hit, at: Int): Option[Arg] = Option.when(hit.args(at).sizeIs == 1)(hit.args(at).head)
 
+  private def folded(hit: Hit): Option[(Arg, Arg)] = hit.args(0) match {
+    case Vector(default, function) => Some((default, function))
+    case _                         => None
+  }
+
+  // fold widens numbers to the type it infers, which map and getOrElse do not
+  private val widening =
+    Set("scala.Byte", "scala.Short", "scala.Char", "scala.Long", "scala.Float", "scala.Double")
+
+  private def sameType(default: Arg, function: Arg): Boolean =
+    default.valueType.exists(tpe => !widening(tpe) && function.resultType.contains(tpe))
+
   private def comparison(hit: Hit, at: Int, equal: Boolean): Option[Comparison] =
     single(hit, at).flatMap(_.comparison).filter(_.equal == equal)
 
@@ -588,9 +600,23 @@ private[collections] object Catalogue {
       Vector(Set("map"), Set("getOrElse")),
       into = "fold",
       idiom = true,
+      spelling = Some(OptionFold.Fold),
       applies = hit =>
         hit.receiver.single && single(hit, 0).exists(!_.identity) && single(hit, 1).exists(!_.diverges),
       message = _ => "use fold for map and getOrElse"
+    ),
+    Law(
+      "fold-to-map-get-or-else",
+      Vector(Set("fold")),
+      into = "getOrElse",
+      idiom = true,
+      spelling = Some(OptionFold.MapGetOrElse),
+      applies = hit => hit.receiver.single && folded(hit).exists(!_._2.identity),
+      exact = hit => folded(hit).exists((default, function) => sameType(default, function)),
+      rewrite = Some((hit, receiver) =>
+        folded(hit).map((default, function) => s"$receiver.map(${function.text}).getOrElse(${default.text})").get
+      ),
+      message = _ => "use map and getOrElse for fold"
     ),
     Law(
       "redundant-identity-map",

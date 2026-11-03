@@ -1095,6 +1095,13 @@ class LintSuite extends FunSuite {
     )
   }
 
+  test("the option fold must be one of its spellings") {
+    val (errors, _) = compile("Lints.scala", "object Lints", "option-fold=getOrElse")
+    assertEquals(errors, List("bonsai option option-fold must be one of fold, map-get-or-else, not getOrElse"))
+    assertEquals(compile("Lints.scala", "object Lints", "option-fold=fold"), (Nil, Nil))
+    assertEquals(compile("Lints.scala", "object Lints", "option-fold=map-get-or-else"), (Nil, Nil))
+  }
+
   test("the ci mode makes the strict checks errors, unless a check is kept a warning") {
     val source = """object Lints {
                    |  private trait Shape

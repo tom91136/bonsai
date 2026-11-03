@@ -32,6 +32,12 @@ trait Arg {
   /** Whether the argument has the type `Nothing`, so that it never gives a value. */
   def diverges: Boolean = false
 
+  /** The qualified name of the type the argument has, with its type arguments, when the front end knows it. */
+  def valueType: Option[String] = None
+
+  /** The type the function gives, named as `valueType` names a type. */
+  def resultType: Option[String] = None
+
   /** The call of this function on `value`, written as source. */
   def applied(value: String): String
 }

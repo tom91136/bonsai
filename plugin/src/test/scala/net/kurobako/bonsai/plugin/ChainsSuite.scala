@@ -11,7 +11,8 @@ import scala.util.Using
   * lints it must report, and the source `-rewrite` makes of it.
   */
 class ChainsSuite extends FunSuite {
-  private val Marker = """// assert: ([a-z-]+)\s*$""".r.unanchored
+  private val Marker  = """// assert: ([a-z-]+)\s*$""".r.unanchored
+  private val Setting = """// option: ([a-z=-]+)\s*$""".r.unanchored
 
   private val directory = Path.of(sys.props("bonsai.chains"))
 
@@ -49,10 +50,11 @@ class ChainsSuite extends FunSuite {
   fixtures.foreach { name =>
     test(s"$name reports the laws it asserts and rewrites to its output") {
       val (source, expected) = stripped(read(s"$name.input.scala"))
-      val (errors, found, _) = run(source)
+      val options            = source.split("\n", -1).toList.collect { case Setting(option) => option }
+      val (errors, found, _) = run(source, options*)
       assertEquals(errors, Nil)
       assertEquals(found.sorted.mkString("\n"), expected.sorted.mkString("\n"))
-      val (rewriteErrors, _, rewritten) = run(source, "-rewrite")
+      val (rewriteErrors, _, rewritten) = run(source, ("-rewrite" :: options)*)
       assertEquals(rewriteErrors, Nil)
       assertEquals(rewritten, stripped(read(s"$name.output.scala"))._1)
     }
@@ -88,6 +90,20 @@ class ChainsSuite extends FunSuite {
     val (errors, found, _) = run(source, "error=filter-to-count")
     assert(errors.exists(_.contains("[bonsai:filter-to-count]")), errors.mkString("\n"))
     assert(!found.exists(_._1 == "filter-to-count"))
+  }
+
+  test("the default of an option is spelled with fold unless the option says otherwise") {
+    val (source, _) = stripped(
+      """object Spelling {
+        |  val option: Option[Int] = Some(1)
+        |  val mapped = option.map(_ + 1).getOrElse(0)// assert: map-get-or-else-to-fold
+        |  val folded = option.fold(0)(_ + 1)// assert: fold-to-map-get-or-else
+        |}""".stripMargin
+    )
+    def laws(options: String*) = run(source, options*)._2.map(_._1)
+    assertEquals(laws(), List("map-get-or-else-to-fold"))
+    assertEquals(laws("option-fold=fold"), List("map-get-or-else-to-fold"))
+    assertEquals(laws("option-fold=map-get-or-else"), List("fold-to-map-get-or-else"))
   }
 
   test("every law is a known check") {

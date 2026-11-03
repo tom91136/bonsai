@@ -38,7 +38,7 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
 
   directory.test("a file that does not exist is an empty configuration") { path =>
     val configured = BonsaiConfiguration.read(path.resolve("absent.conf").toFile)
-    assertEquals(configured.build, BonsaiConfiguration.Settings(None, None, None, None, None))
+    assertEquals(configured.build, BonsaiConfiguration.Settings(None, None, None, None, None, None))
     assertEquals(configured.text, Vector.empty)
     assertEquals(configured.projects, Map.empty)
   }
@@ -125,9 +125,24 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
     )
     assertEquals(
       configured.resolve("demo"),
-      BonsaiConfiguration.Settings(Some(Set("local-throw")), Some(Set("broad-catch")), None, Some(3), Some(true))
+      BonsaiConfiguration.Settings(Some(Set("local-throw")), Some(Set("broad-catch")), None, Some(3), Some(true), None)
     )
     assertEquals(configured.resolve("other"), configured.build)
+  }
+
+  directory.test("the option fold is read at either level and defaults to none") { path =>
+    assertEquals(read(path, "wildcards = 2\n").build.optionFold, None)
+    assertEquals(read(path, "option-fold = fold\n").build.optionFold, Some("fold"))
+    assertEquals(read(path, "option-fold = map-get-or-else\n").build.optionFold, Some("map-get-or-else"))
+    val configured = read(path, "option-fold = fold\nprojects.demo.option-fold = map-get-or-else\n")
+    assertEquals(configured.resolve("demo").optionFold, Some("map-get-or-else"))
+    assertEquals(configured.resolve("other").optionFold, Some("fold"))
+  }
+
+  directory.test("an option fold that is neither spelling fails the read") { path =>
+    val message = failure(path, "option-fold = getOrElse\n")
+    assert(message.contains("option-fold must be one of fold, map-get-or-else, not getOrElse"), message)
+    assert(failure(path, "projects.demo.option-fold = nope\n").contains("projects.demo.option-fold"))
   }
 
   directory.test("unknown keys fail the read, naming the keys there are") { path =>

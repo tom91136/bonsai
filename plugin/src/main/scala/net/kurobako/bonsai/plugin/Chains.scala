@@ -19,13 +19,13 @@ private object Chains {
   * warning. A run that a view fuses is reported here only where its functions are pure and the plugin can write the
   * view and the conversion back to the collection the chain gives.
   */
-private class Chains(checks: Checks, hot: String => Boolean)(using Context) {
+private class Chains(checks: Checks, hot: String => Boolean, optionFold: OptionFold)(using Context) {
   private val lifter = Lifter(Purity.Syntactic, hot)
 
   def run(tree: tpd.Tree): Unit = {
     val reported = mutable.Set.empty[(String, Span)]
     lifter.chains(tree, ctx.owner).filter(_.file == ctx.source).foreach { lifted =>
-      Laws.outcomes(lifted.chain).foreach { outcome =>
+      Laws.outcomes(lifted.chain, optionFold).foreach { outcome =>
         val fix = fixes(lifted, outcome)
         if (outcome.lint || fix.nonEmpty) {
           val span = lifted.span(outcome.until)

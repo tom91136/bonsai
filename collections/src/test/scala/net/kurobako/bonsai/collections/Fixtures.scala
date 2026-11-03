@@ -27,7 +27,11 @@ object Fixtures {
   def fn(text: String): Fn     = Fn.Plain(text, pure = true)
   def effect(text: String): Fn = Fn.Plain(text, pure = false)
   def literal[A](value: A): Fn = Fn.Constant(value)
-  def projection(n: Int): Fn   = Fn.Projected(n)
+
+  def valued(text: String, tpe: String): Fn = Fn.Typed(text, Some(tpe), None)
+  def giving(text: String, tpe: String): Fn = Fn.Typed(text, None, Some(tpe))
+
+  def projection(n: Int): Fn = Fn.Projected(n)
 
   val pair: String = "(_, _)"
 

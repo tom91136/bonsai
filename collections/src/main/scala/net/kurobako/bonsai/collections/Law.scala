@@ -11,7 +11,8 @@ package net.kurobako.bonsai.collections
   * saves passes or intermediate collections. A step written with type arguments, or a call the compiler wrote for a
   * for-comprehension, is never rewritten, since the rewrite would drop the arguments or have no text to replace, only
   * reported. The report of a `viewable` law says that a view runs the steps in one pass. A law with a `java` form is
-  * one the javac plugin reports, in the words of that form; the compiler plugin never reads it.
+  * one the javac plugin reports, in the words of that form; the compiler plugin never reads it. A law with a `spelling`
+  * is left out unless that spelling of the default of an option is the one preferred.
   */
 private[collections] case class Law(
     id: String,
@@ -29,7 +30,8 @@ private[collections] case class Law(
     deferred: Boolean = false,
     analysed: Boolean = false,
     viewable: Boolean = false,
-    java: Option[JavaForm] = None
+    java: Option[JavaForm] = None,
+    spelling: Option[OptionFold] = None
 ) {
 
   /** The steps of `chain` this law matches from `from`, all of which `free` allows, as a hit that is accepted. */

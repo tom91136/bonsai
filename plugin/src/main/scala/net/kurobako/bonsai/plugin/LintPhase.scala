@@ -23,6 +23,7 @@ import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import dotty.tools.dotc.typer.Applications
 import dotty.tools.dotc.util.NoSourcePosition
 import dotty.tools.dotc.util.Spans.Span
+import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.effects.*
 import net.kurobako.bonsai.lifting.*
 import scala.annotation.tailrec
@@ -126,7 +127,8 @@ private class LintPhase(
     hotDeclared: Boolean,
     cold: String => Boolean,
     bounded: (String, String) => Boolean,
-    checked: Set[String]
+    checked: Set[String],
+    optionFold: OptionFold
 ) extends PluginPhase {
   val phaseName: String                = "bonsai-lint"
   override val runsAfter: Set[String]  = Set("posttyper")
@@ -169,7 +171,7 @@ private class LintPhase(
 
   override def transformUnit(tree: tpd.Tree)(using Context): tpd.Tree = {
     pass(Loops.Checks)(Loops(_, hot, hotDeclared, cold, bounded).run(tree))
-    pass(Chains.Checks)(Chains(_, hot).run(tree))
+    pass(Chains.Checks)(Chains(_, hot, optionFold).run(tree))
     pass(Repeats.Checks)(Repeats(_).run(tree))
     pass(Exceptions.Checks)(Exceptions(_, partials, throwing.value).run(tree))
     pass(Effects.Checks)(Effects(_).run(tree))

@@ -4,6 +4,7 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Contexts.ctx
 import dotty.tools.dotc.plugins.PluginPhase
 import dotty.tools.dotc.plugins.StandardPlugin
+import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.effects.*
 import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
@@ -18,7 +19,19 @@ class BonsaiPlugin extends StandardPlugin {
   private val Instrumented = List("**/stryker4s-*/**", "stryker4s-*/**")
   private val Modes        = List("dev", "ci")
   private val Keys         =
-    Set("mode", "disable", "error", "warn", "wildcards", "partial", "throws", "hot", "bounded", "checked")
+    Set(
+      "mode",
+      "disable",
+      "error",
+      "warn",
+      "wildcards",
+      "partial",
+      "throws",
+      "hot",
+      "bounded",
+      "checked",
+      "option-fold"
+    )
 
   // The compilers before 3.5 give no context to initialise a plugin with, so the problems with the options wait for the
   // first phase to report them.
@@ -38,6 +51,12 @@ class BonsaiPlugin extends StandardPlugin {
     )
     val mode = values("mode").lastOption.getOrElse("dev")
     if (!Modes.contains(mode)) problems += s"bonsai option mode must be one of ${Modes.mkString(", ")}, not $mode"
+    val optionFold = values("option-fold").lastOption.fold(OptionFold.Default)(key =>
+      OptionFold.named(key).getOrElse {
+        problems += s"bonsai option option-fold must be one of ${OptionFold.values.map(_.key).mkString(", ")}, not $key"
+        OptionFold.Default
+      }
+    )
     val disabled = checks("disable")
     val errors   = checks("error")
     val warnings = checks("warn")
@@ -96,7 +115,8 @@ class BonsaiPlugin extends StandardPlugin {
         values("hot").exists(!_.startsWith("!")),
         isCold,
         (name, owner) => bounded.exists(Globs.reaches(_, name, owner)),
-        values("checked").toSet
+        values("checked").toSet,
+        optionFold
       )
     )
   }

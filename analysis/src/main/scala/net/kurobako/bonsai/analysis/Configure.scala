@@ -6,9 +6,9 @@ import net.kurobako.bonsai.configuration.*
 import net.kurobako.bonsai.configuration.BonsaiConfiguration.*
 
 /** Reads `.bonsai.conf` for a module and writes what a build that does not read it itself needs to a file, one
-  * tab-separated entry a line: the module's `disabled`, `errors`, `warnings`, `wildcards` and `library` settings, the
-  * build's `hot`, `bounded`, and `checked` lists, the `option`s the analysis runs with, and the manifest lines of the
-  * text rules as they are.
+  * tab-separated entry a line: the module's `disabled`, `errors`, `warnings`, `wildcards`, `library` and `option-fold`
+  * settings, the build's `hot`, `bounded`, and `checked` lists, the `option`s the analysis runs with, and the manifest
+  * lines of the text rules as they are.
   */
 object Configure {
   private val usage = "usage: bonsai-configure --config <file> --module <id> --out <file>"
@@ -33,8 +33,8 @@ object Configure {
     def entries(key: String, values: Set[String]) = values.toVector.sorted.map(value => s"$key\t$value")
     entries("disabled", analysis.disabled) ++ entries("errors", analysis.errors) ++
       entries("warnings", analysis.warnings) ++ settings.wildcards.map(value => s"wildcards\t$value") ++
-      settings.library.map(value => s"library\t$value") ++ entries("hot", analysis.hot) ++
-      analysis.bounded.map((member, max, _) => s"bounded\t$member:$max") ++
+      settings.library.map(value => s"library\t$value") ++ settings.optionFold.map(value => s"option-fold\t$value") ++
+      entries("hot", analysis.hot) ++ analysis.bounded.map((member, max, _) => s"bounded\t$member:$max") ++
       entries("checked", configured.checked.getOrElse(Set.empty)) ++ options.map(option => s"option\t$option") ++
       configured.text
   }

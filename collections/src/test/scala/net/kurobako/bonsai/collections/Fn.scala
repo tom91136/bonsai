@@ -17,6 +17,12 @@ object Fn {
     def applied(value: String): String = text
   }
 
+  case class Typed(text: String, override val valueType: Option[String], override val resultType: Option[String])
+      extends Fn {
+    def pure: Boolean                  = true
+    def applied(value: String): String = text.replace("_", value)
+  }
+
   case class Compares(text: String, equal: Boolean, constant: String, assignable: Boolean = true) extends Fn {
     def pure: Boolean                           = true
     override def comparison: Option[Comparison] = Some(Comparison(equal, constant, assignable))
