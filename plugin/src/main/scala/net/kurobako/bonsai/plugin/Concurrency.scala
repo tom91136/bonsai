@@ -20,6 +20,7 @@ private object Concurrency {
 private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTraverser {
   private val Thread        = Classes.required("java.lang.Thread")
   private val Future        = Classes.required("java.util.concurrent.Future")
+  private val FutureTask    = Classes.required("java.util.concurrent.FutureTask")
   private val Completable   = Classes.required("java.util.concurrent.CompletableFuture")
   private val Interrupted   = Classes.required("java.lang.InterruptedException")
   private val InputStream   = Classes.required("java.io.InputStream")
@@ -87,7 +88,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
         case tpd.Select(_, name) => Finish(name.toString)
         case _                   => false
       }.collect { case tpd.Select(target, _) => target.symbol }
-      done.push(done.top ++ finished ++ invoked(definition.rhs))
+      done.push(done.top ++ finished ++ invoked(definition.rhs) ++ memoised(definition.rhs))
       waiting.push(waiting.top || Waits.exists(word => named(definition.name.toString, word)))
       stopping.push(stopping.top.min(stoppedFrom(definition)))
       executing.push(executing.top || executor(definition.symbol))
@@ -273,6 +274,16 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
     case (complete, _) => complete
   }
 
+  // A memo cell this method runs is finished when read, unless another caller won the race and runs it.
+  private def memoised(body: tpd.Tree): Set[Symbol] = body.filterSubTrees {
+    case value: tpd.ValDef =>
+      value.symbol.info.widen.dealias.derivesFrom(FutureTask) && value.rhs.existsSubTree {
+        case tpd.Select(task, name) => name.toString == "run" && task.tpe.widen.dealias.derivesFrom(FutureTask)
+        case _                      => false
+      }
+    case _ => false
+  }.map(_.symbol).toSet
+
   // Conversions and collection operations keep the futures of an invokeAll result.
   private def completed(tree: tpd.Tree, complete: Set[Symbol]): Boolean = Calls.peelInlined(tree) match {
     case application: tpd.Apply
@@ -302,7 +313,18 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
         case tpd.Select(reference: tpd.Ident, _) => reference.symbol == value.symbol
         case _                                   => false
       }.collect { case select: tpd.Select => select.name.toString }
-      if (references.size == members.size && members.contains("start") && !members.exists(Stops))
+      // A daemon thread does not keep the JVM alive, and setDaemon throws once the thread is started.
+      val daemonized = definition.rhs.filterSubTrees {
+        case tpd.Apply(tpd.Select(reference: tpd.Ident, name), List(tpd.Literal(flag))) =>
+          reference.symbol == value.symbol && name.toString == "setDaemon" && flag.value == true
+        case _ => false
+      }.map(_.span.start).minOption.exists { first =>
+        definition.rhs.filterSubTrees {
+          case tpd.Select(reference: tpd.Ident, name) => reference.symbol == value.symbol && name.toString == "start"
+          case _                                      => false
+        }.forall(_.span.start > first)
+      }
+      if (references.size == members.size && members.contains("start") && !members.exists(Stops) && !daemonized)
         checks(
           Check.OrphanThread,
           s"${value.symbol.name} is started but never joined or interrupted; stop it when its owner shuts down",

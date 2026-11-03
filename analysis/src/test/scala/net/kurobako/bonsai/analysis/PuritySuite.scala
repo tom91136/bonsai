@@ -31,8 +31,8 @@ class PuritySuite extends AnalysisSuite {
         |class Uses(xs: List[Int], paths: List[java.nio.file.Path]) {
         |  var total = 0
         |  def dropped(): Unit = {
-        |    val _ = Pure.double(1)
-        |    val _ = xs.map(_ + 1)
+        |    Pure.double(1)
+        |    xs.map(_ + 1)
         |    val _ = Pure.logged
         |    val _ = Pure.parsed("1")
         |    val _ = Counter()
@@ -110,7 +110,55 @@ class PuritySuite extends AnalysisSuite {
       found.collect {
         case finding if finding.rule == Finding.Rule.PureDiscard => finding.detail.takeWhile(_ != ' ')
       }.sorted,
-      Vector("List.map", "List.map", "List.map", "List.map", "Pure.double")
+      Vector("List.map", "Pure.double")
+    )
+  }
+
+  test("a discard written as val _ is not reported") {
+    val discards = analysed(
+      "Discards",
+      "object Discards { def run(xs: List[Int]): Unit = { val _ = xs.map(_ + 1) } }",
+      Seq.empty
+    )
+    assertEquals(
+      Purity.findings(discards.purity, discards.graph.nodes).filter(_.rule == Finding.Rule.PureDiscard),
+      Vector.empty
+    )
+  }
+
+  test("a pure discard is reported at the line of the call") {
+    val lines = analysed(
+      "Lines",
+      """object Lines {
+        |  def run(xs: List[Int]): Unit = {
+        |    xs.map(_ + 1)
+        |  }
+        |}""".stripMargin,
+      Seq.empty
+    )
+    assertEquals(
+      Purity.findings(lines.purity, lines.graph.nodes).collect {
+        case finding if finding.rule == Finding.Rule.PureDiscard => finding.node.line
+      },
+      Vector(3)
+    )
+  }
+
+  test("a var local to the function passed to a transformation is not an effect of it") {
+    val scoped = analysed(
+      "Scoped",
+      """object Scoped {
+        |  def run(xs: List[Int]): List[Int] = xs.map { x =>
+        |    var all = 0
+        |    List(x).foreach(value => all = all + value)
+        |    all
+        |  }
+        |}""".stripMargin,
+      Seq.empty
+    )
+    assertEquals(
+      Purity.findings(scoped.purity, scoped.graph.nodes).filter(_.rule == Finding.Rule.EffectfulTransform),
+      Vector.empty
     )
   }
 
@@ -509,8 +557,8 @@ class PuritySuite extends AnalysisSuite {
           |  def matched(matcher: java.util.regex.Matcher): Unit = { val _ = matcher.find() }
           |  def called(task: java.util.concurrent.Callable[Int]): Unit = { val _ = task.call() }
           |  def encoded(text: String): Unit = { val _ = text.getBytes("UTF-8") }
-          |  def named(file: java.io.File): Unit = { val _ = file.getName }
-          |  def scala(x: Int): Unit = { val _ = double(x) }
+          |  def named(file: java.io.File): Unit = { file.getName; () }
+          |  def scala(x: Int): Unit = { double(x); () }
           |  def bytes(text: String): Array[Byte] = text.getBytes("UTF-8")
           |  def found(matcher: java.util.regex.Matcher): Boolean = matcher.find()
           |  def pending(task: java.util.concurrent.Callable[Int]): Int = task.call()
@@ -544,7 +592,7 @@ class PuritySuite extends AnalysisSuite {
           |  def apply(f: Int => Int, x: Int): Unit = { val _ = f(x) }
           |  inline def inlined(inline f: Int => Int, x: Int): Unit = { val _ = f(x) }
           |  def byName(f: => Int): Unit = { val _ = f }
-          |  def local(x: Int): Unit = { val _ = double(x) }
+          |  def local(x: Int): Unit = { double(x); () }
           |  def run(): Unit = {
           |    apply(x => { println(x); x }, 1)
           |    inlined(x => { println(x); x }, 1)
@@ -568,7 +616,7 @@ class PuritySuite extends AnalysisSuite {
     """import org.scalatest.Assertions
       |object Checked {
       |  def positive(x: Int): Unit = { Assertions.assert(x > 0); Assertions.assertResult(1)(x); () }
-      |  def doubled(x: Int): Unit = { val _ = Assertions.double(x) }
+      |  def doubled(x: Int): Unit = { Assertions.double(x); () }
       |}""".stripMargin,
     Seq(
       "Compatible.scala" -> "package org.scalatest.compatible\ntrait Assertion",

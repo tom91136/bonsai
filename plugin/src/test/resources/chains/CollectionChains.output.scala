@@ -35,6 +35,13 @@ object CollectionChains {
   val doubled = list.filter(_ > 0).map(_ * 2)
   val rejected = list.filterNot(_ > 0).map(_ * 2)
   val chosen = Option(1).filter(_ > 0).map(_ * 2)
+  val iterated = list.iterator.filter(_ > 0).map(_ * 2)
+  val viewed = list.view.filter(_ > 0).map(_ * 2)
+  val unrelated = List("1", "").filter(_.nonEmpty).map(_.toLong)
+  val component = pairs.filter(_._1 > 0).map { case (number, text) => text * number }
+  val matched = pairs.filterNot { case (number, _) => number > 0 }.map { case (number, text) => text * number }
+  val anys: List[Any] = List(1, "a")
+  val casted = anys.filter(_.isInstanceOf[String]).map(_.asInstanceOf[String])
   val lazily = list.withFilter(_ > 0).map(_ * 2)
   val any = list.map(_ > 0).contains(true)
   val last = list.reverse.find(_ > 0)

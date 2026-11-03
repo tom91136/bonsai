@@ -9,7 +9,7 @@ object Laws {
   /** The ids of the laws that read as Java, which the javac plugin reports under. */
   val javaIds: Vector[String] = Catalogue.laws.filter(_.java.isDefined).map(_.id).distinct
 
-  private case class Found(hit: Hit, order: Int, outcome: Outcome)
+  private case class Found(hit: Hit, order: Int, outcome: Outcome, speaks: Boolean)
 
   private type Index = Map[String, Vector[(Law, Int)]]
 
@@ -25,7 +25,7 @@ object Laws {
       val picked = choose(find(chain, index, !taken(_)))
       (taken ++ picked.flatMap(found => found.hit.from until found.hit.until), chosen ++ picked)
     }
-    chosen.sortBy(_.hit.from).map(_.outcome)
+    chosen.filter(_.speaks).sortBy(_.hit.from).map(_.outcome)
   }
 
   private def find(chain: Chain, index: Index, free: Int => Boolean): Vector[Found] =
@@ -33,7 +33,7 @@ object Laws {
       (step, from) <- chain.steps.zipWithIndex
       (law, order) <- index.getOrElse(step.method, Vector.empty)
       hit          <- law.hit(chain, from, free)
-    } yield Found(hit, order, law.outcome(hit))
+    } yield Found(hit, order, law.outcome(hit), law.speaks(hit))
 
   private def choose(found: Vector[Found]): Vector[Found] = {
     val (_, chosen) = found.sortBy(f => (-f.hit.steps.size, f.hit.from, f.order))

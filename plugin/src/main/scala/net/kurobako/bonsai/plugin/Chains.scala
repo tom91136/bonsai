@@ -19,8 +19,8 @@ private object Chains {
   * warning. A run that a view fuses is reported here only where its functions are pure and the plugin can write the
   * view and the conversion back to the collection the chain gives.
   */
-private class Chains(checks: Checks)(using Context) {
-  private val lifter = Lifter(Purity.Syntactic)
+private class Chains(checks: Checks, hot: String => Boolean)(using Context) {
+  private val lifter = Lifter(Purity.Syntactic, hot)
 
   def run(tree: tpd.Tree): Unit = {
     val reported = mutable.Set.empty[(String, Span)]

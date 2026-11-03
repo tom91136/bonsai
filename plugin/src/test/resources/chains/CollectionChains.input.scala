@@ -32,9 +32,16 @@ object CollectionChains {
   val presence = list.filterNot(_ > 0).nonEmpty// assert: filter-emptiness
   val head = list.filter(_ > 0).headOption// assert: filter-head-option
   val collected = list.collect { case value if value > 0 => value }.headOption// assert: collect-head-option
-  val doubled = list.filter(_ > 0).map(_ * 2)// assert: filter-map-to-collect
-  val rejected = list.filterNot(_ > 0).map(_ * 2)// assert: filter-map-to-collect
-  val chosen = Option(1).filter(_ > 0).map(_ * 2)// assert: filter-map-to-collect
+  val doubled = list.filter(_ > 0).map(_ * 2)
+  val rejected = list.filterNot(_ > 0).map(_ * 2)
+  val chosen = Option(1).filter(_ > 0).map(_ * 2)
+  val iterated = list.iterator.filter(_ > 0).map(_ * 2)
+  val viewed = list.view.filter(_ > 0).map(_ * 2)
+  val unrelated = List("1", "").filter(_.nonEmpty).map(_.toLong)
+  val component = pairs.filter(_._1 > 0).map { case (number, text) => text * number }// assert: filter-map-to-collect
+  val matched = pairs.filterNot { case (number, _) => number > 0 }.map { case (number, text) => text * number }// assert: filter-map-to-collect
+  val anys: List[Any] = List(1, "a")
+  val casted = anys.filter(_.isInstanceOf[String]).map(_.asInstanceOf[String])// assert: filter-map-to-collect
   val lazily = list.withFilter(_ > 0).map(_ * 2)
   val any = list.map(_ > 0).contains(true)// assert: map-contains
   val last = list.reverse.find(_ > 0)// assert: reverse-find

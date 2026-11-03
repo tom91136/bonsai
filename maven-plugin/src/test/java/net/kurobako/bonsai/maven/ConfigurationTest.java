@@ -23,6 +23,7 @@ class ConfigurationTest {
       "wildcards\t3",
       "library\ttrue",
       "hot\tdemo.kernel.**",
+      "bounded\tdemo.Encoding.operands:4",
       "checked\tdemo.where",
       "option\t--baseline",
       "option\t/build/bonsai-baseline.tsv",
@@ -37,6 +38,7 @@ class ConfigurationTest {
     assertEquals(3, configuration.wildcards());
     assertTrue(configuration.library());
     assertEquals(Set.of("demo.kernel.**"), configuration.hot());
+    assertEquals(List.of("demo.Encoding.operands:4"), configuration.bounded());
     assertEquals(Set.of("demo.where"), configuration.checked());
     assertEquals(
       List.of("--baseline", "/build/bonsai-baseline.tsv", "--bounded", "demo.Encoding.operands", "4", "a reason\twith a tab"),

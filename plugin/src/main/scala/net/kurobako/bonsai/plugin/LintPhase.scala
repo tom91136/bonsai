@@ -84,6 +84,33 @@ private object LintPhase {
       preceded(argument.source.content(), argument.span.start) ||
       begins(position.source.content(), position.start, position.end)
     }
+
+  /** Function values invoked by a `while` loop, or per element by a collection method, anywhere in the unit. */
+  def looped(tree: tpd.Tree)(using Context): Set[Symbol] = {
+    val collections = List("scala.collection.IterableOnce", "scala.collection.ArrayOps", "scala.collection.StringOps")
+      .map(Classes.required(_))
+    val invoked                        = mutable.Set.empty[Symbol]
+    def within(region: tpd.Tree): Unit = region.foreachSubTree {
+      case tpd.Apply(tpd.Select(target @ (_: tpd.Ident | _: tpd.Select), name), _) if name == nme.apply =>
+        invoked += target.symbol: Unit
+      case _ => ()
+    }
+    def traversal(function: tpd.Tree): Boolean = Calls.selected(function).exists { select =>
+      val receiver = select.qualifier.tpe.widen
+      !receiver.derivesFrom(defn.OptionClass) && collections.exists(receiver.derivesFrom(_))
+    }
+    tree.foreachSubTree {
+      case tpd.WhileDo(condition, body) =>
+        within(condition)
+        within(body)
+      case tpd.Apply(function, arguments) if traversal(function) => arguments.foreach(within(_))
+      case _                                                     => ()
+    }
+    invoked.toSet
+  }
+
+  def enumCaseParameter(symbol: Symbol)(using Context): Boolean =
+    symbol.owner.isConstructor && symbol.owner.owner.is(Flags.Enum)
 }
 
 /** Lints that need the types of expressions, which SemanticDB does not record: array comparisons, conversions to the
@@ -98,6 +125,7 @@ private class LintPhase(
     hot: String => Boolean,
     hotDeclared: Boolean,
     cold: String => Boolean,
+    bounded: (String, String) => Boolean,
     checked: Set[String]
 ) extends PluginPhase {
   val phaseName: String                = "bonsai-lint"
@@ -121,12 +149,9 @@ private class LintPhase(
   private val classifications = checks.owning(LintPhase.Classifications)
   private val identities      = checks.owning(LintPhase.Identities)
 
-  private def refinements(using Context): Refinements =
-    Refinements(
-      checks,
-      checked,
-      Trees.enclosedBy(ctx.owner, owner => hot(Calls.qualified(owner)))
-    )
+  private def hotCode(using Context): Boolean = Trees.enclosedBy(ctx.owner, owner => hot(Calls.qualified(owner)))
+
+  private def refinements(using Context): Refinements = Refinements(checks, checked, hotCode)
 
   // A pass runs only when some check it reports is enabled, and reports no other.
   private def pass(declared: Set[Check])(run: Checks => Unit): Unit = {
@@ -134,9 +159,17 @@ private class LintPhase(
     if (owning.active) run(owning)
   }
 
+  private val loopInvoked = mutable.Set.empty[Symbol]
+
+  override def prepareForUnit(tree: tpd.Tree)(using Context): Context = {
+    loopInvoked.clear()
+    loopInvoked ++= LintPhase.looped(tree)
+    ctx
+  }
+
   override def transformUnit(tree: tpd.Tree)(using Context): tpd.Tree = {
-    pass(Loops.Checks)(Loops(_, hot, hotDeclared).run(tree))
-    pass(Chains.Checks)(Chains(_).run(tree))
+    pass(Loops.Checks)(Loops(_, hot, hotDeclared, cold, bounded).run(tree))
+    pass(Chains.Checks)(Chains(_, hot).run(tree))
     pass(Repeats.Checks)(Repeats(_).run(tree))
     pass(Exceptions.Checks)(Exceptions(_, partials, throwing.value).run(tree))
     pass(Effects.Checks)(Effects(_).run(tree))
@@ -670,10 +703,15 @@ private class LintPhase(
   private def coldCode(using Context): Boolean =
     Trees.enclosedBy(ctx.owner, owner => cold(Calls.qualified(owner)))
 
-  /** Parameters, fields and values of a function type that Scala does not specialise for its primitive type arguments.
-    * Boxing a Boolean returns a shared instance, so predicates are left alone. A constructor reports its parameters
-    * rather than the fields they become, an overriding method leaves them to the method it overrides, a lambda's
-    * parameters are not declarations, and classes the build leaves out of its hot ones, such as test suites, may box.
+  private def reported(symbol: Symbol)(using Context): Boolean =
+    loopInvoked(symbol) || symbol.is(Flags.Param) && (!hotDeclared || hotCode) && !LintPhase.enumCaseParameter(symbol)
+
+  /** Function-typed values that Scala does not specialise for their primitive type arguments, so every call boxes. A
+    * value is reported when a loop invokes it, or when it is a parameter of hot code outside enum cases, which store
+    * their functions on purpose as dispatch tables. Boolean predicates are not reported, since boxing one returns a
+    * shared instance. A constructor reports its parameters rather than the fields they become, an overriding method
+    * leaves them to the method it overrides, a lambda's parameters are not declarations, and cold classes, such as test
+    * suites, may box.
     */
   private def unspecialised(tree: tpd.ValDef)(using Context): Unit = {
     val symbol   = tree.symbol
@@ -684,7 +722,8 @@ private class LintPhase(
   private def unspecialised(tree: tpd.ValDef, symbol: Symbol, function: Type)(using Context): Unit = {
     val arguments = function.argInfos
     if (
-      !symbol.isOneOf(Flags.Synthetic | Flags.Inline | Flags.ParamAccessor) && !coldCode &&
+      reported(symbol) && !coldCode &&
+      !symbol.isOneOf(Flags.Synthetic | Flags.Inline | Flags.ParamAccessor) &&
       !(symbol.is(Flags.Param) && (symbol.owner.isAnonymousFunction || symbol.owner.allOverriddenSymbols.hasNext)) &&
       !symbol.allOverriddenSymbols.hasNext &&
       arguments.exists(argument => Trees.primitive(argument) && !argument.isRef(defn.BooleanClass)) &&

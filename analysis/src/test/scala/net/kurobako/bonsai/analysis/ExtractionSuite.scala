@@ -34,6 +34,13 @@ class ExtractionSuite extends AnalysisSuite {
       )
     }
 
+  test("a call chain deeper than the default recursion fuel is read") {
+    val chain  = (1 to 600).map(index => s".append(\"$index\")").mkString
+    val result =
+      extract(program("Deep", s"object Deep { val text: String = new java.lang.StringBuilder()$chain.toString }"))
+    assert(result.graph.nodes.contains("Deep"), result.graph.nodes.keySet.mkString(", "))
+  }
+
   private def archive(classes: Path, jar: Path, title: String, version: String): Path = {
     val manifest = JarManifest()
     Seq(

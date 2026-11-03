@@ -15,8 +15,13 @@ object OptionIdioms {
   val defined = map.contains(1)
   val folded = option.map(_ + 1).getOrElse(0)
   val checked = option.map(_ > 0).getOrElse(false)
+  val failed = option.map(_ + 1).getOrElse(sys.error("none"))
+  val thrown = option.map(_ + 1).getOrElse(throw new IllegalStateException("none"))
+  val unfinished = option.map(_ + 1).getOrElse(???)
   val identityFolded = option.getOrElse(0)
   val identityMapped = option
+  val upcast = Option("a").map[CharSequence](identity)
+  val sameTyped = Option("a").map[String](identity)
   val transformed = list.map(identity)
   val viaFor = for (value <- option) yield value
   val viaTwo = for { first <- option; second <- empty } yield second

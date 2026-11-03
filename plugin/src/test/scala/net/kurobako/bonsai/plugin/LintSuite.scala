@@ -553,7 +553,7 @@ class LintSuite extends FunSuite {
         "into is applied once, to arguments the callers of run have, and only ever given lambdas that forward to a method"
       )
     )
-    // Extremum's function type would box its Longs, which unspecialised-function reports outside cold classes
+    // Extremum's function type would box its Longs, so the trait is kept unless its class is cold
     assertEquals(
       tagged(warnings(source), "lambda-trait"),
       List("Often is implemented only by lambdas", "Sink is implemented only by lambdas")
@@ -1084,6 +1084,17 @@ class LintSuite extends FunSuite {
     assertEquals(errors, List("bonsai option wildcards must be a non-negative count, not many"))
   }
 
+  test("a bound must be a member and a non-negative count") {
+    val (errors, _) = compile("Lints.scala", "object Lints", "bounded=Format.widths:many", "bounded=Format.widths")
+    assertEquals(
+      errors,
+      List(
+        "bonsai option bounded must be <member>:<max>, not Format.widths",
+        "bonsai option bounded must be <member>:<max>, not Format.widths:many"
+      )
+    )
+  }
+
   test("the ci mode makes the strict checks errors, unless a check is kept a warning") {
     val source = """object Lints {
                    |  private trait Shape
@@ -1392,7 +1403,7 @@ class LintSuite extends FunSuite {
     )
   }
 
-  test("function types Scala does not specialise for their primitive type arguments are reported where declared") {
+  test("function types Scala does not specialise for their primitive type arguments are reported on parameters") {
     val found = warnings(
       """class Visitor(visit: (Long, Long, Int) => Unit, val each: Long => String)
         |case class Holder(f: (Int, Int, Int) => Int)
@@ -1427,15 +1438,11 @@ class LintSuite extends FunSuite {
         "Function1[Long, String] is not specialised and boxes its primitive arguments on every call",
         "Function3[Int, Int, Int, Int] is not specialised and boxes its primitive arguments on every call",
         "Function3[Long, Int, Boolean, Unit] is not specialised and boxes its primitive arguments on every call",
-        "Function3[Long, Long, Long, Long] is not specialised and boxes its primitive arguments on every call",
-        "Function3[Double, Double, Double, Double] is not specialised and boxes its primitive arguments on every call",
-        "Function3[Long, Int, Boolean, Unit] is not specialised and boxes its primitive arguments on every call",
         "Function2[Float, Float, Float] is not specialised and boxes its primitive arguments on every call",
         "Function1[Short, Int] is not specialised and boxes its primitive arguments on every call",
         "Function1[Int, Char] is not specialised and boxes its primitive arguments on every call",
         "Function1[String, Long] is not specialised and boxes its primitive result on every call",
         "Function3[Long, Int, Boolean, Unit] is not specialised and boxes its primitive arguments on every call",
-        "Function2[Byte, Byte, Int] is not specialised and boxes its primitive arguments on every call",
         "Function2[String, Long, Boolean] is not specialised and boxes its primitive arguments on every call"
       ).sorted
     )
@@ -1446,6 +1453,75 @@ class LintSuite extends FunSuite {
     assertEquals(tagged(warnings(source), "unspecialised-function").size, 2)
     assertEquals(tagged(warnings(source, "hot=!Suite"), "unspecialised-function").size, 1)
     assertEquals(tagged(warnings(source, "hot=!Lints", "hot=!Suite"), "unspecialised-function"), Nil)
+  }
+
+  test("function-typed parameters of enum cases are not reported") {
+    val found = warnings(
+      """object Lints {
+        |  enum Op {
+        |    case Fold(f: (Long, Long, Long) => Long)
+        |    case Pick(f: Short => Int)
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(tagged(found, "unspecialised-function"), Nil)
+  }
+
+  test("a function value a loop invokes is reported, as a parameter or a member, but not one called once") {
+    val found = warnings(
+      """object Lints {
+        |  val scale: Short => Long = s => s.toLong
+        |  def run(xs: Array[Short]): Long = {
+        |    val step: Short => Int = s => s + 1
+        |    var i     = 0
+        |    var total = 0L
+        |    while (i < xs.length) {
+        |      total += step(xs(i)) + scale(xs(i))
+        |      i += 1
+        |    }
+        |    total
+        |  }
+        |  def unrolled(xs: Array[Short]): Int = {
+        |    val step: Short => Int = s => s + 1
+        |    step(xs(0)) + step(xs(1))
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "unspecialised-function"),
+      List(
+        "Function1[Short, Int] is not specialised and boxes its primitive arguments on every call",
+        "Function1[Short, Long] is not specialised and boxes its primitive arguments on every call"
+      ).sorted
+    )
+  }
+
+  test("a function parameter outside a hot class is reported only when a loop invokes it") {
+    val found = warnings(
+      """class Runner {
+        |  def run(f: Short => Int, xs: Array[Short]): Int = {
+        |    var i     = 0
+        |    var total = 0
+        |    while (i < xs.length) {
+        |      total += f(xs(i))
+        |      i += 1
+        |    }
+        |    total
+        |  }
+        |  def apply(f: Char => Int): Int = f('a')
+        |}
+        |object Lints {
+        |  def go(f: Byte => Int): Int = f(1)
+        |}""".stripMargin,
+      "hot=Lints"
+    )
+    assertEquals(
+      tagged(found, "unspecialised-function"),
+      List(
+        "Function1[Byte, Int] is not specialised and boxes its primitive arguments on every call",
+        "Function1[Short, Int] is not specialised and boxes its primitive arguments on every call"
+      ).sorted
+    )
   }
 
   test("appending to an accumulator that copies on every append is reported") {
@@ -2426,6 +2502,7 @@ class LintSuite extends FunSuite {
         |  def limited(future: Future[Int]): Int = scala.concurrent.Await.result(future, Duration(1, "s"))
         |  def fired(): Unit = Thread(() => ()).start()
         |  def daemon(): Unit = { val worker = Thread(() => ()); worker.setDaemon(true); worker.start() }
+        |  def late(): Unit = { val lagging = Thread(() => ()); lagging.start(); lagging.setDaemon(true) }
         |  def joined(): Unit = { val worker = Thread(() => ()); worker.start(); worker.join(1000) }
         |  def kept(): Thread = { val worker = Thread(() => ()); worker.start(); worker }
         |  def deep(): Unit = { val worker = Thread(null, () => (), "deep", 1L << 30); worker.start(); worker.join() }
@@ -2471,8 +2548,8 @@ class LintSuite extends FunSuite {
     assertEquals(
       tagged(found, "orphan-thread"),
       List(
-        "the thread started here is never joined or interrupted",
-        "worker is started but never joined or interrupted"
+        "lagging is started but never joined or interrupted",
+        "the thread started here is never joined or interrupted"
       )
     )
     assertEquals(
@@ -2481,6 +2558,29 @@ class LintSuite extends FunSuite {
         "get retried through interrupts, restoring the interrupt flag afterwards, reimplements CompletableFuture.join"
       )
     )
+  }
+
+  test("a one-shot memo cell is not an unbounded wait, but a cell it never runs still is") {
+    val found = warnings(
+      """import java.util.concurrent.ConcurrentHashMap
+        |import java.util.concurrent.ExecutionException
+        |import java.util.concurrent.FutureTask
+        |object Memo {
+        |  private val entries = ConcurrentHashMap[String, FutureTask[Int]]()
+        |  def value(key: String, compute: () => Int): Int = {
+        |    val once = Option(entries.get(key)).getOrElse {
+        |      val fresh = FutureTask[Int](() => compute())
+        |      Option(entries.putIfAbsent(key, fresh)).getOrElse { fresh.run(); fresh }
+        |    }
+        |    try once.get() catch { case error: ExecutionException => entries.remove(key, once); throw error.getCause }
+        |  }
+        |  def stored(key: String): Int = {
+        |    val held = Option(entries.get(key)).getOrElse(throw new IllegalStateException(key))
+        |    held.get()
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(tagged(found, "unbounded-wait"), List("get waits with no limit, so a stuck task hangs its caller"))
   }
 
   test("waits on futures invokeAll completed, joins in a close that interrupts, and threads an executor starts") {
@@ -2652,7 +2752,7 @@ class LintSuite extends FunSuite {
     )
   }
 
-  test("private fields that are only written, checked or described") {
+  test("private fields only written or checked are reported, and reads in describing methods count") {
     val found = warnings(
       """class Session(code: String) {
         |  private var attempts = 0
@@ -2662,10 +2762,12 @@ class LintSuite extends FunSuite {
         |  private val limit    = 3
         |  private val base     = 10
         |  private val derived  = base * 2
+        |  private val digest   = code.length
         |  require(state.nonEmpty)
         |  def attempt(): Unit = { attempts += 1; seen = seen + 1 }
         |  def remaining: Int = limit - seen + derived
         |  override def toString: String = s"Session($label)"
+        |  override def hashCode: Int = digest
         |}
         |final case class Product(private val hidden: Int)
         |class Suite {
@@ -2680,7 +2782,6 @@ class LintSuite extends FunSuite {
       tagged(found, "write-only-field"),
       List(
         "attempts is written but never read",
-        "label is only described, never used",
         "state is only checked, never used"
       )
     )
@@ -2864,5 +2965,22 @@ class LintSuite extends FunSuite {
         "value: mutable fields change the value after construction, so Json has unstable equality"
       )
     )
+  }
+
+  test("private case classes are not reported, since their values do not leave the scope that declares them") {
+    val found = tagged(
+      warnings(
+        """package fix {
+          |  object Lints {
+          |    private case class Device(name: String, handler: () => Unit, values: Array[Int])
+          |    private[Lints] case class Pinned(values: Array[Int])
+          |    private[fix] case class Scoped(transform: Int => Int)
+          |    case class Open(values: Array[Int])
+          |  }
+          |}""".stripMargin
+      ),
+      "unstable-equality"
+    ).map(_.stripSuffix(" [bonsai:unstable-equality]"))
+    assertEquals(found, List("values: arrays compare by reference, so Open has unstable equality"))
   }
 }

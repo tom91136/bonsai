@@ -387,4 +387,43 @@ class ComplexitySuite extends AnalysisSuite {
     )
     assertFinding(Build.unused(result.unusedBounds), "unused-bound", "Validation.bounded.amounts")
   }
+
+  test("a return in a loop is no call of its method") {
+    val early = complexities(
+      "Early",
+      """object Early {
+        |  def first(values: Vector[Int]): Either[String, Int] = {
+        |    var index = 0
+        |    while (index < values.size) {
+        |      if (values(index) < 0) return Left("negative")
+        |      index += 1
+        |    }
+        |    Right(index)
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(early.map(_.detail), Vector.empty)
+  }
+
+  test("where the build marks classes hot, quadratic findings elsewhere are dropped and cubic ones stay") {
+    def reported(hot: Vector[String]) = {
+      val result = extract(
+        program(
+          "Cold",
+          """object Cold {
+            |  def squares(values: Vector[Int]): Int = values.map(value => values.count(_ == value)).sum
+            |  def cubes(values: Vector[Int]): Int =
+            |    values.map(a => values.map(b => values.count(_ == a + b)).sum).sum
+            |}
+            |object Warm {
+            |  def squares(values: Vector[Int]): Int = values.map(value => values.count(_ == value)).sum
+            |}""".stripMargin
+        ),
+        hot = hot
+      )
+      Complexity.findings(result.complexities, result.graph.nodes, result.hot).map(_.detail.takeWhile(_ != ' '))
+    }
+    assertEquals(reported(Vector.empty).toSet, Set("Cold.squares", "Cold.cubes", "Warm.squares"))
+    assertEquals(reported(Vector("Warm")).toSet, Set("Cold.cubes", "Warm.squares"))
+  }
 }

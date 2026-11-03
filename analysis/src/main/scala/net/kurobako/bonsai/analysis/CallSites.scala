@@ -138,7 +138,14 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
         case (parameter, index)
             if parameter.is(Flags.HasDefault) &&
               arguments.forall(args => args.sizeIs == clause.size && !omitted(args(index))) =>
-          Smells.Spare(subject.name, subject.node, parameter.name.toString, sites, subject.suppressed)
+          Smells.Spare(
+            subject.name,
+            subject.node,
+            parameter.name.toString,
+            sites,
+            subject.suppressed,
+            lines.line(method.sourcePos)
+          )
       }
     }
   }

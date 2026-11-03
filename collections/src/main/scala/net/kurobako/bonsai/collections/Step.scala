@@ -8,7 +8,8 @@ package net.kurobako.bonsai.collections
   * one argument for a count, a comparison with `None` or `Some(x)` takes `x` as its argument for `Some`, and
   * `xs(xs.size - 1)` and `xs.lift(xs.size - 1)` are the last element. The operator of the comparison picks its key. A
   * `typed` step was written with explicit type arguments, which a rewrite of it would drop; a `desugared` step is a
-  * call the compiler wrote for a for-comprehension, which has no text of its own to rewrite.
+  * call the compiler wrote for a for-comprehension, which has no text of its own to rewrite. A `retyped` step has type
+  * arguments that give it a result of a different element type than its receiver has, so that it is not an identity.
   */
 case class Step(
     method: String,
@@ -16,5 +17,6 @@ case class Step(
     receiver: Kind,
     result: Kind,
     typed: Boolean = false,
-    desugared: Boolean = false
+    desugared: Boolean = false,
+    retyped: Boolean = false
 )

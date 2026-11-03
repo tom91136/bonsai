@@ -50,7 +50,8 @@ class Fragments(lines: Lines)(using Context) {
       val shape: Long,
       val loose: Long,
       val roles: Roles,
-      val listing: Option[(String, Int, Int)]
+      val listing: Option[(String, Int, Int)],
+      val operand: Boolean = false
   )
 
   /** What makes a piece a candidate for each of the ways copies are found. */
@@ -176,7 +177,8 @@ class Fragments(lines: Lines)(using Context) {
         helper = piece.roles.helper,
         reach = piece.origin.reach,
         whole = piece.roles.whole,
-        method = piece.origin.method
+        method = piece.origin.method,
+        operand = piece.operand
       )
     }
 
@@ -195,6 +197,15 @@ class Fragments(lines: Lines)(using Context) {
     case _                                                          => None
   }
 
+  // One side of a condition is not the condition a helper names.
+  private def junction(parent: tpd.Tree, child: tpd.Tree): Boolean = parent match {
+    case tpd.Select(left, name)                      => (left eq child) && Junctions(name.toString)
+    case tpd.Apply(tpd.Select(_, name), List(right)) => (right eq child) && Junctions(name.toString)
+    case _                                           => false
+  }
+
+  private val Junctions = Set("&&", "||")
+
   // Named arguments given out of order make the compiler hold them in values of a block around the call.
   private def lifted(block: tpd.Block): Boolean = block.stats.forall(_.symbol.is(Flags.Synthetic))
 
@@ -203,12 +214,16 @@ class Fragments(lines: Lines)(using Context) {
       origin: Origin,
       entire: Boolean,
       pattern: Boolean = false,
-      listing: Option[(String, Int, Int)] = None
+      listing: Option[(String, Int, Int)] = None,
+      operand: Boolean = false
   ): Shaped = {
     val children = subtrees.of(tree)
     val shapes   = tree match {
       case tpd.CaseDef(pat, _, _) => children.map(child => shape(child, origin, entire = false, pattern = child eq pat))
-      case _ => children.map(child => shape(child, origin, entire = false, pattern, element(tree, listing, child)))
+      case _                      =>
+        children.map(child =>
+          shape(child, origin, entire = false, pattern, element(tree, listing, child), junction(tree, child))
+        )
     }
     val cost         = weight(tree) + shapes.map(_.cost).sum
     val applications = (tree match { case tpd.Apply(_, _) => 1; case _ => 0 }) + shapes.map(_.applications).sum
@@ -222,7 +237,7 @@ class Fragments(lines: Lines)(using Context) {
         roles.whole || roles.small || roles.tiny || roles.helper ||
         applications > 0 && cost >= CloneCost.Helper && evaluated(tree)
       ) {
-        val piece = Piece(List(tree), cost, origin, hash, loose, roles, listing)
+        val piece = Piece(List(tree), cost, origin, hash, loose, roles, listing, operand)
         keep(loose, piece)
         broadPieces.getOrElseUpdate(broad, mutable.ArrayBuffer.empty) += piece: Unit
       }

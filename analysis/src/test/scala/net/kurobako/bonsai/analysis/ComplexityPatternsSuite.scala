@@ -226,7 +226,9 @@ class ComplexityPatternsSuite extends AnalysisSuite {
     hot = Vector("Hot")
   )
 
-  private lazy val found = Complexity.findings(extracted.complexities, extracted.graph.nodes, extracted.hot)
+  private lazy val found = Complexity.findings(extracted.complexities, extracted.graph.nodes, None)
+
+  private lazy val foundHot = Complexity.findings(extracted.complexities, extracted.graph.nodes, extracted.hot)
 
   private given Finding.Level = Finding.Level.Warning
 
@@ -319,9 +321,9 @@ class ComplexityPatternsSuite extends AnalysisSuite {
   }
 
   test("linear work in a callback is reported in hot classes only") {
-    assertFinding(found, "complexity", "Hot.callback does linear work for each element")
-    assertFinding(found, "complexity", "Hot.compiled does linear work for each element", "regex compilation")
-    assertFinding(found, "complexity", "Hot.matching does linear work for each element", "regex compilation")
+    assertFinding(foundHot, "complexity", "Hot.callback does linear work for each element")
+    assertFinding(foundHot, "complexity", "Hot.compiled does linear work for each element", "regex compilation")
+    assertFinding(foundHot, "complexity", "Hot.matching does linear work for each element", "regex compilation")
     silent("Hot.cold")
   }
 
@@ -348,6 +350,10 @@ class ComplexityPatternsSuite extends AnalysisSuite {
           |    symbols.map((start, size) => addresses.filter(a => a >= start && a < start + size).toVector)
           |  def unsought(addresses: Array[Long], symbols: Vector[(Long, Long)]): Vector[Vector[Long]] =
           |    symbols.map((start, size) => Vector.from(addresses.view.takeWhile(_ < start + size)))
+          |  def mapped(addresses: Array[Long], symbols: Vector[(Long, Long)]): Vector[Vector[Long]] =
+          |    symbols.map((start, size) =>
+          |      Vector.from(addresses.view.drop(lowerBound(addresses, start)).takeWhile(_ < start + size).map(_ - start))
+          |    )
           |  def pairs(xs: Vector[Int], ys: Vector[Int]): Vector[(Int, Int)] = for { x <- xs; y <- ys if y != x } yield (x, y)
           |  def matched(xs: Vector[Int], ys: Vector[Int]): Vector[(Int, Int)] = for { x <- xs; y <- ys if y == x } yield (x, y)
           |}""".stripMargin
@@ -358,6 +364,7 @@ class ComplexityPatternsSuite extends AnalysisSuite {
     val seekFound = Complexity.findings(seeking.complexities, seeking.graph.nodes, seeking.hot)
     def seekAbout(name: String): Vector[Finding] = seekFound.filter(_.detail.startsWith(s"$name "))
     assertEquals(seekAbout("Seek.within").map(_.detail), Vector.empty)
+    assertEquals(seekAbout("Seek.mapped").map(_.detail), Vector.empty)
     assertEquals(seekAbout("Seek.pairs").map(_.detail), Vector.empty)
     assertEquals(seekAbout("Seek.scanned").size, 1)
     assertEquals(seekAbout("Seek.unsought").size, 1)

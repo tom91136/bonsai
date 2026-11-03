@@ -49,6 +49,7 @@ private[analysis] class Collector(
     concurrent: Set[String],
     reflective: Vector[Regex],
     bounded: Vector[Complexity.Bounded],
+    hot: String => Boolean,
     javaCosts: Vector[JavaModel.Cost],
     references: (Components, Fragments) => Context ?=> tpd.TreeTraverser,
     lines: Lines
@@ -174,7 +175,7 @@ private[analysis] class Collector(
     complexityList ++= costs.javaSummaries
     unusedList ++= declared.unmatched
     val effects = inference(library)
-    val chains  = Pipelines.Chains(effects, lines)
+    val chains  = Pipelines.Chains(effects, lines, hot)
     pipelineList ++= bodies.view.filter((method, _) => ownMethod(method)).flatMap((method, definition) =>
       key(method).toVector.flatMap(
         chains.lifted(method, qualifiedName(method), _, suppressions(method), definition.rhs)
@@ -245,18 +246,21 @@ private[analysis] class Collector(
   }
 
   private def purity(effects: Purity.Inference)(using Context): Purity.Model = {
-    def site(method: Symbol, tree: tpd.Tree) = key(method).map(node => node -> lines.location(tree.sourcePos))
+    def site(method: Symbol, tree: tpd.Tree) =
+      key(method).map(node => (node, lines.location(tree.sourcePos), lines.line(tree.sourcePos)))
     Purity.Model(
       effects.pointless.flatMap((method, callee, tree) =>
-        site(method, tree).map((node, location) => Purity.Discard(callee, node, location, suppressions(method)))
+        site(method, tree).map((node, location, line) =>
+          Purity.Discard(callee, node, location, line, suppressions(method))
+        )
       ),
       effects.effectful.flatMap((method, operation, effect, tree, view) =>
-        site(method, tree).map((node, location) =>
-          Purity.Transform(operation, effect, node, location, view, suppressions(method))
+        site(method, tree).map((node, location, line) =>
+          Purity.Transform(operation, effect, node, location, line, view, suppressions(method))
         )
       ),
       effects.shared.flatMap((method, variable, entry, tree) =>
-        site(method, tree).map((node, location) =>
+        site(method, tree).map((node, location, _) =>
           Purity.SharedWrite(variable, entry, node, location, suppressions(method))
         )
       ),
@@ -404,9 +408,31 @@ private[analysis] class Collector(
         }.toSet,
         method.is(Flags.Inline) || method.owner.isTerm && method.owner.is(Flags.Inline),
         suppressed = suppressions(method),
-        rest = Shapes.clauses(method).drop(1).flatten
+        rest = Shapes.clauses(method).drop(1).flatten,
+        tested = Some(tested(method, body)),
+        line = lines.line(method.sourcePos)
       )
     }
+
+  /** The parameters of the first term parameter list that the first statement of `body` tests, by index. */
+  private def tested(method: Symbol, body: tpd.Tree)(using Context): Set[Int] = {
+    val first = body match {
+      case tpd.Block(statement :: _, _) => statement
+      case tpd.Block(Nil, expression)   => expression
+      case other                        => other
+    }
+    first match {
+      case tpd.If(test, _, _) =>
+        val used = test.filterSubTrees {
+          case tpd.Ident(_) => true
+          case _            => false
+        }.map(_.symbol).toSet
+        Calls.termClauses(method).headOption.getOrElse(Nil).zipWithIndex.collect {
+          case (parameter, index) if used(parameter) => index
+        }.toSet
+      case _ => Set.empty
+    }
+  }
 
   /** The parameters of the first term parameter list that `body` passes only to constructors, by index. */
   private def stored(method: Symbol, body: tpd.Tree)(using Context): Set[Int] = {
@@ -453,9 +479,10 @@ private[analysis] class Collector(
           method.info.finalResultType.widenDealias.show,
           // An extension method is what the rule would make of it already.
           !method.is(Flags.ExtensionMethod) && first.exists(parameter =>
-            receiving(method, parameter, body) && !fixedReceiver(method, parameter)
+            receiving(method, parameter, body) && !fixedReceiver(method, parameter) && !scalar(parameter)
           ),
-          info.test
+          info.test,
+          lines.line(method.sourcePos)
         )
         if (!method.is(Flags.ExtensionMethod)) structure.dispatch(method, parameters, body, info)
       }
@@ -468,6 +495,12 @@ private[analysis] class Collector(
     val tpe = parameter.info.widenDealias
     tpe.member(method.name).exists ||
     parameter.is(Flags.Inline) && tpe.typeSymbol.is(Flags.Trait) && tpe.typeSymbol.typeParams.nonEmpty
+  }
+
+  /** Whether `parameter` is a primitive or a `String`, whose operations the library offers rather than the build. */
+  private def scalar(parameter: Symbol)(using Context): Boolean = {
+    val symbol = parameter.info.widenDealias.typeSymbol
+    symbol.isPrimitiveValueClass || symbol == defn.StringClass
   }
 
   /** Whether every method `body` calls, beside those of objects, is called on `parameter`, and nothing in it names

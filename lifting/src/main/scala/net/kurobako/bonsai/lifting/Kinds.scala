@@ -84,6 +84,19 @@ private[lifting] class Kinds(using Context) {
     }
   }
 
+  /** Whether two collection types have the same element type, which a type argument written on a call can change. */
+  def sameElement(before: Type, after: Type): Boolean =
+    (element(before), element(after)) match {
+      case (Some(left), Some(right)) => left =:= right
+      case _                         => false
+    }
+
+  private def element(tpe: Type): Option[Type] = {
+    val widened = tpe.widenTermRefExpr.finalResultType.widenDealias
+    if (widened.derivesFrom(defn.ArrayClass)) widened.argInfos.headOption
+    else widened.baseType(IterableOnce).argInfos.headOption
+  }
+
   private def standardName(symbol: Symbol, array: Boolean, string: Boolean): String =
     if (array) "Array"
     else if (string) "String"

@@ -22,8 +22,10 @@ class PipelinesSuite extends AnalysisSuite {
           |  def viewed(values: List[Int]): Int = values.view.map(_ + 1).filter(_ > 0).size
           |  def arrays(values: Array[Int]): Int = values.map(_ + 1).filter(_ > 0).sum
           |  def nested(values: List[List[Int]]): Int = values.map(row => row.filter(_ > 0).size).sum
-          |  def longer(rows: Vector[List[Int]]): Int = rows.map(values => values.map(_ + 1).filter(_ > 2).map(_ * 2).sum).sum
-          |  def looped(rows: Vector[Array[Int]]): Int = rows.map(values => values.filter(_ > 0).map(_ + 1).length).sum
+          |  def longer(rows: Vector[List[(Int, Int)]]): Int =
+          |    rows.map(values => values.map(p => (p._1 + 1, p._2)).filter(_._1 > 2).map { case (a, b) => a * b }.sum).sum
+          |  def looped(rows: Vector[Array[(Int, Int)]]): Int =
+          |    rows.map(values => values.filter(_._1 > 0).map { case (a, b) => a + b }.length).sum
           |  def once(values: List[Int]): Int = values.map(_ + 1).filter(_ > 2).sum
           |  def lone(rows: Vector[List[Int]]): Int = rows.map(values => values.map(_ + 1).sum).sum
           |  def lazily(rows: Vector[List[Int]]): Int = rows.map(values => values.view.map(_ + 1).filter(_ > 2).sum).sum
@@ -34,8 +36,9 @@ class PipelinesSuite extends AnalysisSuite {
           |    inner(values)
           |  }
           |  def comprehended(values: List[Int]): List[Int] = for (x <- values.map(_ + 1)) yield x * 2
-          |  def comprehendedTwo(values: List[Int]): List[Int] =
-          |    for { x <- values; y <- values.map(_ + 1).filter(_ > 0) } yield x + y
+          |  def comprehendedTwo(values: List[Int], pairs: List[(Int, Int)]): List[Int] =
+          |    for { x <- values; (a, b) <- pairs.filter(_._1 > 0) } yield x + a
+          |  def comprehendedGuard(values: List[Int]): List[Int] = for (x <- values if x > 0) yield x * 2
           |  def comprehendedIdentity(values: List[Int]): List[Int] = for (x <- values) yield x
           |}""".stripMargin
     ))
@@ -87,6 +90,26 @@ class PipelinesSuite extends AnalysisSuite {
     assertEquals(of("comprehended").size, 1, found.mkString("\n"))
     assertEquals(of("comprehendedTwo").size, 1, found.mkString("\n"))
     assertEquals(of("comprehendedIdentity"), Vector.empty[Finding])
+    assertEquals(of("comprehendedGuard"), Vector.empty[Finding])
+  }
+
+  test("a filter then a map of unrelated shapes is a collect only in a hot class") {
+    given Finding.Level = Finding.Level.Info
+    val sources         = Seq(
+      "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Chains) }",
+      "Chains.scala" ->
+        """object Chains {
+          |  def unrelated(values: List[String]): List[Long] = values.filter(_.nonEmpty).map(_.toLong)
+          |}""".stripMargin
+    )
+    val cold = extract(sources)
+    assertEquals(Pipelines.findings(cold.pipelines, cold.graph.nodes), Vector.empty[Finding])
+    val hot = extract(sources, hot = Vector("Chains"))
+    assertFinding(
+      Pipelines.findings(hot.pipelines, hot.graph.nodes),
+      "intermediate-collections",
+      "Chains.unrelated: filter then map is a collect"
+    )
   }
 
   test("a finding is placed at the line of its chain") {

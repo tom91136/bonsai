@@ -6,11 +6,13 @@ object FlatMapNesting {
 
   val nodes: List[Node] = Nil
 
-  val mapped = nodes.flatMap(x => x.children.map(_.size))
+  val mapped = nodes.flatMap(_.children).map(_.size)
+  val worked = nodes.flatMap(x => x.children.map(_.size + 1))
   val filtered = nodes.flatMap(x => x.children.filter(_.size > 2))
   val dropped = nodes.flatMap(x => x.children.filterNot(_.size > 2))
-  val flat = nodes.flatMap(x => x.children.flatMap(_.children))
-  val grouped = nodes.flatMap(x => x.children.map(_.size)).toSet
+  val flat = nodes.flatMap(_.children).flatMap(_.children)
+  val grouped = nodes.flatMap(_.children).map(_.size).toSet
+  val groupedWorked = nodes.flatMap(x => x.children.map(_.size * 2)).toSet
 
   val effectful = nodes.flatMap(_.children).map(node => println(node))
   val lazily = nodes.view.flatMap(_.children).map(_.size)

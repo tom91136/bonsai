@@ -118,6 +118,34 @@ class SmellsSuite extends AnalysisSuite {
     )
   }
 
+  test("a flag argument is reported at the line of the method that takes it") {
+    val found = findings(
+      "Draw.scala" ->
+        """object Draw {
+          |  val scale = 2
+          |  val offset = 3
+          |  def draw(shape: String, filled: Boolean): String = if (filled) shape else shape.toLowerCase
+          |}""".stripMargin,
+      "Main.scala" -> "object Main { val solid = Draw.draw(\"a\", true); val hollow = Draw.draw(\"b\", false) }"
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.FlagArgument => finding.node.line },
+      Vector(4)
+    )
+  }
+
+  test("a flag tested only inside a lambda in the body is not a choice between methods") {
+    val found = findings(
+      "Draw.scala" ->
+        """object Draw {
+          |  def draw(shape: String, filled: Boolean): List[String] =
+          |    List(shape).map(text => if (filled) text else text.toLowerCase)
+          |}""".stripMargin,
+      "Main.scala" -> "object Main { val solid = Draw.draw(\"a\", true); val hollow = Draw.draw(\"b\", false) }"
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.FlagArgument)
+  }
+
   test("a flag a method only passes to a constructor is data the value stores, not a choice between methods") {
     val found = findings(
       "Mesh.scala" ->
@@ -215,11 +243,26 @@ class SmellsSuite extends AnalysisSuite {
           """object Main {
             |  def first: Boolean = !Deadline.isExpired()
             |  def second: Boolean = !Deadline.isExpired()
+            |  def third: Boolean = !Deadline.isExpired()
+            |  def fourth: Boolean = !Deadline.isExpired()
             |}""".stripMargin
       ),
       "inverted-boolean",
-      "Deadline.isExpired(): its Boolean result is inverted at all 2 calls"
+      "Deadline.isExpired(): its Boolean result is inverted at all 4 calls"
     )
+  }
+
+  test("a boolean method negated at fewer than four calls is not inverted") {
+    val found = findings(
+      "Deadline.scala" -> "object Deadline { def isExpired(): Boolean = true }",
+      "Main.scala"     ->
+        """object Main {
+          |  def first: Boolean = !Deadline.isExpired()
+          |  def second: Boolean = !Deadline.isExpired()
+          |  def third: Boolean = !Deadline.isExpired()
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.InvertedBoolean)
   }
 
   test("a boolean method that some caller reads directly is not inverted") {
@@ -242,10 +285,12 @@ class SmellsSuite extends AnalysisSuite {
             |  private def hidden(flags: Int): Boolean = (flags & 1) != 0 || (flags & 2) != 0
             |  def first(flags: Int, name: String): Boolean = name.nonEmpty && !hidden(flags)
             |  def second(flags: Int, other: Int): Boolean = !hidden(flags) || other > 3
+            |  def third(flags: Int): Boolean = !hidden(flags)
+            |  def fourth(flags: Int, other: Int): Boolean = other < 0 && !hidden(flags)
             |}""".stripMargin
       ),
       "inverted-boolean",
-      "Visibility.hidden(flags): its Boolean result is inverted at all 2 calls"
+      "Visibility.hidden(flags): its Boolean result is inverted at all 4 calls"
     )
   }
 
@@ -256,12 +301,13 @@ class SmellsSuite extends AnalysisSuite {
           """object Loops {
             |  def independent(left: String, right: String, terms: List[String]): List[String] = {
             |    def mentions(term: String, name: String): Boolean = term.contains(name)
-            |    terms.filter(term => !mentions(term, left) && !mentions(term, right))
+            |    val wanted = terms.filter(term => !mentions(term, left) && !mentions(term, right))
+            |    wanted.filter(term => !mentions(term, "a") && !mentions(term, "b"))
             |  }
             |}""".stripMargin
       ),
       "inverted-boolean",
-      "mentions(term, name): its Boolean result is inverted at all 2 calls"
+      "mentions(term, name): its Boolean result is inverted at all 4 calls"
     )
   }
 
@@ -273,10 +319,12 @@ class SmellsSuite extends AnalysisSuite {
             |  private def ready: Boolean = open && !forced
             |  def first: Boolean = !ready
             |  def second(extra: Boolean): Boolean = extra && !ready
+            |  def third(extra: Boolean): Boolean = extra || !ready
+            |  def fourth(extra: Boolean): Boolean = !ready || extra
             |}""".stripMargin
       ),
       "inverted-boolean",
-      "Gate.ready(): its Boolean result is inverted at all 2 calls"
+      "Gate.ready(): its Boolean result is inverted at all 4 calls"
     )
   }
 
@@ -288,10 +336,11 @@ class SmellsSuite extends AnalysisSuite {
             |  private def power(value: Long)(using scale: Int): Boolean = value > 0L && (value & (value - 1L)) == scale
             |  def pairs(a: Long, b: Long)(using Int): Boolean = !power(a) || !power(b)
             |  def single(a: Long)(using Int): Boolean = !power(a)
+            |  def quad(a: Long)(using Int): Boolean = !power(a) || a < 0L
             |}""".stripMargin
       ),
       "inverted-boolean",
-      "Powers.power(value): its Boolean result is inverted at all 3 calls"
+      "Powers.power(value): its Boolean result is inverted at all 4 calls"
     )
   }
 
@@ -503,7 +552,7 @@ class SmellsSuite extends AnalysisSuite {
       "Loops.scala" ->
         """object Loops {
           |  private def loop(body: Int, check: Boolean, exhaustible: Boolean): Int =
-          |    if (check) { if (exhaustible) body else body + 1 } else if (exhaustible) body + 2 else body + 3
+          |    if (check && exhaustible) body else if (check) body + 1 else if (exhaustible) body + 2 else body + 3
           |  def first: Int  = loop(1, true, false)
           |  def second: Int = loop(2, false, false)
           |  def third: Int  = loop(3, false, true)
@@ -660,16 +709,30 @@ class SmellsSuite extends AnalysisSuite {
     assertNoFinding(found)(_.rule == Finding.Rule.IgnoredResult)
   }
 
+  test("a group of three parameters across three methods is not a data clump") {
+    assertEquals(clumps(group("trio", "x", "y", "z")("one.A", "two.B", "three.C")), Vector.empty)
+  }
+
+  test("primitive numbers of one shape recurring across types are not a data clump") {
+    val longs = Vector("a", "b", "c", "d").map(name =>
+      Algebra.Field(name, Polynomial.atom("Long"), Algebra.Kind.Number, primitive = true)
+    )
+    val owners = Vector("one.A", "two.B", "three.C", "four.D", "five.E")
+    val found  = clumps(owners.map(owner => method(s"$owner.take", owner, longs)))
+    assertEquals(found, Vector.empty, found.mkString("\n"))
+  }
+
   test("parameter groups recurring across types are data clumps") {
     assertFinding(
       findings(
-        "Point.scala"  -> "case class Point(x: Int, y: Int, z: Int)",
+        "Point.scala"  -> "case class Point(x: String, y: String, z: String, w: String)",
         "Render.scala" ->
-          """object Render { def plot(x: Int, y: Int, z: Int, colour: String): String = colour; def erase(x: Int, y: Int, z: Int): Unit = () }""",
-        "Physics.scala" -> "object Physics { def push(x: Int, y: Int, z: Int, force: Double): Double = force }"
+          """object Render { def plot(x: String, y: String, z: String, w: String, colour: String): String = colour; def erase(x: String, y: String, z: String, w: String): Unit = () }""",
+        "Physics.scala" ->
+          "object Physics { def push(x: String, y: String, z: String, w: String, force: Double): Double = force }"
       ),
       "data-clump",
-      "(x: Int, y: Int, z: Int) recur in 3 methods across 2 types",
+      "(w: String, x: String, y: String, z: String) recur in 3 methods across 2 types",
       "already the fields of Point"
     )
   }
@@ -984,11 +1047,11 @@ class SmellsSuite extends AnalysisSuite {
     val ready = method("lib.Api.ready", "lib.Api", Vector.empty).copy(exported = true)
     val found = smells(model(usages =
       Vector(
-        Smells.Usage(ready, "Boolean", calls = 2, discarded = 0, testCalls = 0, negated = 2)
+        Smells.Usage(ready, "Boolean", calls = 4, discarded = 0, testCalls = 0, negated = 4)
       )
     ))
 
-    assertFinding(found, "inverted-boolean", "Api.ready: its Boolean result is inverted at all 2 calls")
+    assertFinding(found, "inverted-boolean", "Api.ready: its Boolean result is inverted at all 4 calls")
   }
 
   test("a result of a method called once, or of the API of a library, that no caller uses is reported") {
@@ -1110,19 +1173,19 @@ class SmellsSuite extends AnalysisSuite {
       group("same", "a", "b", "c")("one.Same", "one.Same", "one.Same").zipWithIndex.map((method, index) =>
         method.copy(name = s"${method.name}$index", node = s"${method.node}$index")
       ) ++ group("pair", "d", "e", "f")("two.X", "two.Y") ++
-        group("many", "g", "h", "i")("four.S", "four.R", "four.Q", "four.P")
+        group("many", "g", "h", "i", "j")("four.S", "four.R", "four.Q", "four.P")
     )
     assertEquals(found.size, 1, found.mkString("\n"))
     assert(
-      found.head.detail.startsWith("(g: Int, h: Int, i: Int) recur in 4 methods across 4 types"),
+      found.head.detail.startsWith("(g: Int, h: Int, i: Int, j: Int) recur in 4 methods across 4 types"),
       found.head.detail
     )
     assertEquals(found.map(_.node.name), Vector("four.P.many"))
   }
 
   test("a data clump names the same product whichever order the products arrive in") {
-    val fields   = Vector("a", "b", "c").map(field(_))
-    val methods  = group("take", "a", "b", "c")("one.Alpha", "two.Beta", "three.Gamma")
+    val fields   = Vector("a", "b", "c", "d").map(field(_))
+    val methods  = group("take", "a", "b", "c", "d")("one.Alpha", "two.Beta", "three.Gamma")
     val products = Vector("lib.Metadata", "lib.UploadSession", "lib.Session").map { name =>
       Algebra.Product(
         name,
@@ -1145,23 +1208,24 @@ class SmellsSuite extends AnalysisSuite {
   }
 
   test("overlapping data clumps over mostly the same methods are reported once, and disjoint ones each") {
-    val shared = Vector("a", "b", "c", "x", "y", "z")
+    val shared = Vector("a", "b", "c", "d", "w", "x", "y", "z")
     val found  = clumps(
-      group("first", "a", "b", "c")("one.A") ++ group("both", shared*)("one.B", "one.C") ++
-        group("last", "x", "y", "z")("one.D") ++ group("other", "p", "q", "r")("two.E", "two.F", "two.G")
+      group("first", "a", "b", "c", "d")("one.A") ++ group("both", shared*)("one.B", "one.C") ++
+        group("last", "w", "x", "y", "z")("one.D") ++ group("other", "p", "q", "r", "s")("two.E", "two.F", "two.G")
     )
     assertEquals(
       found.map(_.detail.takeWhile(_ != ')')).sorted,
-      Vector("(a: Int, b: Int, c: Int", "(p: Int, q: Int, r: Int")
+      Vector("(a: Int, b: Int, c: Int, d: Int", "(p: Int, q: Int, r: Int, s: Int")
     )
   }
 
   test("primitive parameters in hot classes, and inline methods, are no data clump, since an object would allocate") {
-    val primitive = (name: String) => Algebra.Field(name, Polynomial.atom("Int"), Algebra.Kind.Number, primitive = true)
-    val methods   = Vector("one.A", "one.B", "two.C").map(owner =>
-      method(s"$owner.run", owner, Vector("a", "b", "c").map(primitive(_)))
-    )
-    val keys                                                             = methods.map(_.node)
+    val primitive = (name: String, shape: String) =>
+      Algebra.Field(name, Polynomial.atom(shape), Algebra.Kind.Number, primitive = true)
+    val fields =
+      Vector(primitive("a", "Int"), primitive("b", "Long"), primitive("c", "Double"), primitive("d", "Short"))
+    val methods = Vector("one.A", "one.B", "two.C").map(owner => method(s"$owner.run", owner, fields))
+    val keys    = methods.map(_.node)
     def found(hot: Option[Set[String]], reviewed: Vector[Smells.Method]) =
       Smells.findings(
         model(methods = reviewed),
@@ -1188,12 +1252,12 @@ class SmellsSuite extends AnalysisSuite {
           |  def four(dest: Int, index: Int, size: Int, out: Array[Int]): Unit = out(dest) = index / size
           |}
           |object Operands {
-          |  def one(left: Operand, right: Operand, third: Operand): Int  = left.id + right.id + third.id
-          |  def two(left: Operand, right: Operand, third: Operand): Int  = left.id - right.id - third.id
-          |  def three(left: Operand, right: Operand, third: Operand): Int = left.id * right.id * third.id
+          |  def one(left: Operand, right: Operand, third: Operand, fourth: Operand): Int  = left.id + right.id + third.id
+          |  def two(left: Operand, right: Operand, third: Operand, fourth: Operand): Int  = left.id - right.id - third.id
+          |  def three(left: Operand, right: Operand, third: Operand, fourth: Operand): Int = left.id * right.id * third.id
           |}
           |object Calls {
-          |  def four(left: Operand, right: Operand, third: Operand): Int = left.id
+          |  def four(left: Operand, right: Operand, third: Operand, fourth: Operand): Int = left.id
           |}""".stripMargin
     )
     def clumps(hot: Vector[String]) = {
@@ -1209,13 +1273,13 @@ class SmellsSuite extends AnalysisSuite {
 
   test("every data clump is reported, so a fix shows as one fewer") {
     val methods = (1 to 21).toVector.flatMap(index =>
-      group("run", s"a$index", s"b$index", s"c$index")(s"g$index.X", s"g$index.Y", s"g$index.Z")
+      group("run", s"a$index", s"b$index", s"c$index", s"d$index")(s"g$index.X", s"g$index.Y", s"g$index.Z")
     )
     assertEquals(clumps(methods).size, 21)
   }
 
   test("long signatures only contribute their smallest groups to data clumps") {
-    val owners                = Vector("p.A", "p.B", "p.C")
+    val owners                = Vector("p.A", "p.B", "p.C", "p.D", "p.E")
     val shared                = Vector("a", "b", "c", "d")
     def signatures(size: Int) = owners.map(owner =>
       method(s"$owner.run", owner, (shared ++ (5 to size).map(index => s"$owner$index")).map(field(_)))
@@ -1316,11 +1380,11 @@ class SmellsSuite extends AnalysisSuite {
         s"""package loops
            |$context
            |object A {
-           |  def unary(context: Ctx, dst: Int, src: Int): Unit = context.each(l => context.set(l, dst, context.read(l, src)))
-           |  def move(context: Ctx, dst: Int, src: Int): Unit = context.each(l => context.set(l, src, context.read(l, dst)))
+           |  def unary(context: Ctx, dst: Int, src: Int, width: Int): Unit = context.each(l => context.set(l, dst, context.read(l, src)))
+           |  def move(context: Ctx, dst: Int, src: Int, width: Int): Unit = context.each(l => context.set(l, src, context.read(l, dst)))
            |}
            |object B {
-           |  def broadcast(context: Ctx, dst: Int, src: Int): Unit = context.each(l => context.set(l, dst, context.read(0, src)))
+           |  def broadcast(context: Ctx, dst: Int, src: Int, width: Int): Unit = context.each(l => context.set(l, dst, context.read(0, src)))
            |}""".stripMargin
     )
     assertEquals(clumpsIn(methods*).size, 1, clumpsIn(methods*).mkString("\n"))
@@ -1330,46 +1394,49 @@ class SmellsSuite extends AnalysisSuite {
     val untyped = Seq(
       "Fragments.scala" ->
         """package render
-          |trait Fragments { def storeElement(pointer: Any, offset: Any, bytes: Any, value: Any): Unit = () }
-          |trait Images { def storeLevel(offset: Any, bytes: Any, value: Any): Unit = () }
-          |trait Tensors { def storeAbsolute(address: Any, offset: Any, bytes: Any, value: Any, pointee: Any): Unit = () }""".stripMargin
+          |trait Fragments { def storeElement(pointer: Any, offset: Any, bytes: Any, value: Any, length: Any): Unit = () }
+          |trait Images { def storeLevel(offset: Any, bytes: Any, value: Any, length: Any): Unit = () }
+          |trait Tensors { def storeAbsolute(address: Any, offset: Any, bytes: Any, value: Any, pointee: Any, length: Any): Unit = () }""".stripMargin
     )
     assertEquals(clumpsIn(untyped*), Vector.empty)
     val typed = Seq(
       "Fragments.scala" ->
         """package render
-          |trait Fragments { def storeElement(pointer: Long, offset: Int, bytes: Array[Byte], value: Long): Unit = () }
-          |trait Images { def storeLevel(offset: Int, bytes: Array[Byte], value: Long): Unit = () }
-          |trait Tensors { def storeAbsolute(address: Long, offset: Int, bytes: Array[Byte], value: Long): Unit = () }""".stripMargin
+          |trait Fragments { def storeElement(pointer: Long, offset: Int, bytes: Array[Byte], value: Long, length: Int): Unit = () }
+          |trait Images { def storeLevel(offset: Int, bytes: Array[Byte], value: Long, length: Int): Unit = () }
+          |trait Tensors { def storeAbsolute(address: Long, offset: Int, bytes: Array[Byte], value: Long, length: Int): Unit = () }""".stripMargin
     )
     assertEquals(clumpsIn(typed*).size, 1, clumpsIn(typed*).mkString("\n"))
   }
 
   test("methods every call of which passes literals for their parameters are row templates, not data clumps") {
-    def sources(arguments: (String, String, String) => String) = Seq(
+    def sources(arguments: (String, String, String, String) => String) = Seq(
       "Forms.scala" ->
         """package forms
           |object Chains {
-          |  def chain(opcode: String, first: String, second: String): Vector[String] = Vector(opcode, first, second)
+          |  def chain(opcode: String, first: String, second: String, third: String): Vector[String] =
+          |    Vector(opcode, first, second, third)
           |}
           |object Loads {
-          |  def load(opcode: String, first: String, second: String): Vector[String] = Vector(opcode, "pointer", first, second)
-          |  def store(opcode: String, first: String, second: String): Vector[String] = Vector(opcode, "pointer", second, first)
+          |  def load(opcode: String, first: String, second: String, third: String): Vector[String] =
+          |    Vector(opcode, "pointer", first, second, third)
+          |  def store(opcode: String, first: String, second: String, third: String): Vector[String] =
+          |    Vector(opcode, "pointer", second, first, third)
           |}
           |object Rows {
-          |  def table(opcode: String, first: String, second: String): Vector[Vector[String]] = Vector(
+          |  def table(opcode: String, first: String, second: String, third: String): Vector[Vector[String]] = Vector(
           |    Chains.chain(%s),
           |    Loads.load(%s),
           |    Loads.store(%s)
           |  )
           |}""".stripMargin.format(
-          arguments("OpAccessChain", "member", "index"),
-          arguments("OpLoadKHR", "layout", "stride"),
-          arguments("OpStoreKHR", "layout", "stride")
+          arguments("OpAccessChain", "member", "index", "lane"),
+          arguments("OpLoadKHR", "layout", "stride", "offset"),
+          arguments("OpStoreKHR", "layout", "stride", "offset")
         )
     )
-    assertEquals(clumpsIn(sources((_, _, _) => "\"op\", \"x\", \"y\"")*), Vector.empty)
-    val computed = (_: String, _: String, _: String) => "opcode, first, second"
+    assertEquals(clumpsIn(sources((_, _, _, _) => "\"op\", \"x\", \"y\", \"z\"")*), Vector.empty)
+    val computed = (_: String, _: String, _: String, _: String) => "opcode, first, second, third"
     val fired    = clumpsIn(sources(computed)*)
     assertEquals(fired.size, 1, fired.mkString("\n"))
   }
@@ -1379,13 +1446,13 @@ class SmellsSuite extends AnalysisSuite {
       "Contexts.scala" ->
         """package contexts
           |class Site
-          |object A { def one(x: Int)(site: Site, y: Long, k: Int): Int = x + k }
-          |object B { def two(z: Int)(site: Site, y: Long, k: Int): Int = z - k }
-          |object C { def three(w: Int)(site: Site, y: Long, k: Int): Int = w * k }""".stripMargin
+          |object A { def one(x: Int)(site: Site, y: Long, k: Int, m: Int): Int = x + k + m }
+          |object B { def two(z: Int)(site: Site, y: Long, k: Int, m: Int): Int = z - k * m }
+          |object C { def three(w: Int)(site: Site, y: Long, k: Int, m: Int): Int = w * k - m }""".stripMargin
     )
     val found = clumpsIn(sources*)
     assertEquals(found.size, 1, found.mkString("\n"))
-    assert(found.head.startsWith("(k: Int, site: Site, y: Long)"), found.head)
+    assert(found.head.startsWith("(k: Int, m: Int, site: Site, y: Long)"), found.head)
   }
 
   test("context parameters are no data clump, so passing a recurring value as one is no clump of its own") {
@@ -1404,9 +1471,9 @@ class SmellsSuite extends AnalysisSuite {
         """package lower
           |class Operand
           |class Site
-          |object A { def lower(resultType: Operand, dest: Operand, width: Int)(using site: Site): Int = 1 }
-          |object B { def emit(resultType: Operand, dest: Operand, width: Int)(using site: Site): Int = 2 }
-          |object C { def fold(resultType: Operand, dest: Operand, width: Int)(using site: Site): Int = 3 }""".stripMargin
+          |object A { def lower(resultType: Operand, dest: Operand, height: Int, width: Int)(using site: Site): Int = 1 }
+          |object B { def emit(resultType: Operand, dest: Operand, height: Int, width: Int)(using site: Site): Int = 2 }
+          |object C { def fold(resultType: Operand, dest: Operand, height: Int, width: Int)(using site: Site): Int = 3 }""".stripMargin
     )
     val found = clumpsIn(widened*)
     assertEquals(found.size, 1, found.mkString("\n"))
@@ -1420,11 +1487,11 @@ class SmellsSuite extends AnalysisSuite {
       "Later.scala" ->
         """package later
           |class Site
-          |object A { def one(a: Int)(y: Long, z: Int, w: Int): Int = a }
-          |object B { def two(b: Int)(y: Long, z: Int, w: Int): Int = b + 1 }
-          |object C { def three(c: Int)(y: Long, z: Int, w: Int)(using site: Site): Int = c + 2 }""".stripMargin
+          |object A { def one(a: Int)(y: Long, z: Int, w: Int, x: Int): Int = a }
+          |object B { def two(b: Int)(y: Long, z: Int, w: Int, x: Int): Int = b + 1 }
+          |object C { def three(c: Int)(y: Long, z: Int, w: Int, x: Int)(using site: Site): Int = c + 2 }""".stripMargin
     )
     assertEquals(found.size, 1, found.mkString("\n"))
-    assert(found.head.startsWith("(w: Int, y: Long, z: Int)"), found.head)
+    assert(found.head.startsWith("(w: Int, x: Int, y: Long, z: Int)"), found.head)
   }
 }

@@ -8,7 +8,8 @@ object Designs {
 
   /** A method of a type of the build. `module` holds when its owner is an object, and `instance` when that object
     * implements a trait, as a type-class instance does; `first` is the class of its first parameter, and `receiving`
-    * whether its body calls nothing but that parameter and nothing of its owner.
+    * whether its body calls nothing but that parameter and nothing of its owner, and that parameter is neither a
+    * primitive nor a `String`.
     */
   case class Method(
       name: String,
@@ -21,7 +22,8 @@ object Designs {
       parameters: Vector[String],
       result: String,
       receiving: Boolean,
-      test: Boolean
+      test: Boolean,
+      line: Int = 0
   ) {
     def short: String = Finding.simple(name)
   }
@@ -94,7 +96,8 @@ object Designs {
           Finding.Rule.ReceiverParameter,
           s"${members.size} methods of ${Finding.simple(owner)} take ${article(Finding.simple(tpe))} first and only call it " +
             s"(${Finding.listed(members.map(_.short).distinct.sorted, Shown)}); make them ${owned}extension methods of it",
-          onlyTests = members.forall(_.test)
+          onlyTests = members.forall(_.test),
+          line = members.head.line
         )
       case _ => None
     }

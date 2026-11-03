@@ -18,8 +18,7 @@ private object Lambdas {
   * every path through its body to arguments its callers have, and is only ever given lambdas forwarding to a method, so
   * the caller can pass the result instead. A conditional or by-name application stays, since passing the result would
   * evaluate it eagerly. Single-method traits in hot classes are left alone, since they are how primitives avoid boxing
-  * there, and so is one whose method a function type would box, outside the classes the build leaves cold, since that
-  * function type is what unspecialised-function reports.
+  * there, and so is one whose method a function type would box, outside the classes the build leaves cold.
   */
 private class Lambdas(checks: Checks, hot: String => Boolean, cold: String => Boolean)(using Context) {
   private val closures = mutable.Map.empty[Symbol, mutable.ListBuffer[tpd.Closure]]
@@ -53,7 +52,7 @@ private class Lambdas(checks: Checks, hot: String => Boolean, cold: String => Bo
         members.size == 1 && members.head.is(Flags.Deferred) && members.head.is(Flags.Method)
       }
 
-  // The trait's function type would box a primitive on every call, as unspecialised-function finds.
+  // A function type in place of the trait would box a primitive on every call.
   private def boxing(symbol: Symbol): Boolean = {
     val method     = methods(symbol).head
     val parameters = method.info.paramInfoss.flatten

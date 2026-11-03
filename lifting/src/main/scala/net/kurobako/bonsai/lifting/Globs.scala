@@ -18,6 +18,9 @@ object Globs {
   /** Whether `glob` selects `name`. */
   def matches(glob: Regex, name: String): Boolean = glob.matches(s"$name.")
 
+  /** Whether `glob` selects a member by its qualified `name` or by the qualified name of its `owner`. */
+  def reaches(glob: Regex, name: String, owner: String): Boolean = matches(glob, name) || matches(glob, owner)
+
   /** Whether `name` is selected by a `!`-prefixed glob, which leaves it out of the hot names. */
   def cold(globs: Seq[String]): String => Boolean = {
     val excluded = globs.collect { case glob if glob.startsWith("!") => qualifiedNames(glob.drop(1)) }

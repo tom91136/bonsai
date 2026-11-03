@@ -210,13 +210,32 @@ class AlgebraSuite extends AnalysisSuite {
                             |case class Load(address: Long, scalar: Int, width: Int) extends Access
                             |case class Store(address: Long, scalar: Int, value: Long) extends Access
                             |case class Swap(address: Long, scalar: Int, value: Long, expected: Long) extends Access
+                            |case class Gather(address: Long, scalar: Int, lanes: Int) extends Access
+                            |case class Scatter(address: Long, scalar: Int, lanes: Int) extends Access
+                            |case class Push(address: Long, scalar: Int) extends Access
+                            |case class Pop(address: Long, scalar: Int) extends Access
                             |case class Fence(scope: String) extends Access""".stripMargin
       ),
       "common-factor",
-      "3 of 4 cases",
+      "7 of 8 cases",
       "address: Long",
       "scalar: Int"
     )
+  }
+
+  test("a common factor shared by fewer than eight cases is not reported") {
+    assertNoFinding(
+      findings(
+        "Access.scala" -> """sealed trait Access
+                            |case class Load(address: Long, scalar: Int, width: Int) extends Access
+                            |case class Store(address: Long, scalar: Int, value: Long) extends Access
+                            |case class Swap(address: Long, scalar: Int, value: Long, expected: Long) extends Access
+                            |case class Gather(address: Long, scalar: Int, lanes: Int) extends Access
+                            |case class Scatter(address: Long, scalar: Int, lanes: Int) extends Access
+                            |case class Push(address: Long, scalar: Int) extends Access
+                            |case class Fence(scope: String) extends Access""".stripMargin
+      )
+    )(_.rule == Finding.Rule.CommonFactor)
   }
 
   test("mutually exclusive options are reported, including named and default arguments") {
@@ -306,10 +325,15 @@ class AlgebraSuite extends AnalysisSuite {
         "Request.scala" -> """sealed trait Request
                              |case class Build(root: String, target: String) extends Request
                              |case class Check(root: String) extends Request
-                             |case class Clean(root: String, all: Boolean) extends Request""".stripMargin
+                             |case class Clean(root: String, all: Boolean) extends Request
+                             |case class Format(root: String) extends Request
+                             |case class Run(root: String, filter: String) extends Request
+                             |case class Publish(root: String, version: String) extends Request
+                             |case class Lint(root: String, fix: Boolean) extends Request
+                             |case class Docs(root: String) extends Request""".stripMargin
       ),
       "common-factor",
-      "3 of 3 cases share (root: String)"
+      "8 of 8 cases share (root: String)"
     )
   }
 
@@ -650,21 +674,31 @@ class AlgebraSuite extends AnalysisSuite {
       Vector(Algebra.Sum(
         "S",
         "S",
-        Vector(variant("A", "xy"), variant("B", "wxyz"), variant("C", "wxyz"), variant("D", "wz"))
+        Vector(
+          variant("A", "xy"),
+          variant("B", "wxyz"),
+          variant("C", "wxyz"),
+          variant("D", "wz"),
+          variant("E", "pq"),
+          variant("F", "rs"),
+          variant("G", "tu"),
+          variant("H", "vm")
+        )
       ))
     ))
-    assertEquals(shown(found), Vector("S: 3 of 4 cases share (w: W, z: Z): B, C, D" -> Finding.Level.Info))
+    assertEquals(shown(found), Vector("S: 3 of 8 cases share (w: W, z: Z): B, C, D" -> Finding.Level.Info))
   }
 
   test("a factor every case of a generated sum shares is reported, as for a handwritten sum") {
     val cases =
-      Vector("V1", "V2", "V3").map(name => Algebra.Variant(name, ints("mpabc") :+ field("own", atom(name)))) :+
-        Algebra.Variant("V4", ints("mp"))
+      Vector("V1", "V2", "V3", "V4", "V5", "V6", "V7").map(name =>
+        Algebra.Variant(name, ints("mpabc") :+ field("own", atom(name)))
+      ) :+ Algebra.Variant("V8", ints("mp"))
     val sum                     = Algebra.Sum("S", "S", cases)
     def factors(origin: Origin) = analyse(model(sums = Vector(sum)), node("S", origin))
       .collect { case finding if finding.rule == Finding.Rule.CommonFactor => finding.detail }
     assertEquals(factors(Origin.Generated), factors(Origin.Handwritten))
-    assert(factors(Origin.Generated).contains("S: 4 of 4 cases share (m: Int, p: Int): V1, V2, V3, V4"))
+    assert(factors(Origin.Generated).contains("S: 8 of 8 cases share (m: Int, p: Int): V1, V2, V3, V4, V5, V6, V7, V8"))
   }
 
   test("the types of different newtypes, and cases of sums told apart by name, are no duplicate shape") {
@@ -689,13 +723,16 @@ class AlgebraSuite extends AnalysisSuite {
 
   test("alternatives with more than twelve fields only contribute pairs to common factors") {
     def factors(size: Int) = {
-      val wide = (1 to 4).toVector.map(index =>
+      val wide = (1 to 8).toVector.map(index =>
         Algebra.Variant(s"V$index", ints("abc") ++ (4 to size).map(extra => field(s"f$extra", atom(s"V$index"))))
       )
       analyse(model(sums = Vector(Algebra.Sum("S", "S", wide :+ Algebra.Variant("Other", ints("z")))))).map(_.detail)
     }
-    assertEquals(factors(12), Vector("S: 4 of 5 cases share (a: Int, b: Int, c: Int): V1, V2, V3, V4"))
-    assertEquals(factors(13), Vector("S: 4 of 5 cases share (a: Int, b: Int): V1, V2, V3, V4"))
+    assertEquals(
+      factors(12),
+      Vector("S: 8 of 9 cases share (a: Int, b: Int, c: Int): V1, V2, V3, V4, V5, V6, V7, V8")
+    )
+    assertEquals(factors(13), Vector("S: 8 of 9 cases share (a: Int, b: Int): V1, V2, V3, V4, V5, V6, V7, V8"))
   }
 
   private def constructed(fields: Algebra.Field*)(sites: Vector[Algebra.Argument]*): Vector[String] = {
@@ -792,6 +829,11 @@ class AlgebraSuite extends AnalysisSuite {
           |  case Undefined(id: Int)
           |  case Opaque(id: Int, typeId: Int)
           |  case Data(id: Int, typeId: Int)
+          |  case Ordinal(id: Int, rank: Int)
+          |  case Length(id: Int, rank: Int)
+          |  case Span(id: Int, rank: Int)
+          |  case Mark(id: Int, rank: Int)
+          |  case Frame(id: Int, rank: Int)
           |  def id: Int
           |}""".stripMargin
     )
@@ -807,6 +849,11 @@ class AlgebraSuite extends AnalysisSuite {
           |  case Undefined(id: Int)
           |  case Opaque(id: Int, typeId: Int)
           |  case Data(id: Int, typeId: Int)
+          |  case Ordinal(id: Int, rank: Int)
+          |  case Length(id: Int, rank: Int)
+          |  case Span(id: Int, rank: Int)
+          |  case Mark(id: Int, rank: Int)
+          |  case Frame(id: Int, rank: Int)
           |}""".stripMargin
     )
     assert(undeclared.exists(_.rule.id == "common-factor"), undeclared.mkString("\n"))

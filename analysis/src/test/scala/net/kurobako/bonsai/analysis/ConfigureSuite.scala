@@ -24,6 +24,7 @@ class ConfigureSuite extends FunSuite {
         |wildcards = 3
         |hot = ["demo.kernel.**"]
         |checked = [demo.where]
+        |bounded = [{ member = "demo.Encoding.operands", max = 4, reason = "at most four operands" }]
         |intended = ["demo.A=demo.B"]
         |generated-disabled = ["*"]
         |projects.demo { warnings = [huge-method], library = true }
@@ -39,6 +40,7 @@ class ConfigureSuite extends FunSuite {
         "wildcards\t3",
         "library\ttrue",
         "hot\tdemo.kernel.**",
+        "bounded\tdemo.Encoding.operands:4",
         "checked\tdemo.where",
         "option\t--disable",
         "option\tduplicate-code",
@@ -55,7 +57,11 @@ class ConfigureSuite extends FunSuite {
         "option\t--hot",
         "option\tdemo.kernel.**",
         "option\t--intended",
-        "option\tdemo.A=demo.B"
+        "option\tdemo.A=demo.B",
+        "option\t--bounded",
+        "option\tdemo.Encoding.operands",
+        "option\t4",
+        "option\tat most four operands"
       ))
     )
   }

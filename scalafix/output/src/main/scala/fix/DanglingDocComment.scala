@@ -2,37 +2,37 @@
 package fix
 
 object DanglingDocComment {
-  
+  /** orphaned by the next one */
   /** documents Stacked */
   val Stacked = 1
 
-  
-  
+  /** first of three */
+  /** second of three */
   /** documents Triple */
   val Triple = 2
 
-  
+  /** orphaned across a blank line */
 
   /** documents Spaced */
   val Spaced = 3
 
-  
+  /** orphaned across a note */
   // a note
   /** documents Noted */
   val Noted = 4
 
-  val Inline = 5
+  val Inline = 5 /** orphaned after code */
   /** documents Tail */
   val Tail = 6
 
   class Holder {
     val member = 7
 
-    
+    /** orphaned by the closing brace */
   }
 
   trait Bare {
-    
+    /** orphaned in a trait without members */
   }
 
   /** documents Plain */
@@ -90,4 +90,4 @@ object DanglingDocComment {
 /** documents Companion */
 class Companion
 
-
+/** orphaned by the end of the file */

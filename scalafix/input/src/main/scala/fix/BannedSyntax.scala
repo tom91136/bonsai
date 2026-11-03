@@ -41,6 +41,13 @@ object ExplicitNew {
   }
 }
 
+object ArrayAllocations {
+  val sized: Array[Long]                = new Array[Long](4) // assert: BannedSyntax.explicit-new-array
+  val ofDim: Array[Long]                = Array.ofDim[Long](4)
+  val literal: Array[Long]              = Array(1L, 2L)
+  def sizedBy(length: Int): Array[Long] = new Array[Long](length) // assert: BannedSyntax.explicit-new-array
+}
+
 object IntrinsicLocks {
   private val monitor = Object()
   private val lock    = ReentrantLock()
@@ -61,6 +68,15 @@ object Iterators {
   val mapKeys     = Map(1 -> 2).keysIterator              // assert: BannedSyntax.no-iterator
   val mapValues   = Map(1 -> 2).valuesIterator            // assert: BannedSyntax.no-iterator
   val lazyValues  = List(1, 2, 3).view
+}
+
+object StatefulIterators {
+  val cursor       = List(1, 2, 3).iterator
+  val first: Int   = cursor.next()
+  val lead         = java.util.List.of(1, 2, 3).iterator()
+  val leadPending  = lead.hasNext()
+  val peekable     = List(1, 2, 3).iterator.buffered
+  val chained      = List(1, 2, 3).iterator.map(_ + 1) // assert: BannedSyntax.no-iterator
 }
 
 object ProductTraversal {

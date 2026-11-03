@@ -136,6 +136,7 @@ object Algebra {
   private val MinimumDuplicateWeight        = 2
   private val MinimumUnnamedDuplicateWeight = 5
   private val MinimumFactorSupport          = 3
+  private val MinimumFactorCases            = 8
   private val MaxFactorFields               = 12
   private val MaxReportedFactors            = 3
   private val ShownNames                    = 8
@@ -146,7 +147,9 @@ object Algebra {
       val repeated = groups.map(group =>
         s"${sum.name}: ${group.size} cases of shape ${group.head.shape}: ${names(group.map(_.name))}"
       )
-      val factors = commonFactors(sum, groups).take(MaxReportedFactors)
+      val factors =
+        if (sum.cases.size < MinimumFactorCases) Vector.empty
+        else commonFactors(sum, groups).take(MaxReportedFactors)
       repeated.flatMap(Finding.at(nodes, sum.node, Finding.Rule.IdenticalCases, _, Finding.Level.Info)) ++
         factors.flatMap { factor =>
           // Fields every alternative carries hoist out cleanly; a partial factor needs a new type and judgement.

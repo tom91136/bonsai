@@ -65,6 +65,9 @@ public final class Scalac {
     for (String glob : configuration.hot()) {
       options.add("-P:bonsai:hot=" + glob);
     }
+    for (String member : configuration.bounded()) {
+      options.add("-P:bonsai:bounded=" + member);
+    }
     for (String type : configuration.checked()) {
       options.add("-P:bonsai:checked=" + type);
     }

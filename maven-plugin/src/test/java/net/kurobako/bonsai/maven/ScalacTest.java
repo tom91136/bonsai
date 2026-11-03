@@ -37,7 +37,7 @@ class ScalacTest {
   void writesTheOptionsTheCompilerPluginReads() throws IOException {
     Configuration configuration = configuration(
       "disabled\tacyclic", "errors\tbroad-catch", "warnings\tidentity-token", "wildcards\t3",
-      "hot\tdemo.kernel.**", "checked\tdemo.where");
+      "hot\tdemo.kernel.**", "bounded\tdemo.Encoding.operands:4", "checked\tdemo.where");
 
     List<String> options = Scalac.options(configuration, ids(), "dev");
 
@@ -48,6 +48,7 @@ class ScalacTest {
     assertTrue(options.contains("-P:bonsai:warn=identity-token"), options.toString());
     assertFalse(options.stream().anyMatch(option -> option.contains("generated")), options.toString());
     assertTrue(options.contains("-P:bonsai:hot=demo.kernel.**"), options.toString());
+    assertTrue(options.contains("-P:bonsai:bounded=demo.Encoding.operands:4"), options.toString());
     assertTrue(options.contains("-P:bonsai:checked=demo.where"), options.toString());
   }
 

@@ -12,8 +12,10 @@ import net.kurobako.bonsai.collections.*
 import scala.annotation.tailrec
 import scala.collection.mutable
 
-/** Reads chains of collection calls from typed trees, with the purity of their functions from `purity`. */
-class Lifter(purity: Purity)(using Context) {
+/** Reads chains of collection calls from typed trees, with the purity of their functions from `purity`, and which of
+  * them are in classes whose qualified names `hot` accepts.
+  */
+class Lifter(purity: Purity, hot: String => Boolean = _ => false)(using Context) {
   private val kinds = Kinds()
 
   private case class Link(
@@ -27,6 +29,7 @@ class Lifter(purity: Purity)(using Context) {
       lowered: Boolean = false,
       component: Boolean = false,
       typed: Boolean = false,
+      retyped: Boolean = false,
       desugared: Boolean = false,
       guard: Boolean = false,
       transparent: Boolean = false,
@@ -60,6 +63,7 @@ class Lifter(purity: Purity)(using Context) {
     // scalafix:off DisableSyntax.var
     private var ancestors: List[tpd.Tree] = Nil
     private var enclosing: Symbol         = owner
+    private var surrounding: Symbol       = owner
     // scalafix:on DisableSyntax.var
 
     def traverse(tree: tpd.Tree)(using Context): Unit = if (descend(tree)) {
@@ -69,23 +73,32 @@ class Lifter(purity: Purity)(using Context) {
         case _                          => ()
       }
       if (!spine(tree) && !flattened(tree, ancestors))
-        build(tree, enclosing, ancestors).filter(_._1.chain.steps.exists(_.receiver.library)).foreach { lifted =>
-          found += lifted._1
-          spine ++= lifted._2
+        build(tree, enclosing, surrounding, ancestors).filter(_._1.chain.steps.exists(_.receiver.library)).foreach {
+          lifted =>
+            found += lifted._1
+            spine ++= lifted._2
         }
       val before = enclosing
+      val outer  = surrounding
       tree match {
         case definition: tpd.DefDef if !definition.symbol.isAnonymousFunction => enclosing = definition.symbol
+        case definition: tpd.TypeDef if definition.symbol.isClass             => surrounding = definition.symbol
         case _                                                                => ()
       }
       ancestors = tree :: ancestors
       traverseChildren(tree)
       ancestors = ancestors.tail
       enclosing = before
+      surrounding = outer
     }
   }
 
-  private def build(tree: tpd.Tree, owner: Symbol, ancestors: List[tpd.Tree]): Option[(Lifted, List[tpd.Tree])] = {
+  private def build(
+      tree: tpd.Tree,
+      owner: Symbol,
+      surrounding: Symbol,
+      ancestors: List[tpd.Tree]
+  ): Option[(Lifted, List[tpd.Tree])] = {
     @annotation.tailrec
     def walk(current: tpd.Tree, links: List[Link]): (tpd.Tree, List[Link]) =
       binding(current, links.headOption)
@@ -117,13 +130,30 @@ class Lifter(purity: Purity)(using Context) {
             else if (found.lowered) kinds.scalar
             else if (Set("unzip", "unzip3")(found.method)) kinds.pair
             else kinds.of(found.end.tpe).getOrElse(kinds.scalar)
-          (built :+ Step(found.method, found.args.toVector, adjusted, result, found.typed, found.desugared), None)
+          (
+            built :+ Step(
+              found.method,
+              found.args.toVector,
+              adjusted,
+              result,
+              found.typed,
+              found.desugared,
+              found.retyped
+            ),
+            None
+          )
         }
       }
       val file    = visible(source).sourcePos.source
       val extents = links.collect { case found if !found.transparent => balanced(file.content(), found.shown.span) }
       val lifted  = Lifted(
-        Chain(Argument(visible(source), purity, owner), steps, assertion(tree, ancestors)),
+        Chain(
+          Argument(visible(source), purity, owner),
+          steps,
+          assertion(tree, ancestors),
+          heated(surrounding),
+          yielded(tree, ancestors)
+        ),
         file,
         balanced(file.content(), visible(source).span),
         extents,
@@ -131,6 +161,26 @@ class Lifter(purity: Purity)(using Context) {
       )
       (lifted, links.flatMap(_.spine).toList :+ tree)
     }
+  }
+
+  private def heated(owner: Symbol): Boolean =
+    owner.ownersIterator.exists(symbol =>
+      symbol.isClass && !symbol.is(Flags.Package) && !symbol.isAnonymousClass && hot(Calls.qualified(symbol))
+    )
+
+  /** Whether `tree` is what the function of a generator that the compiler wrote returns, which is how the generators
+    * after the first of a for-comprehension nest.
+    */
+  @tailrec
+  private def yielded(tree: tpd.Tree, ancestors: List[tpd.Tree]): Boolean = ancestors match {
+    case (alternative: tpd.CaseDef) :: (selection: tpd.Match) :: rest if alternative.body eq tree =>
+      yielded(selection, rest)
+    case (block: tpd.Block) :: rest if block.expr eq tree            => yielded(block, rest)
+    case (inlined: tpd.Inlined) :: rest if inlined.expansion eq tree => yielded(inlined, rest)
+    case (definition: tpd.DefDef) :: (block: tpd.Block) :: (tpd.Apply(function, arguments)) :: _
+        if (definition.rhs eq tree) && definition.symbol.isAnonymousFunction && arguments.exists(_ eq block) =>
+      Calls.selected(function).exists(select => select.name.toString == "flatMap" && desugared(select))
+    case _ => false
   }
 
   /** Whether `tree` is the map of the elements of a row to themselves that the compiler writes for the innermost
@@ -452,6 +502,7 @@ class Lifter(purity: Purity)(using Context) {
                 spine,
                 Option.unless(kinds.guarded(select.symbol))(select.symbol),
                 typed = found.typed,
+                retyped = found.typed && !kinds.sameElement(receiver.tpe, tree.tpe),
                 desugared = desugared(select)
               ))
           }

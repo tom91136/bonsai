@@ -8,6 +8,7 @@ import scalafix.v1.*
 class BannedSyntax extends SyntacticRule("BannedSyntax") {
   private val messages = Map(
     "explicit-new"         -> "use Scala 3 creator application syntax instead of explicit new",
+    "explicit-new-array"   -> "use Array.ofDim[T](n)",
     "anonymous-allocation" -> "replace the anonymous allocation with a named implementation or a function value",
     "intrinsic-lock"       -> "use an explicit java.util.concurrent lock",
     "no-iterator"          -> "use .view for lazy collection traversal or adapt the Java collection boundary",
@@ -17,9 +18,10 @@ class BannedSyntax extends SyntacticRule("BannedSyntax") {
     "no-then"     -> "omit `then`; use parentheses or braces for conditionals"
   )
 
-  private val iteratorMembers = Set("iterator", "keysIterator", "valuesIterator")
-  private val productTypes    = Set("Product", "scala.Product", "_root_.scala.Product")
-  private val productMembers  =
+  private val iteratorMembers  = Set("iterator", "keysIterator", "valuesIterator")
+  private val advancingMembers = Set("next", "hasNext")
+  private val productTypes     = Set("Product", "scala.Product", "_root_.scala.Product")
+  private val productMembers   =
     Set("productIterator", "productElement", "productElementNames", "productElementName", "productArity")
 
   private def ban(id: String, position: Position): Patch = lint(id, messages(id), position)
@@ -42,16 +44,45 @@ class BannedSyntax extends SyntacticRule("BannedSyntax") {
     )
   }
 
+  private def arrayAllocation(term: Term.New): Boolean = term.init.tpe match {
+    case Type.Apply.After_4_6_0(Type.Name("Array"), _) => true
+    case _                                             => false
+  }
+
+  // A cursor advanced in its scope, or buffered, has no view equivalent.
+  private def stateful(selection: Term.Select): Boolean = {
+    val iterator = selection.parent match {
+      case Some(call @ Term.Apply.After_4_6_0(`selection`, _)) => call
+      case _                                                   => selection
+    }
+    iterator.parent match {
+      case Some(Term.Select(qualifier, Term.Name("buffered"))) if qualifier eq iterator => true
+      case Some(definition: Defn.Val) if definition.rhs eq iterator                     => bound(definition)
+      case Some(definition: Defn.Var) if definition.body eq iterator                    => bound(definition)
+      case _                                                                            => false
+    }
+  }
+
+  private def bound(definition: Defn.Val | Defn.Var): Boolean = definition.pats match {
+    case List(Pat.Var(Term.Name(name))) =>
+      definition.parent.exists(_.collect {
+        case Term.Select(Term.Name(`name`), Term.Name(member)) if advancingMembers(member) => member
+      }.nonEmpty)
+    case _ => false
+  }
+
   override def fix(using document: SyntacticDocument): Patch = {
     val trees = document.tree.collect {
-      case term: Term.New if !construction(term) => ban("explicit-new", term.pos)
-      case term: Term.NewAnonymous               => ban("anonymous-allocation", term.pos)
+      case term: Term.New if arrayAllocation(term) => ban("explicit-new-array", term.pos)
+      case term: Term.New if !construction(term)   => ban("explicit-new", term.pos)
+      case term: Term.NewAnonymous                 => ban("anonymous-allocation", term.pos)
       case Term.Apply.After_4_6_0(select @ Term.Select(_, Term.Name("synchronized")), _) =>
         ban("intrinsic-lock", select.name.pos)
       case Term.Apply.After_4_6_0(name @ Term.Name("synchronized"), _) =>
         ban("intrinsic-lock", name.pos)
-      case selection @ Term.Select(_, Term.Name(name)) if iteratorMembers(name) => ban("no-iterator", selection.pos)
-      case selection @ Term.Select(_, Term.Name(name)) if productMembers(name)  =>
+      case selection @ Term.Select(_, Term.Name(name)) if iteratorMembers(name) && !stateful(selection) =>
+        ban("no-iterator", selection.pos)
+      case selection @ Term.Select(_, Term.Name(name)) if productMembers(name) =>
         ban("product-traversal", selection.pos)
       case pattern @ Pat.Typed(_, tpe) if productTypes(tpe.syntax) =>
         ban("product-traversal", pattern.pos)

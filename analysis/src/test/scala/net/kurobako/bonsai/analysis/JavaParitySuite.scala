@@ -94,7 +94,7 @@ class JavaParitySuite extends AnalysisSuite {
   }
 
   test("the methods of the test code of Java are not the ones a data clump is made of") {
-    val parameters = Vector("x", "y", "z").map(name => s"$name|other|java.lang.String||false").mkString(";")
+    val parameters = Vector("w", "x", "y", "z").map(name => s"$name|other|java.lang.String||false").mkString(";")
     def method(owner: String, name: String, source: String, line: Int) =
       record(
         "method",
@@ -259,6 +259,24 @@ class JavaParitySuite extends AnalysisSuite {
         "demo/Deadline.java:16",
         "false",
         inverted
+      ),
+      record(
+        "site",
+        "demo.Deadline.third",
+        "demo.Deadline.isExpired()",
+        "",
+        "demo/Deadline.java:20",
+        "false",
+        inverted
+      ),
+      record(
+        "site",
+        "demo.Deadline.fourth",
+        "demo.Deadline.isExpired()",
+        "",
+        "demo/Deadline.java:24",
+        "false",
+        inverted
       )
     )
   }
@@ -268,7 +286,7 @@ class JavaParitySuite extends AnalysisSuite {
 
     assertEquals(finding.node.name, "demo.Deadline")
     assertEquals(finding.node.source, "demo/Deadline.java")
-    assertEquals(finding.detail, "Deadline.isExpired: its boolean result is inverted at all 2 calls")
+    assertEquals(finding.detail, "Deadline.isExpired: its boolean result is inverted at all 4 calls")
     assertEquals(finding.level, Finding.Level.Warning)
   }
 
@@ -287,7 +305,7 @@ class JavaParitySuite extends AnalysisSuite {
   test("a Java boolean method of test code every caller inverts is reported as information") {
     val finding = reported(readJavaModel(deadline(), Output.Scope.Test), "inverted-boolean")
 
-    assertEquals(finding.detail, "Deadline.isExpired: its boolean result is inverted at all 2 calls (all in tests)")
+    assertEquals(finding.detail, "Deadline.isExpired: its boolean result is inverted at all 4 calls (all in tests)")
     assertEquals(finding.level, Finding.Level.Info)
   }
 

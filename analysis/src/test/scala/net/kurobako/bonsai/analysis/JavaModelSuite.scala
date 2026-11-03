@@ -329,7 +329,8 @@ class JavaModelSuite extends AnalysisSuite {
       roles: Int,
       member: String = "run",
       variables: Seq[String] = Seq.empty,
-      reach: String = ""
+      reach: String = "",
+      span: Int = 1
   ) = {
     val file = s"demo/${owner.stripPrefix("demo.")}.java"
     Seq(
@@ -337,7 +338,7 @@ class JavaModelSuite extends AnalysisSuite {
       owner,
       file,
       line.toString,
-      line.toString,
+      (line + span - 1).toString,
       offsets._1.toString,
       offsets._2.toString,
       cost.toString,
@@ -358,46 +359,64 @@ class JavaModelSuite extends AnalysisSuite {
   private val Entire = 4
   private val Helper = 16
 
-  private def chainAt(index: Int, cost: Int, member: String) =
-    expression("demo.First", index, (index * 100, index * 100 + 40), cost, exact = 1L, roles = Small, member = member)
+  private def chainAt(index: Int, cost: Int, member: String, span: Int) =
+    expression(
+      "demo.First",
+      index,
+      (index * 100, index * 100 + 40),
+      cost,
+      exact = 1L,
+      roles = Small,
+      member = member,
+      span = span
+    )
 
-  private def sites(count: Int, cost: Int) = (1 to count).map(chainAt(_, cost, "run"))
+  private def sites(count: Int, cost: Int, span: Int = 2) = (1 to count).map(chainAt(_, cost, "run", span))
 
-  private def sitesApart(count: Int) = (1 to count).map(index => chainAt(index, 14, s"run$index"))
+  private def sitesApart(count: Int, cost: Int = 26, span: Int = 2) = (1 to count).map(index =>
+    chainAt(index, cost, s"run$index", span)
+  )
 
   test("a chain of calls that Java code repeats at many places is a repeated expression") {
-    val found = cloned(sitesApart(11)*)
+    val found = cloned(sitesApart(6)*)
     assert(found.map(_.rule.id) == Vector("duplicate-code"), found.mkString("\n"))
-    assert(found.head.detail.startsWith("11 copies of 1 line (14 nodes)"), found.mkString("\n"))
+    assert(found.head.detail.startsWith("6 copies of 2 lines (26 nodes)"), found.mkString("\n"))
   }
 
   test("a chain of calls that Java code repeats four times in a method is a repeated expression") {
-    val found = cloned(sites(count = 4, cost = 10)*)
+    val found = cloned(sites(count = 4, cost = 26)*)
     assert(found.map(_.rule.id) == Vector("duplicate-code"), found.mkString("\n"))
   }
 
   test("a chain of calls that Java code repeats too few times for its size is not reported") {
-    assert(cloned(sitesApart(10)*).isEmpty)
+    assert(cloned(sitesApart(5)*).isEmpty)
     val owners = Seq("First", "Second", "Third", "First")
     val apart  = owners.zipWithIndex.map { (owner, index) =>
       expression(
         s"demo.$owner",
         index,
         (index * 100, index * 100 + 40),
-        10,
+        26,
         exact = 1L,
         roles = Small,
-        member = s"run$index"
+        member = s"run$index",
+        span = 2
       )
     }
     assert(cloned(apart*).isEmpty)
   }
 
+  test("copies that fit on one line, or weigh little, are rows of a table and are not reported") {
+    assert(cloned(sitesApart(11, cost = 14, span = 1)*).isEmpty)
+    assert(cloned(sitesApart(11, cost = 26, span = 1)*).isEmpty)
+    assert(cloned(sitesApart(11, cost = 14)*).isEmpty)
+  }
+
   test("Java methods with the same small body that takes a parameter are duplicates") {
     val parameter = Seq(reference("free#1", 0))
     val found     = cloned(
-      expression("demo.First", 8, (100, 140), 12, exact = 1L, Entire | Tiny, "label", parameter),
-      expression("demo.Second", 9, (200, 240), 12, exact = 1L, Entire | Tiny, "title", parameter)
+      expression("demo.First", 8, (100, 140), 26, exact = 1L, Entire | Tiny, "label", parameter, span = 2),
+      expression("demo.Second", 9, (200, 240), 26, exact = 1L, Entire | Tiny, "title", parameter, span = 2)
     )
     assert(found.map(_.rule.id) == Vector("duplicate-code"), found.mkString("\n"))
   }
@@ -408,10 +427,11 @@ class JavaModelSuite extends AnalysisSuite {
         s"demo.$owner",
         8,
         (100 * index, 100 * index + 40),
-        12,
+        26,
         exact = 1L,
         Entire | Tiny,
-        "PATTERN"
+        "PATTERN",
+        span = 2
       )
     }
     assert(cloned(rows.take(2)*).isEmpty)

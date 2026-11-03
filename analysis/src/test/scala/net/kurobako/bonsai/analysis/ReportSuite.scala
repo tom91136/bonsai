@@ -64,7 +64,7 @@ class ReportSuite extends AnalysisSuite {
       s"""enum $name {
          |  case AddI(dest: Int, a: Int, b: Int); case SubI(dest: Int, a: Int, b: Int); case MulI(dest: Int, a: Int, b: Int)
          |  case AddF(dest: Int, a: Double, b: Double); case SubF(dest: Int, a: Double, b: Double)
-         |  case Move(dest: Int, source: Int)
+         |  case Move(dest: Int, source: Int); case Load(dest: Int, slot: Int); case Store(dest: Int, slot: Int)
          |}""".stripMargin
     val mixed = extract(
       Seq(
@@ -289,7 +289,7 @@ class ReportSuite extends AnalysisSuite {
           |  }
           |}""".stripMargin
     ),
-    hot = Vector("Looping")
+    hot = Vector("Looping", "Costly")
   )
 
   test("a suppression on a method silences the findings its rules locate at the enclosing type") {

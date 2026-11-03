@@ -18,7 +18,7 @@ class BonsaiPlugin extends StandardPlugin {
   private val Instrumented = List("**/stryker4s-*/**", "stryker4s-*/**")
   private val Modes        = List("dev", "ci")
   private val Keys         =
-    Set("mode", "disable", "error", "warn", "wildcards", "partial", "throws", "hot", "checked")
+    Set("mode", "disable", "error", "warn", "wildcards", "partial", "throws", "hot", "bounded", "checked")
 
   // The compilers before 3.5 give no context to initialise a plugin with, so the problems with the options wait for the
   // first phase to report them.
@@ -70,8 +70,16 @@ class BonsaiPlugin extends StandardPlugin {
     // `checked=<type>` names, by its qualified name, a refinement type whose checked operations the others bypass.
     // `hot=<glob>` marks the classes whose code runs hot, by the qualified name of the class or object, and
     // `hot=!<glob>` leaves out classes the others mark, such as the suites of a hot package.
-    val isCold      = Globs.cold(values("hot"))
-    val hot         = Globs.heat(isCold, values("hot"))
+    val isCold = Globs.cold(values("hot"))
+    val hot    = Globs.heat(isCold, values("hot"))
+    // `bounded=<member>:<max>` declares, by the qualified name of the member or of its owner, that the collections of a
+    // member hold at most `max` elements, so walking them costs constant time.
+    val bounds = values("bounded").map {
+      case s"$member:$max" if max.toIntOption.exists(_ >= 0) => Right(Globs.qualifiedNames(member))
+      case option => Left(s"bonsai option bounded must be <member>:<max>, not $option")
+    }
+    problems ++= bounds.collect { case Left(problem) => problem }
+    val bounded     = bounds.collect { case Right(glob) => glob }
     val escalated   = strict ++ errors -- warnings
     val matchers    = Instrumented.map(Globs.matcher)
     val phaseChecks =
@@ -87,6 +95,7 @@ class BonsaiPlugin extends StandardPlugin {
         hot,
         values("hot").exists(!_.startsWith("!")),
         isCold,
+        (name, owner) => bounded.exists(Globs.reaches(_, name, owner)),
         values("checked").toSet
       )
     )

@@ -1,5 +1,7 @@
 package fix
 
+import scala.language.dynamics
+
 object ExplicitEtaExpansion {
   sealed abstract class Parent(value: Int)
   final case class Child(value: Int) extends Parent(value)
@@ -41,4 +43,10 @@ object ExplicitEtaExpansion {
   private def implied(implicit factor: Int): Int     = factor
   val contextual: List[Int]                          = List(scaled, implied)
   val contextualLibrary: List[List[Int]]             = List(List(2, 1).sorted)
+
+  final class Lookup extends scala.Dynamic {
+    def selectDynamic(name: String): Lookup = this
+  }
+  val lookup: Lookup                 = new Lookup
+  val dynamicSelection: List[Lookup] = List(lookup.process)
 }

@@ -29,6 +29,17 @@ object Fn {
     def applied(value: String): String      = s"$set.contains($value)"
   }
 
+  case class Facts(
+      text: String,
+      override val inspects: Option[String] = None,
+      override val destructures: Option[String] = None,
+      override val selection: Boolean = false,
+      override val diverges: Boolean = false
+  ) extends Fn {
+    def pure: Boolean                  = true
+    def applied(value: String): String = text.replace("_", value)
+  }
+
   case class Projected(index: Int) extends Fn {
     def text: String                     = s"_._$index"
     def pure: Boolean                    = true

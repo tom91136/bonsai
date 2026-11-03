@@ -185,7 +185,7 @@ class BranchesSuite extends FunSuite {
     )
   }
 
-  test("cases with renamed binders and one body over members they share are the same") {
+  test("cases that bind different names for their values are not joined, even with one body") {
     val source = trees + """object Branches {
                            |  def name(tree: Tree): String = tree match {
                            |    case term: TermSelect => term.name.trim
@@ -193,7 +193,7 @@ class BranchesSuite extends FunSuite {
                            |    case other: Other     => other.name
                            |  }
                            |}""".stripMargin
-    assertEquals(found(source, identical).size, 1)
+    assertEquals(found(source, identical), Nil)
   }
 
   test("cases whose bodies call different members of their own types are not the same") {
@@ -325,39 +325,37 @@ class BranchesSuite extends FunSuite {
     assert(rewritten(source).contains("case _: (NumberFormatException | IllegalStateException) => text.length"))
   }
 
-  test("branches that each call one method differing in a few arguments are reported") {
+  test("branches that each call one method differing in one argument are reported") {
     val source =
       """object Branches {
-                   |  enum Rule { case Limit, Huge, Near }
-                   |  enum Level { case Warn, Info }
-                   |  def at(nodes: Map[String, Int], key: String, rule: Rule, text: String, level: Level = Level.Warn): Option[String] =
-                   |    nodes.get(key).map(_ => text + rule + level)
+                   |  def at(nodes: Map[String, Int], key: String, text: String): Option[String] =
+                   |    nodes.get(key).map(_ => text)
                    |  def findings(size: Int, enumerated: Boolean, hot: Boolean, nodes: Map[String, Int], key: String): Option[String] =
-                   |    if (size > 100) at(nodes, key, Rule.Limit, s"has $size bytes")
-                   |    else if (enumerated) at(nodes, key, Rule.Huge, s"enum of $size bytes", Level.Info)
-                   |    else if (hot) at(nodes, key, Rule.Huge, s"$size bytes interpreted")
-                   |    else at(nodes, key, Rule.Huge, s"$size bytes", Level.Info)
+                   |    if (size > 100) at(nodes, key, s"has $size bytes")
+                   |    else if (enumerated) at(nodes, key, s"enum of $size bytes")
+                   |    else if (hot) at(nodes, key, s"$size bytes interpreted")
+                   |    else at(nodes, key, s"$size bytes")
                    |}""".stripMargin
     val reported = found(source, call)
     assertEquals(reported.size, 1)
-    assert(reported.head.contains("every branch calls at, differing in rule, text, level"), reported.head)
+    assert(reported.head.contains("every branch calls at, differing in text"), reported.head)
   }
 
-  test("match cases that each call one method differing in a few arguments are reported") {
+  test("match cases that each call one method differing in one argument are reported") {
     val source =
       """object Branches {
                    |  def emit(sink: StringBuilder, indent: Int, name: String, value: Int): Unit = sink.append(name * indent + value): Unit
                    |  def write(kind: Int, sink: StringBuilder, indent: Int, n: Int): Unit = kind match {
                    |    case 0 => emit(sink, indent, "zero", n)
-                   |    case 1 => emit(sink, indent, "one", n + 1)
-                   |    case _ => emit(sink, indent, "many", n * 2)
+                   |    case 1 => emit(sink, indent, "zero", n + 1)
+                   |    case _ => emit(sink, indent, "zero", n * 2)
                    |  }
                    |}""".stripMargin
     assertEquals(found(source, call).size, 1)
   }
 
   test(
-    "calls that share too little, build objects, take functions or by-name arguments, or are not in every branch are not reported"
+    "calls differing in two arguments, building objects, or taking functions and by-name arguments are not reported"
   ) {
     val source =
       """object Branches {
@@ -401,12 +399,30 @@ class BranchesSuite extends FunSuite {
                    |    case 1 => other(sink, n, m, 2)
                    |    case _ => emit(sink, n, m, 3)
                    |  }
+                   |  def wide(kind: Int, sink: StringBuilder, indent: Int, n: Int): Unit = kind match {
+                   |    case 0 => emit(sink, indent + 1, "zero", n)
+                   |    case 1 => emit(sink, indent + 2, "zero", n + 1)
+                   |    case _ => emit(sink, indent + 3, "zero", n + 2)
+                   |  }
                    |  def short(kind: Int, sink: StringBuilder, n: Int, m: String): Unit =
                    |    if (kind == 0) emit(sink, n, m, 1) else emit(sink, n, m, n)
                    |  def open(kind: Int, sink: StringBuilder, n: Int, m: String): Unit =
                    |    if (kind == 0) emit(sink, n, m, 1) else if (kind == 1) emit(sink, n, m, n) else if (kind == 2) emit(sink, n, m, n + 1)
                    |}""".stripMargin
     assertEquals(found(source, call), Nil)
+  }
+
+  test("a match of eight or more single-line cases is a dispatch table, not identical branches") {
+    def table(arms: Int): String = {
+      val cases = (0 until arms).map(code => s"    case $code => sink.append(n): Unit").mkString("\n")
+      s"""object Branches {
+         |  def write(code: Int, sink: StringBuilder, n: Int): Unit = code match {
+         |$cases
+         |  }
+         |}""".stripMargin
+    }
+    assertEquals(found(table(8), identical), Nil)
+    assertEquals(found(table(7), identical).size, 1)
   }
 
   private val binding = "binding-in-one-branch"

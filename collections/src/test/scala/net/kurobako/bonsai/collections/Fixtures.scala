@@ -28,7 +28,15 @@ object Fixtures {
   def effect(text: String): Fn = Fn.Plain(text, pure = false)
   def literal[A](value: A): Fn = Fn.Constant(value)
   def projection(n: Int): Fn   = Fn.Projected(n)
-  val same: Fn                 = Fn.Called("identity", value => value, identity = true)
+
+  val pair: String = "(_, _)"
+
+  def reading(shape: String): Fn  = Fn.Facts("_._1 > 0", inspects = Some(shape))
+  def matching(shape: String): Fn = Fn.Facts(s"{ case $shape => }", Some(shape), Some(shape))
+  def casting(tpe: String): Fn    = Fn.Facts(s"_.asInstanceOf[$tpe]", destructures = Some(s"_: $tpe"))
+  def selecting(text: String): Fn = Fn.Facts(text, selection = true)
+  def diverging(text: String): Fn = Fn.Facts(text, diverges = true)
+  val same: Fn                    = Fn.Called("identity", value => value, identity = true)
 
   def step(method: String, args: Arg*): Step = Step(method, args.toVector, Strict, Strict)
 

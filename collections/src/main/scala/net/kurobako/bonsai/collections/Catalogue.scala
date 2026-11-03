@@ -36,6 +36,13 @@ private[collections] object Catalogue {
     "toSet"        -> Set("immutable.Set")
   )
 
+  private def sameShape(hit: Hit): Boolean = (for {
+    filter <- single(hit, 0)
+    map    <- single(hit, 1)
+    taken  <- filter.inspects
+    bound  <- map.destructures
+  } yield taken == bound).contains(true)
+
   private def strictReceiver(hit: Hit): Boolean = strictSequences(hit.receiver.name)
 
   private def notString(hit: Hit): Boolean = hit.steps.forall(_.receiver.name != "String")
@@ -338,10 +345,11 @@ private[collections] object Catalogue {
       idiom = true,
       analysed = true,
       applies = hit => !(hit.steps.head.desugared && single(hit, 1).exists(_.identity)),
+      speaks = hit =>
+        hit.receiver.strict && !hit.receiver.single && !hit.steps.head.desugared &&
+          (hit.chain.hot || sameShape(hit)),
       message = hit =>
-        if (hit.steps.head.desugared)
-          "a guard then yield is a collect; a partial function with a guard replaces the for-comprehension"
-        else s"${hit.method(0)} then map is a collect; a partial function with a guard filters and maps in one pass"
+        s"${hit.method(0)} then map is a collect; a partial function with a guard filters and maps in one pass"
     ),
     Law(
       "find-to-exists",
@@ -543,8 +551,10 @@ private[collections] object Catalogue {
       Vector(identities.keySet),
       into = "self",
       applies = hit =>
-        identities(hit.method(0))(hit.receiver.name) ||
-          (hit.method(0) == "toSeq" && strictReceiver(hit) && hit.chain.asserted && hit.until == hit.chain.steps.size),
+        !hit.steps.head.retyped &&
+          (identities(hit.method(0))(hit.receiver.name) ||
+            (hit.method(0) == "toSeq" && strictReceiver(hit) && hit.chain.asserted &&
+              hit.until == hit.chain.steps.size)),
       rewrite = Some((_, receiver) => receiver),
       message = _ => "remove the identity collection conversion"
     ),
@@ -579,7 +589,7 @@ private[collections] object Catalogue {
       into = "fold",
       idiom = true,
       applies = hit =>
-        hit.receiver.single && single(hit, 0).exists(!_.identity) && single(hit, 1).isDefined,
+        hit.receiver.single && single(hit, 0).exists(!_.identity) && single(hit, 1).exists(!_.diverges),
       message = _ => "use fold for map and getOrElse"
     ),
     Law(
@@ -587,7 +597,9 @@ private[collections] object Catalogue {
       Vector(Set("map")),
       into = "self",
       idiom = true,
-      applies = hit => hit.receiver.single && single(hit, 0).exists(_.identity),
+      applies = hit =>
+        hit.receiver.single && !hit.steps.head.retyped && single(hit, 0).exists(_.identity) &&
+          !(hit.steps.head.desugared && hit.chain.yielded),
       rewrite = Some((_, receiver) => receiver),
       message = _ => "map of identity is the option itself"
     ),
@@ -661,6 +673,7 @@ private[collections] object Catalogue {
       applies = hit =>
         strictRun(hit) && unary(hit) && hit.receiver.name != "Array" &&
           (!hit.steps.head.desugared || Set("map", "flatMap")(hit.method(1))),
+      speaks = hit => hit.chain.hot || !hit.steps.forall(_.args.forall(_.selection)),
       rewrite = Some(nested(_, _)),
       exact = hit => pure(hit) && !hit.args(1).head.text.startsWith("case"),
       message = hit =>

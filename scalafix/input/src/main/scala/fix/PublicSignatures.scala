@@ -18,6 +18,10 @@ object PublicSignatures {
   private def internal(value: Any): (Int, Int)                                              = (0, 0)
   override def toString: String = "PublicSignatures"
 
+  def plane(x: Int, y: Int, z: Int): Unit = ()
+
+  def area(x: Int, y: Int, z: Int, w: Int): Int = x
+
   private object Internal {
     def resize(width: Int, height: Int, depth: Int): Unit = ()
   }

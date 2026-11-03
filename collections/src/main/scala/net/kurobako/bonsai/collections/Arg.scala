@@ -18,6 +18,20 @@ trait Arg {
   /** The source of the set whose `contains` the function is, if it is one. */
   def membership: Option[String] = None
 
+  /** The shape of the argument the function takes apart: the pattern it matches, the tuple it reads components of, or
+    * the type it tests, written as a pattern with every name replaced by `_`.
+    */
+  def inspects: Option[String] = None
+
+  /** The shape of the argument the function binds apart: the pattern it matches, or the type it casts to. */
+  def destructures: Option[String] = None
+
+  /** Whether the function only selects a member of its argument, such as `_.name` or `x => x.name`. */
+  def selection: Boolean = false
+
+  /** Whether the argument has the type `Nothing`, so that it never gives a value. */
+  def diverges: Boolean = false
+
   /** The call of this function on `value`, written as source. */
   def applied(value: String): String
 }

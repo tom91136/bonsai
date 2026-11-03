@@ -236,7 +236,8 @@ private class Sizes(
     if (
       (name == "take" && arguments.flatMap(literal(_)).nonEmpty) ||
       (name == "filter" && arguments.flatMap(Calls.lambda(_)).exists(keyed(_))) ||
-      (name == "slice" && arguments.size == 2 && arguments.forall(literal(_).isDefined))
+      (name == "slice" && arguments.size == 2 && arguments.forall(literal(_).isDefined)) ||
+      (name == "takeWhile" && seeked(select.qualifier))
     ) Some(Polynomial.One)
     else if (Joins(name))
       for {

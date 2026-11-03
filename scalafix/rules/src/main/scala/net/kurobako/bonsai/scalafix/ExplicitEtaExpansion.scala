@@ -19,6 +19,7 @@ class ExplicitEtaExpansion extends SemanticRule("ExplicitEtaExpansion") {
           if isArgument(reference) &&
             !parameterSymbols(reference.symbol) &&
             !reference.symbol.value.startsWith("scala/Predef.identity") &&
+            !dynamic(reference) &&
             mayBeMethod(reference.symbol) =>
         explicitApplication(reference).map { application =>
           Patch.replaceTree(reference, if (bareInfixOperand(reference)) s"($application)" else application) + lint(
@@ -45,6 +46,15 @@ class ExplicitEtaExpansion extends SemanticRule("ExplicitEtaExpansion") {
     case arguments: Term.ArgClause =>
       arguments.parent.exists { case _: Term.ApplyInfix => true; case _ => false } &&
       !arguments.tokens.headOption.exists { case _: Token.LeftParen => true; case _ => false }
+    case _ => false
+  }
+
+  private val dynamicMembers = Set("selectDynamic", "applyDynamic", "applyDynamicNamed", "updateDynamic")
+
+  private def dynamic(reference: Term.Ref)(using SemanticDocument): Boolean = reference match {
+    case Term.Select(_, name) =>
+      val member = reference.symbol.value.desc.value
+      reference.symbol.isGlobal && member != name.value && dynamicMembers(member)
     case _ => false
   }
 

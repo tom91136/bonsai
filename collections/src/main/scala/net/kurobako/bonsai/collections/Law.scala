@@ -1,16 +1,17 @@
 package net.kurobako.bonsai.collections
 
 /** A law over a window of adjacent steps, as data: the methods each step may be, or one slot the `repeat`s of which
-  * make a run of two or more; `applies` for what must hold for it to speak at all; `into`, the method it improves to,
-  * which the cost model needs; and what it says. With a `rewrite` and `exact` holding, the outcome is that rewrite;
-  * otherwise it is reported, with `report` or else the `message`, where an exact outcome that cannot be written keeps
-  * the `message`. `advice` laws apply to the steps no other law took. A law that is an `idiom` is accepted at an equal
-  * cost. The compiler plugin reports what the law finds, but for a `deferred` law only the exact rewrites, the rest
-  * being left to the analysis; the analysis also reports what an `analysed` law finds where it saves passes or
-  * intermediate collections. A step written with type arguments, or a call the compiler wrote for a for-comprehension,
-  * is never rewritten, since the rewrite would drop the arguments or have no text to replace, only reported. The report
-  * of a `viewable` law says that a view runs the steps in one pass. A law with a `java` form is one the javac plugin
-  * reports, in the words of that form; the compiler plugin never reads it.
+  * make a run of two or more; `applies` for what must hold for it to take the steps; `speaks` for what must hold for it
+  * to say anything of them, where a law that takes steps and stays silent keeps them from the laws after it; `into`,
+  * the method it improves to, which the cost model needs; and what it says. With a `rewrite` and `exact` holding, the
+  * outcome is that rewrite; otherwise it is reported, with `report` or else the `message`, where an exact outcome that
+  * cannot be written keeps the `message`. `advice` laws apply to the steps no other law took. A law that is an `idiom`
+  * is accepted at an equal cost. The compiler plugin reports what the law finds, but for a `deferred` law only the
+  * exact rewrites, the rest being left to the analysis; the analysis also reports what an `analysed` law finds where it
+  * saves passes or intermediate collections. A step written with type arguments, or a call the compiler wrote for a
+  * for-comprehension, is never rewritten, since the rewrite would drop the arguments or have no text to replace, only
+  * reported. The report of a `viewable` law says that a view runs the steps in one pass. A law with a `java` form is
+  * one the javac plugin reports, in the words of that form; the compiler plugin never reads it.
   */
 private[collections] case class Law(
     id: String,
@@ -18,6 +19,7 @@ private[collections] case class Law(
     into: String,
     message: Hit => String,
     applies: Hit => Boolean = _ => true,
+    speaks: Hit => Boolean = _ => true,
     rewrite: Option[(Hit, String) => String] = None,
     exact: Hit => Boolean = _ => true,
     report: Option[Hit => String] = None,

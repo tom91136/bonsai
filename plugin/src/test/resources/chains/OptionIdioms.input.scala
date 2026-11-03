@@ -15,11 +15,16 @@ object OptionIdioms {
   val defined = map.get(1).isDefined// assert: map-get-emptiness
   val folded = option.map(_ + 1).getOrElse(0)// assert: map-get-or-else-to-fold
   val checked = option.map(_ > 0).getOrElse(false)// assert: map-get-or-else-to-fold
+  val failed = option.map(_ + 1).getOrElse(sys.error("none"))
+  val thrown = option.map(_ + 1).getOrElse(throw new IllegalStateException("none"))
+  val unfinished = option.map(_ + 1).getOrElse(???)
   val identityFolded = option.map(x => x).getOrElse(0)// assert: redundant-identity-map
   val identityMapped = option.map(identity)// assert: redundant-identity-map
+  val upcast = Option("a").map[CharSequence](identity)
+  val sameTyped = Option("a").map[String](identity)// assert: redundant-identity-map
   val transformed = list.map(identity)
   val viaFor = for (value <- option) yield value// assert: redundant-identity-map
-  val viaTwo = for { first <- option; second <- empty } yield second// assert: redundant-identity-map
+  val viaTwo = for { first <- option; second <- empty } yield second
   val contained = option == Some(1)// assert: some-to-contains
   val excluded = Some(1) != option// assert: some-to-contains
   val nothing = option == None// assert: none-check

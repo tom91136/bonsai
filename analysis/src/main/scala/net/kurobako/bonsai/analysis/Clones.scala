@@ -95,8 +95,9 @@ object Clones {
     * zero for a run of statements. `small` marks a chain of calls too small to be a copy of its own, `tiny` the whole
     * body of a member too small to be, `entire` the body of a member of any size, and `direct` a single call. A
     * `helper` is a body that calls of it may replace, and `reach` the type it is visible to, if not to all code. Of the
-    * fragments that are `whole`, the copies of larger code and of bodies of methods, near duplicates are made, and a
-    * `method` holds the code of a method, where a value holds the rows of a table.
+    * fragments that are `whole`, the copies of larger code and of bodies of methods, near duplicates are made, a
+    * `method` holds the code of a method, where a value holds the rows of a table, and an `operand` is one side of an
+    * `&&` or `||`.
     */
   case class Candidate(
       fragment: Fragment,
@@ -121,7 +122,8 @@ object Clones {
       helper: Boolean = false,
       reach: Option[String] = None,
       whole: Boolean = true,
-      method: Boolean = true
+      method: Boolean = true,
+      operand: Boolean = false
   )
 
   /** The statements a run must span to be a copy of more than one expression. */
@@ -140,6 +142,10 @@ object Clones {
   private val FamilyCopies = 3
 
   private val ShownCopies = 4
+
+  // Copies lighter than this, or on one line, are rows of a table or idioms of the language, which no shared method
+  // would read better.
+  private val MinimumCost = 25
 
   // A chain of calls written this often across the build is an idiom worth a name, while one written a few times in a
   // method is a value to bind.
@@ -163,13 +169,27 @@ object Clones {
 
   /** A finding per group of copies, except that a file holding more than `MaximumPerFile` groups of one rule entirely
     * within itself gets one finding naming its largest. Copies split between main code and tests are information, as an
-    * independent test oracle is meant to repeat what it checks. Groups whose copies are all intended pairs are left
-    * out.
+    * independent test oracle is meant to repeat what it checks. Groups whose copies are all intended pairs, or all
+    * generated, or too small to be worth sharing are left out, as are those whose copies lie in modules with no module
+    * in common that they all depend on, which the `edges` between nodes show.
     */
-  def findings(groups: Vector[Group], nodes: Map[String, Node], intended: Intended = Intended()): Vector[Finding] = {
+  def findings(
+      groups: Vector[Group],
+      nodes: Map[String, Node],
+      intended: Intended = Intended(),
+      edges: Map[String, Set[String]] = Map.empty
+  ): Vector[Finding] = {
+    val homes = Homes(nodes, edges)
     // Overloads one per width are what numbered-family asks for, and literals an inline method specialises on are its
     // point, so near duplicates among them are by design.
-    val designed = groups.filterNot { group =>
+    val worthy = groups.filter { group =>
+      group.helper.isDefined ||
+      (group.fragments.exists(_.lines > 1) && group.cost >= MinimumCost &&
+        (group.holes.isEmpty || group.fragments.forall(_.lines > 1)) &&
+        !group.fragments.forall(copy => nodes.get(copy.node).exists(_.generated)) &&
+        homes.shared(group.fragments.map(_.node)))
+    }
+    val designed = worthy.filterNot { group =>
       lazy val families = group.fragments.map(_.family).distinct
       group.holes.nonEmpty &&
       (group.fragments.forall(_.specialised) || families.forall(_.nonEmpty) && families.size == 1 ||
@@ -247,6 +267,38 @@ object Clones {
       report(near ++ referring)((outer, inner) => outer._1 < inner._2 && inner._1 < outer._2)
   }
 
+  /** The modules the code of a node may share code with: those its module depends on, as the references of its nodes to
+    * the nodes of others show.
+    */
+  private class Homes(nodes: Map[String, Node], edges: Map[String, Set[String]]) {
+    private lazy val direct: Map[String, Set[String]] =
+      edges.toVector.flatMap { (from, targets) =>
+        nodes.get(from).toVector.flatMap(source =>
+          targets.flatMap(nodes.get(_)).collect {
+            case target if target.module != source.module =>
+              source.module -> target.module
+          }
+        )
+      }.groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap
+
+    private def reach(module: String): Set[String] = {
+      @annotation.tailrec
+      def close(seen: Set[String], frontier: Set[String]): Set[String] =
+        if (frontier.isEmpty) seen
+        else {
+          val next = frontier.flatMap(direct.getOrElse(_, Set.empty)) -- seen
+          close(seen ++ next, next)
+        }
+      close(Set(module), Set(module))
+    }
+
+    /** Whether some module holds, or is depended on by the module of, every one of the `copies`. */
+    def shared(copies: Vector[String]): Boolean = {
+      val modules = copies.flatMap(nodes.get(_).map(_.module)).distinct
+      modules.size <= 1 || modules.map(reach(_)).reduce(_ intersect _).nonEmpty
+    }
+  }
+
   private case class Found(
       cost: Int,
       copies: Vector[Candidate],
@@ -275,7 +327,7 @@ object Clones {
     )
     if (helpers.isEmpty) Vector.empty
     else
-      candidates.view.filter(!_.entire).flatMap { site =>
+      candidates.view.filter(site => !site.entire && !site.operand).flatMap { site =>
         helpers.get(site.broad).flatMap(
           _.filter(helper => outside(site, helper) && instance(helper, site))
             .minByOption(helper => (-helper.cost, helper.fragment.path, helper.fragment.start))

@@ -295,6 +295,7 @@ private class Costs(
         else if (select.symbol.is(Flags.Method)) nullary(select, select.symbol, Some(select), scope)
       case ident: tpd.Ident if ident.symbol.is(Flags.Method) => nullary(ident, ident.symbol, None, scope)
       case tpd.DefDef(_, _, _, _)                            => ()
+      case tpd.Return(expression, _)                         => visit(expression, scope)
       case _                                                 => subtrees.of(tree).foreach(visit(_, scope))
     }
 

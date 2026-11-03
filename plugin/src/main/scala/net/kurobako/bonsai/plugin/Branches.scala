@@ -16,14 +16,15 @@ private object Branches {
 
 /** Reports branches of an `if` chain, a `match` or the handlers of a `try` that run the same code: adjacent branches
   * with equal bodies, whose conditions or patterns join, a branch equal to the default one, which decides nothing, and
-  * three or more branches that each call the same method with a few arguments set apart, which one call can make. The
-  * bodies are equal when they resolve to the same symbols, up to the names of the values they bind; a body that is only
-  * a constant, or that has a comment before the next branch, is left alone.
+  * three or more branches that each call the same method with one argument set apart, which one call can make. The
+  * bodies are equal when they resolve to the same symbols, and cases join only when they bind the same name; a body
+  * that is only a constant, or that has a comment before the next branch, is left alone. A `match` with eight or more
+  * single-line cases is a dispatch table, and its cases are left alone.
   */
 private class Branches(checks: Checks)(using Context) {
   private val MinimumBranches = 3
   private val MinimumShared   = 2
-  private val SharedShare     = 3
+  private val DispatchArms    = 8
   private val text            = Edits.source
 
   private enum Shape {
@@ -53,7 +54,7 @@ private class Branches(checks: Checks)(using Context) {
         traverseChildren(tree)
       case branch: tpd.Match =>
         if (!branch.isInline && Trees.real(branch)) {
-          handlers(branch.cases)
+          if (!dispatch(branch.cases)) handlers(branch.cases)
           repeated(branch, branch.cases.map(_.body))
         }
         traverseChildren(tree)
@@ -195,7 +196,7 @@ private class Branches(checks: Checks)(using Context) {
   private def alike(left: tpd.CaseDef, right: tpd.CaseDef): Boolean =
     (shape(left.pat), shape(right.pat)) match {
       case (Some(Shape.Bound(a, _)), Some(Shape.Bound(b, _))) =>
-        sameBody(left, right, Sameness().rename(a.symbol, b.symbol))
+        a.name == b.name && sameBody(left, right, Sameness().rename(a.symbol, b.symbol))
       case (Some(_: Shape.Free), Some(_: Shape.Free)) => sameBody(left, right, Sameness())
       case _                                          => false
     }
@@ -203,6 +204,9 @@ private class Branches(checks: Checks)(using Context) {
   private def sameBody(left: tpd.CaseDef, right: tpd.CaseDef, sameness: Sameness): Boolean =
     guarded(left, right, sameness) && !trivial(left.body) &&
       sameness(Calls.peelInlined(left.body), Calls.peelInlined(right.body))
+
+  private def dispatch(cases: List[tpd.CaseDef]): Boolean =
+    cases.count(arm => !text.slice(arm.span.start, arm.span.end).contains('\n')) >= DispatchArms
 
   private def handlers(cases: List[tpd.CaseDef]): Unit =
     if (cases.nonEmpty && cases.forall(Trees.real)) merge(cases.take(absorbed(cases)))
@@ -343,15 +347,15 @@ private class Branches(checks: Checks)(using Context) {
           val callee    =
             first.receiver.filter(_ => first.method.name == nme.apply).fold(first.method.name.toString)(Trees.text)
           if (
-            shared.size >= MinimumShared && differing.nonEmpty && shared.size * SharedShare >= positions.size &&
+            shared.size >= MinimumShared && differing.size == 1 &&
             differing.forall(index => !Trees.byName(first.parameters(index))) &&
             varying.forall(_.forall(argument => Calls.lambda(argument).isEmpty)) &&
             !varying.forall(_.forall(trivial(_)))
           )
             checks(
               Check.RepeatedBranchCall,
-              s"every branch calls $callee, differing in " +
-                s"${differing.map(first.parameters(_).name).mkString(", ")}; choose those per branch and call once",
+              s"every branch calls $callee, differing in ${first.parameters(differing.head).name}; " +
+                "choose it per branch and call once",
               owner.srcPos
             )
         }

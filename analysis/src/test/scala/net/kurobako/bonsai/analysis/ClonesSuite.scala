@@ -175,14 +175,14 @@ class ClonesSuite extends AnalysisSuite {
     )
   }
 
-  test("generated sources are hashed like handwritten ones") {
+  test("copies that are all generated are not reported, while a handwritten copy among them keeps the finding") {
     val sources = Seq(
       "First.scala"  -> average("First", "items", "kept", "scaled"),
       "Second.scala" -> average("Second", "values", "chosen", "twice")
     )
-    val generated = findings(sources.map((name, code) => s"src/generated/$name" -> code))
-    assertEquals(generated.map(_.rule), findings(sources).map(_.rule))
-    assert(generated.nonEmpty && generated.forall(_.node.generated), generated.mkString("\n"))
+    assertEquals(findings(sources.map((name, code) => s"src/generated/$name" -> code)), Vector.empty)
+    val mixed = findings(Seq(sources.head, s"src/generated/${sources(1)._1}" -> sources(1)._2))
+    assertFinding(mixed, "duplicate-code", "2 copies of")
   }
 
   test("duplicates only in tests are information") {
@@ -365,13 +365,12 @@ class ClonesSuite extends AnalysisSuite {
   private def minimum(width: Int) =
     s"  def minimum$width(x: Long, y: Long): Long = Widths.wrap(8, Widths.minimum(x + 1, y + 1, $width))"
 
-  test("three one-line copies that differ only in literals are a family of near duplicates") {
+  test("three one-line copies that differ only in literals are a table, not a family of near duplicates") {
     val found = findings(Seq(
       "Widths.scala"  -> Widths,
       "Minimum.scala" -> Seq(16, 32, 64).map(minimum(_)).mkString("object Minimum {\n", "\n", "\n}")
     ))
-    assertFinding(found, "near-duplicate-code", "3 copies of 1 line ", "{16, 32, 64}")
-    assertEquals(found.size, 1, found.mkString("\n"))
+    assertEquals(found, Vector.empty)
   }
 
   test("overloads one per width, and inline methods specialising on literals, are near duplicates by design") {
@@ -575,7 +574,9 @@ class ClonesSuite extends AnalysisSuite {
   test("per-width members of companions that differ only in the width are near duplicates by design") {
     def companion(width: Int): String =
       s"""object Float$width {
-         |  def add(l: Long, r: Long): Long = FloatingPoint(IEEE754.add(l, r, $width) + IEEE754.add(r, l, $width))
+         |  def add(l: Long, r: Long): Long = FloatingPoint(
+         |    IEEE754.add(l, r, $width) + IEEE754.add(r, l, $width) + IEEE754.add(l, l, $width) + IEEE754.add(r, r, $width)
+         |  )
          |}""".stripMargin
     val ieee     = "object IEEE754 { def add(l: Long, r: Long, width: Int): Long = l + r + width }"
     val floating = "object FloatingPoint { def apply(bits: Long): Long = bits }"
@@ -592,9 +593,15 @@ class ClonesSuite extends AnalysisSuite {
       "FloatingPoint.scala" -> floating,
       "Floats.scala"        ->
         """object Floats {
-          |  def add16(l: Long, r: Long): Long = FloatingPoint(IEEE754.add(l, r, 16) + IEEE754.add(r, l, 16))
-          |  def add32(l: Long, r: Long): Long = FloatingPoint(IEEE754.add(l, r, 32) + IEEE754.add(r, l, 32))
-          |  def add64(l: Long, r: Long): Long = FloatingPoint(IEEE754.add(l, r, 64) + IEEE754.add(r, l, 64))
+          |  def add16(l: Long, r: Long): Long = FloatingPoint(
+          |    IEEE754.add(l, r, 16) + IEEE754.add(r, l, 16) + IEEE754.add(l, l, 16) + IEEE754.add(r, r, 16)
+          |  )
+          |  def add32(l: Long, r: Long): Long = FloatingPoint(
+          |    IEEE754.add(l, r, 32) + IEEE754.add(r, l, 32) + IEEE754.add(l, l, 32) + IEEE754.add(r, r, 32)
+          |  )
+          |  def add64(l: Long, r: Long): Long = FloatingPoint(
+          |    IEEE754.add(l, r, 64) + IEEE754.add(r, l, 64) + IEEE754.add(l, l, 64) + IEEE754.add(r, r, 64)
+          |  )
           |}""".stripMargin
     )))
     assertFinding(shared, "near-duplicate-code", "3 copies of", "{16, 32, 64}")
@@ -697,5 +704,22 @@ class ClonesSuite extends AnalysisSuite {
     assertEquals(deferred.value, Vector(1))
     assertEquals(deferred.value, Vector(1))
     assertEquals(computations.get, 1)
+  }
+
+  test("copies across modules are reported only where some module they all depend on could hold the code") {
+    def node(name: String, module: String) = name ->
+      Node(name, module, Output.Scope.Main, s"$name.scala", 1, generated = false, exported = false, outer = None)
+    val nodes = Map(node("App", "app"), node("Lib", "lib"), node("Other", "other"), node("Base", "base"))
+    def group(owners: String*) =
+      Clones.Group(40, owners.toVector.map(Clones.Fragment(_, "x.scala", start = 1, end = 3, test = false)))
+    def reported(edges: Map[String, Set[String]], owners: String*) =
+      Clones.findings(Vector(group(owners*)), nodes, edges = edges).size
+    val shared = Map("App" -> Set("Base"), "Lib" -> Set("Base"), "Other" -> Set.empty[String])
+    assertEquals(reported(shared, "App", "Lib"), 1)
+    assertEquals(reported(shared, "App", "Other"), 0)
+    assertEquals(reported(Map("App" -> Set("Lib")), "App", "Lib"), 1)
+    assertEquals(reported(Map("App" -> Set("Lib"), "Lib" -> Set("Base")), "App", "Base"), 1)
+    assertEquals(reported(Map.empty, "App", "Lib"), 0)
+    assertEquals(reported(Map.empty, "App", "App"), 1)
   }
 }

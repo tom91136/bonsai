@@ -11,18 +11,16 @@ private object Fields {
   val Checks: Set[Check] = Set(Check.WriteOnlyField)
 }
 
-/** Reports private fields nothing reads for a purpose: written, checked by `require` or `assert` as the object is
-  * built, or shown and compared by the methods describing the object, but never otherwise used. Every use of a private
-  * field is in its unit. Constructor parameters are left alone, since one only checked as the object is built is not
-  * kept.
+/** Reports private fields that are written but never read, or read only by `require` or `assert` as the object is
+  * built. Every use of a private field is in its unit, and any other read, such as one in `toString` or `hashCode`,
+  * counts as a use. Constructor parameters are left alone, since one only checked as the object is built is not kept.
   */
 private class Fields(checks: Checks)(using Context) extends tpd.TreeTraverser {
   private enum Read {
-    case Written, Checked, Described
+    case Written, Checked
   }
 
-  private val Descriptions = Set("toString", "equals", "hashCode", "canEqual")
-  private val Validations  = Set("require", "assert", "assume")
+  private val Validations = Set("require", "assert", "assume")
 
   private val candidates = mutable.Set.empty[Symbol]
   private val reads      = mutable.Map.empty[Symbol, mutable.Set[Read]]
@@ -77,7 +75,8 @@ private class Fields(checks: Checks)(using Context) extends tpd.TreeTraverser {
     case reference: (tpd.Ident | tpd.Select) if candidates(reference.symbol) =>
       val field = reference.symbol
       if (updating.contains(field)) record(field, Read.Written)
-      else purpose(field).fold(used += field: Unit)(record(field, _))
+      else if (checkedRead(field)) record(field, Read.Checked)
+      else used += field: Unit
       traverseChildren(tree)
     case _ => traverseChildren(tree)
   }
@@ -95,12 +94,7 @@ private class Fields(checks: Checks)(using Context) extends tpd.TreeTraverser {
     finally checked.pop(): Unit
   }
 
-  // Reads in a check the class makes as it is built, outside the functions the check passes on, or in the methods
-  // describing an object.
-  private def purpose(field: Symbol): Option[Read] =
-    if (checked.headOption.flatten.contains(field.owner) && enclosing.headOption.contains(field.owner))
-      Some(Read.Checked)
-    else
-      enclosing.find(_.owner == field.owner).filter(definition => Descriptions(definition.name.toString))
-        .map(_ => Read.Described)
+  // Reads in a check the class makes as it is built, outside the functions the check passes on.
+  private def checkedRead(field: Symbol): Boolean =
+    checked.headOption.flatten.contains(field.owner) && enclosing.headOption.contains(field.owner)
 }

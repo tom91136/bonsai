@@ -143,7 +143,8 @@ object Finding {
 
   /** A finding at the node keyed `key`, lowered to information when it concerns test code or rests only on evidence
     * from tests. `suppressed` holds the rules the declaration the finding concerns suppresses, when that declaration is
-    * narrower than the node.
+    * narrower than the node. `line` places the finding on the method or call it concerns, when that is not the node's
+    * line.
     */
   def at(
       nodes: Map[String, Node],
@@ -152,11 +153,12 @@ object Finding {
       detail: String,
       level: Level = Level.Warning,
       onlyTests: Boolean = false,
-      suppressed: Set[String] = Set.empty
+      suppressed: Set[String] = Set.empty,
+      line: Int = 0
   ): Option[Finding] = nodes.get(key).map(node =>
     Finding(
       rule,
-      node,
+      if (line > 0) node.copy(line = line) else node,
       if (onlyTests) s"$detail (all in tests)" else detail,
       if (node.test || onlyTests) Level.Info else level,
       suppressed

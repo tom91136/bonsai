@@ -33,8 +33,8 @@ object Pipelines {
   /** Lifts the chains of collection calls in each method body to the shared algebra, with the purity of their functions
     * from `effects`.
     */
-  class Chains(effects: Purity.Inference, lines: Lines)(using Context) {
-    private val lifter = lifting.Lifter(Inferred(effects))
+  class Chains(effects: Purity.Inference, lines: Lines, hot: String => Boolean)(using Context) {
+    private val lifter = lifting.Lifter(Inferred(effects), hot)
 
     // A nested method is lifted on its own when the build declares it; a local one is not lifted at all.
     private def descend(tree: tpd.Tree): Boolean = tree match {

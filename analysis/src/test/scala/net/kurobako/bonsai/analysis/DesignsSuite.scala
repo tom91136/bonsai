@@ -111,6 +111,23 @@ class DesignsSuite extends AnalysisSuite {
     )
   }
 
+  test("functions whose first parameter is a primitive or a String are not extension candidates") {
+    val found = findings(
+      "Sample.scala" ->
+        """object Sample {
+          |  def double(count: Int): Int = count * 2
+          |  def triple(count: Int): Int = count * 3
+          |  def quad(count: Int): Int = count * 4
+          |}
+          |object Words {
+          |  def upper(text: String): String = text.toUpperCase
+          |  def lower(text: String): String = text.toLowerCase
+          |  def trim(text: String): String = text.trim
+          |}""".stripMargin
+    )
+    assertEquals(of(found, Finding.Rule.ReceiverParameter), Vector.empty)
+  }
+
   test("receivers that already have a member of the name, and inline algebra instances, are not extension candidates") {
     val found = findings(
       "Semantics.scala" ->

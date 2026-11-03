@@ -38,3 +38,17 @@ class RedundantCollectionConversion extends munit.FunSuite {
   val custom = new ApplicationMethods
   val customConversion = custom.toSeq
 }
+
+object Opaque {
+  opaque type NonEmpty[A] <: A = A
+  def apply[A](value: A): NonEmpty[A] = value
+}
+
+class OpaqueConversions {
+  val names: Set[Opaque.NonEmpty[String]] = Set(Opaque("kernel"))
+  val widened = names.toSet[String]
+  val kept = names.toSet// assert: redundant-collection-conversion
+  val ints: Set[Int] = Set(1)
+  val widenedInts = ints.toSet[AnyVal]
+  val keptInts = ints.toSet[Int]// assert: redundant-collection-conversion
+}

@@ -48,12 +48,8 @@ class ReportedLawsSuite extends munit.FunSuite {
 
   for (filter <- List("filter", "filterNot"))
     report(s"$filter then map", "filter-map-to-collect", s"$filter then map is a collect; $guard") {
-      chain("list", step(filter, fn("_ > 0")), step("map", fn("_ * 2")))
+      chain("list", step(filter, reading(pair)), step("map", matching(pair)))
     }
-
-  report("filter then map on an option", "filter-map-to-collect", s"filter then map is a collect; $guard") {
-    chain("opt", on(Opt, "filter", fn("_ > 0")), on(Opt, "map", fn("_ * 2")))
-  }
 
   for (value <- List(true, false))
     report(s"map then contains($value)", "map-contains", s"map then contains traverses every element; $everyElement") {

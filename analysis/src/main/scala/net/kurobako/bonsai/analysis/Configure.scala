@@ -7,8 +7,8 @@ import net.kurobako.bonsai.configuration.BonsaiConfiguration.*
 
 /** Reads `.bonsai.conf` for a module and writes what a build that does not read it itself needs to a file, one
   * tab-separated entry a line: the module's `disabled`, `errors`, `warnings`, `wildcards` and `library` settings, the
-  * build's `hot` and `checked` lists, the `option`s the analysis runs with, and the manifest lines of the text rules as
-  * they are.
+  * build's `hot`, `bounded`, and `checked` lists, the `option`s the analysis runs with, and the manifest lines of the
+  * text rules as they are.
   */
 object Configure {
   private val usage = "usage: bonsai-configure --config <file> --module <id> --out <file>"
@@ -34,6 +34,7 @@ object Configure {
     entries("disabled", analysis.disabled) ++ entries("errors", analysis.errors) ++
       entries("warnings", analysis.warnings) ++ settings.wildcards.map(value => s"wildcards\t$value") ++
       settings.library.map(value => s"library\t$value") ++ entries("hot", analysis.hot) ++
+      analysis.bounded.map((member, max, _) => s"bounded\t$member:$max") ++
       entries("checked", configured.checked.getOrElse(Set.empty)) ++ options.map(option => s"option\t$option") ++
       configured.text
   }

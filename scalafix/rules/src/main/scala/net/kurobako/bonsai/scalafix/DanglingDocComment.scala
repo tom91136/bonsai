@@ -5,7 +5,7 @@ import scala.meta.tokens.Token
 import scalafix.v1.*
 
 /** Doc comments that document nothing, because another doc comment, a closing brace, or the end of the file follows
-  * them. Plain comments between the two are skipped, as they document nothing either. The orphan is deleted.
+  * them. Plain comments between the two are skipped, as they document nothing either.
   */
 class DanglingDocComment extends SyntacticRule("DanglingDocComment") {
 
@@ -13,8 +13,7 @@ class DanglingDocComment extends SyntacticRule("DanglingDocComment") {
     val tokens = document.tokens.toVector
     tokens.indices.collect {
       case index if documentation(tokens(index)) && orphaned(tokens, index) =>
-        lint("dangling-doc-comment", "the doc comment documents nothing", tokens(index).pos) +
-          lines.remove(tokens, index, index)
+        lint("dangling-doc-comment", "the doc comment documents nothing", tokens(index).pos)
     }.asPatch
   }
 

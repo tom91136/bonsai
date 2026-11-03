@@ -4,7 +4,7 @@ rule = QualifiedPrivate
 package fix
 
 object QualifiedPrivate {
-  class Needed private[QualifiedPrivate] ( // assert: QualifiedPrivate.companion-factory
+  class Needed private[QualifiedPrivate] (
       private[QualifiedPrivate] val token: Int
   )
   class Factory {
@@ -26,10 +26,10 @@ object QualifiedPrivate {
     def use: Int                    = helper
   }
 
-  class Applied private[QualifiedPrivate] (val value: Int) // assert: QualifiedPrivate.companion-factory
+  class Applied private[QualifiedPrivate] (val value: Int)
   def applied: Applied = Applied(1)
 
-  class Generic[A] private[QualifiedPrivate] (val value: A) // assert: QualifiedPrivate.companion-factory
+  class Generic[A] private[QualifiedPrivate] (val value: A)
   def generic: Generic[Int] = Generic(1)
 
   trait Base { private[QualifiedPrivate] def run: Int }
@@ -56,4 +56,16 @@ object QualifiedPrivate {
     private[QualifiedPrivate] def peek: Int = 2
   }
   def read(shared: Shared): Int = shared.peek
+}
+
+object LeaseCache {
+  class Lease[V] private[LeaseCache] (val value: V)
+}
+class LeaseCache {
+  def acquire(value: Int): LeaseCache.Lease[Int] = LeaseCache.Lease(value)
+}
+
+object PreparedProgram {
+  class Prepared private[PreparedProgram] (val module: Int)
+  def prepare(module: Int): Prepared = Prepared(module)
 }

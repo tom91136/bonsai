@@ -5,6 +5,7 @@ import com.sun.source.util.TaskEvent
 import com.sun.source.util.TaskListener
 import com.sun.source.util.Trees
 import dotty.tools.dotc.Driver
+import dotty.tools.dotc.reporting.Reporter
 import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
 import java.nio.file.Files
@@ -18,7 +19,9 @@ import munit.FunSuite
 import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.java.Model as JavaModel
 import net.kurobako.bonsai.testing.*
+import scala.concurrent.Promise
 import scala.jdk.CollectionConverters.*
+import scala.util.Try
 
 /** Compiles test sources into throwaway main and test outputs and analyses them as one build. */
 trait AnalysisSuite extends FunSuite {
@@ -183,9 +186,25 @@ trait AnalysisSuite extends FunSuite {
     write(directory, sources)
     val files     = sources.map((name, _) => directory.resolve(name).toString)
     val arguments =
-      Array("-classpath", (extra ++ classpath).mkString(File.pathSeparator), "-d", output.toString, "-color:never") ++
-        files
-    val reporter = Driver().process(arguments, StoreReporter())
+      Array(
+        "-classpath",
+        (extra ++ classpath).mkString(File.pathSeparator),
+        "-d",
+        output.toString,
+        "-color:never",
+        "-Xmax-fuel",
+        "100000"
+      ) ++ files
+    val reporting = Promise[Reporter]()
+    val thread    = Thread(
+      Thread.currentThread.getThreadGroup,
+      () => reporting.complete(Try(Driver().process(arguments, StoreReporter()))): Unit,
+      "bonsai-test-compile",
+      1L << 30
+    )
+    thread.start()
+    thread.join()
+    val reporter = reporting.future.value.get.get
     assert(!reporter.hasErrors, reporter.allErrors.map(_.message).mkString("\n"))
     output
   }

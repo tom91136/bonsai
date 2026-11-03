@@ -332,6 +332,14 @@ class IdiomLawsSuite extends munit.FunSuite {
     silent(chain("values", on(User, "toList")))
   }
 
+  test("a conversion with a type argument that changes the element type stays") {
+    silent(chain("values", Step("toSet", Vector.empty, SetOf, SetOf, typed = true, retyped = true)))
+    assertEquals(
+      Laws.outcomes(chain("values", Step("toSet", Vector.empty, SetOf, SetOf, typed = true))).map(_.law),
+      Vector("redundant-collection-conversion")
+    )
+  }
+
   test("toSeq of a strict sequence is removed in an assertion only") {
     val steps = Vector(on(ListOf, "toSeq"))
     silent(Chain(fn("values"), steps))
@@ -367,14 +375,36 @@ class IdiomLawsSuite extends munit.FunSuite {
     )
   }
 
-  test("a guard then a yield of a for-comprehension is reported in its own words") {
-    val guard   = Step("filter", Vector(fn("_ > 0")), Strict, Strict.copy(strict = false), desugared = true)
-    val yielded = Step("map", Vector(fn("_ * 2")), Strict.copy(strict = false), Strict, desugared = true)
-    report(
-      chain("list", guard, yielded),
-      "filter-map-to-collect",
-      "a guard then yield is a collect; a partial function with a guard replaces the for-comprehension"
+  test("a guard then a yield of a for-comprehension is not a collect") {
+    val guard   = Step("filter", Vector(reading(pair)), Strict, Strict.copy(strict = false), desugared = true)
+    val yielded = Step("map", Vector(matching(pair)), Strict.copy(strict = false), Strict, desugared = true)
+    silent(chain("list", guard, yielded))
+    silent(Chain(fn("list"), Vector(guard, yielded), hot = true))
+  }
+
+  test("a filter then a map that take the same shape apart is a collect") {
+    val message = "filter then map is a collect; a partial function with a guard filters and maps in one pass"
+    val tested  = Fn.Facts("_.isInstanceOf[Foo]", inspects = Some("_: Foo"))
+    for (
+      (filter, map) <- List(reading(pair) -> matching(pair), matching(pair) -> matching(pair), tested -> casting("Foo"))
     )
+      report(chain("list", step("filter", filter), step("map", map)), "filter-map-to-collect", message)
+  }
+
+  test("a filter then a map that take different shapes apart is a collect only in a hot class") {
+    val steps = Vector(step("filter", fn("_.nonEmpty")), step("map", fn("parseLong")))
+    silent(Chain(fn("list"), steps))
+    silent(chain("list", step("filter", reading(pair)), step("map", matching("(_, _, _)"))))
+    silent(chain("list", step("filter", reading(pair)), step("map", fn("_._2"))))
+    assertEquals(Laws.outcomes(Chain(fn("list"), steps, hot = true)).map(_.law), Vector("filter-map-to-collect"))
+  }
+
+  test("a filter then a map on an option, a view or an iterator is not a collect, even in a hot class") {
+    for (kind <- Seq(OptionOf, Opt, Lazy)) {
+      val steps = Vector(on(kind, "filter", reading(pair)), on(kind, "map", matching(pair)))
+      silent(Chain(fn("value"), steps))
+      silent(Chain(fn("value"), steps, hot = true))
+    }
   }
 
   test("a guard then an identity yield is not a collect") {
@@ -511,6 +541,31 @@ class IdiomLawsSuite extends munit.FunSuite {
     assertEquals(Laws.outcomes(steps).map(_.law), Vector("redundant-identity-map"))
   }
 
+  test("map then getOrElse of a value that never returns is not a fold") {
+    val steps = (default: Arg) =>
+      chain(
+        "option",
+        Step("map", Vector(fn("_ + 1")), OptionOf, OptionOf),
+        Step("getOrElse", Vector(default), OptionOf, Strict)
+      )
+    silent(steps(diverging("sys.error(\"none\")")))
+    assertEquals(Laws.outcomes(steps(fn("0"))).map(_.law), Vector("map-get-or-else-to-fold"))
+  }
+
+  test("map of identity that yields the last generator of a for-comprehension is not an identity map") {
+    val yielded = Step("map", Vector(same), OptionOf, OptionOf, desugared = true)
+    silent(Chain(fn("option"), Vector(yielded), yielded = true))
+    assertEquals(Laws.outcomes(chain("option", yielded)).map(_.law), Vector("redundant-identity-map"))
+  }
+
+  test("map of identity written with a type argument that widens is not an identity map") {
+    silent(chain("option", Step("map", Vector(same), OptionOf, OptionOf, typed = true, retyped = true)))
+    assertEquals(
+      Laws.outcomes(chain("option", Step("map", Vector(same), OptionOf, OptionOf, typed = true))).map(_.law),
+      Vector("redundant-identity-map")
+    )
+  }
+
   test("map of identity on an option is the option") {
     rewrite(
       chain("option", Step("map", Vector(same), OptionOf, OptionOf)),
@@ -629,18 +684,8 @@ class IdiomLawsSuite extends munit.FunSuite {
     assertEquals(pure.map(outcome => (outcome.lint, outcome.analysis)), Vector((true, true)))
     val effects = Laws.outcomes(chain("list", step("map", effect("f")), step("map", fn("_ * 2"))))
     assertEquals(effects.map(outcome => (outcome.lint, outcome.analysis)), Vector((false, true)))
-    val collect = Laws.outcomes(chain("list", step("filter", fn("p")), step("map", fn("f"))))
+    val collect = Laws.outcomes(chain("list", step("filter", reading(pair)), step("map", matching(pair))))
     assertEquals(collect.map(outcome => (outcome.lint, outcome.analysis)), Vector((true, true)))
-  }
-
-  test("the analysis leaves a law to the compiler where it saves no pass or collection, as on a view or an option") {
-    for (kind <- Seq(Lazy, OptionOf)) {
-      val outcomes = Laws.outcomes(chain("value", on(kind, "filter", fn("p")), on(kind, "map", fn("f"))))
-      assertEquals(
-        outcomes.map(outcome => (outcome.law, outcome.lint, outcome.analysis)),
-        Vector(("filter-map-to-collect", true, false))
-      )
-    }
   }
 
   test("advice to use a view belongs to the analysis") {

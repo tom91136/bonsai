@@ -58,6 +58,22 @@ class ChainsSuite extends FunSuite {
     }
   }
 
+  test("a chain in a hot class is a collect or a nest whatever the functions are") {
+    val body = """  case class Node(children: List[Node])
+      |  val nodes: List[Node] = Nil
+      |  val numbers = List("1", "")
+      |  val parsed = numbers.filter(_.nonEmpty).map(_.toLong)
+      |  val path = nodes.flatMap(_.children).flatMap(_.children)
+      |}""".stripMargin
+    val source             = s"package demo\n\nobject Hot {\n$body\n\nobject Cold {\n$body\n"
+    val (errors, found, _) = run(source, "hot=demo.Hot")
+    assertEquals(errors, Nil)
+    assertEquals(
+      found.filter((id, _) => id == "filter-map-to-collect" || id == "flat-map-nesting").sorted,
+      List("filter-map-to-collect" -> 7, "flat-map-nesting" -> 8)
+    )
+  }
+
   test("a law is a check that can be disabled") {
     val (source, expected) = stripped(read("CollectionChains.input.scala"))
     assert(expected.nonEmpty)

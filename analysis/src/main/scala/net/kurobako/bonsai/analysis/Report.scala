@@ -69,7 +69,7 @@ object Report {
       () => Smells.findings(result.smells, result.algebra.products, nodes, result.hot, result.graph.edges),
       () => Designs.findings(result.designs, nodes),
       () => Structures.findings(result.structures, result.graph),
-      () => Clones.findings(result.clones, nodes, intended),
+      () => Clones.findings(result.clones, nodes, intended, result.graph.edges),
       () => Members.findings(result.members, nodes, Liveness.live(result.graph)),
       () => Bytecode.findings(result.bytecode, nodes, result.hot),
       () => Complexity.findings(result.complexities, nodes, result.hot),

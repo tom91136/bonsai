@@ -21,18 +21,36 @@ class MutableExposure extends SemanticRule("MutableExposure") {
         if ancestry.reachable(owner, owner.mods) => exposed(definitions.members(owner.templ))
   }.asPatch
 
-  private def exposed(stats: List[Stat])(using SemanticDocument): Patch = stats.collect {
-    case value: Defn.Val if definitions.public(value.mods) && mutable(value.decltpe, value.pats) =>
-      lint("exposed-mutable", "this public value exposes a mutable collection; expose a read-only view", value.pos)
-    case method: Defn.Def
-        if definitions.public(method.mods) &&
-          method.decltpe.exists(tpe => mutables.contains(definitions.symbol(tpe))) =>
-      lint(
-        "exposed-mutable",
-        "this public method returns a mutable collection; return a read-only view",
-        method.name.pos
-      )
-  }.asPatch
+  private def exposed(stats: List[Stat])(using SemanticDocument): Patch = {
+    val fields = stats.flatMap {
+      case value: Defn.Val    => value.pats.collect { case Pat.Var(name) => name.value }
+      case variable: Defn.Var => variable.pats.collect { case Pat.Var(name) => name.value }
+      case _                  => Nil
+    }.toSet
+    stats.collect {
+      case value: Defn.Val if definitions.public(value.mods) && mutable(value.decltpe, value.pats) =>
+        lint("exposed-mutable", "this public value exposes a mutable collection; expose a read-only view", value.pos)
+      case method: Defn.Def
+          if definitions.public(method.mods) &&
+            method.decltpe.exists(tpe => mutables.contains(definitions.symbol(tpe))) &&
+            returnsField(method.body, fields) =>
+        lint(
+          "exposed-mutable",
+          "this public method returns a mutable collection; return a read-only view",
+          method.name.pos
+        )
+    }.asPatch
+  }
+
+  private def returnsField(body: Term, fields: Set[String]): Boolean = body match {
+    case Term.Name(name)                 => fields(name)
+    case Term.Select(_, Term.Name(name)) => fields(name)
+    case Term.Block(stats)               => stats.lastOption.exists {
+        case term: Term => returnsField(term, fields)
+        case _          => false
+      }
+    case _ => false
+  }
 
   // Inferred types are read from the definition's own symbol, which SemanticDB records within the same file.
   private def mutable(declared: Option[Type], patterns: List[Pat])(using SemanticDocument): Boolean =

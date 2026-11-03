@@ -35,6 +35,14 @@ class NestingLawsSuite extends munit.FunSuite {
     nested("collect", fn("{ case Leaf(n) => n }"), "xs.flatMap(x => x.children.collect({ case Leaf(n) => n }))")
   }
 
+  test("flatMaps that only select members are a path outside a hot class, and nest inside one") {
+    val path = Vector(step("flatMap", selecting("_.operands")), step("flatMap", selecting("_.domain")))
+    assertEquals(Laws.outcomes(Chain(fn("xs"), path)), Vector.empty)
+    assertEquals(rewrites(Chain(fn("xs"), path, hot = true)).map(_.law), Vector("flat-map-nesting"))
+    val worked = Vector(step("flatMap", selecting("_.operands")), step("map", fn("_.domain.size + 1")))
+    assertEquals(rewrites(Chain(fn("xs"), worked)).map(_.law), Vector("flat-map-nesting"))
+  }
+
   test("the function of the flatMap is applied to a name the receiver and the functions do not use") {
     val c = chain("x", step("flatMap", fn("_.xs")), step("map", fn("_.x")))
     assertEquals(rewrites(c).head.render("x"), "x.flatMap(y => y.xs.map(_.x))")

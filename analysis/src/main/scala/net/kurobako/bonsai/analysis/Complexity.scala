@@ -19,7 +19,7 @@ object Complexity {
     /** The size declared for a member or parameter `name` of `owner`, from the entries that match either. */
     def size(name: String, owner: String): Option[Polynomial] = {
       val hits = globs.collect {
-        case (glob, entry) if Globs.matches(glob, name) || Globs.matches(glob, owner) => entry
+        case (glob, entry) if Globs.reaches(glob, name, owner) => entry
       }
       reached ++= hits
       hits.minByOption(_.max).map(entry => Polynomial.constant(entry.max))
@@ -53,10 +53,15 @@ object Complexity {
 
   case class Summary(name: String, node: String, bounds: Bounds, suppressed: Set[String])
 
+  /** The findings of `summaries`; where the build marks classes `hot`, a quadratic bound counts only in those. */
   def findings(summaries: Vector[Summary], nodes: Map[String, Node], hot: Option[Set[String]]): Vector[Finding] =
     summaries.flatMap { summary =>
       val name   = Finding.short(summary.name)
-      val bounds = summary.bounds
+      val cold   = hot.exists(!_.contains(summary.node))
+      val bounds = summary.bounds.copy(
+        time = summary.bounds.time.filter(hit => !cold || hit.degree >= 3),
+        space = summary.bounds.space.filter(hit => !cold || hit.degree >= 3)
+      )
       val merged = bounds.time.zip(bounds.space).exists((time, space) => time.terms.toSet == space.terms.toSet)
       val timed  = bounds.time.flatMap(hit =>
         located(

@@ -16,13 +16,11 @@ class RepeatedCodeSuite extends AnalysisSuite {
     "\n}"
   )
 
-  test("a call chain written at many sites is a repeated expression, even though each copy is small") {
-    val found = findings(Seq("Shortened.scala" -> shortened(17)))
-    assertFinding(found, "duplicate-code", "17 copies of 1 line", "Shortened.scala")
-    assertEquals(found.size, 1, found.mkString("\n"))
+  test("a call chain written on one line at many sites is a row of a table, not a repeated expression") {
+    assertEquals(findings(Seq("Shortened.scala" -> shortened(17))), Vector.empty)
   }
 
-  test("a constructor call repeated within one method is a repeated expression") {
+  test("a constructor call repeated on single lines within one method is a row of a table") {
     val found = findings(Seq(
       "Effects.scala" ->
         """case class Summary(effects: Set[String], runs: Boolean)
@@ -40,11 +38,10 @@ class RepeatedCodeSuite extends AnalysisSuite {
           |  }
           |}""".stripMargin
     ))
-    assertFinding(found, "duplicate-code", "6 copies of 1 line", "Effects.scala")
-    assertEquals(found.size, 1, found.mkString("\n"))
+    assertEquals(found, Vector.empty)
   }
 
-  test("a record built from one source by the same projections four times in a method is a repeated expression") {
+  test("a record built from one source by the same projections on four lines of a method is a table") {
     val found = findings(Seq(
       "Collector.scala" ->
         """case class Shape(kind: String, name: String, cases: Int, primitive: Boolean)
@@ -60,7 +57,7 @@ class RepeatedCodeSuite extends AnalysisSuite {
           |    )
           |}""".stripMargin
     ))
-    assertFinding(found, "duplicate-code", "4 copies of", "Collector.scala")
+    assertEquals(found, Vector.empty)
   }
 
   test("calls with a single argument and chains too short to matter are not repeated expressions") {
@@ -175,7 +172,7 @@ class RepeatedCodeSuite extends AnalysisSuite {
     )
   }
 
-  test("private values with equal small bodies in several objects are duplicates") {
+  test("private values with equal small bodies in several objects are too small to be duplicates") {
     val found = findings(Seq(
       "Clones.scala" ->
         """object Clones {
@@ -193,11 +190,10 @@ class RepeatedCodeSuite extends AnalysisSuite {
           |  def widthless(text: String): String = Width.replaceAllIn(text, "")
           |}""".stripMargin
     ))
-    assertFinding(found, "duplicate-code", "3 copies of 1 line", "Clones.scala", "Designs.scala", "Extraction.scala")
-    assertEquals(found.size, 1, found.mkString("\n"))
+    assertEquals(found, Vector.empty)
   }
 
-  test("private methods with equal small bodies in different objects are duplicates") {
+  test("private methods with equal small bodies in different objects are too small to be duplicates") {
     val found = findings(Seq(
       "Designs.scala" ->
         """object Designs {
@@ -210,8 +206,7 @@ class RepeatedCodeSuite extends AnalysisSuite {
           |  def labelled(keys: List[String]): Set[String] = keys.map(short(_)).toSet
           |}""".stripMargin
     ))
-    assertFinding(found, "duplicate-code", "2 copies of 1 line", "Designs.scala", "Structures.scala")
-    assertEquals(found.size, 1, found.mkString("\n"))
+    assertEquals(found, Vector.empty)
   }
 
   test("small bodies that are mere accessors, or differ in a literal, are not duplicate helpers") {
@@ -248,13 +243,29 @@ class RepeatedCodeSuite extends AnalysisSuite {
       |object Plugin {
       |  def own(configs: Seq[Config], id: String): Option[Config] = configs.find(_.disabled.exists(_.contains(id)))
       |  def disabled(configs: Seq[Config], id: String, extras: Set[String]): Set[String] =
-      |    own(configs, id).flatMap(_.disabled).map(_ ++ extras).getOrElse(Defaults.names.toSet)
+      |    own(configs, id)
+      |      .flatMap(_.disabled)
+      |      .map(_.filter(_.nonEmpty))
+      |      .map(_ ++ extras)
+      |      .getOrElse(Defaults.names.toSet)
       |  def errors(configs: Seq[Config], id: String, extras: Set[String]): Set[String] =
-      |    own(configs, id).flatMap(_.errors).map(_ ++ extras).getOrElse(Defaults.names.toSet)
+      |    own(configs, id)
+      |      .flatMap(_.errors)
+      |      .map(_.filter(_.nonEmpty))
+      |      .map(_ ++ extras)
+      |      .getOrElse(Defaults.names.toSet)
       |  def warnings(configs: Seq[Config], id: String, extras: Set[String]): Set[String] =
-      |    own(configs, id).flatMap(_.warnings).map(_ ++ extras).getOrElse(Defaults.names.toSet)
+      |    own(configs, id)
+      |      .flatMap(_.warnings)
+      |      .map(_.filter(_.nonEmpty))
+      |      .map(_ ++ extras)
+      |      .getOrElse(Defaults.names.toSet)
       |  def silenced(configs: Seq[Config], id: String, extras: Set[String]): Set[String] =
-      |    own(configs, id).flatMap(_.silenced).map(_ ++ extras).getOrElse(Defaults.names.toSet)
+      |    own(configs, id)
+      |      .flatMap(_.silenced)
+      |      .map(_.filter(_.nonEmpty))
+      |      .map(_ ++ extras)
+      |      .getOrElse(Defaults.names.toSet)
       |}""".stripMargin
 
   test("copies that differ only in a selected field are near duplicates") {
@@ -266,7 +277,10 @@ class RepeatedCodeSuite extends AnalysisSuite {
   test("copies that differ in a constant they refer to and a literal are near duplicates") {
     def phased(name: String, phase: String, limit: Int) =
       s"""  def $name(input: List[String]): List[Int] =
-         |    Reports.send(Phase.$phase, input.map(_.trim).filter(_.nonEmpty).map(_.toLowerCase).map(_.length + $limit)).sorted""".stripMargin
+         |    Reports.send(
+         |      Phase.$phase,
+         |      input.map(_.trim).filter(_.nonEmpty).map(_.toLowerCase).map(_.length + $limit)
+         |    ).sorted""".stripMargin
     val found = findings(Seq(
       "Reports.scala" ->
         """enum Phase { case Parse, Lower, Emit }
@@ -456,6 +470,37 @@ class RepeatedCodeSuite extends AnalysisSuite {
           |}""".stripMargin
     ))
     assertFinding(found, "inlined-helper", "Lints.scala", "elementOf")
+  }
+
+  private val Barriers =
+    """enum Isa { case Rdna, Gfx117, Cdna5 }
+      |class Target(val isa: Isa, val major: Int) { def rdna: Boolean = isa == Isa.Rdna }
+      |object Barriers {
+      |  def named(target: Target): Boolean = target.isa == Isa.Cdna5 && target.major >= 9
+      |}""".stripMargin
+
+  test("one side of a condition that is the body of a helper is no inlined helper") {
+    val found = findings(Seq(
+      "Barriers.scala" -> Barriers,
+      "Compiler.scala" ->
+        """object Compiler {
+          |  def split(target: Target): Boolean = target.rdna || target.isa == Isa.Gfx117 ||
+          |    target.isa == Isa.Cdna5 && target.major >= 9
+          |  def first(target: Target): Boolean = target.isa == Isa.Cdna5 && target.major >= 9 || target.rdna
+          |}""".stripMargin
+    ))
+    assertEquals(reported(found, "inlined-helper"), Vector.empty)
+  }
+
+  test("a condition that is the whole body of a lambda and of a helper is an inlined helper") {
+    val found = findings(Seq(
+      "Barriers.scala" -> Barriers,
+      "Compiler.scala" ->
+        """object Compiler {
+          |  def any(targets: List[Target]): Boolean = targets.exists(target => target.isa == Isa.Cdna5 && target.major >= 9)
+          |}""".stripMargin
+    ))
+    assertFinding(found, "inlined-helper", "Compiler.scala", "named")
   }
 
   test("a call that leaves its arguments to their defaults is no helper") {
@@ -732,9 +777,9 @@ class RepeatedCodeSuite extends AnalysisSuite {
     assertEquals(found, Vector.empty)
   }
 
-  test("a chain of calls that returns a value, repeated in a method, is an expression to bind") {
+  test("a chain of calls that returns a value, repeated on single lines of a method, is a row of a table") {
     val found = findings(Seq("Loader.scala" -> loader("names.append(id(dest)).append(value)")))
-    assertFinding(found, "duplicate-code", "13 copies of 1 line", "Loader.scala")
+    assertEquals(found, Vector.empty)
   }
 
   private val Reals =

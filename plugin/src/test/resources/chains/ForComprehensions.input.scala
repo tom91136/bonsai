@@ -16,7 +16,7 @@ object ForComprehensions {
 
   val idOne = for (x <- option) yield x// assert: redundant-identity-map
   val idList = for (x <- list) yield x
-  val idTwo = for { a <- option; b <- empty } yield b// assert: redundant-identity-map
+  val idTwo = for { a <- option; b <- empty } yield b
   val idGuard = for (x <- option if x > 1) yield x// assert: redundant-identity-map
   val idBind = for { x <- option; y = x } yield y
   val idPattern = for ((a, b) <- pairs) yield (a, b)
@@ -38,14 +38,14 @@ object ForComprehensions {
 
   val mapMapFor = (for (x <- list) yield pure(x)).map(pure)
   val mapMapAfter = for (x <- list.map(pure)) yield pure(x)
-  val mapMapGuard = for (x <- list.map(pure) if x > 1) yield pure(x)// assert: filter-map-to-collect
+  val mapMapGuard = for (x <- list.map(pure) if x > 1) yield pure(x)
   val mapMapTwo = for { x <- list.map(pure); y <- other.map(pure) } yield x + y
   val mapMapNest = for { x <- list.map(_ + 1).map(_ * 2); y <- other } yield x + y// assert: map-map-to-map
   val mapMapLater = for { x <- list; y <- other.map(_ + 1).map(_ * 2) } yield x + y// assert: map-map-to-map
   val filterFilterPattern = for ((a, b) <- pairs.filter(_._1 > 0).filter(_._1 > 1)) yield b// assert: filter-filter-to-filter
   val filterFilterLater = for { x <- list; y <- other.filter(_ > 0).filter(_ > 1) } yield x + y// assert: filter-filter-to-filter
   val filterFilterBound = for { x <- list.filter(_ > 0).filter(_ > 1); y = x + 1 if y > 1 } println(y)// assert: filter-filter-to-filter
-  val filterFilter = for (x <- list.filter(positive)) yield x// assert: filter-map-to-collect
+  val filterFilter = for (x <- list.filter(positive)) yield x
 
   val flattened = (for (x <- list) yield many(x)).flatten// assert: map-flatten-to-flat-map
   val flatId = (for (x <- list) yield x).flatMap(many)
@@ -75,7 +75,7 @@ object ForComprehensions {
   val fuseFor = (for (x <- list) yield x + 1).map(_ * 2)
   val fuseAfter = for (x <- list.map(_ + 1)) yield x * 2
   val fuseTwo = for { x <- list.map(_ + 1); y <- other.map(_ * 2) } yield x + y
-  val fuseGuard = for (x <- list.map(_ + 1) if x > 1) yield x * 2// assert: filter-map-to-collect
+  val fuseGuard = for (x <- list.map(_ + 1) if x > 1) yield x * 2
   val fuseInner = for (x <- list) yield other.map(_ + 1).map(_ * 2)// assert: map-map-to-map
   val fuseOpt = for (x <- option.map(_ + 1)) yield x * 2
   val fuseOptTwo = for { x <- option.map(_ + 1); y <- empty.map(_ * 2) } yield x + y
@@ -97,54 +97,54 @@ object ForComprehensions {
   val mapFlatten = for (x <- list.map(List(_)).flatten) yield x + 1// assert: map-flatten-to-flat-map
   val mapFlattenIn = for (x <- nested.map(_.map(List(_)))) yield x.flatten
 
-  val viewFor = for (x <- list.map(_ + 1).filter(_ > 1)) yield x * 2// assert: filter-map-to-collect
+  val viewFor = for (x <- list.map(_ + 1).filter(_ > 1)) yield x * 2
   val viewPat = for ((a, b) <- pairs.map(p => (p._2.length, p._1)).filter(_._1 > 1)) yield a * 2// assert: filter-map-to-collect
   val viewNest = for (x <- list.map(_ + 1).filter(_ > 1); y <- other) yield x * y
-  val guardYield = for (x <- list if x > 1) yield pure(x)// assert: filter-map-to-collect
-  val guardNot = for (x <- list if !positive(x)) yield pure(x)// assert: filter-map-to-collect
-  val guardTwo = for (x <- list if x > 1 if x < 9) yield pure(x)// assert: filter-map-to-collect
-  val guardOption = for (x <- option if x > 1) yield pure(x)// assert: filter-map-to-collect
-  val guardSet = for (x <- list.toSet if x > 1) yield pure(x)// assert: filter-map-to-collect
+  val guardYield = for (x <- list if x > 1) yield pure(x)
+  val guardNot = for (x <- list if !positive(x)) yield pure(x)
+  val guardTwo = for (x <- list if x > 1 if x < 9) yield pure(x)
+  val guardOption = for (x <- option if x > 1) yield pure(x)
+  val guardSet = for (x <- list.toSet if x > 1) yield pure(x)
   val guardAfterMap = for (x <- list.map(pure) if x > 1) yield x
-  val guardAfterFilter = for (x <- list.filter(positive) if x > 1) yield pure(x)// assert: filter-map-to-collect
-  val guardPattern = for ((a, b) <- pairs if a > 1) yield b// assert: filter-map-to-collect
+  val guardAfterFilter = for (x <- list.filter(positive) if x > 1) yield pure(x)
+  val guardPattern = for ((a, b) <- pairs if a > 1) yield b
   val guardNarrow = for (case (a, "a") <- pairs) yield a
-  val guardNarrowTwo = for (case (a, "a") <- pairs if a > 1) yield a// assert: filter-map-to-collect
-  val guardOptions = for (case Some(v) <- List(option) if v > 1) yield v// assert: filter-map-to-collect
+  val guardNarrowTwo = for (case (a, "a") <- pairs if a > 1) yield a
+  val guardOptions = for (case Some(v) <- List(option) if v > 1) yield v
   val guardPatternIdentity = for ((a, b) <- pairs if a > 1) yield (a, b)
-  val guardBound = for { x <- list; y = x + 1 if y > 1 } yield y// assert: filter-map-to-collect
-  val guardBoundTwo = for { x <- list; y = x + 1; z = y * 2 if z > 1 } yield z// assert: filter-map-to-collect
+  val guardBound = for { x <- list; y = x + 1 if y > 1 } yield y
+  val guardBoundTwo = for { x <- list; y = x + 1; z = y * 2 if z > 1 } yield z
   val guardBoundCalled = for { x <- list; y = pure(x) if y > 1 } yield y
   val guardBoundThen = for { x <- list; y = x + 1; z <- other } yield y + z
   val guardNested = for { x <- list if x > 1; y <- other } yield x + y
-  val guardInner = for { x <- list; y <- other if y > 1 } yield x + y// assert: filter-map-to-collect
-  val innerGuardCall = for { x <- list; y <- other if y > x } yield pure(y)// assert: filter-map-to-collect
-  val innerGuardTwo = for { x <- list; y <- other if y > 1 if y < 9 } yield pure(y)// assert: filter-map-to-collect
-  val innerGuardThree = for { x <- list; y <- other; z <- list if z > y } yield x + y + z// assert: filter-map-to-collect
-  val innerGuardOption = for { x <- option; y <- empty if y > 1 } yield x + y// assert: filter-map-to-collect
-  val innerPatternGuard = for { x <- list; (a, b) <- pairs if a > 1 } yield a + x// assert: filter-map-to-collect
+  val guardInner = for { x <- list; y <- other if y > 1 } yield x + y
+  val innerGuardCall = for { x <- list; y <- other if y > x } yield pure(y)
+  val innerGuardTwo = for { x <- list; y <- other if y > 1 if y < 9 } yield pure(y)
+  val innerGuardThree = for { x <- list; y <- other; z <- list if z > y } yield x + y + z
+  val innerGuardOption = for { x <- option; y <- empty if y > 1 } yield x + y
+  val innerPatternGuard = for { x <- list; (a, b) <- pairs if a > 1 } yield a + x
   val innerPatternKey = for { x <- list; (key, _) <- map } yield key// assert: map-to-keys
   val innerPatternValue = for { x <- list; (_, value) <- map } yield value// assert: map-to-values
   val innerPatternComputed = for { x <- list; (key, _) <- map } yield key + x
   val innerRefutable = for { x <- list; case Some(v) <- List(option) } yield v + x
-  val innerRefutableGuard = for { x <- list; case Some(v) <- List(option) if v > x } yield v// assert: filter-map-to-collect
+  val innerRefutableGuard = for { x <- list; case Some(v) <- List(option) if v > x } yield v
   val innerNarrow = for { x <- list; case (a, "a") <- pairs } yield a + x
-  val innerBound = for { x <- list; y <- other; z = y + 1 if z > 1 } yield z// assert: filter-map-to-collect
+  val innerBound = for { x <- list; y <- other; z = y + 1 if z > 1 } yield z
   val innerBoundEffect = for { x <- list; y <- other; z = y + pure(x) if z > 1 } yield z
   val innerMapMap = for { x <- list; y <- other.map(_ + 1).map(_ * 2) } yield x + y// assert: map-map-to-map
-  val innerFilterMap = for { x <- list; y <- other.filter(positive) } yield x + y// assert: filter-map-to-collect
+  val innerFilterMap = for { x <- list; y <- other.filter(positive) } yield x + y
   val innerKinds = for { x <- list; y <- option } yield x + y
   val innerKindsSet = for { x <- list; y <- other.toSet } yield x + y
-  val innerKindsGuard = for { x <- list; y <- other.toSet if y > 1 } yield y + x// assert: filter-map-to-collect
+  val innerKindsGuard = for { x <- list; y <- other.toSet if y > 1 } yield y + x
   val innerKindsMap = for { x <- list; y <- map } yield x + y._1
   val innerKindsKeys = for { x <- list; y <- map } yield y._1// assert: map-to-keys
   val innerEach = for { x <- list; y <- other if y > 1 } println(x + y)
-  val guardSized = (for (x <- list if x > 1) yield pure(x)).size// assert: filter-map-to-collect
-  val guardHead = (for (x <- list if x > 1) yield pure(x)).headOption// assert: filter-map-to-collect
-  val guardSorted = (for (x <- list if x > 1) yield pure(x)).sorted// assert: filter-map-to-collect
-  val guardFlat = (for (x <- list if x > 1) yield many(x)).flatten// assert: filter-map-to-collect
-  val guardFilter = (for (x <- list if x > 1) yield pure(x)).filter(positive)// assert: filter-map-to-collect
-  val guardMapMap = (for (x <- list if x > 1) yield pure(x)).map(pure)// assert: filter-map-to-collect
+  val guardSized = (for (x <- list if x > 1) yield pure(x)).size
+  val guardHead = (for (x <- list if x > 1) yield pure(x)).headOption
+  val guardSorted = (for (x <- list if x > 1) yield pure(x)).sorted
+  val guardFlat = (for (x <- list if x > 1) yield many(x)).flatten
+  val guardFilter = (for (x <- list if x > 1) yield pure(x)).filter(positive)
+  val guardMapMap = (for (x <- list if x > 1) yield pure(x)).map(pure)
 
   def loops(): Unit = {
     for (x <- list) println(x)

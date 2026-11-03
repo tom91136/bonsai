@@ -4,8 +4,8 @@ import scala.meta.*
 import scalafix.v1.*
 
 /** Public signatures that hide meaning in position or in the absence of a type: `Any` and `AnyRef`, tuples, and runs of
-  * three or more parameters of the same primitive or `String` type. Local definitions, and members of private ones, are
-  * not public.
+  * three or more parameters of the same primitive or `String` type, unless they are axes in conventional order. Local
+  * definitions, and members of private ones, are not public.
   */
 class PublicSignatures extends SemanticRule("PublicSignatures") {
   private val untyped    = Set("scala/Any#", "scala/AnyRef#", "java/lang/Object#")
@@ -21,6 +21,7 @@ class PublicSignatures extends SemanticRule("PublicSignatures") {
     "scala/Predef.String#",
     "java/lang/String#"
   )
+  private val axes = List("x", "y", "z", "w")
 
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
     case method: Defn.Def
@@ -40,7 +41,9 @@ class PublicSignatures extends SemanticRule("PublicSignatures") {
         parameter.decltpe.filter(_ => parameter.default.isEmpty).map(definitions.symbol(_).value).filter(primitives)
       )
         .zip(parameters).sliding(3).collectFirst {
-          case Seq((Some(first), _), (Some(second), _), (Some(third), last)) if first == second && second == third =>
+          case Seq((Some(first), leading), (Some(second), middle), (Some(third), last))
+              if first == second && second == third &&
+                !axes.containsSlice(List(leading, middle, last).map(_.name.value)) =>
             lint(
               "primitive-run",
               s"three or more ${first.split('/').last.stripSuffix("#")} parameters in a row are easy to swap",

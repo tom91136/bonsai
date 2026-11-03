@@ -8,8 +8,9 @@ object Smells {
   /** A method of the build; `overriding` marks signatures fixed by a supertype, `exported` those other builds call as
     * part of a library's public API, `stored` the indices of the parameters its body only passes to constructors, and
     * `inlined` those of its inline parameters, which each expansion specialises on, and `rest` the fields of the term
-    * parameter lists after the first; an `inline` method folds the literals it is passed at each expansion; `shared`
-    * marks an abstract method with several implementations, whose literal arguments pick a layout the instances share.
+    * parameter lists after the first; `tested` those its first statement branches on, when the body is known; an
+    * `inline` method folds the literals it is passed at each expansion; `shared` marks an abstract method with several
+    * implementations, whose literal arguments pick a layout the instances share.
     */
   case class Method(
       name: String,
@@ -25,7 +26,9 @@ object Smells {
       inline: Boolean = false,
       shared: Boolean = false,
       suppressed: Set[String] = Set.empty,
-      rest: Vector[Algebra.Field] = Vector.empty
+      rest: Vector[Algebra.Field] = Vector.empty,
+      tested: Option[Set[Int]] = None,
+      line: Int = 0
   ) {
     def short: String = Finding.short(name)
   }
@@ -73,7 +76,8 @@ object Smells {
       node: String,
       parameter: String,
       sites: Vector[Algebra.Site],
-      suppressed: Set[String]
+      suppressed: Set[String],
+      line: Int = 0
   )
 
   case class Model(
@@ -88,10 +92,13 @@ object Smells {
   )
 
   private val MinimumCalls          = 2
+  private val MinimumInverted       = 4
   private val MinimumClumpFields    = 3
   private val MaximumClumpFields    = 6
   private val MaximumClumpSignature = 10
   private val MinimumClumpMethods   = 3
+  private val WideClumpFields       = 4
+  private val WideClumpMethods      = 5
   private val Shown                 = 6
   private val MinimumNulls          = 3
   private val Negations             = Set("not", "non", "no", "without", "never", "missing")
@@ -113,7 +120,9 @@ object Smells {
       // Parameters of recursive methods carry state, so callers fixing their initial value is the usual idiom.
       model.sites.get(method.key).filter(sites => !sites.exists(_.own) && sites.size >= MinimumCalls).toVector.flatMap {
         sites =>
-          parameters(method, sites).flatMap(Finding.at(nodes, method.node, _, _, onlyTests = Algebra.onlyTests(sites)))
+          parameters(method, sites).flatMap(
+            Finding.at(nodes, method.node, _, _, onlyTests = Algebra.onlyTests(sites), line = method.line)
+          )
       }
     }.toVector
     val results = model.usages.view.filter(usage =>
@@ -132,7 +141,7 @@ object Smells {
     val inverted = model.usages.view.filter(usage =>
       usage.result.equalsIgnoreCase("boolean") &&
         !usage.method.overriding && !negated(usage.method) &&
-        usage.calls >= MinimumCalls && usage.negated == usage.calls && usage.discarded == 0
+        usage.calls >= MinimumInverted && usage.negated == usage.calls && usage.discarded == 0
     ).flatMap { usage =>
       val detail = s"${usage.method.short}: its ${usage.result} result is inverted at all ${usage.calls} calls"
       Finding.at(
@@ -140,7 +149,8 @@ object Smells {
         usage.method.node,
         Finding.Rule.InvertedBoolean,
         detail,
-        onlyTests = usage.testCalls == usage.calls
+        onlyTests = usage.testCalls == usage.calls,
+        line = usage.method.line
       )
     }.toVector
     val unused = model.usages.view.filter(usage =>
@@ -204,12 +214,13 @@ object Smells {
         Finding.Rule.UnusedDefault,
         detail,
         onlyTests = Algebra.onlyTests(spare.sites),
-        suppressed = spare.suppressed
+        suppressed = spare.suppressed,
+        line = spare.line
       )
     }
     arguments ++ results ++ unused ++ inverted ++ modules ++ implementations ++ fixed ++ redundant ++ spare ++
-      clumps(reviewed.filterNot(_.test), products, hot.getOrElse(Set.empty), model.sites).flatMap((key, detail) =>
-        Finding.at(nodes, key, Finding.Rule.DataClump, detail)
+      clumps(reviewed.filterNot(_.test), products, hot.getOrElse(Set.empty), model.sites).flatMap((key, detail, line) =>
+        Finding.at(nodes, key, Finding.Rule.DataClump, detail, line = line)
       )
   }
 
@@ -280,11 +291,13 @@ object Smells {
     else {
       val columns = calls.map(_.arguments).transpose
       // A flag the method only stores is data of the value it builds, which no branch splits, and an inline method is
-      // specialised on its literal at every expansion already.
-      val literal = method.fields.indices.filter { index =>
-        method.fields(index).kind == Kind.Flag && !method.stored(index) && !method.inline &&
-        columns(index).forall(value => value == Argument.True || value == Argument.False)
-      }.toVector
+      // specialised on its literal at every expansion already, and a flag tested deeper in the body leaves one body
+      // shared, which a method per value would duplicate.
+      def splits(index: Int) = method.fields(index).kind == Kind.Flag && !method.stored(index) && !method.inline &&
+        method.tested.forall(_.contains(index))
+      val literal = method.fields.indices.filter(index =>
+        splits(index) && columns(index).forall(value => value == Argument.True || value == Argument.False)
+      ).toVector
       val encoded = encoding(literal, columns)
       val states  = encoded.map { (first, second) =>
         Finding.Rule.FlagArgument ->
@@ -314,7 +327,7 @@ object Smells {
               s"${method.short}.${field.name} is always ${values.head.shown} across ${calls.size} $plural"
           }
         else
-          Option.when(field.kind == Kind.Flag && !method.stored(index) && !method.inline && !paired(index)) {
+          Option.when(splits(index) && !paired(index)) {
             val enabled = values.count(_ == Argument.True)
             val detail  = s"${method.short}.${field.name} is a literal at all ${calls.size} calls " +
               s"($enabled true, ${calls.size - enabled} false); each value selects a different method"
@@ -359,7 +372,7 @@ object Smells {
       products: Vector[Algebra.Product],
       hot: Set[String],
       sites: Map[String, Vector[Algebra.Site]]
-  ): Vector[(String, String)] = {
+  ): Vector[(String, String, Int)] = {
     // An inline method is specialised at every expansion, which a parameter object would undo, and in hot code an
     // object of primitives allocates on every call.
     val signatures = methods.view.collect {
@@ -376,8 +389,17 @@ object Smells {
         if (items.size > MaximumClumpSignature) Vector(MinimumClumpFields) else MinimumClumpFields to MaximumClumpFields
       sizes.flatMap(items.combinations(_).map(_.toSet -> method))
     }.groupMap(_._1)(_._2)
+    val numeric = methods.flatMap(method =>
+      (method.fields ++ method.rest).collect {
+        case field if field.primitive && field.kind == Algebra.Kind.Number =>
+          s"${field.name}: ${field.shape}" -> field.shape.toString
+      }
+    ).toMap
     val frequent = support.view.collect {
-      case (items, users) if users.size >= MinimumClumpMethods && users.map(_.owner).distinct.size > 1 =>
+      case (items, users)
+          if users.size >= MinimumClumpMethods && users.map(_.owner).distinct.size > 1 &&
+            (items.size >= WideClumpFields || users.size >= WideClumpMethods) &&
+            !(items.forall(numeric.contains) && items.map(numeric).size == 1) =>
         items -> users.toSet
     }.toMap
     val maximal = frequent.groupMap(_._2)(_._1).toVector.flatMap { (methods, candidates) =>
@@ -399,9 +421,12 @@ object Smells {
       val modelled = shapes.collectFirst { case (product, fields) if items.subsetOf(fields) => product }
         .fold("")(product => s"; already the fields of ${Finding.simple(product.name)}")
       val first = methods.minBy(method => (method.name, method.node))
-      first.node ->
-        (s"(${items.toVector.sorted.mkString(", ")}) recur in ${methods.size} methods across $owners types: " +
-          Finding.listed(methods.toVector.map(_.short).sorted, Shown) + modelled)
+      (
+        first.node,
+        s"(${items.toVector.sorted.mkString(", ")}) recur in ${methods.size} methods across $owners types: " +
+          Finding.listed(methods.toVector.map(_.short).sorted, Shown) + modelled,
+        first.line
+      )
     }
   }
 }

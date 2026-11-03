@@ -49,6 +49,9 @@ object Extraction {
   // The TASTy unpickler recurses over long import selector lists and deep trees.
   private val StackSize = 1L << 30
 
+  // The compiler abandons recursion deeper than its fuel, which a chain of hundreds of calls exceeds.
+  private val MaxFuel = 100000
+
   /** Extracts the build `manifest` describes; `concurrent` names methods that run the functions passed to them on other
     * threads, beside the standard ones, `reflective` globs the types the build names only in strings, and `hot` the
     * classes whose code runs hot, with `!` before a glob leaving out what it matches, and `bounded` the members and
@@ -150,6 +153,7 @@ object Extraction {
           concurrent,
           reflective.map(Globs.qualifiedNames),
           bounded,
+          Globs.heat(hot),
           costs,
           References(_, _),
           lines
@@ -158,6 +162,8 @@ object Extraction {
         Array(
           "-from-tasty",
           "-Yretain-trees",
+          "-Xmax-fuel",
+          MaxFuel.toString,
           "-color:never",
           // Findings name types in one line each, which the printer would otherwise wrap.
           "-pagewidth",

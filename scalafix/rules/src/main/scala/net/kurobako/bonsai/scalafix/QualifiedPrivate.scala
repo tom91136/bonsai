@@ -5,8 +5,6 @@ import scalafix.v1.*
 
 /** Access qualified by an enclosing type, such as `private[Outer]`, that plain `private` already grants: every use is
   * inside the definition's owner or its companion. An enclosing type is declared in one file, so its uses are all here.
-  * A constructor the enclosing type does need is reported as a softer finding: a private constructor and a factory in
-  * the companion grant the same access with no qualifier.
   */
 class QualifiedPrivate extends SemanticRule("QualifiedPrivate") {
   override def fix(using document: SemanticDocument): Patch = {
@@ -20,6 +18,8 @@ class QualifiedPrivate extends SemanticRule("QualifiedPrivate") {
       case application: Term.ApplyType                     => created(application.fun)
       case reference: Term.Name if reference.symbol.isNone =>
         classes.getOrElse(reference.value, Nil).map(constructor(_))
+      case select: Term.Select if select.symbol.isNone =>
+        classes.getOrElse(select.name.value, Nil).map(constructor(_))
       case reference: (Term.Name | Term.Select) if reference.symbol.value.endsWith("#") =>
         List(constructor(reference.symbol))
       case _ => Nil
@@ -36,13 +36,6 @@ class QualifiedPrivate extends SemanticRule("QualifiedPrivate") {
             lint(
               "redundant-qualifier",
               s"private[${within.value}] grants nothing plain private does not; every use is within its own type",
-              modifier.pos
-            )
-          else if (modifier.parent.exists(_.is[Ctor.Primary]))
-            lint(
-              "companion-factory",
-              s"private[${within.value}] lets all of ${within.value} construct ${name(owner)}; make the constructor " +
-                s"private and give the companion of ${name(owner)} the factory ${within.value} needs",
               modifier.pos
             )
           else Patch.empty

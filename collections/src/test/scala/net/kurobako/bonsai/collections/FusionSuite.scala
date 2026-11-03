@@ -185,7 +185,7 @@ class FusionSuite extends munit.FunSuite {
   }
 
   test("an exact law beats the view advice over the same steps") {
-    val found = Laws.outcomes(chain("list", step("filter", fn("_ > 0")), step("map", fn("_ * 2"))))
+    val found = Laws.outcomes(chain("list", step("filter", reading(pair)), step("map", matching(pair))))
     assertEquals(found.map(_.law), Vector("filter-map-to-collect"))
   }
 
@@ -244,7 +244,7 @@ class FusionSuite extends munit.FunSuite {
         step("map", fn("f")),
         step("flatMap", fn("g"))
       ),
-      chain("l", step("filter", fn("p")), step("map", fn("f")), step("map", fn("g")), step("headOption")),
+      chain("l", step("filter", reading(pair)), step("map", matching(pair)), step("map", fn("g")), step("headOption")),
       chain("l", step("sorted"), step("filter", fn("p")), step("isEmpty"))
     )
     for (c <- chains) {
@@ -256,7 +256,7 @@ class FusionSuite extends munit.FunSuite {
   }
 
   test("the longest match wins, then the earliest") {
-    val c = chain("l", step("filter", fn("p")), step("map", fn("f")), step("map", fn("g")))
+    val c = chain("l", step("filter", reading(pair)), step("map", matching(pair)), step("map", fn("g")))
     assertEquals(Laws.outcomes(c).map(o => (o.law, o.from, o.until)), Vector(("filter-map-to-collect", 0, 2)))
   }
 

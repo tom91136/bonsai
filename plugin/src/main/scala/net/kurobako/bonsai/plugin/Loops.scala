@@ -46,7 +46,13 @@ private object Loops {
   * are, and boxing folds in the classes the build marks hot. Boxed primitives in loops are reported only in those
   * classes when the build marks any.
   */
-private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean)(using Context)
+private class Loops(
+    checks: Checks,
+    hot: String => Boolean,
+    hotDeclared: Boolean,
+    cold: String => Boolean,
+    declared: (String, String) => Boolean
+)(using Context)
     extends tpd.TreeTraverser {
   // Whether each enclosing tree runs once per iteration of some loop, and the symbols the innermost loop binds afresh on
   // each iteration; a collection reached through them differs between iterations, so walking it is not repeated work.
@@ -64,6 +70,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
   private val extents = mutable.Stack(0)
   // The symbols the pattern of each enclosing case binds while its guard is traversed.
   private val guarded     = mutable.Stack(Set.empty[Symbol])
+  private val guarding    = mutable.Stack(false)
   private val memberships = Memberships(checks)
   // The method whose recursion each enclosing loop is, the iterations of which are its calls.
   private val recursing = mutable.Stack(Option.empty[Symbol])
@@ -202,8 +209,12 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     case clause: tpd.CaseDef =>
       traverse(clause.pat)
       guarded.push(clause.pat.filterSubTrees(_.isInstanceOf[tpd.Bind]).map(_.symbol).toSet)
+      guarding.push(true)
       try traverse(clause.guard)
-      finally guarded.pop(): Unit
+      finally {
+        guarding.pop()
+        guarded.pop(): Unit
+      }
       traverse(clause.body)
     case assignment: tpd.Assign =>
       accumulated(assignment)
@@ -313,6 +324,13 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     case _                    => false
   }
 
+  // A collection reached through a variable of an enclosing loop is built afresh by that loop, so an index of it would
+  // be built on every iteration of that loop too.
+  private def anchored(receiver: tpd.Tree)(using Context): Boolean = receiver.existsSubTree {
+    case reference: tpd.Ident => bound.exists(_(reference.symbol))
+    case _                    => false
+  }
+
   /** Whether `function` selects a method of a collection, whose function arguments run once per element. */
   private def traversal(function: tpd.Tree)(using Context): Boolean = Calls.selected(function).exists { select =>
     val receiver = select.qualifier.tpe.widen
@@ -386,7 +404,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     val name = select.name.toString
     if (
       (Methods.Walks(name) || Methods.Appends(name) || name == "contains") && retained(select.qualifier) &&
-      !fixed(select.qualifier)
+      !fixed(select.qualifier) && !bounded(select.qualifier)
     ) {
       val receiver = select.qualifier.tpe.widen
       val kind     = article(receiver.classSymbol.name.toString)
@@ -414,7 +432,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
       val receiver = select.qualifier.tpe.widen
       if (
         (name == "exists" || name == "forall") && application.args.sizeIs == 1 && scanned(receiver) &&
-        retained(select.qualifier) && !fixed(select.qualifier) &&
+        retained(select.qualifier) && !fixed(select.qualifier) && !bounded(select.qualifier) &&
         comparing(application.args.head, if (name == "exists") nme.EQ else nme.NE)
       ) {
         scans += application.span
@@ -458,7 +476,8 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     select.filter(select =>
       Methods.Appends(select.name.toString) && strict(select.qualifier.tpe.widen) &&
         !select.qualifier.tpe.widen.derivesFrom(ImmutableLinear) &&
-        (select.qualifier :: application.args).forall(operand => settled(operand) && retained(operand))
+        (select.qualifier :: application.args).forall(operand => settled(operand) && retained(operand)) &&
+        !(select.qualifier :: application.args).forall(bounded(_))
     ).foreach(select =>
       checks(
         Check.LinearInLoop,
@@ -689,7 +708,10 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
   // A pattern definition binds its tuple to a synthetic value; a tuple built in each branch is allocated where they
   // merge, which escape analysis cannot remove, while one built directly is scalar-replaced.
   private def destructured(value: tpd.ValDef)(using Context): Unit =
-    if (value.symbol.is(Flags.Synthetic) && defn.isTupleNType(value.tpt.tpe) && merged(value.rhs))
+    if (
+      iterating && (!hotDeclared || heated) && value.symbol.is(Flags.Synthetic) && defn.isTupleNType(value.tpt.tpe) &&
+      merged(value.rhs)
+    )
       checks(
         Check.TupleDestructure,
         "the tuple destructured here is built in every branch and allocated where they merge, which the JIT cannot " +
@@ -808,8 +830,8 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     */
   private def hoistable(tree: tpd.Tree)(using Context): Unit =
     if (
-      looping.top && !deferred.top && complete(tree) && !hoisted.exists(_.contains(tree.span)) && reached(tree) &&
-      (allocated(tree) || traversed(tree))
+      looping.top && !deferred.top && !guarding.top && complete(tree) && !hoisted.exists(_.contains(tree.span)) &&
+      reached(tree) && (allocated(tree) || traversed(tree)) && !(tiny(tree) && (chilled || hotDeclared && !heated))
     ) {
       hoisted += tree.span
       val reason = recursing.top.fold("the loop")(method => s"what the recursion of ${method.name} changes")
@@ -838,6 +860,18 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
             "with a copy of it in each case",
           matched.srcPos
         )
+
+  // Building a few constants costs less than naming them outside the code the build says runs hot.
+  private def tiny(tree: tpd.Tree)(using Context): Boolean =
+    Trees.built(tree).orElse(tupled(tree))
+      .exists(elements => elements.sizeIs <= MaximumTiny && elements.forall(Trees.constant(_)))
+
+  private def tupled(tree: tpd.Tree)(using Context): Option[List[tpd.Tree]] = Calls.peelInlined(tree) match {
+    case tpd.Apply(_, elements) if defn.isTupleNType(tree.tpe.widen) => Some(elements)
+    case _                                                           => None
+  }
+
+  private val MaximumTiny = 4
 
   private def allocated(tree: tpd.Tree)(using Context): Boolean = tree match {
     case select: tpd.Select =>
@@ -1048,7 +1082,8 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     if (
       !scans.exists(_.contains(tree.span)) && (strict(kind) || kind.derivesFrom(defn.ArrayClass)) &&
       !kind.derivesFrom(Range) &&
-      !kind.derivesFrom(NumericRange) && settled(receiver) && retained(receiver) && !fixed(receiver)
+      !kind.derivesFrom(NumericRange) && settled(receiver) && retained(receiver) && !fixed(receiver) &&
+      !bounded(receiver)
     ) {
       val shown = s"${search.name} over ${Trees.text(receiver)}"
       if (receiver.symbol.exists && iterated.exists(_.contains(receiver.symbol))) {
@@ -1058,7 +1093,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
           s"$shown scans the collection the loop iterates, which makes it quadratic; build an index of it first",
           tree.srcPos
         )
-      } else if (Calls.lambda(predicate).exists(relating(_))) {
+      } else if (!chilled && !anchored(receiver) && Calls.lambda(predicate).exists(relating(_))) {
         scans += tree.span
         checks(
           Check.KeyedLookupInLoop,
@@ -1129,7 +1164,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
       pairs =
         parameters.flatten.zip(lists.flatten).filterNot((parameter, _) => parameter.isOneOf(Flags.GivenOrImplicit))
       (_, root) <- pairs.find((parameter, argument) =>
-        variants(parameter) && structure(parameter.info) && settled(argument) && retained(argument) &&
+        variants(parameter) && branching(parameter.info) && settled(argument) && retained(argument) &&
           !fixed(argument) && Trees.text(argument).nonEmpty &&
           pairs.exists((_, value) => (value ne argument) && varies(value)) &&
           pairs.forall((other, value) => (value eq argument) || !varies(value) || key(other.info))
@@ -1148,12 +1183,23 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
       !defn.isFunctionType(tpe.widenDealias) && !structure(tpe)
 
   /** Whether a type, or the elements of a collection of it, has instances that hold instances of it. */
-  private def structure(tpe: Type)(using Context): Boolean = {
+  private def structure(tpe: Type)(using Context): Boolean = linked(tpe)((_, fields) => fields.nonEmpty)
+
+  /** Whether a structure splits, as a tree does, rather than being a chain of wrappers, which is as long as it is
+    * nested and read in constant time in practice.
+    */
+  private def branching(tpe: Type)(using Context): Boolean =
+    linked(tpe)((cls, fields) => fields.sizeIs > 1 || fields.exists(field => !field.info.derivesFrom(cls)))
+
+  private def linked(tpe: Type)(test: (Symbol, List[Symbol]) => Boolean)(using Context): Boolean = {
     val cls = element(tpe).getOrElse(tpe).widenDealias.classSymbol
     cls.isClass && !cls.is(Flags.JavaDefined) && !cls.fullName.toString.startsWith("scala.") &&
     (cls :: cls.children).exists(candidate =>
-      candidate.isClass && candidate.info.decls.toList.exists(field =>
-        field.isTerm && !field.is(Flags.Method) && field.info.existsPart(_.derivesFrom(cls))
+      candidate.isClass && test(
+        cls,
+        candidate.info.decls.toList.filter(field =>
+          field.isTerm && !field.is(Flags.Method) && field.info.existsPart(_.derivesFrom(cls))
+        )
       )
     )
   }
@@ -1204,11 +1250,12 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
   }
 
   private def growing(application: tpd.Apply, select: tpd.Select)(using Context): Boolean =
-    application.args match {
-      case List(end)        => select.name.toString == "take" && !retained(end) && retained(select.qualifier)
-      case List(start, end) => retained(start) && !retained(end) && retained(select.qualifier)
-      case _                => false
-    }
+    !bounded(select.qualifier) &&
+      (application.args match {
+        case List(end)        => select.name.toString == "take" && !retained(end) && retained(select.qualifier)
+        case List(start, end) => retained(start) && !retained(end) && retained(select.qualifier)
+        case _                => false
+      })
 
   private def framed(value: tpd.ValDef)(using Context): Unit = if (iterating)
     Calls.peelInlined(value.rhs) match {
@@ -1222,7 +1269,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
 
   /** Work on the elements of a field alone, which a method recomputes on every call. */
   private def derived(application: tpd.Apply)(using Context): Unit =
-    if (!looping.top && perCall && traversal(application.fun)) {
+    if (!looping.top && (!hotDeclared || heated) && perCall && traversal(application.fun)) {
       Calls.selected(application.fun).map(select => converted(select.qualifier)).filter(receiver =>
         fieldPath(receiver) && strict(receiver.tpe.widen) && unchanging(receiver) &&
           !element(receiver.tpe.widen).exists(held => Purity.stateful(held) || !standard(held) && changing(held))
@@ -1398,8 +1445,20 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     case other                               => other
   }
 
+  /** Whether the build declares the collection a member holds to be small. */
+  private def bounded(tree: tpd.Tree)(using Context): Boolean = {
+    val member = converted(tree).symbol
+    member.exists && (member.owner.isClass || member.is(Flags.Param)) && {
+      val owner = Calls.qualified(member.owner)
+      declared(s"$owner.${member.name}", owner)
+    }
+  }
+
   private def heated(using Context): Boolean =
     Trees.enclosedBy(ctx.owner, owner => !owner.isAnonymousClass && hot(Calls.qualified(owner)))
+
+  private def chilled(using Context): Boolean =
+    Trees.enclosedBy(ctx.owner, owner => !owner.isAnonymousClass && cold(Calls.qualified(owner)))
 
   @annotation.tailrec
   private def typeArguments(tree: tpd.Tree): List[Type] = tree match {

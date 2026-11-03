@@ -84,6 +84,13 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
     assertEquals(read(path, "generated = [\"gen/**\"]\n").generatedDisabled, None)
   }
 
+  directory.test("every rule is disabled over generated code unless the configuration lists some") { path =>
+    assertEquals(read(path, "").disabledOverGenerated, Set("*"))
+    assertEquals(read(path, "").analysis(read(path, "").build).generatedDisabled, Set("*"))
+    assertEquals(read(path, "generated-disabled = [duplicate-code]\n").disabledOverGenerated, Set("duplicate-code"))
+    assertEquals(read(path, "generated-disabled = []\n").disabledOverGenerated, Set.empty[String])
+  }
+
   directory.test("bounded members keep the order they are named in") { path =>
     val configured = read(
       path,

@@ -148,6 +148,40 @@ class LoopsSuite extends FunSuite {
     assertEquals(tagged(found, "keyed-lookup-in-loop"), Nil, found.mkString("\n"))
   }
 
+  test("a scan of a collection reached through a variable of an enclosing loop is not reported") {
+    val found = warnings(
+      """case class Field(name: String, width: Int)
+        |case class Form(fields: Vector[Field], names: Vector[String])
+        |object Lints {
+        |  def resolved(forms: Vector[Form]): Vector[Vector[Option[Field]]] =
+        |    forms.map(form => form.names.map(name => form.fields.find(_.name == name)))
+        |  def listed(forms: Vector[Form]): Vector[Vector[Option[Field]]] =
+        |    forms.map { form =>
+        |      val fields = form.fields
+        |      form.names.map(name => fields.find(_.name == name))
+        |    }
+        |  def shared(fields: Vector[Field], forms: Vector[Form]): Vector[Vector[Option[Field]]] =
+        |    forms.map(form => form.names.map(name => fields.find(_.name == name)))
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "keyed-lookup-in-loop"),
+      List("find over fields relates its elements to the loop variable and scans them on every iteration"),
+      found.mkString("\n")
+    )
+  }
+
+  test("scans relating a collection to the loop variable are not reported in cold classes") {
+    val source =
+      """case class Item(id: Int, owner: String)
+        |object Lints {
+        |  def counted(items: Vector[Item], ids: Vector[Int]): Vector[Int] = ids.map(id => items.count(_.id == id))
+        |}""".stripMargin
+    assertEquals(tagged(warnings(source), "keyed-lookup-in-loop").size, 1)
+    assertEquals(tagged(warnings(source, "hot=Other"), "keyed-lookup-in-loop").size, 1)
+    assertEquals(tagged(warnings(source, "hot=!Lints"), "keyed-lookup-in-loop"), Nil)
+  }
+
   test("a scan of the collection a loop iterates makes the loop quadratic") {
     val found = warnings(
       """case class Item(id: Int, parent: Int)
@@ -225,6 +259,43 @@ class LoopsSuite extends FunSuite {
     )
   }
 
+  test("a call that descends a chain of wrappers for a value of the loop reads constant-time data") {
+    val found = warnings(
+      """sealed trait Source
+        |case class Register(index: Int) extends Source
+        |case class Half(of: Source) extends Source
+        |case class Selected(of: Source, part: Int) extends Source
+        |object Lints {
+        |  def read(values: Array[Long], source: Source, lane: Int): Long = source match {
+        |    case Register(index) => values(index + lane)
+        |    case Half(of)        => read(values, of, lane) >>> 16
+        |    case Selected(of, part) => read(values, of, lane) >> part
+        |  }
+        |  def fill(values: Array[Long], target: Array[Long], source: Source, lanes: Vector[Int]): Unit =
+        |    lanes.foreach(lane => target(lane) = read(values, source, lane))
+        |}""".stripMargin
+    )
+    assertEquals(tagged(found, "linear-in-loop"), Nil, found.mkString("\n"))
+  }
+
+  test("a tuple destructured in a recursion, or in a loop of a class the build leaves cold, is not reported") {
+    val source =
+      """object Lints {
+        |  def widths(types: Vector[String]): Vector[String] = types.map { tpe =>
+        |    val (cpp, suffix) = if (tpe == "Long") ("uint64_t", "ull") else ("uint32_t", "u")
+        |    cpp + suffix
+        |  }
+        |  def descend(depth: Int, flag: Boolean): String =
+        |    if (depth == 0) "" else {
+        |      val (cpp, suffix) = if (flag) ("uint64_t", "ull") else ("uint32_t", "u")
+        |      cpp + suffix + descend(depth - 1, flag)
+        |    }
+        |}""".stripMargin
+    assertEquals(tagged(warnings(source), "tuple-destructure-in-loop").size, 1)
+    assertEquals(tagged(warnings(source, "hot=Lints"), "tuple-destructure-in-loop").size, 1)
+    assertEquals(tagged(warnings(source, "hot=Other"), "tuple-destructure-in-loop"), Nil)
+  }
+
   test("an aggregate over a window of a collection that grows by one element on each iteration is reported") {
     val found = warnings(
       """object Lints {
@@ -267,6 +338,39 @@ class LoopsSuite extends FunSuite {
     assertEquals(tagged(found, "linear-in-loop").filter(_.contains("window")), Nil, found.mkString("\n"))
   }
 
+  test("scans and windows of a member the build declares bounded are not linear work") {
+    val source =
+      """case class Format(widths: Vector[Int], names: List[String])
+        |object Lints {
+        |  def offsets(format: Format): Vector[Int] =
+        |    format.widths.zipWithIndex.map((_, lane) => format.widths.take(lane).foldLeft(0)(_ + _))
+        |  def known(format: Format, ids: Vector[Int]): Vector[Boolean] = ids.map(id => format.widths.contains(id))
+        |  def present(format: Format, ids: Vector[Int]): Vector[Boolean] = ids.map(id => format.widths.exists(_ == id))
+        |  def listed(format: Format, ids: Vector[String]): Vector[Boolean] = ids.map(id => format.names.contains(id))
+        |  def repeats(format: Format): Vector[Int] = format.widths.map(width => format.widths.count(_ == width))
+        |}""".stripMargin
+    def reported(options: String*) = tagged(warnings(source, options*), "linear-in-loop").map(_.takeWhile(_ != ' '))
+    val all                        = List("contains", "contains", "count", "exists", "take")
+    assertEquals(reported(), all)
+    assertEquals(reported("bounded=Format.widths:4"), List("contains"))
+    assertEquals(reported("bounded=**.widths:4", "bounded=Format.names:4"), Nil)
+    assertEquals(reported("bounded=Format:4"), Nil)
+    assertEquals(reported("bounded=Other.widths:4"), all)
+  }
+
+  test("a scan of a member the build declares bounded is not a keyed lookup") {
+    val source =
+      """case class Item(id: Int, owner: String)
+        |case class Table(items: Vector[Item], owners: Vector[Item])
+        |object Lints {
+        |  def counted(table: Table, ids: Vector[Int]): Vector[Int] = ids.map(id => table.items.count(_.id == id))
+        |  def owned(table: Table, ids: Vector[Int]): Vector[Int] = ids.map(id => table.owners.count(_.id == id))
+        |}""".stripMargin
+    assertEquals(tagged(warnings(source), "keyed-lookup-in-loop").size, 2)
+    assertEquals(tagged(warnings(source, "bounded=Table.items:4"), "keyed-lookup-in-loop").size, 1)
+    assertEquals(tagged(warnings(source, "bounded=Table.*:4"), "keyed-lookup-in-loop"), Nil)
+  }
+
   test("a scan inside a lambda that depends neither on its parameters nor on the loop is hoistable") {
     val found = warnings(
       """object Lints {
@@ -306,6 +410,64 @@ class LoopsSuite extends FunSuite {
         |}""".stripMargin
     )
     assertEquals(tagged(found, "invariant-in-loop"), Nil, found.mkString("\n"))
+  }
+
+  test("work derived from the rows of a field is recomputed on every call only where the build says code runs hot") {
+    val source =
+      """case class Rule(isas: Set[String], operand: String)
+        |object Lints {
+        |  val ISAs  = Vector("gfx6", "gfx7", "gfx8")
+        |  val Rules = Vector(Rule(Set("gfx6"), "a"), Rule(Set("gfx7"), "b"))
+        |  def render: Vector[String] = Rules.map { row =>
+        |    val isas = ISAs.filter(row.isas).mkString(", ")
+        |    s"- $isas ${row.operand}"
+        |  }
+        |}""".stripMargin
+    assertEquals(tagged(warnings(source), "invariant-in-loop").size, 1)
+    assertEquals(tagged(warnings(source, "hot=Lints"), "invariant-in-loop").size, 1)
+    assertEquals(tagged(warnings(source, "hot=Other"), "invariant-in-loop"), Nil)
+  }
+
+  test("a guard is not hoisted out of the loop that evaluates it") {
+    val found = warnings(
+      """sealed trait Op
+        |case class On(id: Int) extends Op
+        |case class Off(id: Int) extends Op
+        |object Lints {
+        |  def apply(ops: Array[Op], values: Vector[Vector[Byte]], indices: Vector[Int]): Unit =
+        |    values.foreach { value =>
+        |      indices.foreach { index =>
+        |        ops(index) = ops(index) match {
+        |          case On(id) if value.forall(_ == 0)  => Off(id)
+        |          case Off(id) if value.exists(_ != 0) => On(id)
+        |          case other                           => other
+        |        }
+        |      }
+        |    }
+        |}""".stripMargin
+    )
+    assertEquals(tagged(found, "invariant-in-loop"), Nil, found.mkString("\n"))
+  }
+
+  test("a table or tuple of at most four literals in a loop is hoisted only where the build says code runs hot") {
+    val source =
+      """object Lints {
+        |  def registered(collectors: Vector[String]): Vector[String] =
+        |    for { collector <- collectors; check <- Seq("handler", "burst") } yield collector + check
+        |  def unit(collectors: Vector[String]): Unit =
+        |    for { collector <- collectors; check <- Seq("handler", "burst") } println(collector + check)
+        |  def wide(collectors: Vector[String]): Vector[String] =
+        |    for { collector <- collectors; check <- Seq("a", "b", "c", "d", "e") } yield collector + check
+        |  def suffixes(types: Vector[String]): Vector[String] = types.map { tpe =>
+        |    val (cpp, suffix) = if (tpe == "Long") ("uint64_t", "ull") else ("uint32_t", "u")
+        |    cpp + suffix
+        |  }
+        |}""".stripMargin
+    assertEquals(tagged(warnings(source), "invariant-in-loop").size, 4)
+    assertEquals(tagged(warnings(source, "hot=Lints"), "invariant-in-loop").size, 4)
+    assertEquals(tagged(warnings(source, "hot=!Lints"), "invariant-in-loop"), Nil)
+    assertEquals(tagged(warnings(source, "hot=Other"), "invariant-in-loop"), Nil)
+    assertEquals(tagged(warnings(source, "hot=!Lints"), "literal-table-in-def").size, 1)
   }
 
   test("a field that a method called by a recursion mutates through another method is not invariant in it") {

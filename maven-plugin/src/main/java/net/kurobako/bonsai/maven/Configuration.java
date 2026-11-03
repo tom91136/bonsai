@@ -18,6 +18,7 @@ public final class Configuration {
   private final Set<String> errors = new TreeSet<>();
   private final Set<String> warnings = new TreeSet<>();
   private final Set<String> hot = new TreeSet<>();
+  private final List<String> bounded = new ArrayList<>();
   private final Set<String> checked = new TreeSet<>();
   private final List<String> options = new ArrayList<>();
   private final List<String> text = new ArrayList<>();
@@ -52,6 +53,11 @@ public final class Configuration {
     return hot;
   }
 
+  /** The members whose collections hold a bounded number of elements, as {@code <member>:<max>}. */
+  public List<String> bounded() {
+    return bounded;
+  }
+
   /** The refinement types whose checked operations a conversion can bypass. */
   public Set<String> checked() {
     return checked;
@@ -83,6 +89,7 @@ public final class Configuration {
         case "errors" -> configuration.errors.add(value);
         case "warnings" -> configuration.warnings.add(value);
         case "hot" -> configuration.hot.add(value);
+        case "bounded" -> configuration.bounded.add(value);
         case "checked" -> configuration.checked.add(value);
         case "option" -> configuration.options.add(value);
         case "wildcards" -> configuration.wildcards = Integer.parseInt(value);

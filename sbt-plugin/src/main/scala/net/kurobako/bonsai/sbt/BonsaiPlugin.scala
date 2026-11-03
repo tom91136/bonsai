@@ -107,8 +107,7 @@ object BonsaiPlugin extends AutoPlugin {
         "every source is checked by default"
     )
     val bonsaiGeneratedDisabled: SettingKey[Set[String]] = settingKey[Set[String]](
-      "Rules the analysis does not report over generated code, by id, or * for all of them; every rule reports it by " +
-        "default"
+      "Rules the analysis does not report over generated code, by id, or * for all of them; all of them by default"
     )
     val bonsaiConcurrent: SettingKey[Set[String]] =
       settingKey[Set[String]]("Methods, by qualified name, that run the functions passed to them on other threads")
@@ -209,7 +208,7 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiEffects           := bonsaiConfiguration.value.effects.getOrElse(Map.empty),
     bonsaiConcurrent        := bonsaiConfiguration.value.concurrent.getOrElse(Set.empty),
     bonsaiGenerated         := bonsaiConfiguration.value.generated.getOrElse(Set.empty),
-    bonsaiGeneratedDisabled := bonsaiConfiguration.value.generatedDisabled.getOrElse(Set.empty),
+    bonsaiGeneratedDisabled := bonsaiConfiguration.value.disabledOverGenerated,
     bonsaiHot               := bonsaiConfiguration.value.hot.getOrElse(Set.empty),
     bonsaiReflective        := bonsaiConfiguration.value.reflective.getOrElse(Set.empty),
     bonsaiIntended          := bonsaiConfiguration.value.intended.getOrElse(Set.empty),
@@ -272,6 +271,7 @@ object BonsaiPlugin extends AutoPlugin {
           (option("disable", bonsaiDisabled.value) ++ option("error", bonsaiErrors.value) ++
             option("warn", bonsaiWarnings.value) :+ s"-P:bonsai:wildcards=${bonsaiWildcards.value}")) ++
           bonsaiHot.value.toSeq.sorted.map(glob => s"-P:bonsai:hot=$glob") ++
+          bonsaiBounded.value.map((member, max, _) => s"-P:bonsai:bounded=$member:$max") ++
           bonsaiChecked.value.toSeq.sorted.map(tpe => s"-P:bonsai:checked=$tpe")
     },
     semanticdbEnabled := true,

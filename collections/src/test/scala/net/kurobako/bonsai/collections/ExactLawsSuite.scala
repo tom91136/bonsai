@@ -191,11 +191,6 @@ class ExactLawsSuite extends munit.FunSuite {
       k => chain("list", on(k, "collect", fn("pf")), on(k, "headOption"))
     ),
     (
-      "filter then map",
-      "filter-map-to-collect",
-      k => chain("list", on(k, "filter", fn("_ > 0")), on(k, "map", fn("_ * 2")))
-    ),
-    (
       "map then contains",
       "map-contains",
       k => chain("list", on(k, "map", fn("_ > 0")), on(k, "contains", literal(true)))

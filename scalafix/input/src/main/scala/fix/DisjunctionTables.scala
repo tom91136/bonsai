@@ -42,6 +42,8 @@ object DisjunctionTables {
   def prefixes(path: String): Boolean =
     path.startsWith("a/") || path.startsWith("b/") || path.startsWith("c/") || path.startsWith("d/") || path.startsWith("e/") || path.startsWith("f/")// assert: DisjunctionTables.equality-disjunction
 
+  def mixedPrefixes(n: String): Boolean = n == "a" || n == "b" || n == "c" || n.startsWith("d") || n.startsWith("e") || n.startsWith("f")// assert: DisjunctionTables.equality-disjunction
+
   def constants(kind: Int): Boolean =
     kind == Kind.A || kind == Kind.B || kind == Kind.C || Kind.D == kind || kind == Kind.E || kind == Kind.F// assert: DisjunctionTables.equality-disjunction
 

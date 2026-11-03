@@ -15,7 +15,8 @@ private object Equality {
 
 /** Reports case class fields whose types compare by reference or change after construction, so `equals` and `hashCode`
   * stop describing the value: arrays, functions, mutable collections, and open traits whose one abstract method lambdas
-  * implement, unless an object of the unit implements the trait, which makes it a strategy.
+  * implement, unless an object of the unit implements the trait, which makes it a strategy. Private case classes are
+  * left out, since their values do not leave the scope that declares them.
   */
 private class Equality(checks: Checks)(using Context) {
   private val Strategies = Set(
@@ -35,7 +36,7 @@ private class Equality(checks: Checks)(using Context) {
     }.collect { case definition @ tpd.TypeDef(_, template: tpd.Template) => (definition, template) }
     val objects =
       classes.collect { case (definition, _) if definition.symbol.is(Flags.Module) => definition.symbol.asClass }
-    classes.filter((definition, _) => definition.symbol.is(Flags.Case) && !definition.symbol.is(Flags.Module)).foreach {
+    classes.filter((definition, _) => escapes(definition.symbol)).foreach {
       (definition, template) =>
         template.constr.termParamss.headOption.toList.flatten.foreach(parameter =>
           reason(parameter.tpt.tpe, objects).foreach(why =>
@@ -48,6 +49,9 @@ private class Equality(checks: Checks)(using Context) {
         )
     }
   }
+
+  private def escapes(symbol: Symbol): Boolean =
+    symbol.is(Flags.Case) && !symbol.is(Flags.Module) && !symbol.is(Flags.Private) && !symbol.privateWithin.exists
 
   private def reason(tpe: Type, objects: List[ClassSymbol]): Option[String] = {
     val widened = tpe.widen.dealias

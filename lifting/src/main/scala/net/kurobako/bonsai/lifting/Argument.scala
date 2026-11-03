@@ -66,7 +66,117 @@ private[lifting] object Argument {
         Some(Texts.of(collection))
       case _ => None
     }
-    new Argument(Texts.of(tree), pure, identity, projection, literal, comparison, membership, template(body, parameter))
+    val matching = definition.flatMap(matched(_))
+    val inspects = matching.map(shape(_)).orElse(for {
+      expression <- body
+      symbol     <- parameter
+      found      <- read(expression, symbol).orElse(tested(expression, symbol))
+    } yield found)
+    val destructures = matching.map(shape(_)).orElse(for {
+      expression <- body
+      symbol     <- parameter
+      found      <- cast(expression, symbol)
+    } yield found)
+    val selection = (body, parameter) match {
+      case (Some(expression), Some(symbol)) => selects(expression, symbol)
+      case _                                => false
+    }
+    new Argument(
+      Texts.of(tree),
+      pure,
+      identity,
+      projection,
+      literal,
+      comparison,
+      membership,
+      inspects,
+      destructures,
+      selection,
+      bare.tpe.widenDealias.isRef(defn.NothingClass),
+      template(body, parameter)
+    )
+  }
+
+  /** The pattern of a function written as a block of cases, which the compiler matches its one parameter against. */
+  private def matched(definition: tpd.DefDef)(using Context): Option[tpd.Tree] =
+    Parameters.sole(definition).filter(_.name.toString.startsWith("x$")).flatMap { parameter =>
+      Calls.peelInlined(definition.rhs) match {
+        case tpd.Match(selector, List(tpd.CaseDef(pattern, _, _))) if Calls.peelInlined(selector).symbol == parameter =>
+          Some(pattern)
+        case _ => None
+      }
+    }
+
+  /** A pattern with every name in it replaced by `_`. */
+  private def shape(pattern: tpd.Tree)(using Context): String = pattern match {
+    case tpd.Bind(_, inner)                      => shape(inner)
+    case tpd.Ident(name) if name.toString == "_" => "_"
+    case tpd.Typed(inner, tpt)                   => s"${shape(inner)}: ${tpt.tpe.show}"
+    case tpd.Alternative(alternatives)           => alternatives.map(shape(_)).mkString(" | ")
+    case tpd.UnApply(_, _, patterns)             =>
+      val symbol = pattern.tpe.widen.classSymbol
+      val parts  = patterns.map(shape(_)).mkString(", ")
+      if (defn.isTupleClass(symbol)) s"($parts)" else s"${symbol.name}($parts)"
+    case other => Texts.of(other)
+  }
+
+  /** The tuple a function reads only components of, as a pattern of its arity. */
+  private def read(body: tpd.Tree, parameter: Symbol)(using Context): Option[String] = {
+    val tuple = parameter.info.widenDealias
+    val reads = Components(parameter)(0, body)
+    Option.when(defn.isTupleClass(tuple.classSymbol) && reads > 0 && reads == collect(body, parameter).size)(
+      List.fill(tuple.argInfos.size)("_").mkString("(", ", ", ")")
+    )
+  }
+
+  /** The type a function tests its parameter against, in the first of the conditions it conjoins. */
+  private def tested(body: tpd.Tree, parameter: Symbol)(using Context): Option[String] = {
+    @tailrec def first(tree: tpd.Tree): tpd.Tree = Calls.peelInlined(tree) match {
+      case tpd.Apply(tpd.Select(left, name), List(_)) if name.toString == "&&" => first(left)
+      case other                                                               => other
+    }
+    first(body) match {
+      case tpd.TypeApply(tpd.Select(target, name), List(tpt))
+          if name.toString == "isInstanceOf" && Calls.peelInlined(target).symbol == parameter =>
+        Some(s"_: ${tpt.tpe.show}")
+      case _ => None
+    }
+  }
+
+  /** The type a function casts its parameter to, when that is all it does with it. */
+  private def cast(body: tpd.Tree, parameter: Symbol)(using Context): Option[String] = {
+    val uses  = collect(body, parameter).size
+    val casts = Casts(parameter)(Nil, body)
+    Option.when(uses > 0 && casts.sizeIs == uses && casts.distinct.sizeIs == 1)(s"_: ${casts.head}")
+  }
+
+  @tailrec
+  private def selects(body: tpd.Tree, parameter: Symbol)(using Context): Boolean = Calls.peelInlined(body) match {
+    case tpd.Apply(select: tpd.Select, Nil) => selects(select, parameter)
+    case tpd.Select(qualifier, _)           =>
+      Calls.peelInlined(qualifier) match {
+        case reference: tpd.Ident => reference.symbol == parameter
+        case inner                => selects(inner, parameter)
+      }
+    case _ => false
+  }
+
+  private class Components(symbol: Symbol) extends tpd.TreeAccumulator[Int] {
+    def apply(found: Int, tree: tpd.Tree)(using Context): Int = tree match {
+      case tpd.Select(qualifier, name)
+          if Component.matches(name.toString) && Calls.peelInlined(qualifier).symbol == symbol =>
+        found + 1
+      case _ => foldOver(found, tree)
+    }
+  }
+
+  private class Casts(symbol: Symbol) extends tpd.TreeAccumulator[List[String]] {
+    def apply(found: List[String], tree: tpd.Tree)(using Context): List[String] = tree match {
+      case tpd.TypeApply(tpd.Select(target, name), List(tpt))
+          if name.toString == "asInstanceOf" && Calls.peelInlined(target).symbol == symbol =>
+        tpt.tpe.show :: found
+      case _ => foldOver(found, tree)
+    }
   }
 
   /** Whether `value` is accepted where the parameter's type is: it conforms, or it is an integer literal that a wider
@@ -238,6 +348,10 @@ private[lifting] class Argument(
     override val literal: Option[Any],
     override val comparison: Option[Comparison],
     override val membership: Option[String],
+    override val inspects: Option[String],
+    override val destructures: Option[String],
+    override val selection: Boolean,
+    override val diverges: Boolean,
     template: Option[Vector[String]]
 ) extends Arg {
   def applied(value: String): String =

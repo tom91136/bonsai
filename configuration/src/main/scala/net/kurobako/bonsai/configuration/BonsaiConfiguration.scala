@@ -43,6 +43,9 @@ object BonsaiConfiguration {
 
     def library(id: String): Option[Boolean] = resolve(id).library
 
+    /** The rules not reported over generated code: those named, or every rule when none are. */
+    def disabledOverGenerated: Set[String] = generatedDisabled.getOrElse(Set("*"))
+
     /** The settings of the module: its own where it names them, the build's elsewhere. */
     def resolve(id: String): Settings = projects.get(id).fold(build)(own =>
       Settings(
@@ -61,7 +64,7 @@ object BonsaiConfiguration {
       effects = effects.getOrElse(Map.empty),
       concurrent = concurrent.getOrElse(Set.empty),
       generated = generated.getOrElse(Set.empty),
-      generatedDisabled = generatedDisabled.getOrElse(Set.empty),
+      generatedDisabled = disabledOverGenerated,
       reflective = reflective.getOrElse(Set.empty),
       hot = hot.getOrElse(Set.empty),
       intended = intended.getOrElse(Set.empty),

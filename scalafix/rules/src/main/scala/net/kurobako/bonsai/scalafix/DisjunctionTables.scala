@@ -5,19 +5,19 @@ import scala.collection.mutable
 import scala.meta.*
 import scalafix.v1.*
 
-/** Boolean expressions that spell out a table. Six or more equality tests against constants over at most two operands
-  * are a lookup in a `Set`, or in a `Map` of `Set`s for two operands. Four or more `||` operands that are the same call
-  * differing in one constant argument are an `exists` over the constants. A disjunction of `==` tests of one operand
-  * against literals of its own type is replaced by a `Set` lookup.
+/** Boolean expressions that spell out a table. Six or more tests against constants over at most two operands are
+  * reported. A chain of equality tests is a lookup in a `Set`, or in a `Map` of `Set`s for two operands. Four or more
+  * `||` operands that are the same call differing in one constant argument are an `exists` over the constants. A
+  * disjunction of `==` tests of one operand against literals of its own type is replaced by a `Set` lookup.
   */
 class DisjunctionTables extends SemanticRule("DisjunctionTables") {
-  private val EqualityTests = 6
+  private val ConstantTests = 6
   private val OperandLimit  = 2
   private val CallVariants  = 4
 
   private val combinators = Set("||", "&&")
 
-  private case class Test(operand: Term, constant: Term, infix: Boolean)
+  private case class Test(operand: Term, constant: Term, infix: Boolean, equality: Boolean)
 
   override def fix(using document: SemanticDocument): Patch = {
     val expressions = document.tree.collect { case tree: Term if combinator(tree) && !combined(tree) => tree }
@@ -32,14 +32,23 @@ class DisjunctionTables extends SemanticRule("DisjunctionTables") {
   private def table(expression: Term)(using SemanticDocument): Option[(Tree, Patch)] = {
     val leaves = flatten(expression)
     val tests  = leaves.flatMap(test(_))
-    Option.when(tests.size >= EqualityTests && tests.map(_.operand.syntax).distinct.size <= OperandLimit) {
-      val message = s"${tests.size} equality tests against constants; look the value up in a Set or a Map of Sets"
-      val patch   = lookup(expression, leaves, tests) match {
-        case Some(replacement) => lint.replace(expression, replacement, "equality-disjunction", message)
-        case None              => lint("equality-disjunction", message, expression.pos)
+    Option.when(tests.size >= ConstantTests && tests.map(_.operand.syntax).distinct.size <= OperandLimit) {
+      val patch = lookup(expression, leaves, tests) match {
+        case Some(replacement) => lint.replace(expression, replacement, "equality-disjunction", summary(tests))
+        case None              => lint("equality-disjunction", summary(tests), expression.pos)
       }
       expression -> patch
     }
+  }
+
+  private def summary(tests: List[Test]): String = {
+    val prefixes = tests.count(!_.equality)
+    if (prefixes == 0) s"${tests.size} equality tests against constants; look the value up in a Set or a Map of Sets"
+    else if (prefixes == tests.size)
+      s"${tests.size} prefix tests against constants; test the value against a list of them"
+    else
+      s"${tests.size} tests against constants, $prefixes of them prefix tests; test the value against a list of the " +
+        "prefixes and a Set of the rest"
   }
 
   private def lookup(expression: Term, leaves: List[Term], tests: List[Test])(using SemanticDocument): Option[String] =
@@ -113,14 +122,14 @@ class DisjunctionTables extends SemanticRule("DisjunctionTables") {
   private def test(leaf: Term): Option[Test] = leaf match {
     case infix: Term.ApplyInfix if infix.op.value == "==" && infix.argClause.values.size == 1 =>
       val other = infix.argClause.values.head
-      if (constant(other) && !constant(infix.lhs)) Some(Test(infix.lhs, other, true))
-      else if (constant(infix.lhs) && !constant(other)) Some(Test(other, infix.lhs, true))
+      if (constant(other) && !constant(infix.lhs)) Some(Test(infix.lhs, other, true, true))
+      else if (constant(infix.lhs) && !constant(other)) Some(Test(other, infix.lhs, true, true))
       else None
     case application: Term.Apply =>
       (application.fun, application.argClause.values) match {
-        case (Term.Select(receiver, Term.Name("equals" | "startsWith")), List(argument))
+        case (Term.Select(receiver, Term.Name(method @ ("equals" | "startsWith"))), List(argument))
             if constant(argument) && !constant(receiver) =>
-          Some(Test(receiver, argument, false))
+          Some(Test(receiver, argument, false, method == "equals"))
         case _ => None
       }
     case _ => None

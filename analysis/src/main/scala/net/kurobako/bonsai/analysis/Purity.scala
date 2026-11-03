@@ -28,7 +28,7 @@ import scala.util.control.NonFatal
 object Purity {
 
   /** A statement whose value is dropped although computing it has no effect. */
-  case class Discard(callee: String, node: String, location: String, suppressed: Set[String])
+  case class Discard(callee: String, node: String, location: String, line: Int, suppressed: Set[String])
 
   /** A function passed to a transformation of a collection, option or result, which performs `effect`; a `view` runs it
     * on every traversal.
@@ -38,6 +38,7 @@ object Purity {
       effect: String,
       node: String,
       location: String,
+      line: Int,
       view: Boolean,
       suppressed: Set[String]
   )
@@ -153,7 +154,8 @@ object Purity {
         discard.node,
         Finding.Rule.PureDiscard,
         s"${discard.callee} has no effects, so dropping its result at ${discard.location} leaves a call that does nothing",
-        suppressed = discard.suppressed
+        suppressed = discard.suppressed,
+        line = discard.line
       )
     ) ++ model.transforms.flatMap(transform =>
       Finding.at(
@@ -163,7 +165,8 @@ object Purity {
         s"the function passed to ${transform.operation} at ${transform.location} ${transform.effect}; " +
           (if (transform.view) "a view runs it again on every traversal, so perform effects in foreach or a loop"
            else "keep transformations pure and perform effects in foreach or a loop"),
-        suppressed = transform.suppressed
+        suppressed = transform.suppressed,
+        line = transform.line
       )
     ) ++ model.methods.toVector.sortBy(_._1).flatMap((name, method) =>
       method.role.flatMap(role =>
@@ -539,7 +542,14 @@ object Purity {
       override val hashCode: Int = ScalaRunTime._hashCode(this)
     }
 
-    private case class TransformSite(method: Symbol, operation: String, lambda: Facts, tree: tpd.Tree, view: Boolean)
+    private case class TransformSite(
+        method: Symbol,
+        operation: String,
+        lambda: Facts,
+        function: Symbol,
+        tree: tpd.Tree,
+        view: Boolean
+    )
     private case class WriteSite(method: Symbol, variable: Symbol, entry: String, tree: tpd.Tree)
     private case class DiscardSite(method: Symbol, name: String, facts: Facts, tree: tpd.Tree)
 
@@ -789,7 +799,7 @@ object Purity {
       val once = consumed.get(site.tree.span).filter(_ => site.view)
       if (once.contains(true)) None
       else
-        decoded(resolve(site.lambda, frame(site.method, None), None).effects).filter(effect =>
+        decoded(resolve(site.lambda, frame(site.method, None), Some(site.function)).effects).filter(effect =>
           Observable(effect.kind) && effect.via.isEmpty
         ).minOption.map(effect => (site.method, site.operation, effect.shown, site.tree, site.view && once.isEmpty))
     }
@@ -1513,10 +1523,8 @@ object Purity {
         case _ => traverseChildren(tree)
       }
 
-      /** A statement whose value is dropped: a non-Unit expression, or `val _ = value`. */
+      /** A statement whose value is dropped: a non-Unit expression that is not bound to `_` explicitly. */
       private def dropped(statement: tpd.Tree): Option[tpd.Tree] = statement match {
-        case tpd.Match(selector, List(tpd.CaseDef(tpd.Ident(name), tpd.EmptyTree, _))) if name.toString == "_" =>
-          Some(selector)
         case _: (tpd.Apply | tpd.Select | tpd.Ident) if !statement.tpe.widen.isRef(defn.UnitClass) => Some(statement)
         case _                                                                                     => None
       }
@@ -1565,8 +1573,11 @@ object Purity {
           qualifier.foreach(pipeline(_).foreach(consumed(_) = Stopping(method.name.toString)))
         if (depth == 0 && Transformations(method.name.toString) && transformed(qualifier))
           passed.zip(arguments).foreach {
-            case (Argument.Function(lambda), argument) if Calls.lambda(argument).isDefined =>
-              transforms += TransformSite(root, method.name.toString, lambda, tree, viewed(qualifier))
+            case (Argument.Function(lambda), argument) =>
+              Calls.lambda(argument).foreach(definition =>
+                transforms +=
+                  TransformSite(root, method.name.toString, lambda, definition.symbol, tree, viewed(qualifier))
+              )
             case _ => ()
           }
         if (depth == 0 && (method +: method.allOverriddenSymbols.toVector).exists(spawns(_)))
