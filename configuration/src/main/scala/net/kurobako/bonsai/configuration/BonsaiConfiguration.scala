@@ -30,6 +30,7 @@ object BonsaiConfiguration {
       effects: Option[Map[String, Set[String]]],
       concurrent: Option[Set[String]],
       generated: Option[Set[String]],
+      generatedDisabled: Option[Set[String]],
       hot: Option[Set[String]],
       reflective: Option[Set[String]],
       intended: Option[Set[String]],
@@ -60,6 +61,7 @@ object BonsaiConfiguration {
       effects = effects.getOrElse(Map.empty),
       concurrent = concurrent.getOrElse(Set.empty),
       generated = generated.getOrElse(Set.empty),
+      generatedDisabled = generatedDisabled.getOrElse(Set.empty),
       reflective = reflective.getOrElse(Set.empty),
       hot = hot.getOrElse(Set.empty),
       intended = intended.getOrElse(Set.empty),
@@ -79,6 +81,7 @@ object BonsaiConfiguration {
       effects: Map[String, Set[String]],
       concurrent: Set[String],
       generated: Set[String],
+      generatedDisabled: Set[String],
       reflective: Set[String],
       hot: Set[String],
       intended: Set[String],
@@ -86,7 +89,9 @@ object BonsaiConfiguration {
       nesting: Map[String, Int]
   ) {
 
-    /** The options of these settings, naming of the ids only the `findings` the analysis knows. */
+    /** The options of these settings, naming of the ids only the `findings` the analysis knows, apart from those
+      * disabled over generated code, which the analysis rejects when it does not know them.
+      */
     def options(findings: Set[String], baseline: File, purity: File): Seq[String] =
       flags("--disable", disabled & findings) ++ flags("--error", errors & findings) ++
         flags("--warn", warnings & findings) ++
@@ -94,6 +99,7 @@ object BonsaiConfiguration {
         effects.toSeq.sortBy(_._1).flatMap((prefix, kinds) =>
           Seq("--effects", s"$prefix=${kinds.toSeq.sorted.mkString(",")}")
         ) ++ flags("--concurrent", concurrent) ++ flags("--generated", generated) ++
+        flags("--generated-disable", generatedDisabled) ++
         flags("--reflective", reflective) ++ flags("--hot", hot) ++ flags("--intended", intended) ++
         bounded.flatMap((member, max, reason) => Seq("--bounded", member, max.toString, reason)) ++
         (if (nesting.isEmpty) Nil
@@ -120,6 +126,7 @@ object BonsaiConfiguration {
             "effects",
             "concurrent",
             "generated",
+            "generated-disabled",
             "hot",
             "reflective",
             "intended",
@@ -139,6 +146,7 @@ object BonsaiConfiguration {
         ),
         stringSet(config, "concurrent"),
         stringSet(config, "generated"),
+        stringSet(config, "generated-disabled"),
         stringSet(config, "hot"),
         stringSet(config, "reflective"),
         stringSet(config, "intended"),

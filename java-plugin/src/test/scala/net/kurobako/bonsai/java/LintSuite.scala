@@ -457,6 +457,43 @@ class LintSuite extends munit.FunSuite {
     )
   }
 
+  test("a method that overrides the one of a supertype stays silent when suppressed by the error prone name") {
+    val model = compile(
+      "Shape" -> """
+        |package demo;
+        |
+        |public interface Shape {
+        |  int sides();
+        |}
+        |""".stripMargin,
+      "Square" -> """
+        |package demo;
+        |
+        |public class Square implements Shape {
+        |  @SuppressWarnings("MissingOverride")
+        |  public int sides() {
+        |    return 4;
+        |  }
+        |}
+        |""".stripMargin,
+      "Triangle" -> """
+        |package demo;
+        |
+        |public class Triangle implements Shape {
+        |  public int sides() {
+        |    return 3;
+        |  }
+        |}
+        |""".stripMargin
+    )
+
+    assertEquals(
+      model.lints.filter(_.id == "missing-override").map(_.owner),
+      Vector("demo.Triangle"),
+      s"the lints of the methods: ${model.lints.mkString(", ")}"
+    )
+  }
+
   test("a method that hides the one of a supertype and overrides it not needs no annotation") {
     val model = compile(
       "Base" -> """
@@ -642,15 +679,15 @@ class LintSuite extends munit.FunSuite {
       |    try {
       |      work();
       |    } catch (Throwable error) {
-      |      report(error);
+      |      report(error.getMessage());
       |    }
       |  }
       |
       |  private void work() {
       |  }
       |
-      |  private void report(Throwable error) {
-      |    System.out.println(error);
+      |  private void report(String message) {
+      |    System.out.println(message);
       |  }
       |}
       |""".stripMargin)
@@ -659,6 +696,145 @@ class LintSuite extends munit.FunSuite {
     assertEquals(found.detail, "the exception is caught so generally that the failures of the program are hidden")
     assertEquals(found.owner, "demo.Errors")
     assertEquals(found.method, "demo.Errors.run")
+  }
+
+  test("a catch of throwable that only logs a message is reported") {
+    val model = compile("Catches" -> """
+      |package demo;
+      |
+      |public class Catches {
+      |  public void run(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Throwable t) {
+      |      log("x");
+      |    }
+      |  }
+      |
+      |  public void copy(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Throwable t) {
+      |      String message = t.getMessage();
+      |      log(message);
+      |    }
+      |  }
+      |
+      |  public void failing(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Error error) {
+      |      log(error.getMessage());
+      |    }
+      |  }
+      |
+      |  private void log(String message) {
+      |    System.out.println(message);
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(_.id == "catch-throwable").map(_.method),
+      Vector("demo.Catches.run", "demo.Catches.copy", "demo.Catches.failing")
+    )
+  }
+
+  test("a catch of throwable that passes the throwable on is not reported") {
+    val model = compile("Catches" -> """
+      |package demo;
+      |
+      |import java.util.concurrent.CompletableFuture;
+      |import java.util.concurrent.atomic.AtomicReference;
+      |
+      |public class Catches {
+      |  private final AtomicReference<Throwable> failure = new AtomicReference<>();
+      |  private final CompletableFuture<String> future = new CompletableFuture<>();
+      |  private Throwable last;
+      |
+      |  public void argument(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Throwable t) {
+      |      failure.set(t);
+      |    }
+      |  }
+      |
+      |  public void wrapped(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Throwable t) {
+      |      throw new IllegalStateException(t);
+      |    }
+      |  }
+      |
+      |  public void rethrown(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Throwable t) {
+      |      throw t;
+      |    }
+      |  }
+      |
+      |  public void completed(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Throwable t) {
+      |      future.completeExceptionally(t);
+      |    }
+      |  }
+      |
+      |  public void assigned(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Throwable t) {
+      |      last = t;
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(_.id == "catch-throwable").map(_.method),
+      Vector.empty,
+      s"the catches pass the throwable on: ${model.lints.mkString(", ")}"
+    )
+  }
+
+  test("a catch of throwable that returns the throwable or a cause of it is not reported") {
+    val model = compile("Catches" -> """
+      |package demo;
+      |
+      |import java.util.concurrent.atomic.AtomicReference;
+      |
+      |public class Catches {
+      |  private final AtomicReference<Throwable> failure = new AtomicReference<>();
+      |
+      |  public Throwable returned(Runnable task) {
+      |    try {
+      |      task.run();
+      |      return null;
+      |    } catch (Throwable t) {
+      |      return t;
+      |    }
+      |  }
+      |
+      |  public void derived(Runnable task) {
+      |    try {
+      |      task.run();
+      |    } catch (Throwable t) {
+      |      Throwable cause = t.getCause();
+      |      failure.set(cause);
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(_.id == "catch-throwable").map(_.method),
+      Vector.empty,
+      s"the catches return or pass on the throwable: ${model.lints.mkString(", ")}"
+    )
   }
 
   test("an exception that is caught and looked at is not swallowed") {
@@ -2380,6 +2556,65 @@ class LintSuite extends munit.FunSuite {
     assertEquals(
       found.map(_.detail),
       Vector("use List.copyOf instead of unmodifiableList of a copy: List.copyOf(values)")
+    )
+  }
+
+  test("an unmodifiable copy into an unordered set is reported with the factory of the set") {
+    val model = compile("Copies" -> """
+      |package demo;
+      |
+      |import java.util.Collections;
+      |import java.util.HashSet;
+      |import java.util.Set;
+      |
+      |public class Copies {
+      |  public Set<String> copy(Set<String> values) {
+      |    return Collections.unmodifiableSet(new HashSet<>(values));
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(_.id == "java9-collection-factory").map(_.detail),
+      Vector("use Set.copyOf instead of unmodifiableSet of a copy: Set.copyOf(values)")
+    )
+  }
+
+  test("an unmodifiable copy that keeps the order of its set or map is not reported") {
+    val model = compile("Copies" -> """
+      |package demo;
+      |
+      |import java.util.Collections;
+      |import java.util.LinkedHashMap;
+      |import java.util.LinkedHashSet;
+      |import java.util.Map;
+      |import java.util.Set;
+      |import java.util.TreeMap;
+      |import java.util.TreeSet;
+      |
+      |public class Copies {
+      |  public Set<String> linked(Set<String> values) {
+      |    return Collections.unmodifiableSet(new LinkedHashSet<>(values));
+      |  }
+      |
+      |  public Set<String> sorted(Set<String> values) {
+      |    return Collections.unmodifiableSet(new TreeSet<>(values));
+      |  }
+      |
+      |  public Map<String, String> linkedMap(Map<String, String> values) {
+      |    return Collections.unmodifiableMap(new LinkedHashMap<>(values));
+      |  }
+      |
+      |  public Map<String, String> sortedMap(Map<String, String> values) {
+      |    return Collections.unmodifiableMap(new TreeMap<>(values));
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(
+      model.lints.filter(_.id == "java9-collection-factory").map(_.method),
+      Vector.empty,
+      s"the copies keep their order: ${model.lints.mkString(", ")}"
     )
   }
 
@@ -5176,7 +5411,9 @@ class LintSuite extends munit.FunSuite {
     )
     val method = model.methods.find(_.name == "demo.Args.run").getOrElse(fail(model.methods.mkString("\n")))
     assertEquals(method.parameters.map(_.kind), Vector("other", "number", "tag", "number"))
-    val site = model.sites.find(_.callee == "demo.Args.run").getOrElse(fail(model.sites.mkString("\n")))
+    val site = model.sites.find(
+      _.callee == "demo.Args.run(Ljava/lang/String;ILdemo/Args$Mode;I)V"
+    ).getOrElse(fail(model.sites.mkString("\n")))
     assertEquals(
       site.arguments,
       Vector("text:a", "symbol:demo.Args.LIMIT", "symbol:demo.Args.Mode.FAST", "present:plain")
@@ -5891,7 +6128,7 @@ class LintSuite extends munit.FunSuite {
       |  }
       |}
       |""".stripMargin)
-    val sites = model.sites.filter(_.callee == "demo.MethodRefs.openNewTab")
+    val sites = model.sites.filter(_.callee == "demo.MethodRefs.openNewTab(Ljava/lang/String;)V")
     assertEquals(sites.size, 2, model.sites.mkString("\n"))
     assertEquals(sites.map(_.arguments), Vector(Vector("unknown"), Vector("text:https://example.com")))
   }

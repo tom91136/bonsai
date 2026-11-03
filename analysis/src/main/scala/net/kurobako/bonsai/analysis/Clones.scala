@@ -45,7 +45,8 @@ object Clones {
   /** The value of a candidate that a near duplicate differs in: a literal, or a reference to a value. `text` tells the
     * values apart, with locals numbered by first occurrence, and `shown`, rendered when a finding names it, is what the
     * finding says; `string` marks a string literal. A reference through a parameter of its method has a `parameter`,
-    * which a call of the method passes.
+    * which a call of the method passes. The `types` of a reference are those of the value and then of each selection
+    * made from it, and those of a literal its own; they are empty where not known.
     */
   case class Literal(
       text: String,
@@ -53,9 +54,16 @@ object Clones {
       reference: Boolean = false,
       parameter: Option[Binding] = None
   )(
-      render: => String = text
+      render: => String = text,
+      types: => Vector[Typed] = Vector.empty
   ) {
-    lazy val shown: String = render
+    lazy val shown: String        = render
+    lazy val typed: Vector[Typed] = types
+  }
+
+  /** The type of a value, which a parameter takes if it conforms to the type of the parameter. */
+  trait Typed {
+    def conforms(to: Typed): Boolean
   }
 
   /** A value computed when first used, for what only fragments found alike need. */
@@ -67,8 +75,10 @@ object Clones {
     def apply[A](compute: => A): Deferred[A] = new Deferred(compute)
   }
 
-  /** The `index` of the parameter that a reference starts at, and the `suffix` of selections that follow it. */
-  case class Binding(index: Int, suffix: String)
+  /** The `index` of the parameter that a reference starts at, and the `suffix` of selections that follow it, which
+    * number `depth`. The parameter `accepts` values of a type, unless that type is not known or depends on the method.
+    */
+  case class Binding(index: Int, suffix: String)(val depth: Int = 0, val accepts: Option[Typed] = None)
 
   /** A fragment of code to group, as either language produces it. `fragment` says where it is and `span` the offsets
     * within its file that tell overlapping copies apart. `exact` and `loose` hash it with its locals numbered by first
@@ -241,7 +251,8 @@ object Clones {
       cost: Int,
       copies: Vector[Candidate],
       holes: Vector[Vector[Literal]],
-      helper: Option[Helper] = None
+      helper: Option[Helper] = None,
+      anchor: Option[Candidate] = None
   )
 
   /** Copies in one file that differ in few places, some of which are references, as one function of them would do. */
@@ -269,7 +280,9 @@ object Clones {
         helpers.get(site.broad).flatMap(
           _.filter(helper => outside(site, helper) && instance(helper, site))
             .minByOption(helper => (-helper.cost, helper.fragment.path, helper.fragment.start))
-            .map(helper => Found(site.cost, Vector(site), Vector.empty, Some(Helper(helper.fragment, helper.reach))))
+            .map(helper =>
+              Found(site.cost, Vector(site), Vector.empty, Some(Helper(helper.fragment, helper.reach)), Some(helper))
+            )
         )
       }.toVector
   }
@@ -286,10 +299,12 @@ object Clones {
       val bound = parts.indices.map { index =>
         val part = parts(index)
         part.parameter match {
-          case Some(Binding(parameter, suffix)) =>
-            Option.when(values(index).text.endsWith(suffix) && (values(index).reference || suffix.isEmpty))(
-              Some(parameter -> values(index).text.stripSuffix(suffix))
-            )
+          case Some(binding) =>
+            val Binding(parameter, suffix) = binding
+            Option.when(
+              values(index).text.endsWith(suffix) && (values(index).reference || suffix.isEmpty) &&
+                accepted(binding, values(index))
+            )(Some(parameter -> values(index).text.stripSuffix(suffix)))
           case None => Option.when(same(part, values(index)))(None)
         }
       }
@@ -298,6 +313,12 @@ object Clones {
         arguments.forall(!_._2.startsWith(Bound)) && arguments.groupMap(_._1)(_._2).values.forall(_.distinct.size == 1)
       }
     }
+  }
+
+  private def accepted(binding: Binding, value: Literal): Boolean = {
+    val types = value.typed
+    val index = types.size - 1 - binding.depth
+    binding.accepts.forall(expected => types.isEmpty || index >= 0 && types(index).conforms(expected))
   }
 
   // Bodies alike in the overloads of one method differ in the types they take, which one method could not.
@@ -356,28 +377,38 @@ object Clones {
 
   private def listed(copies: Vector[Candidate]): Boolean = unanimous(copies.map(_.listing))
 
-  /** The largest groups first, without those whose every copy is covered by a copy reported before. */
-  private def report(confirmed: Vector[Found])(covers: ((Int, Int), (Int, Int)) => Boolean): Vector[Group] =
-    confirmed.sortBy(found => (-found.cost, -found.copies.size))
-      .foldLeft((Map.empty[String, Vector[(Int, Int)]], Vector.empty[Group])) { case ((reported, groups), found) =>
-        val copies  = found.copies
-        val covered = copies.forall(copy => reported.get(copy.fragment.path).exists(_.exists(covers(_, copy.span))))
-        if (covered) (reported, groups)
-        else
-          (
-            copies.foldLeft(reported)((seen, copy) =>
-              seen.updated(copy.fragment.path, seen.getOrElse(copy.fragment.path, Vector.empty) :+ copy.span)
-            ),
-            groups :+ Group(
-              found.cost,
-              copies.map(_.fragment),
-              found.holes.map(_.distinct.map(_.shown)),
-              copies.exists(_.mapping),
-              found.helper,
-              found.holes.exists(_.exists(_.reference))
+  /** The largest groups first, without those whose every copy is covered by a copy reported before. Of equal cost,
+    * calls of a helper come first, as the more specific advice, and the body of the helper counts as reported for the
+    * groups after it, though not for the calls.
+    */
+  private def report(confirmed: Vector[Found])(covers: ((Int, Int), (Int, Int)) => Boolean): Vector[Group] = {
+    def spans(seen: Map[String, Vector[(Int, Int)]], copies: Vector[Candidate]) =
+      copies.foldLeft(seen)((seen, copy) =>
+        seen.updated(copy.fragment.path, seen.getOrElse(copy.fragment.path, Vector.empty) :+ copy.span)
+      )
+    def within(seen: Map[String, Vector[(Int, Int)]], copy: Candidate) =
+      seen.get(copy.fragment.path).exists(_.exists(covers(_, copy.span)))
+    confirmed.sortBy(found => (-found.cost, found.helper.isEmpty, -found.copies.size))
+      .foldLeft((Map.empty[String, Vector[(Int, Int)]], Map.empty[String, Vector[(Int, Int)]], Vector.empty[Group])) {
+        case ((reported, anchored, groups), found) =>
+          val copies = found.copies
+          if (copies.forall(copy => within(reported, copy) || found.helper.isEmpty && within(anchored, copy)))
+            (reported, anchored, groups)
+          else
+            (
+              spans(reported, copies),
+              spans(anchored, found.anchor.toVector),
+              groups :+ Group(
+                found.cost,
+                copies.map(_.fragment),
+                found.holes.map(_.distinct.map(_.shown)),
+                copies.exists(_.mapping),
+                found.helper,
+                found.holes.exists(_.exists(_.reference))
+              )
             )
-          )
-      }._2
+      }._3
+  }
 
   // Members of sibling companions of distinct types, each holding only the width of its own type.
   private def widthsOfCompanions(group: Group): Boolean = {

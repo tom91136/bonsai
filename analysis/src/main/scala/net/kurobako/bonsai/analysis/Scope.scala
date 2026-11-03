@@ -39,8 +39,16 @@ private case class Scope(
     inFallback: Boolean = false,
     amortized: Option[Int] = None
 ) {
-  def factor: Polynomial =
-    Polynomial.product(loops.foldLeft(Vector.empty[Polynomial])((turns, loop) =>
+  def factor: Polynomial = factorOf(loops)
+
+  /** The turns of the loops from the `level`-th one inwards, which is how often a value kept across them is built. */
+  def factorFrom(level: Int): Polynomial =
+    if (level <= 0) factor
+    else
+      factorOf(loops.drop(loops.zipWithIndex.filterNot(_._1.hidden).lift(level).fold(loops.size)(_._2)))
+
+  private def factorOf(inner: Vector[Scope.Loop]): Polynomial =
+    Polynomial.product(inner.foldLeft(Vector.empty[Polynomial])((turns, loop) =>
       turns.dropRight(loop.absorbs) :+ loop.trips
     ))
 

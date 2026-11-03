@@ -5,9 +5,9 @@ import dotty.tools.dotc.core.Constants.Constant
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.ExprType
 import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.Classes
 
 /** Reports an `if` whose condition an enclosing `if` of the same method already decided, so one of its branches never
   * runs. Conditions are the same when written the same: comparisons and sums of literals, immutable values and
@@ -19,7 +19,7 @@ private class Implied(checks: Checks)(using Context) {
   private val Arithmetic  = Set("+", "-", "*")
   private val Emptiness   = Set("isEmpty", "nonEmpty", "isDefined")
   private val Immutable   =
-    List("scala.Option", "java.lang.String", "scala.collection.immutable.Iterable").map(requiredClass(_))
+    List("scala.Option", "java.lang.String", "scala.collection.immutable.Iterable").map(Classes.required(_))
 
   /** A condition as a fact: the expression compared, and whether the condition holds when the expression does. */
   private case class Atom(key: String, holds: Boolean)
@@ -124,8 +124,8 @@ private class Implied(checks: Checks)(using Context) {
   // twice finds the same value.
   private def comparable(left: tpd.Tree, right: tpd.Tree)(using Context): Boolean = {
     val tpe = left.tpe.widen
-    Trees.primitive(tpe) || tpe.derivesFrom(requiredClass("java.lang.String")) ||
-    tpe.derivesFrom(requiredClass("scala.Option")) || nothing(right)
+    Trees.primitive(tpe) || tpe.derivesFrom(Classes.required("java.lang.String")) ||
+    tpe.derivesFrom(Classes.required("scala.Option")) || nothing(right)
   }
 
   private def nothing(tree: tpd.Tree)(using Context): Boolean = Calls.peelInlined(tree) match {

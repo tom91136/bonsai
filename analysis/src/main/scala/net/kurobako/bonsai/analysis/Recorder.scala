@@ -46,6 +46,7 @@ private[analysis] case class Components(
     symbols: Symbols,
     callSites: CallSites,
     reads: Reads,
+    derivations: Derivations,
     dispatching: Dispatch,
     structure: StructureObserver,
     recorder: Recorder

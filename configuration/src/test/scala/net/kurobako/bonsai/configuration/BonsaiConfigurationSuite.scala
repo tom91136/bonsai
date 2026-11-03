@@ -78,6 +78,14 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
     assertEquals(configured.checked, Some(Set("demo.where")))
   }
 
+  directory.test("the rules disabled over generated code are read by id, or all of them with *") { path =>
+    assertEquals(
+      read(path, "generated-disabled = [duplicate-code, \"*\"]\n").generatedDisabled,
+      Some(Set("duplicate-code", "*"))
+    )
+    assertEquals(read(path, "generated = [\"gen/**\"]\n").generatedDisabled, None)
+  }
+
   directory.test("bounded members keep the order they are named in") { path =>
     val configured = read(
       path,
@@ -168,6 +176,7 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
       Map("demo.io" -> Set("output", "input")),
       Set("demo.run"),
       Set("gen/**"),
+      Set("duplicate-code", "*"),
       Set("demo.rendered.*"),
       Set("demo.kernel.**"),
       Set("demo.A=demo.B"),
@@ -198,6 +207,10 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
         "demo.run",
         "--generated",
         "gen/**",
+        "--generated-disable",
+        "*",
+        "--generated-disable",
+        "duplicate-code",
         "--reflective",
         "demo.rendered.*",
         "--hot",

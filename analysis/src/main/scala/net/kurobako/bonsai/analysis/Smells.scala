@@ -13,6 +13,7 @@ object Smells {
     */
   case class Method(
       name: String,
+      key: String,
       node: String,
       owner: String,
       fields: Vector[Algebra.Field],
@@ -110,7 +111,7 @@ object Smells {
     // The callers in this build do not settle the API of a library, which other builds call.
     val arguments = reviewed.view.filterNot(_.exported).flatMap { method =>
       // Parameters of recursive methods carry state, so callers fixing their initial value is the usual idiom.
-      model.sites.get(method.name).filter(sites => !sites.exists(_.own) && sites.size >= MinimumCalls).toVector.flatMap {
+      model.sites.get(method.key).filter(sites => !sites.exists(_.own) && sites.size >= MinimumCalls).toVector.flatMap {
         sites =>
           parameters(method, sites).flatMap(Finding.at(nodes, method.node, _, _, onlyTests = Algebra.onlyTests(sites)))
       }
@@ -169,20 +170,16 @@ object Smells {
     }
     val implementations =
       model.abstractions.view.filter(abstraction =>
-        abstraction.implementations.size == 1 && !abstraction.functional && !abstraction.specialised &&
+        abstraction.implementations.size == 1 && abstraction.implementations.head._2 == abstraction.module &&
+          !abstraction.functional && !abstraction.specialised &&
           !closesCycle(abstraction, abstraction.implementations.head._1, nodes, referrers, files)
-      ).flatMap {
-        abstraction =>
-          val (implementation, module) = abstraction.implementations.head
-          // An implementation in another module is often a deliberate port; one beside its interface rarely is.
-          val level = if (module == abstraction.module) Finding.Level.Warning else Finding.Level.Info
-          Finding.at(
-            nodes,
-            abstraction.node,
-            Finding.Rule.SingleImplementation,
-            s"${abstraction.name} has a single implementation, $implementation",
-            level
-          )
+      ).flatMap { abstraction =>
+        Finding.at(
+          nodes,
+          abstraction.node,
+          Finding.Rule.SingleImplementation,
+          s"${abstraction.name} has a single implementation, ${abstraction.implementations.head._1}"
+        )
       }.toVector
     val fixed = model.instantiations.filter(instantiation =>
       !instantiation.varied && instantiation.arguments.size == 1 && instantiation.arguments.values.sum >= MinimumCalls
@@ -198,7 +195,9 @@ object Smells {
         onlyTests = Algebra.onlyTests(default.sites)
       )
     }
-    val spare = model.spares.flatMap { spare =>
+    val redundantParameters = model.defaults.map(default => default.node -> default.parameter).toSet
+    // Redundant arguments are dropped first, so an unused default only shows once they are gone.
+    val spare = model.spares.filterNot(spare => redundantParameters((spare.node, spare.parameter))).flatMap { spare =>
       val detail = s"${spare.owner}.${spare.parameter} has a default that none of its ${spare.sites.size} calls " +
         "relies on; remove the default"
       Finding.at(
@@ -277,7 +276,7 @@ object Smells {
     * take three of their four combinations, and references most callers leave null.
     */
   private def parameters(method: Method, sites: Vector[Algebra.Site]): Vector[(Finding.Rule, String)] = {
-    // A call to an overload of the method passes the arguments of that one, which are not the parameters of this one.
+    // Java calls are kept at every arity, so a varargs call with another count is not a call of these parameters.
     val calls = sites.filter(_.arguments.size == method.fields.size)
     if calls.isEmpty then Vector.empty
     else {
@@ -343,7 +342,7 @@ object Smells {
 
   // A method every call of which passes literals is a row of a table, whose literals the callers chose.
   private def literalCalls(method: Method, sites: Map[String, Vector[Algebra.Site]]): Boolean =
-    sites.get(method.name).exists(calls =>
+    sites.get(method.key).exists(calls =>
       calls.nonEmpty && calls.forall(call =>
         call.arguments.size == method.fields.size && call.arguments.forall {
           case Algebra.Argument.Word(
@@ -394,12 +393,14 @@ object Smells {
       if (distinct) kept :+ candidate else kept
     }
     lazy val shapes =
-      products.map(product => product -> product.fields.map(field => s"${field.name}: ${field.shape}").toSet)
+      products.sortBy(product => (product.fields.size, product.name)).map(product =>
+        product -> product.fields.map(field => s"${field.name}: ${field.shape}").toSet
+      )
     chosen.map { (items, methods) =>
       val owners   = methods.map(_.owner).size
       val modelled = shapes.collectFirst { case (product, fields) if items.subsetOf(fields) => product }
         .fold("")(product => s"; already the fields of ${Finding.simple(product.name)}")
-      val first = methods.minBy(_.name)
+      val first = methods.minBy(method => (method.name, method.node))
       first.node ->
         (s"(${items.toVector.sorted.mkString(", ")}) recur in ${methods.size} methods across $owners types: " +
           Finding.listed(methods.toVector.map(_.short).sorted, Shown) + modelled)

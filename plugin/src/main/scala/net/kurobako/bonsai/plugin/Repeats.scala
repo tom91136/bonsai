@@ -70,6 +70,7 @@ private class Repeats(checks: Checks)(using Context) {
   )
 
   private val MinimumWork = 2
+  private val keyed       = java.util.IdentityHashMap[tpd.Tree, Option[(String, Int)]]()
   private val axioms      = Calls()
 
   def run(tree: tpd.Tree): Unit = new tpd.TreeTraverser {
@@ -163,6 +164,18 @@ private class Repeats(checks: Checks)(using Context) {
     * anything but standard library calls on values.
     */
   private def key(tree: tpd.Tree, binders: Map[Symbol, Int]): Option[(String, Int)] =
+    if (binders.nonEmpty) read(tree, binders)
+    else {
+      val known = keyed.get(tree)
+      if (known != null) known
+      else {
+        val found = read(tree, binders)
+        keyed.put(tree, found)
+        found
+      }
+    }
+
+  private def read(tree: tpd.Tree, binders: Map[Symbol, Int]): Option[(String, Int)] =
     if (!sound(tree.tpe)) None
     else
       tree match {

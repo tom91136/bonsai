@@ -29,7 +29,7 @@ private[analysis] final class Symbols(
   private val edges      = mutable.Map.empty[String, mutable.Set[String]]
   private val mainRoots  = mutable.Set.empty[String]
   private val registered = mutable.Map.empty[Symbol, Option[String]]
-  private val keys       = mutable.Map.empty[Symbol, Option[String]]
+  private val keys       = java.util.HashMap[Symbol, Option[String]]()
   private val parameters = mutable.Map.empty[Symbol, Vector[Algebra.Field]]
   private val names      = mutable.Map.empty[Symbol, String]
   private val children   = mutable.Map.empty[String, mutable.Set[String]]
@@ -64,22 +64,42 @@ private[analysis] final class Symbols(
   def methodName(method: Symbol, fields: Vector[Algebra.Field])(using Context): String =
     s"${qualifiedName(method)}(${fields.map(_.name).mkString(", ")})"
 
+  def methodKey(method: Symbol, fields: Vector[Algebra.Field])(using Context): String =
+    Keys.of(method).getOrElse(methodName(method, fields))
+
   def fieldsOf(symbol: Symbol)(using Context): Vector[Algebra.Field] =
     parameters.getOrElseUpdate(symbol, if (symbol.isClass) Shapes.fields(symbol) else Shapes.parameters(symbol))
 
   def refer(from: Option[String], symbol: Symbol)(using Context): Unit =
-    for {
-      source <- from
-      target <- key(symbol) if source != target
-    } edge(source, target)
+    if (from.isDefined) {
+      val target = key(symbol)
+      if (target.isDefined && from.get != target.get) edge(from.get, target.get)
+    }
 
   def link(from: Option[String], targets: Iterable[String]): Unit =
     from.foreach(source => targets.filter(_ != source).foreach(edge(source, _)))
 
-  private def edge(source: String, target: String): Unit = edges.getOrElseUpdate(source, mutable.Set.empty) += target
+  private var latestSource                       = ""
+  private var latestTargets: mutable.Set[String] = null
+
+  private def edge(source: String, target: String): Unit = {
+    if (latestTargets == null || latestSource != source) {
+      latestTargets = edges.getOrElseUpdate(source, mutable.Set.empty)
+      latestSource = source
+    }
+    latestTargets += target: Unit
+  }
 
   /** The node key of any symbol, memoised because every tree and type of the build asks for one. */
-  def key(symbol: Symbol)(using Context): Option[String] = keys.getOrElseUpdate(symbol, register(node(symbol)))
+  def key(symbol: Symbol)(using Context): Option[String] = {
+    val cached = keys.get(symbol)
+    if (cached ne null) cached
+    else {
+      val created = register(node(symbol))
+      keys.put(symbol, created)
+      created
+    }
+  }
 
   def nodeOf(symbol: Symbol)(using Context): Option[Node] = key(symbol).flatMap(known.get)
 
@@ -132,6 +152,10 @@ private[analysis] final class Symbols(
 
   private def rules(id: String): Set[String] = net.kurobako.bonsai.java.JavaLint.resolve(id)
 
+  /** The line `symbol` is declared at, or 0 when unknown. */
+  def lineOf(symbol: Symbol)(using Context): Int =
+    if (symbol.source.exists && symbol.span.exists) symbol.sourcePos.line + 1 else 0
+
   /** The key of an analysed node, recording the node on first sight. */
   def register(symbol: Symbol)(using Context): Option[String] =
     if (!symbol.exists) None
@@ -142,7 +166,7 @@ private[analysis] final class Symbols(
           val name   = qualifiedName(symbol)
           val source = sourcePath(symbol)
           val outer  = register(node(symbol.owner))
-          val line   = if (symbol.source.exists && symbol.span.exists) symbol.sourcePos.line + 1 else 0
+          val line   = lineOf(symbol)
           // Other builds can name a public type of a library, unless its enclosing type hides it. Code the build
           // only names in strings, compiled where the names are visible, can name a reflective type and the types
           // inside it whatever their qualifier.

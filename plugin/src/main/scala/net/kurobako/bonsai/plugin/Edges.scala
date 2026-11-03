@@ -10,10 +10,31 @@ import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeTraverser
 import scala.collection.mutable
 
-/** Records the build files a unit references, marking references made inside the splices of macro implementations. */
-private class Edges(path: String, valid: Symbol => Boolean, analysis: Analysis) extends tpd.TreeTraverser {
+/** Records the build files a unit references, marking references made inside the splices of macro implementations.
+  * `sourceOf` gives the path of the build file that defines a symbol, or nothing where it is not one.
+  */
+private class Edges(path: String, sourceOf: Symbol => Option[String], analysis: Analysis)(using Context)
+    extends tpd.TreeTraverser {
   // (inside a macro implementation, inside one of its splices) for the tree being traversed
   private val scopes = mutable.Stack((false, false))
+
+  // The files and the types already reported from the code outside and inside splices, which report them again alike.
+  private val files = Array.fill(2)(mutable.HashSet.empty[String])
+  private val types =
+    Array.fill(2)(java.util.Collections.newSetFromMap(java.util.IdentityHashMap[Type, java.lang.Boolean]()))
+  private var from: tpd.Tree = tpd.EmptyTree
+
+  private val typeEdges = new TypeTraverser {
+    def traverse(tpe: Type): Unit = if (types(spliced).add(tpe)) {
+      add(tpe.typeSymbol, from)
+      tpe match {
+        case named: NamedType => traverse(named.prefix)
+        case _                => traverseChildren(tpe)
+      }
+    }
+  }
+
+  private def spliced: Int = if (scopes.top._2) 1 else 0
 
   override def traverse(tree: tpd.Tree)(using Context): Unit = if (!tree.isEmpty) {
     val (declaration, call) = scopes.top
@@ -48,23 +69,12 @@ private class Edges(path: String, valid: Symbol => Boolean, analysis: Analysis) 
   }
 
   private def add(symbol: Symbol, tree: tpd.Tree)(using Context): Unit =
-    if (valid(symbol) && symbol.source.path != path)
-      analysis.reference(path, symbol.source.path, scopes.top._2, tree.sourcePos)
-
-  private def addType(tree: tpd.Tree)(using Context): Unit =
-    if (tree.hasType) Edges.TypeEdges(add(_, tree)).traverse(tree.tpe)
-}
-
-private object Edges {
-
-  /** Reports the type symbol of a type and of every type it is built from. */
-  private class TypeEdges(add: Symbol => Unit)(using Context) extends TypeTraverser {
-    def traverse(tpe: Type): Unit = {
-      add(tpe.typeSymbol)
-      tpe match {
-        case named: NamedType => traverse(named.prefix)
-        case _                => traverseChildren(tpe)
-      }
+    sourceOf(symbol).foreach { source =>
+      if (source != path && files(spliced).add(source)) analysis.reference(path, source, spliced == 1, tree.sourcePos)
     }
+
+  private def addType(tree: tpd.Tree): Unit = if (tree.hasType) {
+    from = tree
+    typeEdges.traverse(tree.tpe)
   }
 }

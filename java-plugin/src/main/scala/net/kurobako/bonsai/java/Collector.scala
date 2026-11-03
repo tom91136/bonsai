@@ -34,14 +34,14 @@ class Collector(trees: Trees) {
   private val preconditions = mutable.ArrayBuffer.empty[Model.Precondition]
   private val reassignables = mutable.ArrayBuffer.empty[Model.Reassignable]
   private val writes        = mutable.LinkedHashSet.empty[Model.Write]
-  private val stores        = mutable.Map.empty[String, Vector[(ExecutableElement, Map[String, Guards.Stored])]]
+  private val stores        = mutable.Map.empty[String, Vector[(String, Map[String, Model.Stored])]]
   private val instances     = mutable.ArrayBuffer.empty[Instance]
   private val costs         = mutable.ArrayBuffer.empty[Model.Cost]
 
   private case class Instance(
       caller: String,
       owner: String,
-      constructor: ExecutableElement,
+      constructor: String,
       arguments: Vector[String],
       location: String
   )
@@ -64,7 +64,17 @@ class Collector(trees: Trees) {
       preconditions.toVector,
       reassignables.toVector,
       writes.toVector,
-      costs.toVector
+      costs.toVector,
+      instances.toVector.filterNot(instance =>
+        nodes.contains(instance.owner) || CostTrees.standard(instance.owner)
+      ).map(instance =>
+        Model.Instance(instance.caller, instance.owner, instance.constructor, instance.arguments, instance.location)
+      ),
+      constructions.keys.toVector.flatMap(owner =>
+        stores.getOrElse(owner, Vector.empty).flatMap((constructor, kept) =>
+          kept.map((field, held) => Model.Store(owner, constructor, field, held))
+        )
+      )
     )
   }
 
@@ -76,17 +86,10 @@ class Collector(trees: Trees) {
       _      <- constructions.get(instance.owner)
       fields <- this.fields.get(instance.owner)
     } yield {
-      val arguments = instance.arguments
-      val stored    = stores.get(instance.owner).flatMap(_.collectFirst {
+      val kept = stores.get(instance.owner).flatMap(_.collectFirst {
         case (constructor, kept) if constructor == instance.constructor => kept
       }).getOrElse(Map.empty)
-      val values = fields.map { field =>
-        stored.get(field.parameter.name) match {
-          case Some(Guards.Stored.Parameter(index)) if index < arguments.size => arguments(index)
-          case Some(Guards.Stored.Constant(argument))                         => argument
-          case _                                                              => "unknown"
-        }
-      }
+      val values = Model.aligned(fields, kept, instance.arguments)
       Model.Site(instance.caller, instance.owner, values, instance.location)
     }
 
@@ -134,22 +137,20 @@ class Collector(trees: Trees) {
               Collector.exported(element),
               Collector.outer(element),
               Collector.suppressed(element),
-              generated = Collector.generated(element)
+              generated = Collector.generated(element),
+              constructible = Collector.constructible(element)
             )
           )
           val _ = edges.getOrElseUpdate(name, mutable.LinkedHashSet.empty)
           // A record is a product of its components, which the analysis reads alike with a case class.
           if element.getKind == ElementKind.RECORD then
-            products.update(
-              name,
-              Model.Product(name, name, Collector.components(element), Set.empty, Collector.exported(element))
-            ): Unit
+            products.update(name, Model.Product(name, name, Collector.components(element), Set.empty)): Unit
           // A sealed type is a sum of the types that extend it, which the analysis reads alike with a sealed trait.
           if element.getModifiers.contains(Modifier.SEALED) then
             sums.update(name, Model.Sum(name, name, Collector.variants(element))): Unit
           Guards.construction(trees, path).foreach(constructions.update(name, _))
           preconditions ++= Guards.preconditions(trees, path)
-          stores.update(name, Guards.stores(trees, path))
+          stores.update(name, Guards.stores(trees, path).map((constructor, kept) => CostTrees.key(constructor) -> kept))
           types.push(name)
           owners.push(name)
           try super.visitClass(node, unused)
@@ -174,13 +175,15 @@ class Collector(trees: Trees) {
             nodes.get(owner).foreach(found => nodes.update(owner, found.copy(entry = true)))
           val parameters =
             element.asInstanceOf[ExecutableElement].getParameters.asScala.toVector.map(Collector.parameter)
-          val _ = methods.getOrElseUpdate(
-            name,
+          val key = CostTrees.key(element.asInstanceOf[ExecutableElement])
+          val _   = methods.getOrElseUpdate(
+            key,
             Model.Method(
               owner,
               name,
+              key,
               Collector.exported(element),
-              Set.empty,
+              Collector.stored(trees, path),
               parameters,
               location(compilation, node),
               Collector.returns(element.asInstanceOf[ExecutableElement]),
@@ -195,7 +198,7 @@ class Collector(trees: Trees) {
             clones.add(body, path, owner, executable, Collector.overriding(executable))
           }
           CostTrees.of(compilation, path, owner).foreach(costs += _)
-          owners.push(name)
+          owners.push(key)
           try super.visitMethod(node, unused)
           finally { val _ = owners.pop() }
         }
@@ -204,10 +207,10 @@ class Collector(trees: Trees) {
       override def visitVariable(node: VariableTree, unused: Unit): Unit = {
         val path    = getCurrentPath
         val element = trees.getElement(path)
-        // A field of the type is a field of the product the analysis makes of it; a parameter of a method is one of
-        // the parameters of the method, which the method itself holds.
+        // An instance field of the type is a field of the product the analysis makes of it; a parameter of a method is
+        // one of the parameters of the method, which the method itself holds.
 
-        if unnamed == 0 && Collector.field(element) then {
+        if unnamed == 0 && Collector.instanceField(element) then {
           val owner = owners.headOption.getOrElse("")
           fields.update(
             owner,
@@ -258,8 +261,8 @@ class Collector(trees: Trees) {
         val path   = getCurrentPath
         val caller = owners.headOption.getOrElse("")
         Call.of(trees, path).filter(_.method.getKind == ElementKind.METHOD).foreach { call =>
-          val callee = Collector.qualified(call.method)
-          if callee.nonEmpty then {
+          val callee = CostTrees.key(call.method)
+          if Collector.qualified(call.method).nonEmpty then {
             val values    = call.arguments
             val arguments = values.map(Collector.argument(trees, path, _))
             val discarded = Collector.discarded(path)
@@ -289,7 +292,7 @@ class Collector(trees: Trees) {
                 instances += Instance(
                   caller,
                   Collector.qualified(declared),
-                  constructor,
+                  CostTrees.key(constructor),
                   arguments,
                   location(compilation, node)
                 ): Unit
@@ -306,11 +309,10 @@ class Collector(trees: Trees) {
         val caller  = owners.headOption.getOrElse("")
         if element != null && (element.getKind == ElementKind.METHOD || element.getKind == ElementKind.CONSTRUCTOR)
         then {
-          val callee = Collector.qualified(element)
-          if callee.nonEmpty then {
+          if Collector.qualified(element).nonEmpty then {
             val executable = element.asInstanceOf[ExecutableElement]
             val arguments  = Vector.fill(executable.getParameters.size)("unknown")
-            sites += Model.Site(caller, callee, arguments, location(compilation, node)): Unit
+            sites += Model.Site(caller, CostTrees.key(executable), arguments, location(compilation, node)): Unit
           }
         }
         super.visitMemberReference(node, unused)
@@ -533,6 +535,9 @@ object Collector {
 
   private def field(element: Element): Boolean = element != null && element.getKind == ElementKind.FIELD
 
+  private def instanceField(element: Element): Boolean =
+    field(element) && !element.getModifiers.contains(Modifier.STATIC)
+
   private val Steps = Set(
     Tree.Kind.PREFIX_INCREMENT,
     Tree.Kind.PREFIX_DECREMENT,
@@ -559,6 +564,23 @@ object Collector {
     else {
       val modifiers = element.getModifiers
       modifiers.contains(Modifier.PUBLIC) || modifiers.contains(Modifier.PROTECTED)
+    }
+
+  /** Whether other code can call a constructor of the type: any that is public or protected, or for a record the
+    * canonical one.
+    */
+  private def constructible(element: Element): Boolean =
+    element match {
+      case typeElement: TypeElement =>
+        val record     = typeElement.getKind == ElementKind.RECORD
+        val components = typeElement.getRecordComponents.asScala.map(_.asType.toString).toVector
+        typeElement.getEnclosedElements.asScala.exists {
+          case constructor: ExecutableElement if constructor.getKind == ElementKind.CONSTRUCTOR =>
+            exported(constructor) &&
+            (!record || constructor.getParameters.asScala.map(_.asType.toString).toVector == components)
+          case _ => false
+        }
+      case _ => false
     }
 
   private[java] def parameter(element: Element): Model.Parameter = {
@@ -666,6 +688,47 @@ object Collector {
       }
     marked(tpe.getAnnotationMirrors) || (element != null && marked(element.getAnnotationMirrors))
   }
+
+  /** The parameters, by index, that the body of the method passes only to constructors. */
+  private[java] def stored(trees: Trees, method: TreePath): Set[Int] =
+    Option(method.getLeaf.asInstanceOf[MethodTree].getBody).fold(Set.empty[Int]) { body =>
+      val uses   = mutable.Map.empty[Element, Int].withDefaultValue(0)
+      val passes = mutable.Map.empty[Element, Int].withDefaultValue(0)
+      new TreePathScanner[Unit, Unit] {
+        private def pass(arguments: java.util.List[? <: ExpressionTree]): Unit =
+          arguments.asScala.foreach { argument =>
+            val path = peeled(new TreePath(getCurrentPath, argument))
+            if path.getLeaf.isInstanceOf[IdentifierTree] then
+              Option(trees.getElement(path)).foreach(element => passes(element) += 1)
+          }
+
+        @annotation.tailrec
+        private def peeled(path: TreePath): TreePath = path.getLeaf match {
+          case parenthesized: ParenthesizedTree => peeled(new TreePath(path, parenthesized.getExpression))
+          case cast: TypeCastTree               => peeled(new TreePath(path, cast.getExpression))
+          case _                                => path
+        }
+
+        override def visitIdentifier(node: IdentifierTree, unused: Unit): Unit = {
+          Option(trees.getElement(getCurrentPath)).foreach(element => uses(element) += 1)
+          super.visitIdentifier(node, unused)
+        }
+
+        override def visitNewClass(node: NewClassTree, unused: Unit): Unit = {
+          pass(node.getArguments)
+          super.visitNewClass(node, unused)
+        }
+
+        override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
+          if Option(trees.getElement(getCurrentPath)).exists(_.getKind == ElementKind.CONSTRUCTOR) then
+            pass(node.getArguments)
+          super.visitMethodInvocation(node, unused)
+        }
+      }.scan(new TreePath(method, body), ())
+      trees.getElement(method).asInstanceOf[ExecutableElement].getParameters.asScala.zipWithIndex.collect {
+        case (parameter, index) if uses(parameter) > 0 && uses(parameter) == passes(parameter) => index
+      }.toSet
+    }
 
   /** The argument a call passes, with the constants and the enum cases it names read as their symbols. */
   private[java] def argument(trees: Trees, call: TreePath, tree: ExpressionTree): String = {

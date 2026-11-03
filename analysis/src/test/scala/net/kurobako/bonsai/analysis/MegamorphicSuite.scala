@@ -137,4 +137,72 @@ class MegamorphicSuite extends AnalysisSuite {
     )
     assertNoFinding(Megamorphic.findings(result.megamorphic, result.graph.nodes))(_.detail.startsWith("Main.total"))
   }
+
+  test("members implemented by vals only are not megamorphic") {
+    val result = extract(
+      Seq(
+        "Main.scala" ->
+          """object Main {
+            |  def main(args: Array[String]): Unit = println(total(Nil))
+            |  def total(hosts: List[Host]): Int = hosts.map(_.host.length).sum
+            |}""".stripMargin,
+        "Hosts.scala" ->
+          """trait Host { def host: String }
+            |class Alpha extends Host { val host: String = "alpha" }
+            |class Beta extends Host { val host: String = "beta" }
+            |class Gamma extends Host { val host: String = "gamma" }
+            |class Delta extends Host { val host: String = "delta" }
+            |class Epsilon extends Host { val host: String = "epsilon" }""".stripMargin
+      ),
+      hot = Vector("Main")
+    )
+    assertEquals(Megamorphic.findings(result.megamorphic, result.graph.nodes), Vector.empty)
+  }
+
+  test("members implemented by case-class fields are not megamorphic") {
+    val result = extract(
+      Seq(
+        "Main.scala" ->
+          """object Main {
+            |  def main(args: Array[String]): Unit = println(total(Nil))
+            |  def total(hosts: List[Host]): Int = hosts.map(_.host.length).sum
+            |}""".stripMargin,
+        "Hosts.scala" ->
+          """trait Host { def host: String }
+            |case class Alpha(host: String) extends Host
+            |case class Beta(host: String) extends Host
+            |case class Gamma(host: String) extends Host
+            |case class Delta(host: String) extends Host
+            |case class Epsilon(host: String) extends Host""".stripMargin
+      ),
+      hot = Vector("Main")
+    )
+    assertEquals(Megamorphic.findings(result.megamorphic, result.graph.nodes), Vector.empty)
+  }
+
+  test("members implemented by methods with bodies are megamorphic") {
+    val result = extract(
+      Seq(
+        "Main.scala" ->
+          """object Main {
+            |  def main(args: Array[String]): Unit = println(total(Nil))
+            |  def total(hosts: List[Host]): Int = hosts.map(_.host.length).sum
+            |}""".stripMargin,
+        "Hosts.scala" ->
+          """trait Host { def host: String }
+            |class Alpha extends Host { def host = "alpha".toUpperCase }
+            |class Beta extends Host { def host = "beta".toUpperCase }
+            |class Gamma extends Host { def host = "gamma".toUpperCase }
+            |class Delta extends Host { def host = "delta".toUpperCase }
+            |class Epsilon extends Host { def host = "epsilon".toUpperCase }""".stripMargin
+      ),
+      hot = Vector("Main")
+    )
+    assertFinding(
+      Megamorphic.findings(result.megamorphic, result.graph.nodes),
+      "megamorphic-call",
+      "Main.total calls Host.host in a loop",
+      "5 implementations"
+    )
+  }
 }

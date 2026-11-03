@@ -7,8 +7,13 @@ class CostTreeSuite extends munit.FunSuite {
 
   private val Lines = "\\{(loop|each|op|call|exit)(:\\d+)? \\d+ ".r
 
-  private def trees(sources: (String, String)*): Map[String, String] =
+  private val Sinks = " @[-\\d]+r?s?(?=\\})".r
+
+  private def sinked(sources: (String, String)*): Map[String, String] =
     collect(sources*).map(cost => cost.key -> Lines.replaceAllIn(Model.Cost.render(cost.body), "{$1$2 ")).toMap
+
+  private def trees(sources: (String, String)*): Map[String, String] =
+    sinked(sources*).view.mapValues(Sinks.replaceAllIn(_, "")).toMap
 
   private def service(body: String) = "Service" -> s"""
     |package demo;
@@ -545,5 +550,101 @@ class CostTreeSuite extends munit.FunSuite {
       "demo.Service.numbers(Ljava/lang/Number;[Ljava/lang/Number;)V",
       "demo.Service.copied(Ljava/util/List;)Ljava/util/List;"
     ).foreach(key => assert(keys.contains(key), key))
+  }
+
+  test("a copy or a call records where its value goes") {
+    val found = sinked(service("""
+      |  List<String> returned(List<String> a) { return new ArrayList<>(a); }
+      |  void dropped(List<String> a) { List<String> c = new ArrayList<>(a); }
+      |  int measured(List<String> a) { return new ArrayList<>(a).size(); }
+      |  void stored(List<String> a) { items = new ArrayList<>(a); }
+      |  void listed(List<String> a) { shared.addAll(new ArrayList<>(a)); }
+      |  List<String> held(List<String> a) { List<String> c = new ArrayList<>(a); return c; }
+      |  int helper(List<String> a) { return a.size(); }
+      |  int calls(List<String> a) { return helper(a); }
+      |  void discards(List<String> a) { helper(a); }
+      |  List<String> keeps(List<String> a) { return List.copyOf(a); }
+      |""".stripMargin))
+    assertEquals(found("demo.Service.returned(Ljava/util/List;)Ljava/util/List;"), "{op copy $0}")
+    assertEquals(found("demo.Service.dropped(Ljava/util/List;)V"), "{op copy $0 @-}")
+    assertEquals(found("demo.Service.measured(Ljava/util/List;)I"), "{op copy $0 @-}")
+    assertEquals(found("demo.Service.stored(Ljava/util/List;)V"), "{op copy $0 @0s}")
+    assertEquals(found("demo.Service.listed(Ljava/util/List;)V"), "{op copy $0 @0s} {op copy ? @0s}")
+    assertEquals(found("demo.Service.held(Ljava/util/List;)Ljava/util/List;"), "{op copy $0}")
+    assertEquals(
+      found("demo.Service.calls(Ljava/util/List;)I"),
+      "{call demo.Service.helper(Ljava/util/List;)I this $0}"
+    )
+    assertEquals(
+      found("demo.Service.discards(Ljava/util/List;)V"),
+      "{call demo.Service.helper(Ljava/util/List;)I this $0 @-}"
+    )
+    assertEquals(found("demo.Service.keeps(Ljava/util/List;)Ljava/util/List;"), "{op copy $0}")
+  }
+
+  test("a value built in a loop records the loops it stays live across") {
+    val found = sinked(service("""
+      |  List<List<String>> added(List<String> a, List<String> names) {
+      |    List<List<String>> all = new ArrayList<>();
+      |    for (String n : names) { all.add(new ArrayList<>(a)); }
+      |    return all;
+      |  }
+      |  void local(List<String> a, List<String> names) {
+      |    List<List<String>> all = new ArrayList<>();
+      |    for (String n : names) { all.add(new ArrayList<>(a)); }
+      |  }
+      |  void passed(List<String> a, List<String> names) {
+      |    for (String n : names) { List<String> c = new ArrayList<>(a); c.add(n); System.out.println(c); }
+      |  }
+      |  void kept(List<String> a, List<String> names) {
+      |    for (String n : names) { List<String> c = new ArrayList<>(a); shared.addAll(c); }
+      |  }
+      |  List<String> reassigned(List<String> a, List<String> names) {
+      |    List<String> latest = null;
+      |    for (String n : names) { latest = new ArrayList<>(a); }
+      |    return latest;
+      |  }
+      |  int overwritten(List<String> a, List<String> names) {
+      |    List<String> latest = null;
+      |    for (String n : names) { latest = new ArrayList<>(a); }
+      |    return latest.size();
+      |  }
+      |  int nested(List<String> a, List<String> names) {
+      |    int total = 0;
+      |    for (String n : names) {
+      |      List<List<String>> all = new ArrayList<>();
+      |      for (String m : names) { all.add(new ArrayList<>(a)); }
+      |      total += all.size();
+      |    }
+      |    return total;
+      |  }
+      |  List<ArrayList<String>> streamed(List<String> a, List<String> names) {
+      |    return names.stream().map(n -> new ArrayList<>(a)).collect(Collectors.toList());
+      |  }
+      |  long counted(List<String> a, List<String> names) {
+      |    return names.stream().map(n -> new ArrayList<>(a)).count();
+      |  }
+      |""".stripMargin))
+    assertEquals(
+      found("demo.Service.added(Ljava/util/List;Ljava/util/List;)Ljava/util/List;"),
+      "{loop $1 {op copy $0}}"
+    )
+    assertEquals(found("demo.Service.local(Ljava/util/List;Ljava/util/List;)V"), "{loop $1 {op copy $0 @-}}")
+    assertEquals(found("demo.Service.passed(Ljava/util/List;Ljava/util/List;)V"), "{loop $1 {op copy $0 @-}}")
+    assertEquals(
+      found("demo.Service.kept(Ljava/util/List;Ljava/util/List;)V"),
+      "{loop $1 {op copy $0 @0s} {op copy ? @0s}}"
+    )
+    assertEquals(
+      found("demo.Service.reassigned(Ljava/util/List;Ljava/util/List;)Ljava/util/List;"),
+      "{loop $1 {op copy $0}}"
+    )
+    assertEquals(found("demo.Service.overwritten(Ljava/util/List;Ljava/util/List;)I"), "{loop $1 {op copy $0 @0}}")
+    assertEquals(found("demo.Service.nested(Ljava/util/List;Ljava/util/List;)I"), "{loop $1 {loop $1 {op copy $0 @-}}}")
+    assertEquals(
+      found("demo.Service.streamed(Ljava/util/List;Ljava/util/List;)Ljava/util/List;"),
+      "{each $1 {op copy $0}}"
+    )
+    assertEquals(found("demo.Service.counted(Ljava/util/List;Ljava/util/List;)J"), "{each $1 {op copy $0 @-}}")
   }
 }

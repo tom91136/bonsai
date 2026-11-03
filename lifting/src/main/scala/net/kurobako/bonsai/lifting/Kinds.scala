@@ -3,30 +3,29 @@ package net.kurobako.bonsai.lifting
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.collections.Kind
 
 /** What the laws need to know of a type, read from the type itself. */
 private[lifting] class Kinds(using Context) {
-  private val ArrayOps     = requiredClass("scala.collection.ArrayOps")
-  private val StringOps    = requiredClass("scala.collection.StringOps")
-  private val IterableOnce = requiredClass("scala.collection.IterableOnce")
-  private val Iterable     = requiredClass("scala.collection.Iterable")
-  private val View         = requiredClass("scala.collection.View")
-  private val LazyList     = requiredClass("scala.collection.immutable.LazyList")
-  private val Iterator     = requiredClass("scala.collection.Iterator")
-  private val SeqOps       = requiredClass("scala.collection.SeqOps")
-  private val SeqMap       = requiredClass("scala.collection.SeqMap")
-  private val SortedOps    = requiredClass("scala.collection.SortedOps")
-  private val MapClass     = requiredClass("scala.collection.Map")
-  private val SetClass     = requiredClass("scala.collection.Set")
-  private val Product      = requiredClass("scala.Product")
+  private val ArrayOps     = Classes.required("scala.collection.ArrayOps")
+  private val StringOps    = Classes.required("scala.collection.StringOps")
+  private val IterableOnce = Classes.required("scala.collection.IterableOnce")
+  private val Iterable     = Classes.required("scala.collection.Iterable")
+  private val View         = Classes.required("scala.collection.View")
+  private val LazyList     = Classes.required("scala.collection.immutable.LazyList")
+  private val Iterator     = Classes.required("scala.collection.Iterator")
+  private val SeqOps       = Classes.required("scala.collection.SeqOps")
+  private val SeqMap       = Classes.required("scala.collection.SeqMap")
+  private val SortedOps    = Classes.required("scala.collection.SortedOps")
+  private val MapClass     = Classes.required("scala.collection.Map")
+  private val SetClass     = Classes.required("scala.collection.Set")
+  private val Product      = Classes.required("scala.Product")
 
   private val Insertion = Set("immutable.ListSet", "immutable.VectorSet", "mutable.LinkedHashSet")
 
   private val Operations: Vector[Symbol] = Vector(
-    requiredClass("scala.collection.IterableOnceOps"),
+    Classes.required("scala.collection.IterableOnceOps"),
     ArrayOps,
     StringOps,
     defn.OptionClass,

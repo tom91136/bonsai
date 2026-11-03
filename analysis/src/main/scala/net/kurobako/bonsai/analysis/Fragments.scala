@@ -5,6 +5,7 @@ import dotty.tools.dotc.core.Constants
 import dotty.tools.dotc.core.Constants.Constant
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
+import dotty.tools.dotc.core.NameKinds
 import dotty.tools.dotc.core.NameKinds.DefaultGetterName
 import dotty.tools.dotc.core.NameOps.isOperatorName
 import dotty.tools.dotc.core.StdNames.nme
@@ -84,7 +85,7 @@ class Fragments(using Context) {
     * value's initialiser, such as an array of some size, is no method a family would share.
     */
   def add(body: tpd.Tree, node: String, test: Boolean, member: Symbol, family: String, specialised: Boolean): Unit =
-    if (!row(body)) shape(body, origin(node, test, member, family, specialised), entire = true): Unit
+    if (!row(body)) shape(body, origin(node, test, member, family, specialised, body), entire = true): Unit
 
   def groups(): Vector[Clones.Group] = Clones.groups(candidates())
 
@@ -93,13 +94,16 @@ class Fragments(using Context) {
       test: Boolean,
       member: Symbol,
       family: String,
-      specialised: Boolean
+      specialised: Boolean,
+      body: tpd.Tree
   ): Origin = {
     val method      = member.is(Flags.Method)
     val constrained = member.is(Flags.Override) || member.allOverriddenSymbols.nonEmpty
     val parameters  = member.paramSymss.flatten.filter(_.isTerm)
-    val callable    = !test && !constrained && !member.isOneOf(Flags.Inline | Flags.Macro) &&
-      !parameters.exists(_.isOneOf(Flags.GivenOrImplicit | Flags.Erased))
+    val callable    = !test && !constrained &&
+      !member.isOneOf(Flags.Inline | Flags.Macro | Flags.Given | Flags.Synthetic) &&
+      !member.name.is(NameKinds.UniqueName) &&
+      !parameters.exists(_.isOneOf(Flags.GivenOrImplicit | Flags.Erased)) && faithful(member, body)
     val everywhere = member.ownersIterator.drop(1).takeWhile(!_.is(Flags.Package)).forall(owner =>
       owner.is(Flags.Module) && !owner.isOneOf(Flags.Private | Flags.Protected) && !owner.privateWithin.exists
     ) && !member.isOneOf(Flags.Private | Flags.Protected) && !member.privateWithin.exists
@@ -115,6 +119,22 @@ class Fragments(using Context) {
       Option.unless(everywhere)(node),
       parameters
     )
+  }
+
+  /** Whether a call of `member` has the type of its body, which a declared result type that is wider, or an opaque
+    * alias the body does not have outside its scope, would change.
+    */
+  private def faithful(member: Symbol, body: tpd.Tree): Boolean = {
+    val actual   = body.tpe
+    val declared = member.info.widenExpr.finalResultType
+    actual == null || declared <:< actual.widen && !declared.existsPart {
+      case reference: Types.NamedType =>
+        reference.symbol.is(Flags.Opaque) && !actual.existsPart {
+          case other: Types.NamedType => other.symbol == reference.symbol
+          case _                      => false
+        }
+      case _ => false
+    }
   }
 
   /** The fragments that share a hash with another, confirmed with hashes that number locals by first occurrence. */
@@ -440,12 +460,26 @@ class Fragments(using Context) {
       case _                                => ""
     }
 
+    def depth(tree: tpd.Tree): Int = tree match {
+      case tpd.Select(qualifier, nme.apply) => depth(qualifier)
+      case tpd.Select(qualifier, _)         => 1 + depth(qualifier)
+      case _                                => 0
+    }
+
+    def types(tree: tpd.Tree): Vector[Clones.Typed] = tree match {
+      case tpd.Select(qualifier, nme.apply) => types(qualifier)
+      case tpd.Select(qualifier, _)         => types(qualifier) :+ typed(tree.tpe)
+      case other                            => Vector(typed(other.tpe))
+    }
+
     def variable(tree: tpd.Tree): Clones.Literal = {
       val (key, shown) = text(tree)
       val parameter    = Option(head(tree).symbol).collect {
-        case symbol if parameters.contains(symbol) => Clones.Binding(parameters.indexOf(symbol), selections(tree))
+        case symbol if parameters.contains(symbol) =>
+          val index = parameters.indexOf(symbol)
+          Clones.Binding(index, selections(tree))(depth(tree), accepted(symbol))
       }
-      Clones.Literal(key, reference = true, parameter = parameter)(shown)
+      Clones.Literal(key, reference = true, parameter = parameter)(shown, types(tree))
     }
 
     def go(tree: tpd.Tree, covered: Boolean): Unit = {
@@ -461,9 +495,31 @@ class Fragments(using Context) {
     found.result()
   }
 
-  private def rendered(constant: Constant): Clones.Literal =
-    if (constant.tag == Constants.StringTag) Clones.Literal(constant.stringValue, string = true)(constant.show)
-    else Clones.Literal(constant.show)()
+  private def rendered(constant: Constant): Clones.Literal = {
+    val types = Vector(typed(Types.ConstantType(constant)))
+    if (constant.tag == Constants.StringTag)
+      Clones.Literal(constant.stringValue, string = true)(constant.show, types)
+    else Clones.Literal(constant.show)(types = types)
+  }
+
+  private final class Typing(val tpe: Types.Type) extends Clones.Typed {
+    def conforms(to: Clones.Typed): Boolean = to match {
+      case other: Typing => tpe <:< other.tpe
+      case _             => true
+    }
+  }
+
+  private def typed(tpe: Types.Type): Clones.Typed = new Typing(if (tpe == null) defn.AnyType else tpe.widenExpr.widen)
+
+  // A type that mentions the parameters or type parameters of the method is not one a call elsewhere can be held to.
+  private def accepted(parameter: Symbol): Option[Clones.Typed] = {
+    val tpe = parameter.info.widenExpr
+    Option.unless(tpe.existsPart {
+      case reference: Types.NamedType => reference.symbol.exists && reference.symbol.owner == parameter.owner
+      case _: Types.ParamRef          => true
+      case _                          => false
+    })(typed(tpe))
+  }
 
   private def applications(trees: List[tpd.Tree]): Boolean = trees match {
     case List(tree) =>

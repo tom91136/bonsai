@@ -46,6 +46,34 @@ class ReportSuite extends AnalysisSuite {
     assert(!found.exists(line => line.finding.level == Finding.Level.Info && line.level == "error"))
   }
 
+  test("rules disabled over generated code drop its findings of them, and * drops all its findings") {
+    def opcodes(name: String) =
+      s"""enum $name {
+         |  case AddI(dest: Int, a: Int, b: Int); case SubI(dest: Int, a: Int, b: Int); case MulI(dest: Int, a: Int, b: Int)
+         |  case AddF(dest: Int, a: Double, b: Double); case SubF(dest: Int, a: Double, b: Double)
+         |  case Move(dest: Int, source: Int)
+         |}""".stripMargin
+    val mixed = extract(
+      Seq(
+        "src/main/scala/Written.scala"        -> opcodes("Written"),
+        "src/generated/main/scala/Made.scala" -> opcodes("Made")
+      ),
+      generated = GeneratedSources
+    )
+    def rules(options: Report.Options, generated: Boolean): Set[String] =
+      Report(Report.findings(mixed), mixed.graph.nodes, options).collect {
+        case line if line.finding.node.generated == generated => line.finding.rule.id
+      }.toSet
+    val written = rules(defaults, generated = false)
+    val made    = rules(defaults, generated = true)
+    assert(made.nonEmpty && made.subsetOf(written), s"generated: $made\nhandwritten: $written")
+    val one = made.head
+    assertEquals(rules(defaults.copy(generatedDisabled = Set(one)), generated = true), made - one)
+    assertEquals(rules(defaults.copy(generatedDisabled = Set(one)), generated = false), written)
+    assertEquals(rules(defaults.copy(generatedDisabled = Set("*")), generated = true), Set.empty[String])
+    assertEquals(rules(defaults.copy(generatedDisabled = Set("*")), generated = false), written)
+  }
+
   test("findings naming long types stay on one line") {
     val wide = extract(Seq(
       "Shape.scala" ->
@@ -159,10 +187,11 @@ class ReportSuite extends AnalysisSuite {
       exported = false,
       outer = None
     )
-    val recorded = Finding(Finding.Rule.DuplicateCode, node, "2 copies of 5 lines (84 nodes): A.scala:10-14, B.scala:3-7")
-    val moved    = recorded.copy(detail = "2 copies of 5 lines (68 nodes): A.scala:30-34, B.scala:23-27")
-    val other    = recorded.copy(detail = "2 copies of 5 lines (68 nodes): A.scala:30-34, C.scala:23-27")
-    val options  = defaults.copy(failing = Set("duplicate-code"), baseline = Set(recorded.key))
+    val recorded =
+      Finding(Finding.Rule.DuplicateCode, node, "2 copies of 5 lines (84 nodes): A.scala:10-14, B.scala:3-7")
+    val moved   = recorded.copy(detail = "2 copies of 5 lines (68 nodes): A.scala:30-34, B.scala:23-27")
+    val other   = recorded.copy(detail = "2 copies of 5 lines (68 nodes): A.scala:30-34, C.scala:23-27")
+    val options = defaults.copy(failing = Set("duplicate-code"), baseline = Set(recorded.key))
     def levels(finding: Finding) = Report(Vector(finding), Map(node.name -> node), options).map(_.level)
     assertEquals(levels(moved), Vector("warning"))
     assertEquals(levels(other), Vector("error"))

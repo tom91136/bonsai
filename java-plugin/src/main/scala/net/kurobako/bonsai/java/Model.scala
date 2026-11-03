@@ -3,6 +3,7 @@ package net.kurobako.bonsai.java
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import net.kurobako.bonsai.collections.Sink
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
 
@@ -22,13 +23,15 @@ case class Edge(from: String, to: String)
   * uses:
   *
   * {{{
-  * node<TAB>name<TAB>source<TAB>line<TAB>exported<TAB>outer<TAB>suppressed<TAB>entry<TAB>generated
-  * method<TAB>owner<TAB>name<TAB>exported<TAB>stored<TAB>parameters<TAB>location<TAB>returns<TAB>overriding
+  * node<TAB>name<TAB>source<TAB>line<TAB>exported<TAB>outer<TAB>suppressed<TAB>entry<TAB>generated<TAB>constructible
+  * method<TAB>owner<TAB>name<TAB>key<TAB>exported<TAB>stored<TAB>parameters<TAB>location<TAB>returns<TAB>overriding
   * field<TAB>owner<TAB>name<TAB>kind<TAB>shape<TAB>cases<TAB>primitive
   * site<TAB>caller<TAB>callee<TAB>arguments<TAB>location<TAB>discarded
   * edge<TAB>from<TAB>to
   * lint<TAB>id<TAB>owner<TAB>method<TAB>path<TAB>line<TAB>detail
   * cost<TAB>owner<TAB>name<TAB>key<TAB>line<TAB>suppressed<TAB>parameters<TAB>tree
+  * instance<TAB>caller<TAB>owner<TAB>constructor<TAB>arguments<TAB>location
+  * store<TAB>owner<TAB>constructor<TAB>field<TAB>kind<TAB>value
   * }}}
   *
   * The name of a node is its qualified name, which is the package, the types that hold it and its own name, joined by
@@ -50,7 +53,9 @@ case class Edge(from: String, to: String)
   */
 object Model {
 
-  /** A node of the model: a type. */
+  /** A node of the model: a type. It is `constructible` when other code can call a constructor of it, which for a
+    * record is the canonical one.
+    */
   case class Node(
       name: String,
       source: String,
@@ -59,15 +64,17 @@ object Model {
       outer: Option[String],
       suppressed: Set[String],
       entry: Boolean = false,
-      generated: Boolean = false
+      generated: Boolean = false,
+      constructible: Boolean = false
   )
 
   /** A method of a type, with the parameters it takes, the type it returns and whether it overrides a method of a
-    * supertype.
+    * supertype. The key tells apart the overloads that share a name, which findings do not show.
     */
   case class Method(
       owner: String,
       name: String,
+      key: String,
       exported: Boolean,
       stored: Set[Int],
       parameters: Vector[Parameter],
@@ -95,12 +102,38 @@ object Model {
       negated: Boolean = false
   )
 
+  /** Where a constructor keeps the value of a field, in the field of the type it is given as the parameter at `index`,
+    * or as a constant of the delegation to another constructor.
+    */
+  enum Stored {
+    case Parameter(index: Int)
+    case Constant(argument: String)
+  }
+
+  /** A construction of a class that the compilation does not declare, whose arguments the declaring compilation aligns
+    * with the fields of the class by what its constructors keep (`stores`).
+    */
+  case class Instance(caller: String, owner: String, constructor: String, arguments: Vector[String], location: String)
+
+  /** What a constructor of a class keeps in a field of it, which the constructions of the class are read by. */
+  case class Store(owner: String, constructor: String, field: String, kept: Stored)
+
+  /** The values a construction gives the fields of its class, given what the constructor it calls keeps in each. */
+  def aligned(fields: Vector[Field], kept: Map[String, Stored], arguments: Vector[String]): Vector[String] =
+    fields.map { field =>
+      kept.get(field.parameter.name) match {
+        case Some(Stored.Parameter(index)) if index < arguments.size => arguments(index)
+        case Some(Stored.Constant(argument))                         => argument
+        case _                                                       => "unknown"
+      }
+    }
+
   /** A class the code names only in a text, which a module build can look up at run time but the compiler cannot see.
     */
   case class Reflection(caller: String, target: String, location: String)
 
   /** A product of the Java code, which is a record or a class whose fields are its shape. */
-  case class Product(node: String, name: String, fields: Vector[Parameter], parents: Set[String], exported: Boolean)
+  case class Product(node: String, name: String, fields: Vector[Parameter], parents: Set[String])
 
   /** A sum of the Java code, which is a sealed type and the types that extend it. */
   case class Sum(node: String, name: String, variants: Vector[Variant])
@@ -270,6 +303,10 @@ object Model {
     * such as `$0`, `$1.items` or `this.items`, and `?` where the collection is not one. In a call of a method to
     * itself, an argument that is a strictly smaller part of the parameter in its position (a sublist, a substring) is
     * `$i<`, and an integer parameter less a positive constant is `$i-`.
+    *
+    * An op or a call ends with the sink of what it builds or returns unless that is returned: `@` and the number of the
+    * outermost loop the value stays live across, or `-` for a value no loop keeps, then `r` if the method returns it
+    * and `s` if it stores it in a field or a variable of an outer method. Such as `@-` for a value that is dropped.
     */
   case class Cost(
       owner: String,
@@ -314,29 +351,50 @@ object Model {
       }
     }
 
+    def renderSink(sink: Sink): String =
+      if sink == Sink.Returned then ""
+      else
+        " @" + (if sink.level == Int.MaxValue then "-" else sink.level.toString) + (if sink.returned then "r" else "") +
+          (if sink.stored then "s" else "")
+
+    private val sinkToken = "@(-|\\d+)(r?)(s?)".r
+
+    def parseSink(token: String): Option[Sink] = token match {
+      case sinkToken(level, returned, stored) =>
+        val depth = if level == "-" then Some(Int.MaxValue) else level.toIntOption
+        depth.map(Sink(_, returned.nonEmpty, stored.nonEmpty))
+      case _ => None
+    }
+
     /** A step of the cost of a method, with the line it is on. */
     case class Node(line: Int, step: Step) {
       def render: String = step match {
         case Step.Loop(extent, callback, absorbs, body) =>
           val head = (if callback then "{each" else "{loop") + (if absorbs > 0 then s":$absorbs" else "")
           (Vector(head, line.toString, extent) ++ body.map(_.render)).mkString(" ") + "}"
-        case Step.Exit(body)       => (Vector("{exit", line.toString) ++ body.map(_.render)).mkString(" ") + "}"
-        case Step.Op(kind, extent) => s"{op $line ${kind.render} $extent}"
-        case Step.Call(key, receiver, arguments) =>
-          (Vector("{call", line.toString, key, receiver) ++ arguments).mkString(" ") + "}"
+        case Step.Exit(body)             => (Vector("{exit", line.toString) ++ body.map(_.render)).mkString(" ") + "}"
+        case Step.Op(kind, extent, sink) => s"{op $line ${kind.render} $extent${renderSink(sink)}}"
+        case Step.Call(key, receiver, arguments, sink) =>
+          (Vector("{call", line.toString, key, receiver) ++ arguments).mkString(" ") + renderSink(sink) + "}"
       }
     }
 
     enum Step {
       case Loop(extent: String, callback: Boolean, absorbs: Int, body: Vector[Node])
       case Exit(body: Vector[Node])
-      case Op(kind: Kind, extent: String)
-      case Call(key: String, receiver: String, arguments: Vector[String])
+      case Op(kind: Kind, extent: String, sink: Sink = Sink.Returned)
+      case Call(key: String, receiver: String, arguments: Vector[String], sink: Sink = Sink.Returned)
     }
 
     def render(nodes: Vector[Node]): String = nodes.map(_.render).mkString(" ")
 
     private val loopHead = "(loop|each)(:\\d+)?".r
+
+    private def marked(marks: List[String]): Option[Sink] = marks match {
+      case Nil          => Some(Sink.Returned)
+      case token :: Nil => parseSink(token)
+      case _            => None
+    }
 
     /** The nodes a text written by `render` holds. */
     def parse(text: String): Option[Vector[Node]] = {
@@ -362,17 +420,22 @@ object Model {
             (body, after) <- nodes(tail, Vector.empty)
             remaining     <- after match { case "}" :: more => Some(more); case _ => None }
           } yield (Node(number, Step.Exit(body)), remaining)
-        case "op" :: line :: kind :: extent :: "}" :: tail =>
+        case "op" :: line :: kind :: extent :: tail if extent != "}" =>
+          val (marks, after) = tail.span(_ != "}")
           for {
             number <- line.toIntOption
             parsed <- Kind.parse(kind)
-          } yield (Node(number, Step.Op(parsed, extent)), tail)
+            sink   <- marked(marks)
+            _      <- after.headOption
+          } yield (Node(number, Step.Op(parsed, extent, sink)), after.tail)
         case "call" :: line :: key :: receiver :: tail =>
-          val (arguments, after) = tail.span(_ != "}")
+          val (words, after)     = tail.span(_ != "}")
+          val (arguments, marks) = words.span(!_.startsWith("@"))
           for {
             number <- line.toIntOption
+            sink   <- marked(marks)
             _      <- after.headOption
-          } yield (Node(number, Step.Call(key, receiver, arguments.toVector)), after.tail)
+          } yield (Node(number, Step.Call(key, receiver, arguments.toVector, sink)), after.tail)
         case _ => None
       }
       nodes(tokens, Vector.empty).collect { case (found, Nil) => found }
@@ -445,7 +508,8 @@ object Model {
         node.outer.getOrElse(""),
         node.suppressed.toSeq.sorted.mkString(","),
         node.entry.toString,
-        node.generated.toString
+        node.generated.toString,
+        node.constructible.toString
       ),
     columns =>
       Right(
@@ -457,19 +521,21 @@ object Model {
           columns.lift(4).filter(_.nonEmpty),
           items(columns.lift(5).getOrElse("")).toSet,
           columns.lift(6).exists(_.toBoolean),
-          columns.lift(7).exists(_.toBoolean)
+          columns.lift(7).exists(_.toBoolean),
+          columns.lift(8).exists(_.toBoolean)
         )
       )
   )
 
   private val methodCodec = Codec[Method](
     "method",
-    6,
-    "a method holds an owner, a name and its parameters",
+    7,
+    "a method holds an owner, a name, a key and its parameters",
     method =>
       Vector(
         method.owner,
         method.name,
+        method.key,
         method.exported.toString,
         method.stored.toSeq.sorted.mkString(","),
         parameterText(method.parameters),
@@ -479,17 +545,18 @@ object Model {
         method.suppressed.toSeq.sorted.mkString(",")
       ),
     columns =>
-      parameterList(columns(4)).map(parameters =>
+      parameterList(columns(5)).map(parameters =>
         Method(
           columns(0),
           columns(1),
-          columns(2).toBoolean,
-          items(columns(3)).map(_.toInt).toSet,
+          columns(2),
+          columns(3).toBoolean,
+          items(columns(4)).map(_.toInt).toSet,
           parameters,
-          columns(5),
-          columns.lift(6).getOrElse(""),
-          columns.lift(7).exists(_.toBoolean),
-          items(columns.lift(8).getOrElse("")).toSet
+          columns(6),
+          columns.lift(7).getOrElse(""),
+          columns.lift(8).exists(_.toBoolean),
+          items(columns.lift(9).getOrElse("")).toSet
         )
       )
   )
@@ -582,20 +649,17 @@ object Model {
 
   private val productCodec = Codec[Product](
     "product",
-    5,
+    4,
     "a product holds a node, a name and its fields",
     product =>
       Vector(
         product.node,
         product.name,
         parameterText(product.fields),
-        product.parents.toSeq.sorted.mkString(","),
-        product.exported.toString
+        product.parents.toSeq.sorted.mkString(",")
       ),
     columns =>
-      parameterList(columns(2)).map(fields =>
-        Product(columns(0), columns(1), fields, items(columns(3)).toSet, columns(4).toBoolean)
-      )
+      parameterList(columns(2)).map(fields => Product(columns(0), columns(1), fields, items(columns(3)).toSet))
   )
 
   private val sumCodec = Codec[Sum](
@@ -633,6 +697,54 @@ object Model {
       Vector(construction.owner, construction.access, construction.factories.mkString(","), construction.guard.render),
     columns =>
       Right(Construction(columns(0), columns(1), items(columns(2)), Guard.parse(columns(3)).getOrElse(Guard.Unknown)))
+  )
+
+  private val instanceCodec = Codec[Instance](
+    "instance",
+    5,
+    "a construction holds a caller, an owner, a constructor, arguments and a place",
+    instance =>
+      Vector(
+        instance.caller,
+        instance.owner,
+        escape(instance.constructor),
+        instance.arguments.map(escape).mkString(","),
+        instance.location
+      ),
+    columns =>
+      Right(Instance(columns(0), columns(1), unescape(columns(2)), items(columns(3)).map(unescape), columns(4)))
+  )
+
+  private val storeCodec = Codec[Store](
+    "store",
+    5,
+    "a store holds an owner, a constructor, a field and what is kept",
+    store =>
+      Vector(
+        store.owner,
+        escape(store.constructor),
+        store.field,
+        store.kept match {
+          case Stored.Parameter(_) => "parameter"
+          case Stored.Constant(_)  => "constant"
+        },
+        store.kept match {
+          case Stored.Parameter(index)   => index.toString
+          case Stored.Constant(argument) => escape(argument)
+        }
+      ),
+    columns =>
+      Right(
+        Store(
+          columns(0),
+          unescape(columns(1)),
+          columns(2),
+          columns(3) match {
+            case "parameter" => Stored.Parameter(columns(4).toInt)
+            case _           => Stored.Constant(unescape(columns(4)))
+          }
+        )
+      )
   )
 
   private val preconditionCodec = Codec[Precondition](
@@ -723,7 +835,9 @@ object Model {
       preconditions: Vector[Precondition] = Vector.empty,
       reassignables: Vector[Reassignable] = Vector.empty,
       writes: Vector[Write] = Vector.empty,
-      costs: Vector[Cost] = Vector.empty
+      costs: Vector[Cost] = Vector.empty,
+      instances: Vector[Instance] = Vector.empty,
+      stores: Vector[Store] = Vector.empty
   ) {
 
     /** The model as the lines the analysis reads. */
@@ -732,7 +846,8 @@ object Model {
         edgeCodec.lines(edges) ++ cloneCodec.lines(fragments) ++ productCodec.lines(products) ++
         sumCodec.lines(sums) ++ lintCodec.lines(lints) ++ reflectCodec.lines(reflections) ++
         constructionCodec.lines(constructions) ++ preconditionCodec.lines(preconditions) ++
-        reassignableCodec.lines(reassignables) ++ writeCodec.lines(writes) ++ costCodec.lines(costs)
+        reassignableCodec.lines(reassignables) ++ writeCodec.lines(writes) ++ costCodec.lines(costs) ++
+        instanceCodec.lines(instances) ++ storeCodec.lines(stores)
   }
 
   /** The model of the compilation the plugin ran in, read from the file it wrote, or what is wrong with it. */
@@ -764,9 +879,13 @@ object Model {
       val reassignables = records(reassignableCodec)
       val writes        = records(writeCodec)
       val costs         = records(costCodec)
+      val instances     = records(instanceCodec)
+      val stores        = records(storeCodec)
       val failures      =
         (nodes ++ methods ++ fields ++ sites ++ edges ++ fragments ++ products ++ sums ++ lints ++ reflections ++
-          constructions ++ preconditions ++ reassignables ++ writes ++ costs).collect { case Left(failure) => failure }
+          constructions ++ preconditions ++ reassignables ++ writes ++ costs ++ instances ++ stores).collect {
+          case Left(failure) => failure
+        }
       if failures.nonEmpty then Left(failures.mkString("\n"))
       else
         Right(
@@ -785,7 +904,9 @@ object Model {
             preconditions.flatMap(_.toOption),
             reassignables.flatMap(_.toOption),
             writes.flatMap(_.toOption),
-            costs.flatMap(_.toOption)
+            costs.flatMap(_.toOption),
+            instances.flatMap(_.toOption),
+            stores.flatMap(_.toOption)
           )
         )
     }

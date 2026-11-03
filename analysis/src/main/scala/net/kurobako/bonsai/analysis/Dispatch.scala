@@ -4,6 +4,7 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
+import dotty.tools.dotc.core.Symbols.getClassIfDefined
 import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.lifting.Calls
@@ -45,7 +46,7 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
   def classify(cls: Symbol, name: String, key: String, info: Node)(using Context): Unit =
     if (cls.is(Flags.Trait) || cls.is(Flags.Abstract)) {
       // Other builds can implement what a library exports, unless it is sealed.
-      if (!cls.is(Flags.Enum) && !info.test && (cls.is(Flags.Sealed) || !exported(cls))) {
+      if (!cls.is(Flags.Enum) && !info.test && !facade(cls) && (cls.is(Flags.Sealed) || !exported(cls))) {
         abstracts(cls) = (name, key, info.module)
         if (cls.is(Flags.Trait) && !cls.info.decls.exists(_.is(Flags.Deferred))) mixins += cls
       }
@@ -56,6 +57,13 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
         if (cls.typeRef.baseType(parent).argInfos.exists(_.widenDealias.typeSymbol.isPrimitiveValueClass))
           specialised += parent
       }
+
+  // A Scala.js facade describes a JavaScript API, which Scala does not implement; the library may be off the classpath.
+  private def facade(cls: Symbol)(using Context): Boolean = {
+    val native = getClassIfDefined("scala.scalajs.js.native")
+    val any    = getClassIfDefined("scala.scalajs.js.Any")
+    native.exists && cls.hasAnnotation(native) || any.exists && cls.derivesFrom(any)
+  }
 
   def abstractions: Vector[Smells.Abstraction] =
     abstracts.toVector.collect {
@@ -79,7 +87,9 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
       val implementations = concreteSubclasses(callee.owner).view.filter(cls =>
         (test || !nodeOf(cls).exists(_.test)) && reaches(cls, callee.owner, receiver)
       ).flatMap(concreteMember(callee, _)).toVector.distinct
-      Option.when(implementations.size > MaximumInlinedReceivers)(Megamorphic.Site(
+      Option.when(
+        implementations.size > MaximumInlinedReceivers && !implementations.forall(stableRead)
+      )(Megamorphic.Site(
         qualifiedName(caller),
         node,
         s"${callee.owner.name.toString.stripSuffix("$")}.${callee.name}",
@@ -120,10 +130,7 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
           ))
             .toVector
         val all = (Option.when(bodied(method))(method).toVector ++ overrides).distinct
-        // An immutable val implements a method by a read, which has no effect.
-        Option.when(all.nonEmpty && all.forall(target =>
-          bodied(target) || !target.is(Flags.Method) && !target.is(Flags.Mutable)
-        ))(all)
+        Option.when(all.nonEmpty && all.forall(target => bodied(target) || immutableRead(target)))(all)
       }
     )
 
@@ -136,6 +143,14 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
 
   // HotSpot's inline caches hold two receiver types; a third makes a call site megamorphic.
   private val MaximumInlinedReceivers = 2
+
+  // An immutable val implements a method by a read, which has no effect.
+  private def immutableRead(member: Symbol)(using Context): Boolean =
+    !member.is(Flags.Method) && !member.is(Flags.Mutable)
+
+  // A lazy val runs its initialiser on the first read.
+  private def stableRead(member: Symbol)(using Context): Boolean =
+    immutableRead(member) && !member.is(Flags.Lazy)
 
   /** Whether a value of `cls` can be the receiver of static type `receiver` at a call of a member of `owner`: a class
     * extending `owner` with other concrete type arguments than the receiver's never is.

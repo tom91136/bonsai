@@ -364,9 +364,15 @@ object JavaLint {
     "WeakerAccess"                                     -> Set("weaker-access")
   )
 
+  /** The Error Prone bug pattern names and their corresponding bonsai rule ids. */
+  val ErrorProne: Map[String, Set[String]] = Map(
+    "FallThrough"     -> Set("fallthrough-in-switch"),
+    "MissingOverride" -> Set("missing-override")
+  )
+
   /** The rule ids a suppression name names, with `*` for all rules. */
   def resolve(name: String): Set[String] =
     if (name == "bonsai") Set("*")
     else if (name.startsWith("bonsai:")) Set(name.drop("bonsai:".length))
-    else IntelliJ.getOrElse(name, Set(name))
+    else IntelliJ.getOrElse(name, ErrorProne.getOrElse(name, Set(name)))
 }

@@ -8,6 +8,7 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.plugins.PluginPhase
 import dotty.tools.dotc.report
 import dotty.tools.dotc.util.NoSource
+import dotty.tools.dotc.util.SourcePosition
 import scala.collection.mutable
 
 private class AcyclicPhase(analysis: Analysis, checks: Checks, problems: List[String]) extends PluginPhase {
@@ -15,6 +16,8 @@ private class AcyclicPhase(analysis: Analysis, checks: Checks, problems: List[St
   override val runsAfter: Set[String]   = Set("posttyper")
   override val runsBefore: Set[String]  = Set("pickler")
   override def run(using Context): Unit = ()
+
+  private val cycles = checks.owning(List(Check.Acyclic))
 
   // 3.4.0 does not suspend compilations, and does not say so.
   private def suspended(using Context): Boolean =
@@ -29,13 +32,24 @@ private class AcyclicPhase(analysis: Analysis, checks: Checks, problems: List[St
     analysis.include(ctx.run.files.map(_.path))
     analysis.forget(sources.map(_.source.path).toSet)
     val paths = analysis.paths
-    val edges = analysis.edges
-
-    def valid(symbol: Symbol): Boolean =
-      symbol != NoSymbol && Option(symbol.source).exists(source => source != NoSource && paths(source.path))
-
     sources.foreach(checks.remember)
-    sources.foreach(unit => Edges(unit.source.path, valid(_), analysis).traverse(unit.tpdTree))
+    if (cycles.active) cyclic(sources, paths, analysis.edges)
+    units
+  }
+
+  private def cyclic(
+      sources: List[CompilationUnit],
+      paths: collection.Set[String],
+      edges: collection.Map[(String, String, Boolean), SourcePosition]
+  )(using Context): Unit = {
+    val known                                    = mutable.HashMap.empty[Symbol, Option[String]]
+    def sourceOf(symbol: Symbol): Option[String] = known.getOrElseUpdate(
+      symbol,
+      if (symbol == NoSymbol) None
+      else Option(symbol.source).filter(source => source != NoSource && paths(source.path)).map(_.path)
+    )
+
+    sources.foreach(unit => Edges(unit.source.path, sourceOf, analysis).traverse(unit.tpdTree))
 
     val byPair  = edges.toVector.groupBy { case ((from, to, _), _) => (from, to) }
     val checked = byPair.filterNot { case (_, dependencies) =>
@@ -58,9 +72,8 @@ private class AcyclicPhase(analysis: Analysis, checks: Checks, problems: List[St
         if (others.isEmpty) "" else s"\nand ${others.size} more $files on cycles with it:\n  ${others.mkString("\n  ")}"
       val message =
         s"Cyclic source dependency (${group.size} files), through the shortest cycle:\n${details.mkString("\n")}$rest"
-      checks(Check.Acyclic, message, steps.head._2)
+      cycles(Check.Acyclic, message, steps.head._2)
     }
-    units
   }
 }
 

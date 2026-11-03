@@ -290,7 +290,7 @@ private class Branches(checks: Checks)(using Context) {
       case application: tpd.Apply =>
         val (head, lists, types) = peel(application, Nil, Nil)
         val method               = head.symbol
-        val parameters           = method.paramSymss.filter(_.headOption.exists(_.isTerm)).flatten.toVector
+        val parameters           = Trees.termParameters(method).flatten.toVector
         val arguments            = lists.flatten.toVector
         Option.when(
           method.exists && method.is(Flags.Method) && !Trees.constructs(method) && parameters.size == arguments.size

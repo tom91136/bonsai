@@ -20,6 +20,7 @@ import net.kurobako.bonsai.effects.Kind
 import net.kurobako.bonsai.effects.Receiver
 import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
+import scala.runtime.ScalaRunTime
 import scala.util.control.NonFatal
 
 /** Side effects of the build's methods, inferred from their bodies and from axioms for the standard library. A call
@@ -276,7 +277,7 @@ object Purity {
     def ++(other: Ids): Ids =
       if (other.isEmpty) this
       else if (isEmpty) other
-      else Ids.Builder().addAll(this).addAll(other).result()
+      else Ids.union(values, other.values)
 
     override def equals(other: Any): Boolean = other match {
       case ids: Ids => java.util.Arrays.equals(values, ids.values)
@@ -288,6 +289,27 @@ object Purity {
 
   private object Ids {
     val Empty: Ids = Ids(Array.emptyIntArray)
+
+    private def union(left: Array[Int], right: Array[Int]): Ids = {
+      val merged    = new Array[Int](left.length + right.length)
+      var (i, j, n) = (0, 0, 0)
+      while (i < left.length || j < right.length) {
+        val next =
+          if (j == right.length || i < left.length && left(i) <= right(j)) {
+            val value = left(i)
+            i += 1
+            if (j < right.length && right(j) == value) j += 1
+            value
+          } else {
+            val value = right(j)
+            j += 1
+            value
+          }
+        merged(n) = next
+        n += 1
+      }
+      Ids(if (n == merged.length) merged else java.util.Arrays.copyOf(merged, n))
+    }
 
     /** The members of `now` that `before` lacks, when `now` holds all of `before`. */
     def gained(before: Ids, now: Ids): Option[Ids] = {
@@ -317,6 +339,11 @@ object Purity {
         if (count == members.length) members = java.util.Arrays.copyOf(members, count * 2)
         members(count) = id
         count += 1
+        this
+      }
+
+      def clear(): this.type = {
+        count = 0
         this
       }
 
@@ -389,6 +416,18 @@ object Purity {
       ids.result()
     }
 
+    // Builders nest with the summaries being made, so the finished ones are kept for the next.
+    private val spares = mutable.Stack.empty[Ids.Builder]
+
+    private def builder(): Ids.Builder = if (spares.isEmpty) Ids.Builder() else spares.pop().clear()
+
+    private def spare(finished: Ids.Builder): Unit = spares.push(finished)
+
+    private def localTarget(id: Int, owner: Symbol): Boolean = {
+      val target = effectTable(id).target
+      target.isDefined && local(target.get, owner)
+    }
+
     private def decoded(ids: Ids): Vector[Effect] = ids.values.iterator.map(effectTable(_)).toVector
 
     private def retarget(id: Int, target: Option[Symbol]): Int =
@@ -445,12 +484,29 @@ object Purity {
       case Several(values: Set[Value])
       case Inert
       case Opaque
+
+      // Values nest, and are hashed whole at every lookup of a frame or a key that holds them.
+      override lazy val hashCode: Int = this match {
+        case product: (Object | Function | Parameter | Several) => ScalaRunTime._hashCode(product)
+        case _                                                  => ordinal
+      }
+
+      // How many objects and functions deep the value goes.
+      lazy val levels: Int = this match {
+        case Object(_, bindings)                   => 1 + bindings.valuesIterator.map(_.levels).maxOption.getOrElse(0)
+        case Function(_, Frame(_, self, bindings)) =>
+          1 + (self.iterator ++ bindings.valuesIterator).map(_.levels).maxOption.getOrElse(0)
+        case Several(values) => values.iterator.map(_.levels).maxOption.getOrElse(0)
+        case _               => 0
+      }
     }
 
     /** Where evaluation happens: `root` numbers the parameters, `self` is this, and `bindings` holds the known values
       * of parameters and captured symbols.
       */
-    private case class Frame(root: Symbol, self: Option[Value], bindings: Map[Symbol, Value])
+    private case class Frame(root: Symbol, self: Option[Value], bindings: Map[Symbol, Value]) {
+      override lazy val hashCode: Int = ScalaRunTime._hashCode(this)
+    }
 
     /** A method summarised for one receiver, or for any when `self` is empty, and for the objects bound to its context
       * parameters and to the values of enclosing methods it captures.
@@ -469,6 +525,19 @@ object Purity {
       def apply(effects: Set[Effect], invokes: Set[Int]): Summary = Summary(interned(effects), invokes, Set.empty)
     }
 
+    // The keys of lookups that hash far more often than they are built.
+    private case class Evaluation(tree: tpd.Tree, frame: Frame) {
+      override val hashCode: Int = ScalaRunTime._hashCode(this)
+    }
+
+    private case class Returned(target: Symbol, receiver: Option[Value], arguments: Vector[Value]) {
+      override val hashCode: Int = ScalaRunTime._hashCode(this)
+    }
+
+    private case class Resolving(facts: Facts, frame: Frame, method: Option[Symbol]) {
+      override val hashCode: Int = ScalaRunTime._hashCode(this)
+    }
+
     private case class TransformSite(method: Symbol, operation: String, lambda: Facts, tree: tpd.Tree, view: Boolean)
     private case class WriteSite(method: Symbol, variable: Symbol, entry: String, tree: tpd.Tree)
     private case class DiscardSite(method: Symbol, name: String, facts: Facts, tree: tpd.Tree)
@@ -482,14 +551,14 @@ object Purity {
     private val Silent        = Summary(Ids.Empty, Set.empty, Set.empty)
     private val locals        = mutable.Map.empty[Symbol, tpd.Tree]
     private val lambdas       = mutable.Map.empty[Symbol, Facts]
-    private val evaluated     = mutable.Map.empty[(tpd.Tree, Frame), Value]
-    private val returning     = mutable.Map.empty[(Symbol, Option[Value], Vector[Value]), Value]
-    private val evaluating    = mutable.Set.empty[(Symbol, Option[Value], Vector[Value])]
-    private val pendingValues = mutable.Set.empty[(tpd.Tree, Frame)]
+    private val evaluated     = mutable.Map.empty[Evaluation, Value]
+    private val returning     = mutable.Map.empty[Returned, Value]
+    private val evaluating    = mutable.Set.empty[Returned]
+    private val pendingValues = mutable.Set.empty[Evaluation]
     private val sites         = mutable.Map.empty[Symbol, mutable.ArrayBuffer[(Symbol, Vector[Argument])]]
     private val tracing       = mutable.Set.empty[Symbol]
     private val running       = mutable.Set.empty[Symbol]
-    private val resolving     = mutable.Set.empty[(Facts, Frame, Option[Symbol])]
+    private val resolving     = mutable.Set.empty[Resolving]
     private val pending       = mutable.Queue.empty[(Symbol, Int)]
     private val explored      = mutable.Set.empty[Symbol]
     private val facts         = mutable.Map.empty[Symbol, Facts]
@@ -542,7 +611,9 @@ object Purity {
       "span",
       "distinctBy"
     )
-    private val View = requiredClass("scala.collection.View")
+    private val View          = requiredClass("scala.collection.View")
+    private val IteratorClass = requiredClass("scala.collection.Iterator")
+    private val traversals    = Traversals()
 
     /** How many library bodies the inference read. */
     def library: Int = explored.size
@@ -558,7 +629,7 @@ object Purity {
         val (method, depth) = pending.dequeue()
         facts(method) =
           try
-            method.defTree match {
+            treeOf(method) match {
               case definition: tpd.DefDef => Walker(method, method, depth).facts(definition.rhs)
               case _                      => Facts(Vector(plain(Kind.Unknown, "has no body")), Set.empty, Vector.empty)
             }
@@ -620,7 +691,7 @@ object Purity {
 
     /** The facts of a method of the build or a library, reading a library body on first need within the limits. */
     private def factsOf(method: Symbol): Option[Facts] = facts.get(method).orElse(
-      Option.when(explored.size < MaximumLibrary)(method.defTree).collect {
+      Option.when(explored.size < MaximumLibrary)(treeOf(method)).collect {
         case definition: tpd.DefDef if !definition.rhs.isEmpty =>
           explored += method
           val read =
@@ -649,9 +720,12 @@ object Purity {
       */
     def pointless: Vector[(Symbol, String, tpd.Tree)] = discards.toVector.collect {
       case site
-          if settled(resolve(site.facts, frame(site.method, None), None, keepFresh = true)).effects.forall(id =>
-            effectTable(id).kind == Kind.Reads && !effectTable(id).assumed
-          ) =>
+          if {
+            val summary = settled(resolve(site.facts, frame(site.method, None), None, keepFresh = true))
+            !runsUnknown(summary) && summary.effects.forall(id =>
+              effectTable(id).kind == Kind.Reads && !effectTable(id).assumed
+            )
+          } =>
         (site.method, site.name, site.tree)
     }
 
@@ -678,8 +752,9 @@ object Purity {
     /** Whether calling `method` has no effect at all, not even throwing, and runs nothing that is unknown. */
     def silent(method: Symbol): Boolean = summaries.get(Key(method, None)).exists(quiet)
 
-    private def quiet(summary: Summary): Boolean =
-      summary.effects.isEmpty && summary.invokes.isEmpty && summary.captures.isEmpty
+    private def runsUnknown(summary: Summary): Boolean = summary.invokes.nonEmpty || summary.captures.nonEmpty
+
+    private def quiet(summary: Summary): Boolean = summary.effects.isEmpty && !runsUnknown(summary)
 
     /** Assignments to shared variables by functions other threads run, by enclosing method, with the variable, the
       * method running the function and the assignment.
@@ -739,7 +814,7 @@ object Purity {
       */
     private def resolve(facts: Facts, frame: Frame, method: Option[Symbol], keepFresh: Boolean = false): Summary = {
       def summarise(): Summary = {
-        val effects  = Ids.Builder().addAll(facts.ids)
+        val effects  = builder().addAll(facts.ids)
         val invokes  = mutable.Set.from(facts.invokes)
         val captures = mutable.Set.empty[Symbol]
         facts.calls.foreach { call =>
@@ -780,7 +855,7 @@ object Purity {
         // A captured parameter is this method's own once evaluation reaches the method declaring it.
         val own                 = positions(frame.root)
         val (outer, unenclosed) = captures.toSet.filterNot(own.contains)
-          .partition(parameter => frame.root.ownersIterator.contains(parameter.owner))
+          .partition(parameter => ownedBy(frame.root, parameter.owner))
         invokes ++= captures.flatMap(own.get)
         // Another method's parameter runs whatever the build passes it.
         unenclosed.filterNot(running).foreach { parameter =>
@@ -792,15 +867,16 @@ object Purity {
           invokes ++= ran.invokes
         }
         val found = effects.result()
+        spare(effects)
         Summary(
           method.fold(found)(owner =>
-            found.filter(id => !targeted.get(id) || !effectTable(id).target.exists(local(_, owner)))
+            found.filter(id => !targeted.get(id) || !localTarget(id, owner))
           ),
           invokes.toSet,
           outer
         )
       }
-      val key = (facts, frame, method)
+      val key = Resolving(facts, frame, method)
       // Evaluating the same facts in the same frame again from within itself never ends, so what cannot be known stays
       // unknown.
       if (!resolving.add(key)) Summary(Set(plain(Kind.Unknown, "runs a function that runs itself")), Set.empty)
@@ -885,7 +961,13 @@ object Purity {
     }
 
     private def combined(parts: Vector[Summary]): Summary = Summary(
-      parts.foldLeft(Ids.Builder())((all, part) => all.addAll(part.effects)).result(),
+      {
+        val all = builder()
+        parts.foreach(part => all.addAll(part.effects))
+        val found = all.result()
+        spare(all)
+        found
+      },
       parts.flatMap(_.invokes).toSet,
       parts.flatMap(_.captures).toSet
     )
@@ -894,18 +976,31 @@ object Purity {
       * from the methods enclosing it, which decide what its own calls on them run.
       */
     private def bound(target: Symbol, method: Symbol, arguments: Vector[Argument], frame: Frame): Map[Symbol, Value] = {
-      val declared = terms(method)
-      val own      = terms(target)
-      val context  = arguments.zipWithIndex.collect {
-        case (Argument.Expression(tree, Form.Plain), index)
-            if own.isDefinedAt(index) && declared.lift(index).exists(_.isOneOf(Flags.Given | Flags.Implicit)) =>
-          own(index) -> evaluate(tree, frame)
+      var bound = Map.empty[Symbol, Value]
+      if (arguments.exists(_.isInstanceOf[Argument.Expression])) {
+        val declared = terms(method)
+        val own      = terms(target)
+        arguments.zipWithIndex.foreach {
+          case (Argument.Expression(tree, Form.Plain), index)
+              if own.isDefinedAt(index) && declared.lift(index).exists(_.isOneOf(Flags.Given | Flags.Implicit)) =>
+            val value = evaluate(tree, frame)
+            if (exact(value)) bound = bound.updated(own(index), value)
+          case _ => ()
+        }
       }
-      val local    = target.exists && !target.owner.isClass
-      val captured = frame.bindings.filter((symbol, _) =>
-        local && symbol.owner != target && target.owner.ownersIterator.contains(symbol.owner)
-      )
-      (context ++ captured).filter((_, value) => objects(value).isDefined).toMap
+      if (target.exists && !target.owner.isClass)
+        frame.bindings.foreach { (symbol, value) =>
+          if (symbol.owner != target && ownedBy(target.owner, symbol.owner) && exact(value))
+            bound = bound.updated(symbol, value)
+        }
+      bound
+    }
+
+    // Whether `ancestor` is `symbol` or one of the symbols enclosing it.
+    private def ownedBy(symbol: Symbol, ancestor: Symbol): Boolean = {
+      var current = symbol
+      while (current.exists && current != ancestor) current = current.owner
+      current.exists
     }
 
     private def constant(condition: tpd.Tree): Option[Boolean] = condition.tpe.widenTermRefExpr match {
@@ -944,6 +1039,12 @@ object Purity {
         else leaves(cls).map(_.map(Value.Object(_, Map.empty)))
       case tpd.TypeApply(inner, _) => typed(inner)
       case _                       => None
+    }
+
+    private def exact(value: Value): Boolean = value match {
+      case Value.Object(_, _)    => true
+      case Value.Several(values) => values.forall(exact)
+      case _                     => false
     }
 
     // The exact objects a value may be, or nothing when it may be anything else.
@@ -989,7 +1090,7 @@ object Purity {
       * value defined in terms of itself is opaque.
       */
     private def evaluate(tree: tpd.Tree, frame: Frame): Value = {
-      val key = (tree, frame)
+      val key = Evaluation(tree, frame)
       evaluated.get(key).getOrElse {
         if (pendingValues(key)) Value.Opaque
         else {
@@ -1063,7 +1164,7 @@ object Purity {
     private def stable(symbol: Symbol, owner: Option[Value]): Value = {
       val holder = owner.filter(_.isInstanceOf[Value.Object])
       val member = overriding(symbol, holder)
-      member.defTree match {
+      treeOf(member) match {
         case value: tpd.ValDef if !value.rhs.isEmpty => evaluate(value.rhs, frame(member.owner, holder))
         case _ if member.is(Flags.ParamAccessor)     =>
           terms(member.owner.primaryConstructor).find(_.name == member.name).fold(Value.Opaque)(passed(_))
@@ -1169,29 +1270,29 @@ object Purity {
         carrying: Vector[Value]
     ): Value = {
       val target = overriding(method, receiver)
-      val key    = (target, receiver.filter(_.isInstanceOf[Value.Object]), arguments)
-      if (Axioms.Pure.exists(qualified(target.owner).startsWith(_)) || target.owner.is(Flags.JavaDefined))
+      val key    = Returned(target, receiver.filter(_.isInstanceOf[Value.Object]), arguments)
+      if (pure(target.owner) || target.owner.is(Flags.JavaDefined))
         // What may hold a function carries those that flowed into it, including ones the inference cannot follow.
         if (carries(result)) several(carrying) else Value.Opaque
       else if (evaluating(key) || evaluating.size > MaximumNesting * 4) Value.Opaque
       else
         returning.getOrElse(
           key,
-          target.defTree match {
+          treeOf(target) match {
             case definition: tpd.DefDef
                 if !definition.rhs.isEmpty &&
-                  (target.isEffectivelyFinal || key._2.isDefined || !target.owner.isClass) =>
+                  (target.isEffectivelyFinal || key.receiver.isDefined || !target.owner.isClass) =>
               evaluating += key
               val parameters = definition.termParamss.flatten.map(_.symbol)
               val result     =
                 try evaluate(
                     definition.rhs,
-                    Frame(target, key._2, frame(target, key._2).bindings ++ parameters.zip(arguments))
+                    Frame(target, key.receiver, frame(target, key.receiver).bindings ++ parameters.zip(arguments))
                   )
                 finally evaluating -= key
               returning(key) = result
               result
-            case tpd.ValDef(_, _, _) => stable(target, key._2)
+            case tpd.ValDef(_, _, _) => stable(target, key.receiver)
             case _                   => Value.Opaque
           }
         )
@@ -1211,19 +1312,34 @@ object Purity {
       case many                                => Value.Several(many.toSet)
     }
 
-    // A value no deeper than `depth` objects, so values stay finite as evaluation repeats.
-    private def shallow(value: Value, depth: Int): Value = value match {
+    // A value no deeper than `depth` objects, so values stay finite as evaluation repeats; a value that is already so
+    // is returned as it is.
+    private def shallow(value: Value, depth: Int): Value =
+      if (value.levels <= depth) value else shallowest(value, depth)
+
+    private def shallowest(value: Value, depth: Int): Value = value match {
       case Value.Object(cls, bindings) =>
-        if (depth <= 0) Value.Opaque else Value.Object(cls, bindings.view.mapValues(shallow(_, depth - 1)).toMap)
+        if (depth <= 0) Value.Opaque
+        else {
+          val inner = shallowed(bindings, depth - 1)
+          if (inner eq bindings) value else Value.Object(cls, inner)
+        }
       case Value.Function(body, Frame(root, self, bindings)) =>
         if (depth <= 0) Value.Opaque
-        else Value.Function(
-          body,
-          Frame(root, self.map(shallow(_, depth - 1)), bindings.view.mapValues(shallow(_, depth - 1)).toMap)
-        )
-      case Value.Several(values) => Value.Several(values.map(shallow(_, depth)))
-      case other                 => other
+        else {
+          val outer = self.map(shallow(_, depth - 1))
+          val inner = shallowed(bindings, depth - 1)
+          if (inner.eq(bindings) && outer == self) value else Value.Function(body, Frame(root, outer, inner))
+        }
+      case Value.Several(values) =>
+        val inner = values.map(shallow(_, depth))
+        if (inner == values) value else Value.Several(inner)
+      case other => other
     }
+
+    private def shallowed(bindings: Map[Symbol, Value], depth: Int): Map[Symbol, Value] =
+      if (bindings.valuesIterator.forall(value => shallow(value, depth) eq value)) bindings
+      else bindings.view.mapValues(shallow(_, depth)).toMap
 
     /** The method an application calls, and its arguments across every argument list. */
     private def flatten(tree: tpd.Tree): (tpd.Tree, List[tpd.Tree]) = tree match {
@@ -1234,13 +1350,17 @@ object Purity {
       case other                      => (other, Nil)
     }
 
+    private val trees = mutable.HashMap.empty[Symbol, tpd.Tree]
+
+    private def treeOf(symbol: Symbol): tpd.Tree = trees.getOrElseUpdate(symbol, symbol.defTree)
+
     private val MaximumDepth   = 8
     private val MaximumLibrary = 20000
 
     /** Whether `method` has a library body the inference reads, queueing it on first sight within the limits. */
     private def explore(method: Symbol, depth: Int): Boolean =
       explored(method) || facts.contains(method) || depth <= MaximumDepth && explored.size < MaximumLibrary &&
-        (method.defTree match {
+        (treeOf(method) match {
           case definition: tpd.DefDef if !definition.rhs.isEmpty =>
             explored += method
             pending.enqueue(method -> depth)
@@ -1248,27 +1368,19 @@ object Purity {
           case _ => false
         })
 
-    private val members = mutable.HashMap.empty[(Symbol, Symbol), Symbol]
+    private val members = mutable.LongMap.empty[Symbol]
 
     private def matching(method: Symbol, cls: Symbol): Symbol =
-      members.getOrElseUpdate((method, cls), method.denot.matchingMember(cls.thisType))
+      members.getOrElseUpdate(method.id.toLong << 32 | cls.id, method.denot.matchingMember(cls.thisType))
 
-    private case class Declaration(variable: Boolean, inMethod: Boolean, enclosing: Set[Symbol])
-
-    private val declarations = mutable.HashMap.empty[Symbol, Declaration]
-    private val closures     = mutable.HashMap.empty[Symbol, Boolean]
+    private val closures = mutable.HashMap.empty[Symbol, Boolean]
 
     // A local of the method, or of a function inside it, that holds a value it allocated or is a variable.
-    private def local(symbol: Symbol, method: Symbol): Boolean = {
-      val declared = declarations.getOrElseUpdate(
-        symbol,
-        Declaration(symbol.is(Flags.Mutable), !symbol.owner.isClass, symbol.owner.ownersIterator.toSet)
-      )
-      (declared.variable || fresh(symbol)) && declared.inMethod && declared.enclosing(method)
-    }
+    private def local(symbol: Symbol, method: Symbol): Boolean =
+      !symbol.owner.isClass && (symbol.is(Flags.Mutable) || fresh(symbol)) && ownedBy(symbol.owner, method)
 
     private def within(symbol: Symbol, owner: Symbol): Boolean =
-      symbol.owner == owner || symbol.owner.ownersIterator.contains(owner)
+      symbol.owner == owner || ownedBy(symbol.owner, owner)
 
     private val shortNames = mutable.Map.empty[Symbol, String]
     private val parameters = mutable.Map.empty[Symbol, Vector[Symbol]]
@@ -1276,7 +1388,13 @@ object Purity {
 
     private def short(symbol: Symbol): String = shortNames.getOrElseUpdate(symbol, Finding.short(qualified(symbol)))
 
-    private def qualified(symbol: Symbol): String = Calls.qualified(symbol)
+    private val qualifiedNames = mutable.HashMap.empty[Symbol, String]
+    private val pureOwners     = mutable.HashMap.empty[Symbol, Boolean]
+
+    private def qualified(symbol: Symbol): String = qualifiedNames.getOrElseUpdate(symbol, Calls.qualified(symbol))
+
+    private def pure(owner: Symbol): Boolean =
+      pureOwners.getOrElseUpdate(owner, Axioms.Pure.exists(qualified(owner).startsWith(_)))
 
     private val axioms = Calls()
 
@@ -1540,7 +1658,7 @@ object Purity {
       private def modelledEffects(method: Symbol, qualifier: Option[tpd.Tree], parameters: List[Symbol]): Summary = {
         val runs =
           parameters.zipWithIndex.collect { case (parameter, index) if callable(parameter.info) => index }.toSet
-        val modelled = Axioms.summary(axioms.of(method, qualifier), runs)
+        val modelled = Axioms.summary(axioms.of(method, qualifier, qualified), runs)
         Summary(modelled.effects.toSet, modelled.invokes)
       }
 
@@ -1588,7 +1706,7 @@ object Purity {
 
       private def transformed(qualifier: Option[tpd.Tree]): Boolean = qualifier.exists { q =>
         val tpe = Calls.unconverted(q).tpe
-        Traversals.collection(tpe) || tpe.widen.derivesFrom(requiredClass("scala.collection.Iterator"))
+        traversals.collection(tpe) || tpe.widen.derivesFrom(IteratorClass)
       }
     }
   }

@@ -126,6 +126,14 @@ class CLISuite extends FunSuite {
     )
   }
 
+  test("rules are disabled over generated code by id, or all of them with *") {
+    assertEquals(
+      CLI.parse(List("--generated-disable", "duplicate-code", "--generated-disable", "*")).map(_.generatedDisabled),
+      Right(Set("duplicate-code", "*"))
+    )
+    assert(CLI.parse(List("--generated-disable", "bogus")).left.exists(_.startsWith("unknown rule: bogus")))
+  }
+
   test("intended pairs are carried through, and a malformed pair is rejected") {
     assertEquals(
       CLI.parse(List("--intended", "a.Execute*=a.Render*", "--intended", "b.**=b.Other")).map(_.intended),

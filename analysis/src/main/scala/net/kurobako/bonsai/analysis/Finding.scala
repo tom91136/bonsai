@@ -6,7 +6,24 @@ import net.kurobako.bonsai.java.JavaLint
 
 object Finding {
   private[analysis] val Numbers = "[0-9]+".r
-  private val IdBytes           = 5
+
+  /** `text` with every run of digits replaced by `#`. */
+  private[analysis] def numberless(text: String): String = {
+    val out = StringBuilder(text.length)
+    var i   = 0
+    while (i < text.length) {
+      val c = text.charAt(i)
+      if (c >= '0' && c <= '9') {
+        while (i < text.length && text.charAt(i) >= '0' && text.charAt(i) <= '9') i += 1
+        out.append('#')
+      } else {
+        out.append(c)
+        i += 1
+      }
+    }
+    out.toString
+  }
+  private val IdBytes = 5
 
   /** A rule of the analysis. Rules are in reporting priority: evidence from references and constructions first,
     * structural observations last. Warnings of `strict` rules fail the ci mode.

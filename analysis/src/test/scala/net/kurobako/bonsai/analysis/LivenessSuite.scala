@@ -21,6 +21,20 @@ class LivenessSuite extends AnalysisSuite {
     )
   }
 
+  test("top-level aliases nothing refers to are unused") {
+    assertEquals(
+      findings(Seq(
+        entry,
+        "src/main/scala/Used.scala"    -> "object Used { def run(): Unit = () }",
+        "src/main/scala/Aliases.scala" ->
+          """package recovery
+            |type Spare = scala.collection.immutable.List[Int]
+            |val Idle: scala.collection.immutable.List.type = scala.collection.immutable.List""".stripMargin
+      )),
+      Set("unused" -> "recovery.Spare", "unused" -> "recovery.Idle")
+    )
+  }
+
   test("dependencies of unused definitions are unused, including dead cycles") {
     assertEquals(
       findings(

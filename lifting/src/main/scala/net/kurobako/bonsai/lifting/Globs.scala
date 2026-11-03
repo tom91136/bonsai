@@ -2,6 +2,7 @@ package net.kurobako.bonsai.lifting
 
 import java.nio.file.FileSystems
 import java.nio.file.PathMatcher
+import java.util.concurrent.ConcurrentHashMap
 import scala.util.matching.Regex
 
 object Globs {
@@ -20,14 +21,19 @@ object Globs {
   /** Whether `name` is selected by a `!`-prefixed glob, which leaves it out of the hot names. */
   def cold(globs: Seq[String]): String => Boolean = {
     val excluded = globs.collect { case glob if glob.startsWith("!") => qualifiedNames(glob.drop(1)) }
-    name => excluded.exists(matches(_, name))
+    memoised(name => excluded.exists(matches(_, name)))
   }
 
   /** Whether `name` is selected by one of the `globs` and by none of the `!`-prefixed ones. */
   def heat(globs: Seq[String]): String => Boolean = {
     val isCold = cold(globs)
     val hot    = globs.collect { case glob if !glob.startsWith("!") => qualifiedNames(glob) }
-    name => !isCold(name) && hot.exists(matches(_, name))
+    memoised(name => !isCold(name) && hot.exists(matches(_, name)))
+  }
+
+  private def memoised(test: String => Boolean): String => Boolean = {
+    val known = ConcurrentHashMap[String, java.lang.Boolean]()
+    name => known.computeIfAbsent(name, key => test(key))
   }
 
   def matcher(glob: String): PathMatcher = FileSystems.getDefault.getPathMatcher(s"glob:$glob")

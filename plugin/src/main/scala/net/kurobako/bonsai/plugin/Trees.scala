@@ -7,10 +7,10 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.Classes
 
 private object Trees {
 
@@ -28,14 +28,36 @@ private object Trees {
       case tpd.TypeApply(inner, _) => depth(inner, applied)
       case _                       => applied
     }
-    application.fun.symbol.paramSymss.filter(_.headOption.exists(_.isTerm)).lift(depth(application.fun, 0))
-      .getOrElse(Nil)
+    termParameters(application.fun.symbol).lift(depth(application.fun, 0)).getOrElse(Nil)
   }
+
+  /** The term parameter lists of a method. */
+  def termParameters(method: Symbol)(using Context): List[List[Symbol]] = {
+    val known = parameterLists.get()
+    if (known.run != ctx.runId) {
+      known.run = ctx.runId
+      known.lists.clear()
+    }
+    val found = known.lists.get(method)
+    if (found != null) found
+    else {
+      val computed = method.paramSymss.filter(_.headOption.exists(_.isTerm))
+      known.lists.put(method, computed)
+      computed
+    }
+  }
+
+  // The lists of one compilation run: symbols outlive no run, so the next one starts afresh.
+  private final class Lists(var run: Int, val lists: java.util.IdentityHashMap[Symbol, List[List[Symbol]]])
+
+  private val parameterLists = ThreadLocal.withInitial(() => Lists(-1, java.util.IdentityHashMap()))
 
   /** The elements of a collection built in place by the apply of a companion, as `Set(a, b)` or `Vector(a, b)`. */
   def built(tree: tpd.Tree)(using Context): Option[List[tpd.Tree]] = {
     val collection = Calls.peelInlined(tree).tpe.widen
-    if (collection.derivesFrom(requiredClass("scala.collection.Iterable")) || collection.derivesFrom(defn.ArrayClass))
+    if (
+      collection.derivesFrom(Classes.required("scala.collection.Iterable")) || collection.derivesFrom(defn.ArrayClass)
+    )
       varargs(Calls.peelInlined(tree))
     else None
   }
@@ -89,15 +111,15 @@ private object Trees {
 
   /** Option, Either and Try hold a failure, or an absent value, as a value. */
   def optional(tpe: Type)(using Context): Boolean =
-    tpe.derivesFrom(defn.OptionClass) || tpe.derivesFrom(requiredClass("scala.util.Either")) ||
-      tpe.derivesFrom(requiredClass("scala.util.Try"))
+    tpe.derivesFrom(defn.OptionClass) || tpe.derivesFrom(Classes.required("scala.util.Either")) ||
+      tpe.derivesFrom(Classes.required("scala.util.Try"))
 
   /** Whether the functions passed to a call run before it returns, as those passed to Option, Either, Try and strict
     * collections do.
     */
   def eager(function: tpd.Tree)(using Context): Boolean = Calls.selected(function).exists { select =>
     val receiver = select.qualifier.tpe.widen
-    optional(receiver) || receiver.derivesFrom(requiredClass("scala.collection.IterableOnce")) ||
-    receiver.derivesFrom(requiredClass("scala.collection.ArrayOps"))
+    optional(receiver) || receiver.derivesFrom(Classes.required("scala.collection.IterableOnce")) ||
+    receiver.derivesFrom(Classes.required("scala.collection.ArrayOps"))
   }
 }

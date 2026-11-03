@@ -9,14 +9,23 @@ import dotty.tools.dotc.core.NameKinds.DefaultGetterName
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
+import java.util.concurrent.ConcurrentHashMap
 import net.kurobako.bonsai.effects.Partials
 import net.kurobako.bonsai.effects.Throwing
 import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 import scala.util.matching.Regex
+
+/** The patterns of the methods that throw, with the patterns each qualified name matches kept once found. */
+private class ThrowingTable(patterns: List[(Regex, List[String])]) {
+  private val matched = ConcurrentHashMap[String, List[(Regex, List[String])]]()
+
+  def matching(name: String): List[(Regex, List[String])] =
+    matched.computeIfAbsent(name, _ => patterns.filter((pattern, _) => pattern.matches(name)))
+}
 
 /** Exceptions used for control flow where a result type can carry the failure: throws a surrounding handler turns into
   * a result, throws standing in for an Option or Either's absent value, helpers that throw only for their callers'
@@ -26,7 +35,7 @@ import scala.util.matching.Regex
 private class Exceptions(
     checks: Checks,
     partials: Map[String, Partials.Partial],
-    throwing: List[(Regex, List[String])]
+    throwing: ThrowingTable
 )(using Context)
     extends tpd.TreeTraverser {
 
@@ -49,10 +58,10 @@ private class Exceptions(
   private val bodies   = mutable.Map.empty[Symbol, tpd.DefDef]
   private val escaping = mutable.Map.empty[Symbol, Set[Type]]
 
-  private val NoSuchElement = requiredClass("java.util.NoSuchElementException").typeRef
-  private val NumberFormat  = requiredClass("java.lang.NumberFormatException").typeRef
-  private val FutureClass   = requiredClass("scala.concurrent.Future")
-  private val PartialClass  = requiredClass("scala.PartialFunction")
+  private val NoSuchElement = Classes.required("java.util.NoSuchElementException").typeRef
+  private val NumberFormat  = Classes.required("java.lang.NumberFormatException").typeRef
+  private val FutureClass   = Classes.required("scala.concurrent.Future")
+  private val PartialClass  = Classes.required("scala.PartialFunction")
 
   def run(tree: tpd.Tree): Unit = {
     tree.foreachSubTree {
@@ -246,18 +255,24 @@ private class Exceptions(
     }
   }
 
+  private val known = mutable.HashMap.empty[Symbol, Option[Partials.Partial]]
+
   private def partial(symbol: Symbol)(using Context): Option[Partials.Partial] =
     if (!symbol.exists) None
-    else (symbol :: symbol.allOverriddenSymbols.toList).view.flatMap(candidate =>
-      partials.get(Calls.qualified(candidate))
-    ).headOption
+    else
+      known.getOrElseUpdate(
+        symbol,
+        (symbol :: symbol.allOverriddenSymbols.toList).view.flatMap(candidate =>
+          partials.get(Calls.qualified(candidate))
+        ).headOption
+      )
 
   private def partialCall(select: tpd.Select)(using Context): Unit =
     if (partial(select.symbol).isDefined) handlers.top.headOption.foreach(_.partial += select)
 
   private def throwsCall(tree: tpd.Tree)(using Context): Unit = if (tree.symbol.exists) {
     val name    = Calls.qualified(tree.symbol)
-    val matched = throwing.filter((pattern, _) => pattern.matches(name))
+    val matched = throwing.matching(name)
     if (matched.nonEmpty)
       handlers.top.headOption.foreach(_.boundary +=
         ((

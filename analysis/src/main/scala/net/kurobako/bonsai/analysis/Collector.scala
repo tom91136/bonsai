@@ -37,7 +37,9 @@ private case class Definition(
     variable: Boolean,
     info: Node,
     suppressed: Set[String],
-    field: Boolean = false
+    field: Boolean = false,
+    alias: Boolean = false,
+    line: Int = 0
 )
 
 private[analysis] class Collector(
@@ -55,11 +57,14 @@ private[analysis] class Collector(
   private val symbols     = Symbols(outputs, libraries, generated, reflective)
   private val callSites   = CallSites(symbols)
   private val reads       = Reads(symbols, (symbol, from) => use(symbol, from))
+  private val derivations = Derivations(symbol => symbols.key(symbol).isDefined)
   private val dispatching = Dispatch(symbols, bodies.contains(_))
   private val structure   = StructureObserver(symbols, () => dispatching.classes)
   import symbols.exported
   import symbols.fieldsOf
   import symbols.key
+  import symbols.lineOf
+  import symbols.methodKey
   import symbols.methodName
   import symbols.node
   import symbols.nodeOf
@@ -69,7 +74,7 @@ private[analysis] class Collector(
   import symbols.suppressions
 
   private val products       = mutable.Map.empty[Symbol, Algebra.Product]
-  private val required       = mutable.Map.empty[Symbol, Algebra.Product]
+  private val required       = mutable.Map.empty[Symbol, (String, Algebra.Product)]
   private val sums           = mutable.Map.empty[String, Algebra.Sum]
   private val failures       = mutable.ArrayBuffer.empty[String]
   private val methods        = mutable.Map.empty[Symbol, Smells.Method]
@@ -110,39 +115,44 @@ private[analysis] class Collector(
   override def runOn(units: List[CompilationUnit])(using Context): List[CompilationUnit] = {
     val fragments  = Fragments()
     val placing    = Placements(symbols)
-    val components = Components(symbols, callSites, reads, dispatching, structure, this)
+    val components = Components(symbols, callSites, reads, derivations, dispatching, structure, this)
     placements = Some(placing)
     units.foreach { unit =>
       try {
+        given Context = ctx.withSource(unit.source)
         references(components, fragments).traverse(unit.tpdTree)
         placing.traverse(unit.tpdTree)
       } catch { case NonFatal(error) => problem(s"${unit.source.path} could not be analysed: $error") }
     }
     qualifiedUses()
+    products.mapValuesInPlace((cls, product) => product.copy(derived = derivations.derived(cls)))
     enumerations ++= hierarchies.flatMap((parent, name, key) => enumeration(parent, name, key))
     val subjects = products.view.mapValues(product => product.name -> product.fields.size).toMap ++
-      methods.view.mapValues(method => method.name -> method.fields.size) ++
-      required.view.mapValues(product => product.name -> product.fields.size)
+      methods.view.mapValues(method => method.key -> method.fields.size) ++
+      required.view.mapValues((key, product) => key -> product.fields.size)
     callSites.align(subjects, methods)
     usage = users.toVector.groupMapReduce((symbol, _) => memberName(symbol))((_, nodes) => nodes.toSet)(_ ++ _)
-    memberList ++= members.map { (symbol, definition) =>
-      val bases = symbol.allOverriddenSymbols.toVector
-      Members.Member(
-        definition.name,
-        definition.node,
-        users.get(symbol).fold(Set.empty[String])(_.toSet),
-        bases.exists(base => key(base).isEmpty || users.get(base).exists(_.nonEmpty)),
-        bases.exists(key(_).isDefined),
-        bases.nonEmpty,
-        definition.deferred,
-        definition.public,
-        definition.variable && !assigned(symbol),
-        structure.detachable(symbol),
-        definition.info.test,
-        definition.suppressed,
-        definition.field,
-        unlisted(symbol)
-      )
+    memberList ++= members.collect {
+      case (symbol, definition) if !(definition.field && derivations.derived(symbol.owner)) =>
+        val bases = symbol.allOverriddenSymbols.toVector
+        Members.Member(
+          definition.name,
+          definition.node,
+          users.get(symbol).fold(Set.empty[String])(_.toSet),
+          bases.exists(base => key(base).isEmpty || users.get(base).exists(_.nonEmpty)),
+          bases.exists(key(_).isDefined),
+          bases.nonEmpty,
+          definition.deferred,
+          definition.public,
+          definition.variable && !assigned(symbol),
+          structure.detachable(symbol),
+          definition.info.test,
+          definition.suppressed,
+          definition.field,
+          unlisted(symbol),
+          definition.alias,
+          definition.line
+        )
     }
     val overridden = givens.keySet.flatMap(_.allOverriddenSymbols)
     givenList ++= givens.collect {
@@ -198,17 +208,17 @@ private[analysis] class Collector(
 
   def algebra: Algebra.Model =
     Algebra.Model(
-      products.values.toVector,
-      sums.values.toVector,
+      products.values.toVector.sortBy(_.name),
+      sums.values.toVector.sortBy(_.name),
       callSites.recorded,
-      required.values.toVector,
+      required.values.toMap,
       enumerations.toVector
     )
 
   def smells: Smells.Model = Smells.Model(
     methods.toVector.map((symbol, method) =>
       if (overridden.getOrElse(symbol, 0) > 1) method.copy(shared = true) else method
-    ),
+    ).sortBy(method => (method.name, method.node)),
     callSites.recorded,
     callSites.usages(methods),
     dispatching.abstractions,
@@ -320,6 +330,9 @@ private[analysis] class Collector(
         }.toSet
         val fields    = fieldsOf(cls)
         val invariant = Predicates.required(cls, requirements(template.body), fields)
+        val returns   = cls.info.decls.toList.view.collect {
+          case method if method.is(Flags.Method) => method.info.finalResultType.widenDealias.typeSymbol.name.toString
+        }.toSet
         products(cls) = Algebra.Product(
           name,
           key,
@@ -327,7 +340,8 @@ private[analysis] class Collector(
           parents,
           invariant,
           access(cls, fields),
-          exported(cls) && exported(cls.primaryConstructor)
+          exported(cls) && exported(cls.primaryConstructor),
+          returns = returns
         )
       } else if (cls.is(Flags.Sealed)) {
         val variants = cls.children.map { child =>
@@ -381,6 +395,7 @@ private[analysis] class Collector(
       )
       methods(method) = Smells.Method(
         methodName(method, fields),
+        methodKey(method, fields),
         info.name,
         qualifiedName(method.owner),
         fields,
@@ -561,16 +576,15 @@ private[analysis] class Collector(
       val fields    = fieldsOf(method)
       val condition = Predicates.required(method, conditions, fields)
       if (condition != Algebra.Predicate.Known(true)) {
-        required(method) =
-          Algebra.Product(
-            methodName(method, fields),
-            key,
-            fields,
-            Set.empty,
-            condition,
-            Algebra.Access.Open,
-            exported(method)
-          )
+        required(method) = methodKey(method, fields) -> Algebra.Product(
+          methodName(method, fields),
+          key,
+          fields,
+          Set.empty,
+          condition,
+          Algebra.Access.Open,
+          exported(method)
+        )
       }
     }
   }
@@ -585,9 +599,8 @@ private[analysis] class Collector(
       Flags.Inline | Flags.Exported
     // Term-only flags make a flag set term-only, so the flags type aliases can carry are tested on their own.
     val aliases = Flags.Synthetic | Flags.Private | Flags.Exported
-    // Parameters of a case class are its fields, which patterns read without naming them, unless the class is
-    // derived from by generic code that reads them all.
-    val field = symbol.is(Flags.ParamAccessor) && owner.is(Flags.CaseClass) && Reads.underived(owner)
+    // Parameters of a case class are its fields, which patterns read without naming them.
+    val field = symbol.is(Flags.ParamAccessor) && owner.is(Flags.CaseClass)
     if (
       owner.isClass && !owner.isAnonymousClass && !owner.owner.isTerm && !symbol.isOneOf(excluded) &&
       (field || !symbol.is(Flags.ParamAccessor)) &&
@@ -607,7 +620,9 @@ private[analysis] class Collector(
             symbol.is(Flags.Mutable),
             info,
             suppressions(symbol),
-            field
+            field,
+            symbol.isAliasType,
+            lineOf(symbol)
           )
       }
   }

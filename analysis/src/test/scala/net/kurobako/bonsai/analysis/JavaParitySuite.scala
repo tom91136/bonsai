@@ -4,6 +4,8 @@ import dotty.tools.dotc.Driver
 import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.Path
+import net.kurobako.bonsai.java.Model as JavaModel
 import net.kurobako.bonsai.testing.Scratch
 
 /** The Java code of a build, which the rules that need every call site read alike with the Scala code. */
@@ -31,6 +33,7 @@ class JavaParitySuite extends AnalysisSuite {
       "method",
       "demo.Service",
       "demo.Service.helper",
+      "demo.Service.helper()",
       "false",
       "",
       "",
@@ -38,8 +41,8 @@ class JavaParitySuite extends AnalysisSuite {
       returns,
       (inheritance == Inheritance.Overriding).toString
     ),
-    record("site", "demo.Service.one", "demo.Service.helper", "", s"$source:12", "true"),
-    record("site", "demo.Service.two", "demo.Service.helper", "", s"$source:16", "true")
+    record("site", "demo.Service.one", "demo.Service.helper()", "", s"$source:12", "true"),
+    record("site", "demo.Service.two", "demo.Service.helper()", "", s"$source:16", "true")
   )
 
   /** The finding of the rule of the given id, which the analysis reports. */
@@ -93,7 +96,18 @@ class JavaParitySuite extends AnalysisSuite {
   test("the methods of the test code of Java are not the ones a data clump is made of") {
     val parameters = Vector("x", "y", "z").map(name => s"$name|other|java.lang.String||false").mkString(";")
     def method(owner: String, name: String, source: String, line: Int) =
-      record("method", owner, s"$owner.$name", "false", "", parameters, s"$source:$line", "String", "false")
+      record(
+        "method",
+        owner,
+        s"$owner.$name",
+        s"$owner.$name()",
+        "false",
+        "",
+        parameters,
+        s"$source:$line",
+        "String",
+        "false"
+      )
     val model = Vector(
       record("node", "demo.First", "demo/First.java", "4", "true"),
       record("node", "demo.Second", "demo/Second.java", "4", "true"),
@@ -150,21 +164,21 @@ class JavaParitySuite extends AnalysisSuite {
 
   test(
     "a call that passes fewer arguments than the method takes is read without failing"
-  ) { // The model of the Java code names a method by its name, so a call to an overload of it passes the arguments of
-    // that one, which are not the parameters of the one the model holds.
+  ) {
     val result = readJavaModel(Vector(
       record("node", "demo.Service", "demo/Service.java", "4", "true"),
       record(
         "method",
         "demo.Service",
         "demo.Service.helper",
+        "demo.Service.helper()",
         "false",
         "",
         "name|other|||false;exact|flag|||false",
         "demo/Service.java:8"
       ),
-      record("site", "demo.Service.one", "demo.Service.helper", "present:name", "demo/Service.java:12", "true"),
-      record("site", "demo.Service.two", "demo.Service.helper", "present:name", "demo/Service.java:16", "true")
+      record("site", "demo.Service.one", "demo.Service.helper()", "present:name", "demo/Service.java:12", "true"),
+      record("site", "demo.Service.two", "demo.Service.helper()", "present:name", "demo/Service.java:16", "true")
     ))
 
     // The call passes one argument to a method that takes two, so the rule cannot read it and says nothing.
@@ -179,6 +193,7 @@ class JavaParitySuite extends AnalysisSuite {
         "method",
         "demo.Service",
         "demo.Service.helper",
+        "demo.Service.helper()",
         "false",
         "",
         "exact|flag|||false;limit|number|||false",
@@ -187,12 +202,19 @@ class JavaParitySuite extends AnalysisSuite {
       record(
         "site",
         "demo.Service.one",
-        "demo.Service.helper",
+        "demo.Service.helper()",
         "present:flag,number:3",
         "demo/Service.java:12",
         "true"
       ),
-      record("site", "demo.Service.two", "demo.Service.helper", "present:flag,number:3", "demo/Service.java:16", "true")
+      record(
+        "site",
+        "demo.Service.two",
+        "demo.Service.helper()",
+        "present:flag,number:3",
+        "demo/Service.java:16",
+        "true"
+      )
     ))
 
     val findings  = Report.findings(unknown)
@@ -212,6 +234,7 @@ class JavaParitySuite extends AnalysisSuite {
         "method",
         "demo.Deadline",
         "demo.Deadline.isExpired",
+        "demo.Deadline.isExpired()",
         "false",
         "",
         "",
@@ -219,8 +242,24 @@ class JavaParitySuite extends AnalysisSuite {
         "boolean",
         (inheritance == Inheritance.Overriding).toString
       ),
-      record("site", "demo.Deadline.first", "demo.Deadline.isExpired", "", "demo/Deadline.java:12", "false", inverted),
-      record("site", "demo.Deadline.second", "demo.Deadline.isExpired", "", "demo/Deadline.java:16", "false", inverted)
+      record(
+        "site",
+        "demo.Deadline.first",
+        "demo.Deadline.isExpired()",
+        "",
+        "demo/Deadline.java:12",
+        "false",
+        inverted
+      ),
+      record(
+        "site",
+        "demo.Deadline.second",
+        "demo.Deadline.isExpired()",
+        "",
+        "demo/Deadline.java:16",
+        "false",
+        inverted
+      )
     )
   }
 
@@ -250,5 +289,485 @@ class JavaParitySuite extends AnalysisSuite {
 
     assertEquals(finding.detail, "Deadline.isExpired: its boolean result is inverted at all 2 calls (all in tests)")
     assertEquals(finding.level, Finding.Level.Info)
+  }
+
+  /** The result of compiling Java main sources, then test sources against the main classes, each with the javac plugin.
+    */
+  private def javaBuild(
+      main: Seq[(String, String)],
+      test: Seq[(String, String)] = Nil,
+      libraries: Set[String] = Set.empty
+  ): Extraction.Result =
+    Scratch.using("bonsai-") { directory =>
+      def compiled(scope: String, sources: Seq[(String, String)], path: Seq[Path]) = {
+        write(directory.resolve(scope), sources)
+        val classes = Files.createDirectories(directory.resolve(s"$scope-classes"))
+        val model   = directory.resolve(s"$scope-model.tsv")
+        JavaModel.write(javac(sources.map((name, _) => directory.resolve(scope).resolve(name)), classes, path), model)
+        classes -> model
+      }
+      val (mainClasses, mainModel) = compiled("main", main, classpath)
+      val tested                   = Option.when(test.nonEmpty)(compiled("test", test, mainClasses +: classpath))
+      val manifest                 = Manifest(
+        Vector.empty,
+        classpaths,
+        libraries,
+        models = Output("m", Output.Scope.Main, mainModel) +:
+          tested.map((_, model) => Output("m", Output.Scope.Test, model)).toVector
+      )
+      Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+    }
+
+  private val Event = "demo/Event.java" -> """
+    |package demo;
+    |
+    |public class Event {
+    |  final Object source;
+    |  final boolean visible;
+    |  Event(Object source, boolean visible) { this.source = source; this.visible = visible; }
+    |}
+    |""".stripMargin
+
+  test("a flag a Java method only passes to a constructor is data of the value it builds, not a flag argument") {
+    val result = javaBuild(Seq(
+      Event,
+      "demo/Panel.java" -> """
+        |package demo;
+        |
+        |public class Panel {
+        |  Event last;
+        |  void fire(boolean visible) { last = new Event(this, visible); }
+        |  void show() { fire(true); }
+        |  void hide() { fire(false); }
+        |}
+        |""".stripMargin
+    ))
+
+    assertNoFinding(Report.findings(result))(finding =>
+      finding.rule.id == "flag-argument" && finding.detail.contains("Panel.fire")
+    )
+  }
+
+  test("a Java flag that selects a branch at literal call sites is a flag argument") {
+    val result = javaBuild(Seq(
+      Event,
+      "demo/Panel.java" -> """
+        |package demo;
+        |
+        |public class Panel {
+        |  Event last;
+        |  void fire(boolean visible) { if (visible) last = new Event(this, visible); else last = null; }
+        |  void show() { fire(true); }
+        |  void hide() { fire(false); }
+        |}
+        |""".stripMargin
+    ))
+
+    assertFinding(Report.findings(result), "flag-argument", "Panel.fire.visible is a literal at all 2 calls")
+  }
+
+  test("a Java flag that a method passes to a constructor and also branches on is a flag argument") {
+    val result = javaBuild(Seq(
+      Event,
+      "demo/Panel.java" -> """
+        |package demo;
+        |
+        |public class Panel {
+        |  Event last;
+        |  void fire(boolean visible) { last = new Event(this, visible); if (visible) last = null; }
+        |  void show() { fire(true); }
+        |  void hide() { fire(false); }
+        |}
+        |""".stripMargin
+    ))
+
+    assertFinding(Report.findings(result), "flag-argument", "Panel.fire.visible is a literal at all 2 calls")
+  }
+
+  private val Session = "demo/Session.java" -> """
+    |package demo;
+    |
+    |public class Session {
+    |  private final String name;
+    |  private final boolean owned;
+    |  public Session(String name) { this(name, true); }
+    |  public Session(String name, boolean owned) {
+    |    if (name == null) throw new IllegalArgumentException("name");
+    |    this.name = name;
+    |    this.owned = owned;
+    |  }
+    |  public Session(String name, int unused) { this(name, false); }
+    |}
+    |""".stripMargin
+
+  private val Starter = "demo/Starter.java" -> """
+    |package demo;
+    |
+    |public class Starter {
+    |  Session first() { return new Session("a", 0); }
+    |  Session second() { return new Session("b", 1); }
+    |}
+    |""".stripMargin
+
+  test("a Java field that the constructions of the tests pass another value is not constant") {
+    val result = javaBuild(
+      Seq(Session, Starter),
+      Seq("demo/SessionTest.java" -> """
+        |package demo;
+        |
+        |public class SessionTest {
+        |  Session open() { return new Session("c"); }
+        |}
+        |""".stripMargin)
+    )
+
+    assertNoFinding(Report.findings(result))(_.rule.id == "constant-field")
+  }
+
+  test("a Java field constant across every construction, in main code and tests, is reported") {
+    val result = javaBuild(
+      Seq(Session, Starter),
+      Seq("demo/SessionTest.java" -> """
+        |package demo;
+        |
+        |public class SessionTest {
+        |  Session closed() { return new Session("c", 2); }
+        |}
+        |""".stripMargin)
+    )
+
+    assertFinding(Report.findings(result), "constant-field", "Session.owned is always False across 3 constructions")
+  }
+
+  test("a Java field constant across the constructions of main code alone is reported") {
+    val result = javaBuild(Seq(Session, Starter))
+
+    assertFinding(Report.findings(result), "constant-field", "Session.owned is always False across 2 constructions")
+  }
+
+  private val Handle = "demo/Handle.java" -> """
+    |package demo;
+    |
+    |public class Handle {
+    |  private final String name;
+    |  private final boolean owned;
+    |  public Handle(String name, boolean owned) {
+    |    if (name == null) throw new IllegalArgumentException("name");
+    |    this.name = name;
+    |    this.owned = owned;
+    |  }
+    |}
+    |""".stripMargin
+
+  private val Handles = "demo/Handles.java" -> """
+    |package demo;
+    |
+    |public class Handles {
+    |  Handle first() { return new Handle("a", false); }
+    |  Handle second() { return new Handle("b", false); }
+    |}
+    |""".stripMargin
+
+  private val Point = "demo/Point.java" -> "package demo;\npublic record Point(String name, boolean owned) {}\n"
+
+  private val Points = "demo/Points.java" -> """
+    |package demo;
+    |
+    |public class Points {
+    |  Point first() { return new Point("a", false); }
+    |  Point second() { return new Point("b", false); }
+    |}
+    |""".stripMargin
+
+  private val Token = "demo/Token.java" -> """
+    |package demo;
+    |
+    |public class Token {
+    |  private final String name;
+    |  private final boolean owned;
+    |  private Token(String name, boolean owned) { this.name = name; this.owned = owned; }
+    |  public static Token first() { return new Token("a", false); }
+    |  public static Token second() { return new Token("b", false); }
+    |}
+    |""".stripMargin
+
+  private val Libraries = Set("m")
+
+  test("a public Java class with a public constructor in a library is not constant, as other builds construct it") {
+    val result = javaBuild(Seq(Handle, Handles), libraries = Libraries)
+
+    assertNoFinding(Report.findings(result))(_.rule.id == "constant-field")
+  }
+
+  test("a public Scala case class in a library is not constant, as other builds construct it") {
+    val result = extract(
+      Seq(
+        "Handle.scala"  -> "case class Handle(name: String, owned: Boolean)",
+        "Handles.scala" -> "object Handles { val all = List(Handle(\"a\", false), Handle(\"b\", false)) }"
+      ),
+      libraries = Libraries
+    )
+
+    assertNoFinding(Report.findings(result))(_.rule.id == "constant-field")
+  }
+
+  test("a public Java class with a public constructor outside a library is constant") {
+    val result = javaBuild(Seq(Handle, Handles))
+
+    assertFinding(Report.findings(result), "constant-field", "Handle.owned is always False across 2 constructions")
+  }
+
+  test("a public Scala case class outside a library is constant") {
+    val result = extract(
+      Seq(
+        "Handle.scala"  -> "case class Handle(name: String, owned: Boolean)",
+        "Handles.scala" -> "object Handles { val all = List(Handle(\"a\", false), Handle(\"b\", false)) }"
+      )
+    )
+
+    assertFinding(Report.findings(result), "constant-field", "Handle.owned is always False across 2 constructions")
+  }
+
+  test("a public Java record outside a library is constant") {
+    val result = javaBuild(Seq(Point, Points))
+
+    assertFinding(Report.findings(result), "constant-field", "Point.owned is always False across 2 constructions")
+  }
+
+  test("a public Java record in a library is not constant, as other builds construct it") {
+    val result = javaBuild(Seq(Point, Points), libraries = Libraries)
+
+    assertNoFinding(Report.findings(result))(_.rule.id == "constant-field")
+  }
+
+  test("a Java class of a library whose constructors are private and built through factories is constant") {
+    val result = javaBuild(Seq(Token), libraries = Libraries)
+
+    assertFinding(Report.findings(result), "constant-field", "Token.owned is always False across 2 constructions")
+  }
+
+  test("a Scala case class of a library whose constructor is private and built through factories is constant") {
+    val result = extract(
+      Seq(
+        "Token.scala" ->
+          """case class Token private (name: String, owned: Boolean)
+            |object Token {
+            |  def first: Token  = Token("a", false)
+            |  def second: Token = Token("b", false)
+            |}""".stripMargin
+      ),
+      libraries = Libraries
+    )
+
+    assertFinding(Report.findings(result), "constant-field", "Token.owned is always False across 2 constructions")
+  }
+
+  test(
+    "a public Java class nested in a package-private class of a library is constant, as other builds cannot reach it"
+  ) {
+    val result = javaBuild(
+      Seq(
+        "demo/Hidden.java" -> """
+          |package demo;
+          |
+          |class Hidden {
+          |  public static class Inner {
+          |    private final String name;
+          |    private final boolean owned;
+          |    public Inner(String name, boolean owned) {
+          |      if (name == null) throw new IllegalArgumentException("name");
+          |      this.name = name;
+          |      this.owned = owned;
+          |    }
+          |  }
+          |  Object first() { return new Inner("a", false); }
+          |  Object second() { return new Inner("b", false); }
+          |}
+          |""".stripMargin
+      ),
+      libraries = Libraries
+    )
+
+    assertFinding(Report.findings(result), "constant-field", "Inner.owned is always False across 2 constructions")
+  }
+
+  test("an overload of a Java method does not share the result of the method it overloads") {
+    val result = javaBuild(Seq(
+      "demo/Thing.java" -> """
+        |package demo;
+        |
+        |public class Thing {
+        |  private String id = "";
+        |  public String id() { return id; }
+        |  public Thing id(String id) { this.id = id; return this; }
+        |  public String touch() { return id; }
+        |}
+        |""".stripMargin,
+      "demo/Panel.java" -> """
+        |package demo;
+        |
+        |public class Panel {
+        |  void rename(Thing thing) { thing.id("a"); }
+        |  void poke(Thing thing) { thing.touch(); }
+        |}
+        |""".stripMargin
+    ))
+
+    assertNoFinding(Report.findings(result))(finding =>
+      finding.rule.id == "unused-return-value" && finding.detail.startsWith("Thing.id:")
+    )
+    assertFinding(Report.findings(result), "unused-return-value", "Thing.touch: its String result is never used")
+  }
+
+  test("static constants of Java types are not fields of the shape they make") {
+    val result = javaBuild(Seq(
+      "demo/First.java" -> """
+        |package demo;
+        |
+        |public class First {
+        |  static final String ALPHA = "a";
+        |  static final String BETA = "b";
+        |  static final String GAMMA = "c";
+        |  final int count;
+        |  final int limit;
+        |  First(int count, int limit) { this.count = count; this.limit = limit; }
+        |}
+        |""".stripMargin,
+      "demo/Second.java" -> """
+        |package demo;
+        |
+        |public class Second {
+        |  static final String ALPHA = "a";
+        |  static final String BETA = "b";
+        |  static final String GAMMA = "c";
+        |  final int size;
+        |  final int width;
+        |  Second(int size, int width) { this.size = size; this.width = width; }
+        |}
+        |""".stripMargin
+    ))
+
+    assertNoFinding(Report.findings(result))(_.rule.id == "duplicate-shape")
+  }
+
+  test("Java types with the same fields and static constants are duplicates") {
+    val result = javaBuild(Seq(
+      "demo/First.java" -> """
+        |package demo;
+        |
+        |public class First {
+        |  static final String ALPHA = "a";
+        |  static final String BETA = "b";
+        |  static final String GAMMA = "c";
+        |  final int count;
+        |  final int limit;
+        |  First(int count, int limit) { this.count = count; this.limit = limit; }
+        |}
+        |""".stripMargin,
+      "demo/Second.java" -> """
+        |package demo;
+        |
+        |public class Second {
+        |  static final String ALPHA = "a";
+        |  static final String BETA = "b";
+        |  static final String GAMMA = "c";
+        |  final int count;
+        |  final int limit;
+        |  Second(int count, int limit) { this.count = count; this.limit = limit; }
+        |}
+        |""".stripMargin
+    ))
+
+    assertFinding(Report.findings(result), "duplicate-shape", "First, Second")
+  }
+
+  test("Java builders nested in the type they build are not duplicates of it") {
+    val result = javaBuild(Seq(
+      "demo/AudioParameters.java" -> """
+        |package demo;
+        |
+        |public final class AudioParameters {
+        |  final int rate;
+        |  final int channels;
+        |  final int depth;
+        |  public AudioParameters(int rate, int channels, int depth) {
+        |    this.rate = rate;
+        |    this.channels = channels;
+        |    this.depth = depth;
+        |  }
+        |  public static final class Builder {
+        |    private int rate;
+        |    private int channels;
+        |    private int depth;
+        |    public Builder rate(int rate) { this.rate = rate; return this; }
+        |    public Builder channels(int channels) { this.channels = channels; return this; }
+        |    public Builder depth(int depth) { this.depth = depth; return this; }
+        |    public AudioParameters build() { return new AudioParameters(rate, channels, depth); }
+        |  }
+        |}
+        |""".stripMargin
+    ))
+
+    assertNoFinding(Report.findings(result))(_.rule.id == "duplicate-shape")
+  }
+
+  test("Java mutables nested in the type they convert to and from are not duplicates of it") {
+    val result = javaBuild(Seq(
+      "demo/Point.java" -> """
+        |package demo;
+        |
+        |public final class Point {
+        |  final int x;
+        |  final int y;
+        |  public Point(int x, int y) {
+        |    this.x = x;
+        |    this.y = y;
+        |  }
+        |  public Mutable toMutable() { return new Mutable(x, y); }
+        |  public static final class Mutable {
+        |    int x;
+        |    int y;
+        |    Mutable(int x, int y) {
+        |      this.x = x;
+        |      this.y = y;
+        |    }
+        |    public Point toImmutable() { return new Point(x, y); }
+        |  }
+        |}
+        |""".stripMargin
+    ))
+
+    assertNoFinding(Report.findings(result))(_.rule.id == "duplicate-shape")
+  }
+
+  test("Java types nested in one another without building the outer type are duplicates") {
+    val result = javaBuild(Seq(
+      "demo/AudioParameters.java" -> """
+        |package demo;
+        |
+        |public final class AudioParameters {
+        |  final int rate;
+        |  final int channels;
+        |  final int depth;
+        |  AudioParameters(int rate, int channels, int depth) {
+        |    this.rate = rate;
+        |    this.channels = channels;
+        |    this.depth = depth;
+        |  }
+        |  public static final class Snapshot {
+        |    private int rate;
+        |    private int channels;
+        |    private int depth;
+        |    Snapshot(int rate, int channels, int depth) {
+        |      this.rate = rate;
+        |      this.channels = channels;
+        |      this.depth = depth;
+        |    }
+        |  }
+        |}
+        |""".stripMargin
+    ))
+
+    assertFinding(Report.findings(result), "duplicate-shape", "AudioParameters, Snapshot")
   }
 }

@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.analysis
 
+import net.kurobako.bonsai.collections.Sink
 import net.kurobako.bonsai.java.Model.Cost
 import net.kurobako.bonsai.java.Model.Cost.Fixed
 import net.kurobako.bonsai.java.Model.Cost.Kind
@@ -20,7 +21,8 @@ private object JavaCosts {
 
 /** The bounds of the methods of the Java code, evaluated from the trees of loops, library work and calls that the javac
   * plugin wrote, with the same charges and scopes as the Scala code. A call is bound by key to a Java method here or to
-  * a Scala method through the resolver, so each language sees the other's loops.
+  * a Scala method through the resolver, so each language sees the other's loops. The sink the plugin recorded for an
+  * operation or call says how long what it builds stays live, as the sinks of the Scala code do.
   *
   * The extents of the trees are positions, `$0` for the first parameter; they are named after the parameters here, so
   * that the findings read as the Scala ones do.
@@ -94,10 +96,10 @@ private class JavaCosts(costs: Iterable[JavaModel.Cost], declared: Complexity.De
       if (extent == Fixed) Atoms.Binding(None, Some(Polynomial.One), static = true)
       else sizeOf(extent).fold(Atoms.Binding(None, None))(size => Atoms.Binding(Some(named(extent)), Some(size)))
 
-    def charge(line: Int, work: Work, scope: Scope, counted: Scope): Unit =
-      charges += Charge.at(scope, counted, work, line)
+    def charge(line: Int, work: Work, scope: Scope, counted: Scope, sink: Sink = Sink.Returned): Unit =
+      charges += Charge.at(scope, counted, work, line, sink)
 
-    def operation(line: Int, kind: Kind, extent: String, scope: Scope): Unit = {
+    def operation(line: Int, kind: Kind, extent: String, sink: Sink, scope: Scope): Unit = {
       val count  = sizeOf(extent)
       val size   = count.getOrElse(Atoms.Unknown)
       val linear = growsWith(count)
@@ -111,10 +113,10 @@ private class JavaCosts(costs: Iterable[JavaModel.Cost], declared: Complexity.De
           val length = Polynomial.One + Polynomial.product(scope.loops.takeRight(depth).map(_.trips))
           Work(s"text growth over ${Atoms.show(length)} (line $line)", length, length, linear = true)
       }
-      charge(line, work, scope, scope)
+      charge(line, work, scope, scope, sink)
     }
 
-    def call(line: Int, key: String, receiver: String, arguments: Vector[String], scope: Scope): Unit =
+    def call(line: Int, key: String, receiver: String, arguments: Vector[String], sink: Sink, scope: Scope): Unit =
       if (key == cost.key) selves += SelfCall(arguments, scope.loops.nonEmpty)
       else
         callee(key, resolve).orElse(resolve(key)).foreach { found =>
@@ -123,7 +125,7 @@ private class JavaCosts(costs: Iterable[JavaModel.Cost], declared: Complexity.De
           val time      = Atoms.rebind(inherited.time, bindings)
           val space     = Atoms.rebind(inherited.space, bindings)
           val what      = s"call of ${key.takeWhile(_ != '(').split('.').last} (line $line)"
-          charge(line, Work(what, time, space, linearIn(time)), scope, scope)
+          charge(line, Work(what, time, space, linearIn(time)), scope, scope, sink)
         }
 
     def recursion: Recursion = selves.toVector match {
@@ -146,9 +148,9 @@ private class JavaCosts(costs: Iterable[JavaModel.Cost], declared: Complexity.De
           )
         charge(node.line, Work(what, Polynomial.One, Polynomial.Zero, linear = false), scope, inner)
         body.foreach(walk(_, inner))
-      case Step.Exit(body)                     => body.foreach(walk(_, scope.copy(terminal = true)))
-      case Step.Op(kind, extent)               => operation(node.line, kind, extent, scope)
-      case Step.Call(key, receiver, arguments) => call(node.line, key, receiver, arguments, scope)
+      case Step.Exit(body)                           => body.foreach(walk(_, scope.copy(terminal = true)))
+      case Step.Op(kind, extent, sink)               => operation(node.line, kind, extent, sink, scope)
+      case Step.Call(key, receiver, arguments, sink) => call(node.line, key, receiver, arguments, sink, scope)
     }
 
     cost.body.foreach(walk(_, Scope()))

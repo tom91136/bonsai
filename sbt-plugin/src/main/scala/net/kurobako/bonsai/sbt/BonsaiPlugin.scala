@@ -108,6 +108,10 @@ object BonsaiPlugin extends AutoPlugin {
       "Globs of sources the build generates, such as **/src/generated/**, which the analysis labels as generated; " +
         "every source is checked by default"
     )
+    val bonsaiGeneratedDisabled = settingKey[Set[String]](
+      "Rules the analysis does not report over generated code, by id, or * for all of them; every rule reports it by " +
+        "default"
+    )
     val bonsaiConcurrent =
       settingKey[Set[String]]("Methods, by qualified name, that run the functions passed to them on other threads")
     val bonsaiHot = settingKey[Set[String]](
@@ -203,15 +207,16 @@ object BonsaiPlugin extends AutoPlugin {
         baseDirectory.value,
         file(bonsaiConfiguration.value.purity.getOrElse(BonsaiConfiguration.DefaultPurity))
       ),
-    bonsaiEffects    := bonsaiConfiguration.value.effects.getOrElse(Map.empty),
-    bonsaiConcurrent := bonsaiConfiguration.value.concurrent.getOrElse(Set.empty),
-    bonsaiGenerated  := bonsaiConfiguration.value.generated.getOrElse(Set.empty),
-    bonsaiHot        := bonsaiConfiguration.value.hot.getOrElse(Set.empty),
-    bonsaiReflective := bonsaiConfiguration.value.reflective.getOrElse(Set.empty),
-    bonsaiIntended   := bonsaiConfiguration.value.intended.getOrElse(Set.empty),
-    bonsaiChecked    := bonsaiConfiguration.value.checked.getOrElse(Set.empty),
-    bonsaiBounded    := bonsaiConfiguration.value.bounded,
-    bonsaiNesting    := bonsaiConfiguration.value.nesting,
+    bonsaiEffects           := bonsaiConfiguration.value.effects.getOrElse(Map.empty),
+    bonsaiConcurrent        := bonsaiConfiguration.value.concurrent.getOrElse(Set.empty),
+    bonsaiGenerated         := bonsaiConfiguration.value.generated.getOrElse(Set.empty),
+    bonsaiGeneratedDisabled := bonsaiConfiguration.value.generatedDisabled.getOrElse(Set.empty),
+    bonsaiHot               := bonsaiConfiguration.value.hot.getOrElse(Set.empty),
+    bonsaiReflective        := bonsaiConfiguration.value.reflective.getOrElse(Set.empty),
+    bonsaiIntended          := bonsaiConfiguration.value.intended.getOrElse(Set.empty),
+    bonsaiChecked           := bonsaiConfiguration.value.checked.getOrElse(Set.empty),
+    bonsaiBounded           := bonsaiConfiguration.value.bounded,
+    bonsaiNesting           := bonsaiConfiguration.value.nesting,
     // The JVM would otherwise take a quarter of the host's memory, which a shared machine runs out of.
     bonsaiAnalysisHeap := "4g"
   )
@@ -449,6 +454,7 @@ object BonsaiPlugin extends AutoPlugin {
           bonsaiEffects.value,
           bonsaiConcurrent.value,
           bonsaiGenerated.value ++ generated,
+          bonsaiGeneratedDisabled.value,
           bonsaiReflective.value,
           bonsaiHot.value,
           bonsaiIntended.value,

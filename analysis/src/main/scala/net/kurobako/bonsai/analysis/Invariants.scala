@@ -62,17 +62,19 @@ object Invariants {
   }
 
   /** A class invariant or method precondition, with the words its findings use. */
-  private case class Subject(product: Algebra.Product, name: String, condition: String, uses: String)
+  private case class Subject(product: Algebra.Product, siteKey: String, name: String, condition: String, uses: String)
 
   def findings(model: Algebra.Model, nodes: Map[String, Node]): Vector[Finding] = {
     val subjects =
-      model.products.map(product => Subject(product, Finding.simple(product.name), "invariant", "constructions")) ++
-        model.preconditions.map(product =>
-          Subject(product, Finding.short(product.name), "precondition", "calls")
+      model.products.map(product =>
+        Subject(product, product.name, Finding.simple(product.name), "invariant", "constructions")
+      ) ++
+        model.preconditions.map((siteKey, product) =>
+          Subject(product, siteKey, Finding.short(product.name), "precondition", "calls")
         )
     subjects.flatMap { subject =>
       val key   = subject.product.node
-      val sites = model.sites.getOrElse(subject.product.name, Vector.empty)
+      val sites = model.sites.getOrElse(subject.siteKey, Vector.empty)
       (states(subject) ++ parallel(subject)).flatMap((detail, rule) => Finding.at(nodes, key, rule, detail)) ++
         violations(subject, sites).flatMap((detail, failing) =>
           Finding.at(nodes, key, Finding.Rule.InvariantViolation, detail, onlyTests = Algebra.onlyTests(failing))
@@ -85,8 +87,8 @@ object Invariants {
 
   /** States the type can represent but the invariant rejects, with the sum the remaining states describe. */
   private def states(subject: Subject): Vector[(String, Finding.Rule)] = {
-    val Subject(product, name, condition, _) = subject
-    val domain                               = leaves(product.invariant).collect {
+    val Subject(product, _, name, condition, _) = subject
+    val domain                                  = leaves(product.invariant).collect {
       case Predicate.Holds(field, _) => field
       case Predicate.Is(field, _)    => field
     }.distinct.sorted.view.map(index => (index, product.fields(index), values(product.fields(index).kind)))
@@ -113,7 +115,7 @@ object Invariants {
           field.kind != Kind.Optional && valid.groupBy(_.removed(index)).values.forall(_.size == 1)
         }.toVector
         val forced = constant.map((index, field, _) =>
-          s"$name: the $condition forces ${field.name} to ${valid.head(index)}; it carries no information" ->
+          s"$name: the $condition forces ${field.name} to ${valid.head(index).shown}; it carries no information" ->
             Finding.Rule.InvariantConstant
         )
         val determined = redundant.map { (index, field, _) =>

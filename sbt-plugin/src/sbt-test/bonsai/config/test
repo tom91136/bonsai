@@ -11,6 +11,10 @@ $ copy-file changes/project.conf .bonsai.conf
 $ copy-file changes/checked.conf .bonsai.conf
 > reload
 > checkChecked
+# the rules it disables over generated code reach the analysis
+$ copy-file changes/generated-disabled.conf .bonsai.conf
+> reload
+> checkGeneratedDisabled
 # a project the build does not have, or a key no setting reads, fails the load
 $ copy-file changes/stranger.conf .bonsai.conf
 -> reload

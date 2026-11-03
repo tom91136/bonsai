@@ -535,6 +535,34 @@ class PuritySuite extends AnalysisSuite {
     assert(isImpure(java.purity.verdicts("Dropped.pending")))
   }
 
+  private lazy val forwarded = extract(
+    Seq(
+      "Main.scala"      -> "object Main { def main(args: Array[String]): Unit = println(Forwarded) }",
+      "Forwarded.scala" ->
+        """object Forwarded {
+          |  def double(x: Int): Int = x * 2
+          |  def apply(f: Int => Int, x: Int): Unit = { val _ = f(x) }
+          |  inline def inlined(inline f: Int => Int, x: Int): Unit = { val _ = f(x) }
+          |  def byName(f: => Int): Unit = { val _ = f }
+          |  def local(x: Int): Unit = { val _ = double(x) }
+          |  def run(): Unit = {
+          |    apply(x => { println(x); x }, 1)
+          |    inlined(x => { println(x); x }, 1)
+          |    byName { println(1); 1 }
+          |  }
+          |}""".stripMargin
+    )
+  )
+
+  test("dropping the result of a call through a function parameter is not reported, the caller decides what it does") {
+    assertEquals(
+      Purity.findings(forwarded.purity, forwarded.graph.nodes).collect {
+        case finding if finding.rule == Finding.Rule.PureDiscard => finding.detail.takeWhile(_ != ' ')
+      },
+      Vector("Forwarded.double")
+    )
+  }
+
   private lazy val asserted = analysed(
     "Checked",
     """import org.scalatest.Assertions

@@ -18,8 +18,10 @@ import scala.collection.mutable
   * containing it are never reported. A collection the build declares bounded has a constant size, so work on it or per
   * element of it adds no factor.
   *
-  * Time counts every call and traversal wherever its result goes. Allocation counts the copies an operation makes of
-  * what it works on, not the results it hands back.
+  * Time counts every call and traversal wherever its result goes. Space counts the copies an operation makes of what it
+  * works on, and only for as long as they are kept: a copy that the method returns, stores or accumulates is live
+  * across the turns of the loops it is kept over, and one that only reaches a call that holds nothing is the space of a
+  * single turn. A caller inherits the space its callee returns or stores.
   */
 private class Costs(
     definitions: collection.Map[Symbol, tpd.DefDef],
@@ -32,6 +34,8 @@ private class Costs(
   private val library  = Library()
   private val memo     = new Memo[Symbol]
   private val subtrees = Children()
+  private val flows    =
+    Flows(library, definitions, method => definitions.contains(method) || known(method).isDefined, subtrees)
   private val fixed    = mutable.Map.empty[Symbol, Option[Polynomial]]
   private val sized    = mutable.Map.empty[Symbol, Option[Polynomial]]
   private val searched = mutable.Map.empty[Symbol, Boolean]
@@ -233,6 +237,7 @@ private class Costs(
     val charges: mutable.ArrayBuffer[Charge]                = mutable.ArrayBuffer.empty
     val recursions: mutable.ArrayBuffer[(tpd.Apply, Scope)] = mutable.ArrayBuffer.empty
     private val sizes                                       = sizesOf(current)
+    private val flow                                        = flows.of(current)
 
     def run(definition: tpd.DefDef): Unit = {
       exits ++= exitsOf(definition.rhs, current)
@@ -257,7 +262,7 @@ private class Costs(
 
     private def charge(tree: tpd.Tree, work: Work, scope: Scope, counted: Scope): Unit = {
       val cause = if (scope.inFallback) work.copy(what = s"${work.what} (in orElse fallback)") else work
-      charges += Charge.at(scope, counted, cause, line(tree))
+      charges += Charge.at(scope, counted, cause, line(tree), flow.of(tree))
     }
 
     private val exits = mutable.Set.empty[tpd.Tree]

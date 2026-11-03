@@ -85,9 +85,9 @@ class ExtractionSuite extends AnalysisSuite {
       Seq(
         "Shapes.scala" ->
           """package shapes
-          |trait Figure { def area: Int; val sides: Int }
+          |trait Figure { def area: Int; def sides: Int }
           |class Circle extends Figure { def area = 1; val sides = 0; override def toString = "circle" }
-          |class Square extends Figure { def area = 2; val sides = 4; override def toString = "square" }
+          |class Square extends Figure { def area = 2; def sides = 4; override def toString = "square" }
           |class Triangle extends Figure { def area = 3; val sides = 3 }
           |class Plot { def area: Int = 4 }
           |trait Named { def name: String }
@@ -308,7 +308,6 @@ class ExtractionSuite extends AnalysisSuite {
       ).toSet,
       Set(
         ("Client.connect(host, port)", "port", "80", Vector(false, false)),
-        ("Preferences", "name", "\"x\"", Vector(false)),
         ("Preferences", "retries", "3", Vector(false)),
         ("Preferences.make(label, count)", "count", "5", Vector(false)),
         ("Codec.group(name, minimum)", "minimum", "Some(\"1.0\")", Vector(false))
@@ -395,13 +394,13 @@ class ExtractionSuite extends AnalysisSuite {
     assertEquals(sites.get("Name"), None)
     assertEquals(sites.get("Money"), Some(Set(Vector(Algebra.Argument.Number(1)), Vector(Algebra.Argument.Unknown))))
     assertEquals(
-      sites.get("Render.render(text, width)"),
+      sites.get("Render.render(Ljava/lang/String;I)Ljava/lang/String;"),
       Some(Set(
         Vector(Algebra.Argument.Word(Algebra.Wording.Text, "a"), Algebra.Argument.Unknown),
         Vector(Algebra.Argument.Word(Algebra.Wording.Text, "b"), Algebra.Argument.Unknown)
       ))
     )
-    assertEquals(result.algebra.preconditions.map(_.name), Vector("Validators.positive(size)"))
+    assertEquals(result.algebra.preconditions.values.map(_.name).toVector, Vector("Validators.positive(size)"))
   }
 
   test("type arguments of a later type clause are counted for that clause's parameters") {

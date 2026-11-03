@@ -21,19 +21,22 @@ final class Calls(using Context) {
   private def named(name: String): Symbol = classes.getOrElseUpdate(name, getClassIfDefined(name))
 
   /** `method` called on `qualifier`, if it has one. */
-  def of(method: Symbol, qualifier: Option[tpd.Tree]): Axioms.Call = {
+  def of(method: Symbol, qualifier: Option[tpd.Tree]): Axioms.Call = of(method, qualifier, Calls.qualified(_))
+
+  /** As above, with `qualified` naming the symbols, for callers that remember the names. */
+  def of(method: Symbol, qualifier: Option[tpd.Tree], qualified: Symbol => String): Axioms.Call = {
     val operand = qualifier.map { tree =>
       val tpe = Calls.unconverted(tree).tpe.widen
       Axioms.Operand(name => named(name).exists && tpe.derivesFrom(named(name)), tree.symbol.is(Flags.Module))
     }
     Axioms.Call(
-      Calls.qualified(Calls.owner(method)),
+      qualified(Calls.owner(method)),
       method.name.toString,
       method.isConstructor,
       operand,
       method.is(Flags.Synthetic) || method.name.is(DefaultGetterName),
       method.is(Flags.JavaDefined),
-      Calls.qualified(method.info.finalResultType.dealias.typeSymbol)
+      qualified(method.info.finalResultType.dealias.typeSymbol)
     )
   }
 }
@@ -44,7 +47,13 @@ object Calls {
     * Java statics.
     */
   def qualified(symbol: Symbol)(using Context): String =
-    if (symbol.exists) symbol.fullName.toString.replace("$.", ".").stripSuffix("$") else ""
+    if (symbol.exists) names.get().computeIfAbsent(symbol, _ => spelled(symbol)) else ""
+
+  private def spelled(symbol: Symbol)(using Context): String =
+    symbol.fullName.toString.replace("$.", ".").stripSuffix("$")
+
+  // Symbols are compared by identity and held weakly, so the names of a finished compilation go with it.
+  private val names = ThreadLocal.withInitial(() => java.util.WeakHashMap[Symbol, String]())
 
   /** The owner of `symbol`, or `NoSymbol` where the classpath lacks the class `symbol` was read from. */
   def owner(symbol: Symbol)(using Context): Symbol = if (symbol.exists) symbol.owner else NoSymbol

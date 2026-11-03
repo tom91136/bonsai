@@ -7,7 +7,6 @@ import dotty.tools.dotc.core.Annotations.Annotation
 import dotty.tools.dotc.core.Constants.Constant
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Contexts.ctx
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.AnnotatedType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.report
@@ -22,6 +21,7 @@ import dotty.tools.dotc.util.SourcePosition
 import dotty.tools.dotc.util.Spans.Span
 import dotty.tools.dotc.util.SrcPos
 import java.nio.file.Path
+import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 
 /** Reports each check at its severity unless it is disabled, escalated to an error, kept as a warning by `lenient`, or
@@ -37,9 +37,19 @@ private class Checks(
     errors: Set[Check],
     lenient: Set[Check],
     instrumented: Path => Boolean,
-    suppressions: mutable.Map[SourceFile, List[(Span, Set[String])]]
+    suppressions: mutable.Map[SourceFile, List[(Span, Set[String])]],
+    patched: mutable.Map[SourceFile, List[Span]] = mutable.Map.empty,
+    reported: Option[Set[Check]] = None
 ) {
-  private val patched = mutable.Map.empty[SourceFile, List[Span]]
+
+  /** A view that reports only `owned`, and says whether any of them is enabled so that the code reporting them can be
+    * skipped. Reporting any other check through it fails, so the set cannot drift from the code.
+    */
+  def owning(owned: Iterable[Check]): Checks =
+    new Checks(disabled, errors, lenient, instrumented, suppressions, patched, Some(owned.toSet))
+
+  /** Whether some check this view owns is enabled. */
+  def active: Boolean = reported.forall(_.exists(!disabled(_)))
 
   def apply(
       check: Check,
@@ -47,7 +57,8 @@ private class Checks(
       position: SrcPos,
       fix: List[ActionPatch] = Nil,
       escalate: Boolean = false
-  )(using Context): Unit =
+  )(using Context): Unit = {
+    require(reported.forall(_(check)), s"${check.id} is not among the checks this pass reports")
     if (
       !disabled(check) && !instrumented(Path.of(position.sourcePos.source.path)) &&
       !suppressed(check, position)
@@ -63,6 +74,7 @@ private class Checks(
         report.warning(Fixable(tagged, actions), shown)
       }
     }
+  }
 
   // Patches that overlap make the compiler fail, so the fix of the check that reports second is left out.
   private def disjoint(fix: List[ActionPatch]): Boolean = {
@@ -94,7 +106,7 @@ private class Checks(
   }
 
   private def annotated(tree: tpd.Tree)(using Context): List[(Span, Set[String])] = {
-    val Suppress = requiredClass("java.lang.SuppressWarnings")
+    val Suppress = Classes.required("java.lang.SuppressWarnings")
     // The annotation takes one array of names, written `Array(...)`, whose second argument list is its ClassTag.
     @annotation.tailrec
     def elements(tree: tpd.Tree): List[tpd.Tree] = tree match {

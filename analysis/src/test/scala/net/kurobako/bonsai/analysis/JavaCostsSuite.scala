@@ -51,6 +51,8 @@ class JavaCostsSuite extends AnalysisSuite {
 
   private given Finding.Level = Finding.Level.Warning
 
+  private def space(finding: Finding): Boolean = finding.rule.id == "space-complexity"
+
   private def scan(body: String) = "demo/Scan.java" -> s"""
     |package demo;
     |
@@ -105,6 +107,7 @@ class JavaCostsSuite extends AnalysisSuite {
     |  int searches(List<String> rows, List<String> keys) { int n = 0; for (String r : rows) { if (keys.contains(r)) n++; } return n; }
     |  int hashed(List<String> rows, Set<String> keys) { int n = 0; for (String r : rows) { if (keys.contains(r)) n++; } return n; }
     |  int sorts(List<String> rows, List<String> keys) { for (String r : rows) { Collections.sort(keys); } return 0; }
+    |  List<List<String>> sorted(List<String> rows, List<String> keys) { List<List<String>> out = new ArrayList<>(); for (String r : rows) { out.add(keys.stream().sorted().collect(java.util.stream.Collectors.toList())); } return out; }
     |  int copies(List<String> rows, List<String> keys) { for (String r : rows) { List<String> c = new ArrayList<>(keys); } return 0; }
     |  void fronts(List<String> rows, List<String> out) { for (String r : rows) { out.add(0, r); } }
     |  void linked(List<String> rows, LinkedList<String> out) { for (String r : rows) { out.add(0, r); } }
@@ -126,10 +129,10 @@ class JavaCostsSuite extends AnalysisSuite {
     )
   }
 
-  test("a sort allocates a copy and a search does not") {
-    assertFinding(found(library), "space-complexity", "Scan.sorts allocates O(|keys| * |rows|)")
+  test("a sort allocates a copy that is kept, and a discarded sort and a search do not") {
+    assertFinding(found(library), "space-complexity", "Scan.sorted allocates O(|keys| * |rows|)")
     assertNoFinding(found(library))(finding =>
-      finding.rule.id == "space-complexity" && finding.detail.startsWith("Scan.searches")
+      space(finding) && Vector("sorts", "searches").exists(name => finding.detail.startsWith(s"Scan.$name"))
     )
   }
 
@@ -564,5 +567,111 @@ class JavaCostsSuite extends AnalysisSuite {
     val scala =
       Seq("demo/Sized.scala" -> "package demo\n\nobject Sized {\n  def size(xs: List[Int]): Int = xs.size\n}\n")
     assertEquals(fixed(Vector(fixedEntry), scala).unusedBounds, Vector.empty)
+  }
+
+  private lazy val retention = build(Seq("demo/Retention.java" ->
+    """
+    |package demo;
+    |
+    |import java.util.*;
+    |
+    |public class Retention {
+    |  List<List<String>> shared = new ArrayList<>();
+    |  List<String> command(String header, List<String> defines) {
+    |    List<String> arguments = new ArrayList<>(defines);
+    |    arguments.add(header);
+    |    return arguments;
+    |  }
+    |  List<String> passed(List<String> headers, List<String> defines) {
+    |    List<String> results = new ArrayList<>();
+    |    ProcessBuilder builder = new ProcessBuilder();
+    |    for (String header : headers) {
+    |      List<String> arguments = new ArrayList<>(defines);
+    |      arguments.add(header);
+    |      results.add(builder.command(arguments).toString());
+    |    }
+    |    return results;
+    |  }
+    |  List<String> copied(List<String> headers, List<String> defines) {
+    |    List<String> results = new ArrayList<>();
+    |    ProcessBuilder builder = new ProcessBuilder();
+    |    for (String header : headers) {
+    |      results.add(builder.command(List.copyOf(defines)).toString());
+    |    }
+    |    return results;
+    |  }
+    |  List<String> delegated(List<String> headers, List<String> defines) {
+    |    List<String> results = new ArrayList<>();
+    |    ProcessBuilder builder = new ProcessBuilder();
+    |    for (String header : headers) {
+    |      results.add(builder.command(command(header, defines)).toString());
+    |    }
+    |    return results;
+    |  }
+    |  List<List<String>> added(List<String> headers, List<String> defines) {
+    |    List<List<String>> all = new ArrayList<>();
+    |    for (String header : headers) {
+    |      List<String> arguments = new ArrayList<>(defines);
+    |      arguments.add(header);
+    |      all.add(arguments);
+    |    }
+    |    return all;
+    |  }
+    |  List<List<String>> returned(List<String> headers, List<String> defines) {
+    |    List<List<String>> all = new ArrayList<>();
+    |    for (String header : headers) {
+    |      all.add(command(header, defines));
+    |    }
+    |    return all;
+    |  }
+    |  List<String> reassigned(List<String> headers, List<String> defines) {
+    |    List<String> latest = null;
+    |    for (String header : headers) {
+    |      latest = new ArrayList<>(defines);
+    |    }
+    |    return latest;
+    |  }
+    |  void stored(List<String> headers, List<String> defines) {
+    |    for (String header : headers) {
+    |      List<String> arguments = new ArrayList<>(defines);
+    |      arguments.add(header);
+    |      shared.add(arguments);
+    |    }
+    |  }
+    |  void accumulated(List<String> headers, List<String> defines) {
+    |    List<String> all = new ArrayList<>();
+    |    for (String header : headers) {
+    |      List<String> arguments = new ArrayList<>(defines);
+    |      all.addAll(arguments);
+    |    }
+    |    shared.add(all);
+    |  }
+    |  List<List<String>> streamed(List<String> headers, List<String> defines) {
+    |    return headers.stream().map(header -> new ArrayList<>(defines)).collect(java.util.stream.Collectors.toList());
+    |  }
+    |  List<String> dropped(List<String> headers, List<String> defines) {
+    |    return headers.stream().map(header -> new ArrayList<>(defines).toString()).collect(java.util.stream.Collectors.toList());
+    |  }
+    |}
+    |""".stripMargin))
+
+  private val spaceless = Vector("passed", "copied", "delegated", "dropped")
+  private val retained  = Vector("added", "returned", "reassigned", "stored", "accumulated", "streamed")
+
+  test("a list built per iteration and handed to a call that keeps nothing is not live across the loop") {
+    spaceless.foreach { name =>
+      assertFinding(found(retention), "complexity", s"Retention.$name is O(|defines| * |headers|) in time:")
+      assertNoFinding(found(retention))(finding => space(finding) && finding.detail.startsWith(s"Retention.$name "))
+    }
+  }
+
+  test("lists a Java loop returns, stores, or adds to a collection that outlives it are live space") {
+    retained.foreach { name =>
+      assertFinding(
+        found(retention),
+        "complexity",
+        s"Retention.$name is O(|defines| * |headers|) in time and space"
+      )
+    }
   }
 }

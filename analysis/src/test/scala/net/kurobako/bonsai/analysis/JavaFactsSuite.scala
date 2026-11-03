@@ -623,7 +623,7 @@ class JavaFactsSuite extends AnalysisSuite {
         |""".stripMargin)*
     )
 
-    assertEquals(result.algebra.preconditions.map(_.name), Vector("demo.Service.take(count, open)"))
+    assertEquals(result.algebra.preconditions.values.map(_.name).toVector, Vector("demo.Service.take(count, open)"))
     assertFinding(
       invariants(result),
       "invariant-violation",
@@ -668,7 +668,7 @@ class JavaFactsSuite extends AnalysisSuite {
         |""".stripMargin)*
     )
 
-    assertEquals(result.algebra.preconditions, Vector.empty)
+    assertEquals(result.algebra.preconditions, Map.empty[String, Algebra.Product])
     assertEquals(invariants(result), Vector.empty)
   }
 
@@ -709,7 +709,7 @@ class JavaFactsSuite extends AnalysisSuite {
         |""".stripMargin)*
     )
 
-    assertEquals(result.algebra.preconditions, Vector.empty)
+    assertEquals(result.algebra.preconditions, Map.empty[String, Algebra.Product])
     assertEquals(invariants(result), Vector.empty)
   }
 

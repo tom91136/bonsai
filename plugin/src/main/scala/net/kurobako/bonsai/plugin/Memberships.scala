@@ -5,9 +5,9 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 
 private object Memberships {
@@ -28,8 +28,8 @@ private class Memberships(checks: Checks)(using Context) {
 
   private val sites = mutable.ArrayBuffer.empty[Site]
 
-  private val Iterable = requiredClass("scala.collection.Iterable")
-  private val Set      = requiredClass("scala.collection.Set")
+  private val Iterable = Classes.required("scala.collection.Iterable")
+  private val Set      = Classes.required("scala.collection.Set")
 
   /** Records the constant collections `application` tests membership in, given the symbols the pattern of an enclosing
     * guard binds, and returns their spans.

@@ -72,12 +72,41 @@ class AlgebraSuite extends AnalysisSuite {
     assertEquals(shapes(Intended(Vector("bits.*" -> "bits.*"))).size, 0)
   }
 
+  test("types of one shape that generic derivation builds mirror an outside format and are not duplicates") {
+    val found = findings(
+      "Support.scala" ->
+        """trait Codec[A]
+          |object Codec { def derived[A](using scala.deriving.Mirror.Of[A]): Codec[A] = new Codec[A] {} }
+          |case class FirstWire(id: Int, label: String) derives Codec
+          |case class SecondWire(id: Int, label: String) derives Codec
+          |case class FirstPlain(count: Long, tag: Char)
+          |case class SecondPlain(count: Long, tag: Char)
+          |case class MixedWire(size: Byte, name: Short) derives Codec
+          |case class MixedPlain(size: Byte, name: Short)""".stripMargin
+    )
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.DuplicateShape && finding.detail.contains("Wire") &&
+        !finding.detail.contains("Mixed")
+    )
+    assertFinding(found, "duplicate-shape", "FirstPlain, SecondPlain")
+    assertFinding(found, "duplicate-shape", "MixedPlain, MixedWire")
+  }
+
   test("function types with named parameters are plain functions") {
     val found = findings(
       "P.scala" -> "case class P(x: Int, y: String, f: (Long, Char) => Byte)",
       "Q.scala" -> "case class Q(y: String, f: (count: Long, symbol: Char) => Byte, x: Int)"
     )
     assertFinding(found, "duplicate-shape", "P, Q")
+  }
+
+  test("companion fields are not fields of the case classes they belong to") {
+    val found = findings(
+      "P.scala" -> """case class P(x: Int, y: Int, z: Int, w: Int, v: Int)
+        |object P { val ALPHA = "a"; val BETA = "b"; val GAMMA = "c" }""".stripMargin,
+      "Q.scala" -> "case class Q(a: Int, b: Int, c: Int, d: Int, e: Int)"
+    )
+    assertFinding(found, "duplicate-shape", "P, Q")(using Finding.Level.Info)
   }
 
   test("context functions are not curried plain functions") {
@@ -194,6 +223,33 @@ class AlgebraSuite extends AnalysisSuite {
     assertFinding(found, "constant-field", "Config.label is always Absent")
   }
 
+  test("fields of a class that generic derivation builds are not constant across the constructions seen") {
+    val found = findings(
+      "Config.scala" ->
+        """trait Reader[A]
+          |object Reader { def derived[A](using scala.deriving.Mirror.Of[A]): Reader[A] = new Reader[A] {} }
+          |case class Loaded(verify: Boolean, label: Option[String], count: Int) derives Reader
+          |case class Built(verify: Boolean, label: Option[String], count: Int)
+          |object Decoder {
+          |  inline def decode[A]: Option[A] = scala.compiletime.summonFrom {
+          |    case _: scala.deriving.Mirror.Of[A] => None
+          |    case _                               => None
+          |  }
+          |}
+          |case class Decoded(verify: Boolean, count: Int)""".stripMargin,
+      "Main.scala" ->
+        """object Main {
+          |  val loaded  = List(Loaded(false, None, 1), Loaded(false, None, 2))
+          |  val built   = List(Built(false, None, 1), Built(false, None, 2))
+          |  val decoded = List(Decoded(false, 1), Decoded(false, 2)) ++ Decoder.decode[Decoded]
+          |}""".stripMargin
+    )
+    assertFinding(found, "constant-field", "Built.verify is always False")
+    assertFinding(found, "constant-field", "Built.label is always Absent")
+    assertNoFinding(found)(finding => finding.rule.id == "constant-field" && finding.detail.contains("Loaded"))
+    assertNoFinding(found)(finding => finding.rule.id == "constant-field" && finding.detail.contains("Decoded"))
+  }
+
   test("constructions inside lambdas count") {
     val found = findings(
       "Instruction.scala" -> "enum Instruction { case Load(bytes: Int, signed: Boolean, coherent: Boolean = false) }",
@@ -238,6 +294,55 @@ class AlgebraSuite extends AnalysisSuite {
       "duplicate-shape",
       "Generator.Error, Parser.Error"
     )
+  }
+
+  test("duplicate-shape exempts a nested builder that constructs its outer type") {
+    val found = findings(
+      "Audio.scala" ->
+        """case class Audio(rate: Int, channels: Int, depth: Int)
+          |object Audio {
+          |  case class Builder(rate: Int, channels: Int, depth: Int) {
+          |    def build(): Audio = Audio(rate, channels, depth)
+          |  }
+          |}
+          |""".stripMargin
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.DuplicateShape)
+  }
+
+  test("duplicate-shape keeps reporting unrelated types with the same fields") {
+    val found = findings(
+      "First.scala"  -> "case class First(rate: Int, channels: Int, depth: Int)",
+      "Second.scala" -> "case class Second(rate: Int, channels: Int, depth: Int)"
+    )
+    assertFinding(found, "duplicate-shape", "First, Second")
+  }
+
+  test("duplicate-shape keeps reporting a nested type with the same fields that does not build its outer type") {
+    val found = findings(
+      "Audio.scala" ->
+        """case class Audio(rate: Int, channels: Int, depth: Int)
+          |object Audio {
+          |  case class Snapshot(rate: Int, channels: Int, depth: Int)
+          |}
+          |""".stripMargin
+    )
+    assertFinding(found, "duplicate-shape", "Audio, Snapshot")
+  }
+
+  test("duplicate-shape keeps reporting a builder whose shape differs from its outer type") {
+    val found = findings(
+      "Audio.scala" ->
+        """case class Audio(rate: Int, channels: Int, depth: Int)
+          |object Audio {
+          |  case class Builder(rate: Int, channels: Int) {
+          |    def build(): Audio = Audio(rate, channels, 0)
+          |  }
+          |}
+          |""".stripMargin,
+      "First.scala" -> "case class First(rate: Int, channels: Int)"
+    )
+    assertFinding(found, "duplicate-shape", "Audio.Builder, First")
   }
 
   test("generated sums are reported like handwritten ones, and labelled as generated") {
@@ -385,7 +490,7 @@ class AlgebraSuite extends AnalysisSuite {
       sums: Vector[Algebra.Sum] = Vector.empty,
       sites: Map[String, Vector[Algebra.Site]] = Map.empty,
       enumerations: Vector[Algebra.Enumeration] = Vector.empty
-  ): Algebra.Model = Algebra.Model(products, sums, sites, Vector.empty, enumerations)
+  ): Algebra.Model = Algebra.Model(products, sums, sites, Map.empty, enumerations)
 
   private def analyse(model: Algebra.Model, overrides: Node*): Vector[Finding] = {
     val keys = model.products.map(_.node) ++ model.sums.map(_.node) ++ model.enumerations.map(_.node)

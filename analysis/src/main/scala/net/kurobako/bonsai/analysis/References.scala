@@ -19,16 +19,19 @@ private[analysis] class References(components: Components, fragments: Fragments)
   import components.*
   private val owners  = mutable.Stack.empty[Option[String]]
   private val methods = mutable.Stack.empty[Symbol]
+  private val entered = mutable.Set.empty[Symbol]
   // Whether the tree being traversed runs once per iteration of a loop, and the extent of the innermost loop.
   private val looping = mutable.Stack(false)
   private val loops   = mutable.Stack(Span(0))
   // Synthetic methods such as case class `apply` and `copy` forward their parameters, which says nothing about callers.
   private val synthetic = mutable.Stack(false)
   // Inline expansion happens after pickling, so the givens it summons are only visible through their imports.
-  private val imports = mutable.Stack(mutable.Set.empty[String])
-  private val parents = mutable.Set.empty[tpd.Tree]
-  private var parent  = false
-  private val types   = TypeReferences { symbol =>
+  private val imports    = mutable.Stack(mutable.Set.empty[String])
+  private val traversals = Traversals()
+  private val methodsOf  = mutable.HashMap.empty[Symbol, Map[String, List[Symbol]]]
+  private val parents    = mutable.Set.empty[tpd.Tree]
+  private var parent     = false
+  private val types      = TypeReferences { symbol =>
     symbols.refer(owner, symbol)
     read(symbol)
     if (!parent) dispatching.asType(symbol)
@@ -36,9 +39,9 @@ private[analysis] class References(components: Components, fragments: Fragments)
 
   // The methods the compiler writes for a case class read every field.
   private def read(symbol: Symbol): Unit =
-    if (!(synthetic.top && symbol.is(Flags.ParamAccessor)) && !methods.contains(symbol)) recorder.use(symbol, owner)
+    if (!(synthetic.top && symbol.is(Flags.ParamAccessor)) && !entered(symbol)) recorder.use(symbol, owner)
 
-  private def owner: Option[String] = owners.headOption.flatten
+  private def owner: Option[String] = if (owners.isEmpty) None else owners.top
 
   def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
     case imported: tpd.Import =>
@@ -89,8 +92,11 @@ private[analysis] class References(components: Components, fragments: Fragments)
       pushing(synthetic, synthetic.top || symbol.isAllOf(Flags.SyntheticMethod) && !symbol.isAnonymousFunction) {
         pushing(owners, node) {
           pushing(methods, symbol) {
-            symbol.annotations.foreach(annotation => traverse(annotation.tree))
-            traverseChildren(tree)
+            val added = entered.add(symbol)
+            try {
+              symbol.annotations.foreach(annotation => traverse(annotation.tree))
+              traverseChildren(tree)
+            } finally if (added) entered -= symbol: Unit
           }
         }
       }
@@ -110,8 +116,9 @@ private[analysis] class References(components: Components, fragments: Fragments)
         case select: tpd.Select if select.name == nme.UNARY_!                  => callSites.negate(select.qualifier)
         case tpd.Apply(tpd.Select(argument, name), Nil) if name == nme.UNARY_! => callSites.negate(argument)
         case application: tpd.Apply if !synthetic.top                          =>
-          callSites.record(application, owner, methods.contains(_))
+          callSites.record(application, owner, entered)
           reads.shown(application, owner)
+          reads.selected(application, owner)
         case assignment: tpd.Assign                   => recorder.assign(assignment.lhs.symbol)
         case unapply: tpd.UnApply                     => recorder.matched(unapply, owner)
         case generic: tpd.TypeApply if !synthetic.top =>
@@ -139,6 +146,7 @@ private[analysis] class References(components: Components, fragments: Fragments)
       symbols.refer(owner, tree.symbol)
       read(tree.symbol)
       recorder.mention(tree)
+      derivations.observe(tree)
       structure.observe(tree, owner)
       reads.keyed(tree.tpe, owner)
       tree match {
@@ -159,7 +167,7 @@ private[analysis] class References(components: Components, fragments: Fragments)
   }
 
   // While bodies and the function arguments of collection traversals run once per iteration.
-  private def children(tree: tpd.Tree): Unit = tree match {
+  private def children(tree: tpd.Tree)(using Context): Unit = tree match {
     case tpd.WhileDo(condition, body) =>
       pushing(loops, tree.span) {
         pushing(looping, value = true) {
@@ -167,7 +175,7 @@ private[analysis] class References(components: Components, fragments: Fragments)
           traverse(body)
         }
       }
-    case tpd.Apply(function, arguments) if Traversals.traversal(function) =>
+    case tpd.Apply(function, arguments) if traversals.traversal(function) =>
       traverse(function)
       arguments.foreach { argument =>
         val lambda = Calls.lambda(argument).isDefined
@@ -202,16 +210,18 @@ private[analysis] class References(components: Components, fragments: Fragments)
     * different types, one per width, as numbered-family asks for.
     */
   private def family(symbol: Symbol)(using Context): String = {
-    def unsized(name: String) = Finding.Numbers.replaceAllIn(name, "#")
-    val owner                 = symbol.owner
-    val name                  = unsized(symbol.name.toString)
-    val alike                 = owner.info.decls.toList.filter(member =>
-      member.is(Flags.Method) && unsized(member.name.toString) == name
-    )
-    if (symbol.is(Flags.Method) && owner.isClass && alike.map(_.info.firstParamTypes.map(_.show)).distinct.size > 1)
-      s"${owner.fullName}.$name"
-    else ""
+    val owner = symbol.owner
+    if (symbol.is(Flags.Method) && owner.isClass) {
+      val name  = unsized(symbol.name.toString)
+      val alike = methodsOf.getOrElseUpdate(
+        owner,
+        owner.info.decls.toList.filter(_.is(Flags.Method)).groupBy(member => unsized(member.name.toString))
+      ).getOrElse(name, Nil)
+      if (alike.map(_.info.firstParamTypes.map(_.show)).distinct.size > 1) s"${owner.fullName}.$name" else ""
+    } else ""
   }
+
+  private def unsized(name: String): String = Finding.numberless(name)
 
   // An inline method that expands inline methods on literals specialises them, as staged code does.
   private def specialising(symbol: Symbol, body: tpd.Tree)(using Context): Boolean =

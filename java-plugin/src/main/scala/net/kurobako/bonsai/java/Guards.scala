@@ -8,6 +8,7 @@ import javax.lang.model.`type`.TypeKind
 import javax.lang.model.element.*
 import net.kurobako.bonsai.java.Model.Guard
 import net.kurobako.bonsai.java.Model.Probe
+import net.kurobako.bonsai.java.Model.Stored
 import scala.jdk.CollectionConverters.*
 
 /** Reads how a type is constructed: who may call its constructors, and what the constructor requires of its arguments
@@ -23,14 +24,6 @@ private[java] object Guards {
     Tree.Kind.EQUAL_TO           -> "==",
     Tree.Kind.NOT_EQUAL_TO       -> "!="
   )
-
-  /** Where a constructor keeps the value of a field, in the field of the type it is given as the parameter at `index`,
-    * or as a constant of the delegation to another constructor.
-    */
-  enum Stored {
-    case Parameter(index: Int)
-    case Constant(argument: String)
-  }
 
   private val Flipped = Map("<" -> ">", "<=" -> ">=", ">" -> "<", ">=" -> "<=", "==" -> "==", "!=" -> "!=")
 
@@ -107,7 +100,7 @@ private[java] object Guards {
           if !fixed || names(element.getSimpleName.toString) > 1 || Collector.overriding(element) then None
           else
             Reader(trees, owner, method, element).guard.filter(guard => informative(guard) && !probe(guard))
-              .map(Model.Precondition(Collector.qualified(element)(using trees), _))
+              .map(Model.Precondition(CostTrees.key(element)(using trees), _))
         }
       case _ => Vector.empty
     }

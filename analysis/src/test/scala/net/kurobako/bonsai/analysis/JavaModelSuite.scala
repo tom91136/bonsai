@@ -90,9 +90,9 @@ class JavaModelSuite extends AnalysisSuite {
   test("a flag every caller passes as a literal is reported on the Java code") {
     val result = read(
       """node	demo.Service	demo/Service.java	4	false
-          |method	demo.Service	demo.Service.find	false		name|other|java.lang.String||false;exact|flag|boolean||false	demo/Service.java:8
-          |site	demo.Service.one	demo.Service.find	present:name,true	demo/Service.java:12
-          |site	demo.Service.two	demo.Service.find	present:name,false	demo/Service.java:16
+          |method	demo.Service	demo.Service.find	demo.Service.find(Ljava/lang/String;Z)V	false		name|other|java.lang.String||false;exact|flag|boolean||false	demo/Service.java:8
+          |site	demo.Service.one	demo.Service.find(Ljava/lang/String;Z)V	present:name,true	demo/Service.java:12
+          |site	demo.Service.two	demo.Service.find(Ljava/lang/String;Z)V	present:name,false	demo/Service.java:16
           |""".stripMargin
     )
 

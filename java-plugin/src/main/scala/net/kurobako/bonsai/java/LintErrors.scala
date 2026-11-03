@@ -70,19 +70,19 @@ object LintErrors {
     found
   }
 
-  private def derivedNames(block: BlockTree, caught: String): Set[String] = {
+  private def derivedNames(block: BlockTree, caught: String, carries: Tree => Boolean = _ => true): Set[String] = {
     val derived = mutable.Set(caught)
     var changed = true
     while changed do {
       val before = derived.size
       new TreeScanner[Unit, Unit] {
         override def visitVariable(node: VariableTree, unused: Unit): Unit = {
-          if node.getInitializer != null && namesAny(node.getInitializer, derived) then
+          if node.getInitializer != null && namesAny(node.getInitializer, derived) && carries(node.getInitializer) then
             derived += node.getName.toString
           super.visitVariable(node, unused)
         }
         override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
-          if namesAny(node.getExpression, derived) then
+          if namesAny(node.getExpression, derived) && carries(node.getExpression) then
             node.getVariable match {
               case id: IdentifierTree => derived += id.getName.toString
               case _                  => ()
@@ -162,6 +162,49 @@ object LintErrors {
     names.toSet
   }
 
+  private def carries(context: Context)(tree: Tree): Boolean =
+    Option(context.elements.getTypeElement("java.lang.Throwable")).exists { throwable =>
+      val typed = context.typeOf(tree)
+      Lints.subtype(context, typed, throwable.asType()) || Lints.subtype(context, throwable.asType(), typed)
+    }
+
+  private def handsOn(block: BlockTree, names: Set[String]): Boolean = {
+    def passes(expression: ExpressionTree): Boolean = expression match {
+      case parenthesized: ParenthesizedTree => passes(parenthesized.getExpression)
+      case cast: TypeCastTree               => passes(cast.getExpression)
+      case id: IdentifierTree               => names.contains(id.getName.toString)
+      case _                                => false
+    }
+    var found = false
+    new TreeScanner[Unit, Unit] {
+      override def visitMethodInvocation(node: MethodInvocationTree, unused: Unit): Unit = {
+        if Lints.arguments(node).exists(passes) then found = true
+        super.visitMethodInvocation(node, unused)
+      }
+      override def visitNewClass(node: NewClassTree, unused: Unit): Unit = {
+        if Lints.arguments(node).exists(passes) then found = true
+        super.visitNewClass(node, unused)
+      }
+      override def visitThrow(node: ThrowTree, unused: Unit): Unit = {
+        if passes(node.getExpression) then found = true
+        super.visitThrow(node, unused)
+      }
+      override def visitReturn(node: ReturnTree, unused: Unit): Unit = {
+        if node.getExpression != null && passes(node.getExpression) then found = true
+        super.visitReturn(node, unused)
+      }
+      override def visitAssignment(node: AssignmentTree, unused: Unit): Unit = {
+        if passes(node.getExpression) then found = true
+        super.visitAssignment(node, unused)
+      }
+      override def visitVariable(node: VariableTree, unused: Unit): Unit = {
+        if node.getInitializer != null && passes(node.getInitializer) then found = true
+        super.visitVariable(node, unused)
+      }
+    }.scan(block, ())
+    found
+  }
+
   /** An exception that is caught so generally that the failures of the program are hidden. */
   private object CatchThrowable extends Lint {
     val id    = JavaLint.CatchThrowable.id
@@ -170,7 +213,9 @@ object LintErrors {
     def check(context: Context, tree: Tree): Vector[Found] = {
       val catchTree = tree.asInstanceOf[CatchTree]
       val caught    = context.typeOf(catchTree.getParameter)
-      if Lints.isType(caught, "java.lang.Throwable") || Lints.isType(caught, "java.lang.Error") then
+      val generic   = Lints.isType(caught, "java.lang.Throwable") || Lints.isType(caught, "java.lang.Error")
+      val derived   = derivedNames(catchTree.getBlock, catchTree.getParameter.getName.toString, carries(context))
+      if generic && !handsOn(catchTree.getBlock, derived) then
         Vector(context.found("the exception is caught so generally that the failures of the program are hidden"))
       else Vector.empty
     }

@@ -38,6 +38,18 @@ class InvariantsSuite extends AnalysisSuite {
     )
   }
 
+  test("a forced value is named as the code writes it") {
+    assertFinding(
+      findings(
+        "Access.scala" ->
+          """enum Mode { case Load, Store }
+            |case class Access(mode: Mode) { require(mode == Mode.Load) }""".stripMargin
+      ),
+      "invariant-constant",
+      "forces mode to Load;"
+    )
+  }
+
   test("enum tags take part in the decomposition") {
     assertFinding(
       findings(

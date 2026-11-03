@@ -535,6 +535,139 @@ class RepeatedCodeSuite extends AnalysisSuite {
     assertEquals(reported(found, "inlined-helper"), Vector.empty)
   }
 
+  private val Codecs =
+    """trait Codec[A] { def imap[B](to: A => B, from: B => A): Codec[B] }
+      |object Codec { def of[A](name: String, size: Int): Codec[A] = null }""".stripMargin
+
+  private val Table = "Map[String, List[Int]]"
+  private val Build = s"""Codec.of[$Table]("json".trim, "x".length + 1)"""
+
+  private val CodecSite =
+    s"""object Models {
+       |  val lengths = $Build.imap[Int](_.size, _ => Map.empty)
+       |}""".stripMargin
+
+  private def codecs(json: String) = Seq("Codecs.scala" -> Codecs, "Json.scala" -> json, "Models.scala" -> CodecSite)
+
+  test("an anonymous given is no helper") {
+    val found = findings(codecs(s"object Json { given Codec[$Table] = $Build }"))
+    assertEquals(reported(found, "inlined-helper"), Vector.empty, found.mkString("\n"))
+  }
+
+  test("a given over an opaque type, which the call would give another type than the copy, is no helper") {
+    val found = findings(codecs(
+      s"""object Json {
+         |  opaque type Json = $Table
+         |  given codec: Codec[Json] = $Build
+         |}""".stripMargin
+    ))
+    assertEquals(reported(found, "inlined-helper"), Vector.empty, found.mkString("\n"))
+  }
+
+  test("a method whose result is an opaque type that its body is not is no helper") {
+    val found = findings(codecs(
+      s"""object Json {
+         |  opaque type Json = $Table
+         |  def codec(): Codec[Json] = $Build
+         |}""".stripMargin
+    ))
+    assertEquals(reported(found, "inlined-helper"), Vector.empty, found.mkString("\n"))
+  }
+
+  test("a method whose declared result is wider than its body is no helper") {
+    val found = findings(codecs(s"object Json { def codec(): Any = $Build }"))
+    assertEquals(reported(found, "inlined-helper"), Vector.empty, found.mkString("\n"))
+  }
+
+  test("a method whose declared result is its body type is a helper") {
+    val found = findings(codecs(s"object Json { def codec(): Codec[$Table] = $Build }"))
+    assertFinding(found, "inlined-helper", "Models.scala", "codec")
+  }
+
+  private def documented(parameter: String, site: String) =
+    Seq(
+      "Emitter.scala" ->
+        s"""trait Described { val name: String; val description: Option[String] }
+           |case class SubItem(name: String, description: Option[String]) extends Described
+           |case class Domain(name: String, description: Option[String])
+           |case class Special(name: String, description: Option[String]) extends Described
+           |object Emitter {
+           |  def docOf(item: $parameter): String =
+           |    item.description.map(_.trim).filter(_.nonEmpty).map(_.toLowerCase).getOrElse(item.name)
+           |}""".stripMargin,
+      "Main.scala" ->
+        s"""object Main {
+           |  def run(value: $site): String =
+           |    value.description.map(_.trim).filter(_.nonEmpty).map(_.toLowerCase).getOrElse(value.name).trim
+           |}""".stripMargin
+    )
+
+  test("a helper is no helper for a value that its parameter does not accept") {
+    val found = findings(documented("SubItem", "Domain"))
+    assertEquals(reported(found, "inlined-helper"), Vector.empty, found.mkString("\n"))
+  }
+
+  test("a helper is no helper for a value of a supertype of its parameter") {
+    val found = findings(documented("SubItem", "Described"))
+    assertEquals(reported(found, "inlined-helper"), Vector.empty, found.mkString("\n"))
+  }
+
+  test("a helper is a helper for a value of a subtype of its parameter, and of its own type") {
+    assertFinding(findings(documented("Described", "Special")), "inlined-helper", "Main.scala", "docOf")
+    assertFinding(findings(documented("SubItem", "SubItem")), "inlined-helper", "Main.scala", "docOf")
+  }
+
+  test("a helper over a type parameter is a helper for a value of any type") {
+    val found = findings(Seq(
+      "Emitter.scala" ->
+        """object Emitter {
+          |  def docOf[A](item: Option[A], fallback: A): String =
+          |    item.map(_.toString.trim).filter(_.nonEmpty).map(_.toLowerCase).getOrElse(fallback.toString)
+          |}""".stripMargin,
+      "Main.scala" ->
+        """object Main {
+          |  def run(value: Option[Int], other: Int): String =
+          |    value.map(_.toString.trim).filter(_.nonEmpty).map(_.toLowerCase).getOrElse(other.toString).trim
+          |}""".stripMargin
+    ))
+    assertFinding(found, "inlined-helper", "Main.scala", "docOf")
+  }
+
+  private val BaseChain =
+    """name.trim.toLowerCase.stripPrefix("cef_").stripSuffix("_t")
+      |      .replace("-", "_").replace(" ", "_").filter(_ != '.').take(64).mkString""".stripMargin
+
+  private def baseNames(helper: String) =
+    s"""object Naming {
+       |  def baseName(name: String): String = $helper
+       |}
+       |object Writer {
+       |  def header(name: String): String = {
+       |    val base = $BaseChain
+       |    base + "_N.cpp"
+       |  }
+       |  def handler(name: String): String = {
+       |    val base = $BaseChain
+       |    base + ".cpp"
+       |  }
+       |  def folder(name: String): String = {
+       |    val base = $BaseChain
+       |    base.toUpperCase
+       |  }
+       |}""".stripMargin
+
+  test("copies of the body of a helper are reported as inlined helpers, not also as a duplicate group") {
+    val found = findings(Seq("Naming.scala" -> baseNames(BaseChain)))
+    assertEquals(reported(found, "inlined-helper").size, 3, found.mkString("\n"))
+    assertEquals(reported(found, "duplicate-code"), Vector.empty, found.mkString("\n"))
+  }
+
+  test("copies of an expression that no helper holds are a duplicate group") {
+    val found = findings(Seq("Naming.scala" -> baseNames("name")))
+    assertFinding(found, "duplicate-code", "3 copies")
+    assertEquals(reported(found, "inlined-helper"), Vector.empty, found.mkString("\n"))
+  }
+
   test("a method too small to be worth calling is no helper") {
     val found = findings(Seq(
       "Context.scala" -> "object Context { def named(leaf: String): Boolean = leaf.nonEmpty }",

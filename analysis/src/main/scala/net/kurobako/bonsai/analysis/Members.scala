@@ -9,7 +9,8 @@ object Members {
     * through dynamic dispatch; `rooted` when it overrides a member of the build, which is reported instead; `constant`
     * when it is a `var` nothing assigns after initialisation; `detachable` when it is a member of an object that names
     * nothing else of the object; `field` when it is a parameter of a case class; `unlisted` when it is of the kind a
-    * collection of its siblings registers and no such collection lists it.
+    * collection of its siblings registers and no such collection lists it; `alias` when it is a type alias, and `line`
+    * is where it is declared, or 0 when unknown.
     */
   case class Member(
       name: String,
@@ -25,7 +26,9 @@ object Members {
       test: Boolean,
       suppressed: Set[String],
       field: Boolean = false,
-      unlisted: Boolean = false
+      unlisted: Boolean = false,
+      alias: Boolean = false,
+      line: Int = 0
   ) {
     def short: String = Finding.short(name)
   }
@@ -60,6 +63,26 @@ object Members {
 
   private val Shown = 6
 
+  private def at(
+      nodes: Map[String, Node],
+      member: Member,
+      rule: Finding.Rule,
+      detail: String,
+      level: Finding.Level = Finding.Level.Warning
+  ): Option[Finding] =
+    Finding.at(nodes, member.node, rule, detail, level).map(finding =>
+      if (member.line > 0) finding.copy(node = finding.node.copy(line = member.line)) else finding
+    )
+
+  // A type alias beside a value of its name, as a top-level alias pair is, shares one node with it.
+  private def unreferenced(member: Member, values: Map[(String, String), Member]): String =
+    values.get(member.node -> member.name).filter(_ => member.alias) match {
+      case Some(value) =>
+        val used = if (value.users.nonEmpty || value.inherited) "; the value of that name is" else ""
+        s"the type alias ${member.short} is never referenced$used"
+      case None => s"${member.short} is never referenced"
+    }
+
   // Members of one type that only tests use say the same of the type, as of a builder only tests drive, so they are
   // one finding.
   private def grouped(findings: Vector[Finding]): Vector[Finding] = {
@@ -77,7 +100,12 @@ object Members {
     }
   }
 
-  private def visibility(members: Vector[Member], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
+  private def visibility(
+      members: Vector[Member],
+      nodes: Map[String, Node],
+      live: String => Boolean
+  ): Vector[Finding] = {
+    val values = members.collect { case member if !member.alias => (member.node, member.name) -> member }.toMap
     members.view.filter(member => !member.test && live(member.node)).flatMap {
       member =>
         val used   = member.users.nonEmpty || member.inherited
@@ -85,32 +113,23 @@ object Members {
           if (!used)
             Option.unless(member.rooted || drifting(member))(
               if (member.field) s"${member.short} is a field nothing reads; remove it, or read it"
-              else s"${member.short} is never referenced"
+              else unreferenced(member, values)
             ).flatMap(
-              Finding.at(
-                nodes,
-                member.node,
-                if (member.field) Finding.Rule.UnreadField else Finding.Rule.UnusedMember,
-                _
-              )
+              at(nodes, member, if (member.field) Finding.Rule.UnreadField else Finding.Rule.UnusedMember, _)
             )
           else if (!member.inherited && member.users.forall(user => nodes.get(user).exists(_.test)))
-            Finding.at(
-              nodes,
-              member.node,
-              Finding.Rule.TestOnlyMember,
-              s"${member.short} is referenced only from tests"
-            )
+            at(nodes, member, Finding.Rule.TestOnlyMember, s"${member.short} is referenced only from tests")
           else
             Option.when(
               member.public && !member.overriding && !member.deferred && !member.inherited &&
                 member.users.forall(Node.within(nodes, _, member.node))
             )(s"${member.short} is referenced only by its own type and companion; it can be private")
-              .flatMap(Finding.at(nodes, member.node, Finding.Rule.WeakerAccess, _, Finding.Level.Info))
+              .flatMap(at(nodes, member, Finding.Rule.WeakerAccess, _, Finding.Level.Info))
         val mutability = Option.when(used && member.constant)(s"${member.short} is never reassigned; it can be a val")
-          .flatMap(Finding.at(nodes, member.node, Finding.Rule.VarCouldBeVal, _))
+          .flatMap(at(nodes, member, Finding.Rule.VarCouldBeVal, _))
         (access ++ mutability).filterNot(_.suppressedBy(member.suppressed))
     }.toVector
+  }
 
   /** Members of objects that need nothing else of their object and that one other type of the build uses, and nothing
     * else, not even their own object.
@@ -124,9 +143,9 @@ object Members {
         case Vector(user)
             if !Node.within(nodes, user, member.node) && !Node.within(nodes, member.node, user) &&
               nodes.get(user).exists(node => !node.test) =>
-          Finding.at(
+          at(
             nodes,
-            member.node,
+            member,
             Finding.Rule.MisplacedMember,
             s"${member.short} is used only by ${Finding.simple(user)}; move it there",
             Finding.Level.Info
@@ -140,9 +159,9 @@ object Members {
 
   private def drifted(members: Vector[Member], nodes: Map[String, Node], live: String => Boolean): Vector[Finding] =
     members.view.filter(member => drifting(member) && live(member.node)).flatMap(member =>
-      Finding.at(
+      at(
         nodes,
-        member.node,
+        member,
         Finding.Rule.RegistryDrift,
         s"${member.short} is of the kind the collections of its siblings register, but none lists it; add it to one, " +
           "or derive the registry from the definitions"

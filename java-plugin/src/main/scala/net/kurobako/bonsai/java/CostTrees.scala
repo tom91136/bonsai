@@ -23,9 +23,9 @@ object CostTrees {
 
   private val Standard = Vector("java.", "javax.", "jdk.", "sun.", "com.sun.", "scala.")
 
-  private val Views     = Set("keySet", "values", "entrySet", "iterator", "listIterator", "descendingIterator")
-  private val Visits    = Set("forEach", "removeIf", "replaceAll")
-  private val Factories =
+  private val Views        = Set("keySet", "values", "entrySet", "iterator", "listIterator", "descendingIterator")
+  private[java] val Visits = Set("forEach", "removeIf", "replaceAll")
+  private val Factories    =
     Set("of", "copyOf", "asList", "singletonList", "singleton", "singletonMap", "emptyList", "emptySet", "emptyMap")
   private val Expansions = Set("flatMap", "flatMapToInt", "flatMapToLong", "flatMapToDouble", "mapMulti")
   private val Stages     = Set(
@@ -74,7 +74,7 @@ object CostTrees {
     }
 
   /** The qualified owner, the name and the erased JVM descriptor of a method or constructor. */
-  private def key(element: ExecutableElement)(using Trees): String = {
+  private[java] def key(element: ExecutableElement)(using Trees): String = {
     val name       = if element.getKind == ElementKind.CONSTRUCTOR then "<init>" else element.getSimpleName.toString
     val parameters = synthetic(element) ++ parametersOf(element).map(parameter => descriptor(parameter.asType))
     val owner      = Collector.qualified(element.getEnclosingElement)
@@ -92,7 +92,7 @@ object CostTrees {
           Vector(Descriptors.clazz("java.lang.String"), Descriptors.primitive("int"))
         case cls: TypeElement
             if cls.getKind == ElementKind.CLASS && cls.getNestingKind == NestingKind.MEMBER &&
-              !static(cls) =>
+              cls.getEnclosingElement.getKind.isClass && !static(cls) =>
           Vector(Descriptors.clazz(binary(cls.getEnclosingElement.asInstanceOf[TypeElement])))
         case _ => Vector.empty
       }
@@ -128,10 +128,10 @@ object CostTrees {
 
   private def static(element: Element): Boolean = element.getModifiers.contains(Modifier.STATIC)
 
-  private def standard(element: Element)(using Trees): Boolean = {
-    val owner = Collector.qualified(element.getEnclosingElement)
-    Standard.exists(owner.startsWith)
-  }
+  private def standard(element: Element)(using Trees): Boolean =
+    standard(Collector.qualified(element.getEnclosingElement))
+
+  private[java] def standard(owner: String): Boolean = Standard.exists(owner.startsWith)
 
   /** The nodes of a loop or branch being collected; an exit is a branch that ends the recursion. */
   private case class Frame(nodes: mutable.ArrayBuffer[Node], exit: Boolean)
@@ -148,6 +148,7 @@ object CostTrees {
     private val shrinks    = mutable.Map.empty[Element, Int]
     private val declared   = mutable.Map.empty[Element, Int]
     private val leaving    = mutable.Set.empty[IfTree]
+    private lazy val flow  = CostFlows(trees, method, (tpe, targets) => derives(tpe, targets*), assigned).run()
     private var depth      = 0
     private var floor      = 0
 
@@ -562,7 +563,7 @@ object CostTrees {
           val found = elementOf(identifier)
           if found != null && derives(found.asType, "java.lang.String") then {
             val since = depth - declared.getOrElse(found, 0)
-            if since > 0 then emit(Node(line(node), Step.Op(Kind.Concat(since), Static)))
+            if since > 0 then emit(Node(line(node), Step.Op(Kind.Concat(since), Static, flow.of(node))))
           }
         case _ =>
       }
@@ -577,9 +578,12 @@ object CostTrees {
           if standard(constructor) then {
             if derives(constructed, "java.util.Collection", "java.util.Map") && arguments.sizeIs == 1 &&
               collection(arguments.head)
-            then emit(Node(line(node), Step.Op(Kind.Copy, extent(arguments.head).getOrElse(Unknown))))
+            then emit(Node(line(node), Step.Op(Kind.Copy, extent(arguments.head).getOrElse(Unknown), flow.of(node))))
           } else if node.getClassBody == null then
-            emit(Node(line(node), Step.Call(key(constructor), Static, arguments.map(extent(_).getOrElse(Unknown)))))
+            emit(Node(
+              line(node),
+              Step.Call(key(constructor), Static, arguments.map(extent(_).getOrElse(Unknown)), flow.of(node))
+            ))
         case _ =>
       }
     }
@@ -609,7 +613,7 @@ object CostTrees {
           val target =
             if static(callee) || callee.getKind == ElementKind.CONSTRUCTOR then Static
             else receiver.fold("this")(target => path(target).getOrElse(Unknown))
-          emit(Node(line(node), Step.Call(key(callee), target, passed(callee, arguments))))
+          emit(Node(line(node), Step.Call(key(callee), target, passed(callee, arguments), flow.of(node))))
         }
       }
     }
@@ -669,7 +673,7 @@ object CostTrees {
       elementOf(reference) match {
         // `T[]::new` allocates an array, as `new T[n]` does, through a constructor javac makes up for it
         case _ if reference.getQualifierExpression.isInstanceOf[ArrayTypeTree] =>
-        case callee: ExecutableElement if !standard(callee) =>
+        case callee: ExecutableElement if !standard(callee)                    =>
           val qualifier = reference.getQualifierExpression
           val receiver  =
             if static(callee) || callee.getKind == ElementKind.CONSTRUCTOR then Static
@@ -682,7 +686,12 @@ object CostTrees {
                     case _ => path(qualifier).getOrElse(Unknown)
                   }
               }
-          emit(Node(line(reference), Step.Call(key(callee), receiver, Vector.fill(callee.getParameters.size)(Unknown))))
+          emit(
+            Node(
+              line(reference),
+              Step.Call(key(callee), receiver, Vector.fill(callee.getParameters.size)(Unknown), flow.of(reference))
+            )
+          )
         case _ =>
       }
 
@@ -693,7 +702,8 @@ object CostTrees {
         name: String,
         arguments: Vector[ExpressionTree]
     ): Unit = {
-      def op(kind: Kind, over: Option[String]): Unit = emit(Node(line(node), Step.Op(kind, over.getOrElse(Unknown))))
+      def op(kind: Kind, over: Option[String]): Unit =
+        emit(Node(line(node), Step.Op(kind, over.getOrElse(Unknown), flow.of(node))))
       val list    = receiver.exists(target => derives(typeOf(target), "java.util.List"))
       val linked  = receiver.exists(target => derives(typeOf(target), "java.util.LinkedList"))
       val onOwner = Collector.qualified(callee.getEnclosingElement)

@@ -24,6 +24,7 @@ class ConfigureSuite extends FunSuite {
         |hot = ["demo.kernel.**"]
         |checked = [demo.where]
         |intended = ["demo.A=demo.B"]
+        |generated-disabled = ["*"]
         |projects.demo { warnings = [huge-method], library = true }
         |""".stripMargin
     )
@@ -48,6 +49,8 @@ class ConfigureSuite extends FunSuite {
         "option\t<root>/bonsai-baseline.tsv",
         "option\t--purity-lock",
         "option\t<root>/bonsai-purity.tsv",
+        "option\t--generated-disable",
+        "option\t*",
         "option\t--hot",
         "option\tdemo.kernel.**",
         "option\t--intended",

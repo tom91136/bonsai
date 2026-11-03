@@ -6,31 +6,31 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.ClassSymbol
 import dotty.tools.dotc.core.Symbols.Symbol
-import dotty.tools.dotc.core.Symbols.requiredClass
 import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 
 /** Reports blocking work handed to a shared pool sized for computation, waits with no limit, threads nothing stops, and
   * an interruptible wait retried by hand where an uninterruptible one exists.
   */
 private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTraverser {
-  private val Thread        = requiredClass("java.lang.Thread")
-  private val Future        = requiredClass("java.util.concurrent.Future")
-  private val Completable   = requiredClass("java.util.concurrent.CompletableFuture")
-  private val Interrupted   = requiredClass("java.lang.InterruptedException")
-  private val InputStream   = requiredClass("java.io.InputStream")
-  private val Reader        = requiredClass("java.io.Reader")
-  private val Process       = requiredClass("java.lang.Process")
-  private val Latch         = requiredClass("java.util.concurrent.CountDownLatch")
-  private val Barrier       = requiredClass("java.util.concurrent.CyclicBarrier")
-  private val Semaphore     = requiredClass("java.util.concurrent.Semaphore")
-  private val BlockingQueue = requiredClass("java.util.concurrent.BlockingQueue")
-  private val Executor      = requiredClass("java.util.concurrent.Executor")
-  private val Channel       = requiredClass("java.nio.channels.Channel")
-  private val ServerSocket  = requiredClass("java.net.ServerSocket")
-  private val Socket        = requiredClass("java.net.Socket")
-  private val Executing     = requiredClass("scala.concurrent.ExecutionContext")
-  private val Service       = requiredClass("java.util.concurrent.ExecutorService")
+  private val Thread        = Classes.required("java.lang.Thread")
+  private val Future        = Classes.required("java.util.concurrent.Future")
+  private val Completable   = Classes.required("java.util.concurrent.CompletableFuture")
+  private val Interrupted   = Classes.required("java.lang.InterruptedException")
+  private val InputStream   = Classes.required("java.io.InputStream")
+  private val Reader        = Classes.required("java.io.Reader")
+  private val Process       = Classes.required("java.lang.Process")
+  private val Latch         = Classes.required("java.util.concurrent.CountDownLatch")
+  private val Barrier       = Classes.required("java.util.concurrent.CyclicBarrier")
+  private val Semaphore     = Classes.required("java.util.concurrent.Semaphore")
+  private val BlockingQueue = Classes.required("java.util.concurrent.BlockingQueue")
+  private val Executor      = Classes.required("java.util.concurrent.Executor")
+  private val Channel       = Classes.required("java.nio.channels.Channel")
+  private val ServerSocket  = Classes.required("java.net.ServerSocket")
+  private val Socket        = Classes.required("java.net.Socket")
+  private val Executing     = Classes.required("scala.concurrent.ExecutionContext")
+  private val Service       = Classes.required("java.util.concurrent.ExecutorService")
 
   private val Blocking = Set(
     "java.lang.Thread.sleep",

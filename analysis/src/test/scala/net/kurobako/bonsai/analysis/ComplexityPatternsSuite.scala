@@ -280,7 +280,7 @@ class ComplexityPatternsSuite extends AnalysisSuite {
 
   test("a sort or a copy inside a traversal multiplies by the traversed size, and cubic work is an error") {
     assertFinding(found, "complexity", "Patterns.sortedInside is O(|xs| * |ys| * log|ys|)")
-    assertFinding(found, "complexity", "Patterns.copying is O(|xs| * |ys|) in time and space")
+    assertFinding(found, "complexity", "Patterns.copying is O(|xs| * |ys|) in time:")
     assertFinding(found, "complexity", "Patterns.cubic is O(|xs|^3)")(using Finding.Level.Error)
   }
 

@@ -19,7 +19,7 @@ private[analysis] object JavaConversion {
       guarded: Map[String, Vector[Algebra.Site]],
       usages: Vector[Smells.Usage],
       products: Vector[Algebra.Product],
-      preconditions: Vector[Algebra.Product],
+      preconditions: Map[String, Algebra.Product],
       sums: Vector[Algebra.Sum],
       clones: Vector[Clones.Group],
       lints: Vector[JavaLints.Found],
@@ -50,16 +50,21 @@ private[analysis] object JavaConversion {
     val outside     = mutable.Set.empty[(String, String)]
     val reflections = mutable.ArrayBuffer.empty[JavaModel.Reflection]
     val costs       = mutable.LinkedHashMap.empty[String, JavaModel.Cost]
+    val instances   = mutable.ArrayBuffer.empty[(JavaModel.Instance, Boolean)]
+    val constructed = mutable.Set.empty[String]
+    val members     = mutable.Map.empty[String, Vector[JavaModel.Field]]
+    val kept        = mutable.Map.empty[(String, String), Map[String, JavaModel.Stored]]
     val problems    = Vector.newBuilder[String]
     manifest.models.foreach { model =>
       JavaModel.read(model.path) match {
         case Left(problem)    => problems += problem
         case Right(collected) =>
           // The code of the test sources is marked as such, which lowers the findings that concern it.
-          val test = model.scope == Output.Scope.Test
+          val test      = model.scope == Output.Scope.Test
+          val published = manifest.libraries(model.module) && model.scope == Output.Scope.Main
           collected.nodes.foreach { node =>
             // The public API of a library is used by the builds that depend on it, as the public API of Scala code is.
-            val exported = node.exported && manifest.libraries(model.module) && model.scope == Output.Scope.Main
+            val exported = node.exported && published && node.outer.forall(nodes.get(_).exists(_.exported))
             nodes.getOrElseUpdate(
               node.name,
               Node(
@@ -78,10 +83,19 @@ private[analysis] object JavaConversion {
             // public API of a library is used by the builds that depend on it.
             if (exported || node.entry) roots += node.name
           }
+          // The builds that depend on a library construct its public types, so the constructions in this build do not
+          // settle the shape of one, as with a case class of Scala code.
+          val built =
+            if published then
+              collected.nodes.collect {
+                case node if node.constructible && nodes.get(node.name).exists(_.exported) => node.name
+              }.toSet
+            else Set.empty[String]
           collected.methods.foreach { method =>
             val owner = method.owner
             methods += Smells.Method(
               method.name,
+              method.key,
               owner,
               owner,
               method.parameters.map(parameter => field(parameter)),
@@ -97,8 +111,11 @@ private[analysis] object JavaConversion {
               suppressed = method.suppressed
             )
             // The type the method returns, which the rules that need every call site read by.
-            returns(method).foreach(returned => results(method.name) = returned)
+            returns(method).foreach(returned => results(method.key) = returned)
           }
+          val returning = collected.methods
+            .flatMap(method => returns(method).map(method.owner -> _))
+            .groupMapReduce(_._1)(pair => Set(pair._2))(_ ++ _)
           val constructions = collected.constructions.map(construction => construction.owner -> construction).toMap
           val recorded      = collected.products.map(_.name).toSet
           collected.fields.groupBy(_.owner).filterNot((owner, _) => recorded(owner)).foreach { (owner, fields) =>
@@ -107,7 +124,8 @@ private[analysis] object JavaConversion {
               owner,
               fields.map(found => field(found.parameter)),
               Set.empty,
-              exported = false,
+              exported = built(owner),
+              returns = returning.getOrElse(owner, Set.empty),
               construction = constructions.get(owner)
             )
           }
@@ -118,17 +136,18 @@ private[analysis] object JavaConversion {
               product.node,
               product.fields.map(field),
               product.parents,
-              product.exported,
+              built(product.node),
+              returns = returning.getOrElse(product.node, Set.empty),
               construction = constructions.get(product.name)
             )
           }
           // A method that starts with guards is a product of its parameters, which the analysis reads alike with a
           // method of the Scala code that starts with a `require`.
-          val declared = collected.methods.map(method => method.name -> method).toMap
+          val declared = collected.methods.map(method => method.key -> method).toMap
           collected.preconditions.foreach { precondition =>
             declared.get(precondition.method).foreach { method =>
               val fields = method.parameters.map(field)
-              required += method.name -> productOf(
+              required += method.key -> productOf(
                 s"${method.name}(${method.parameters.map(_.name).mkString(", ")})",
                 method.owner,
                 fields,
@@ -151,9 +170,7 @@ private[analysis] object JavaConversion {
             sites.getOrElseUpdate(callee, mutable.ArrayBuffer.empty) += Algebra.Site(
               site.arguments.map(argument),
               test = test,
-              // A call the callee makes of itself, whose arguments the method itself fixes, or a construction inside the
-              // type it builds.
-              own = site.caller == callee || site.caller.startsWith(s"$callee."),
+              own = isOwn(site.caller, callee),
               site.location
             )
             // The calls of a method, those of them that drop the result, those in tests and those that invert it, which
@@ -165,6 +182,15 @@ private[analysis] object JavaConversion {
               tests = tally.tests + (if (test) 1 else 0),
               inverted = tally.inverted + (if (site.negated) 1 else 0)
             )
+          }
+          // A class is constructed by the code of any module, but only the module that declares it knows what its
+          // constructors keep in its fields.
+          collected.instances.foreach(instance => instances += instance -> test): Unit
+          collected.constructions.foreach(construction => constructed += construction.owner): Unit
+          collected.fields.groupBy(_.owner).foreach((owner, found) => members(owner) = found)
+          collected.stores.foreach { store =>
+            val key = store.owner -> store.constructor
+            kept(key) = kept.getOrElse(key, Map.empty) + (store.field -> store.kept)
           }
           collected.edges.foreach { edge =>
             edges.getOrElseUpdate(edge.from, mutable.LinkedHashSet.empty) += edge.to: Unit
@@ -192,13 +218,25 @@ private[analysis] object JavaConversion {
           collected.costs.foreach(cost => costs.getOrElseUpdate(cost.key, cost)): Unit
       }
     }
+    instances.foreach { (instance, test) =>
+      if constructed(instance.owner) then
+        members.get(instance.owner).foreach { fields =>
+          val values = JavaModel.aligned(
+            fields,
+            kept.getOrElse(instance.owner -> instance.constructor, Map.empty),
+            instance.arguments
+          )
+          sites.getOrElseUpdate(instance.owner, mutable.ArrayBuffer.empty) +=
+            Algebra.Site(values.map(argument), test, isOwn(instance.caller, instance.owner), instance.location)
+        }
+    }
     lints ++= JavaLints.unwritten(reassigned.toVector, written.toSet, outside.toSet, nodes.toMap)
     // The usages of the methods of the Java code, which the rules that need every call site read alike with the usages
     // of the methods of the Scala code.
     val usages = methods.toVector.flatMap { method =>
       for {
-        returns <- results.get(method.name)
-        tally   <- calls.get(method.name)
+        returns <- results.get(method.key)
+        tally   <- calls.get(method.key)
       } yield Smells.Usage(method, returns, tally.total, tally.dropped, tally.tests, tally.inverted)
     }
     val built = products.reverseIterator.map(product => product.name -> product).toMap
@@ -220,11 +258,11 @@ private[analysis] object JavaConversion {
           callee -> named(found.toVector, built(callee))
         ).toMap ++ required.flatMap { (callee, product) =>
           val calls = sites.getOrElse(callee, mutable.ArrayBuffer.empty).filter(_.arguments.size == product.fields.size)
-          Option.when(calls.nonEmpty)(product.name -> calls.toVector)
+          Option.when(calls.nonEmpty)(callee -> calls.toVector)
         },
         usages,
         products.toVector,
-        required.map(_._2).toVector,
+        required.toMap,
         resolved,
         // The copies of the code of the Java code are of the whole build, as the same block of code written in two
         // modules of it is as much a copy as one written twice in one.
@@ -236,6 +274,11 @@ private[analysis] object JavaConversion {
       problems.result()
     )
   }
+
+  /** Whether a call is one the callee makes of itself, whose arguments the method itself fixes, or a construction
+    * inside the type it builds.
+    */
+  private def isOwn(caller: String, callee: String): Boolean = caller == callee || caller.startsWith(s"$callee.")
 
   /** The type a method of the Java code returns, unless it returns nothing or returns the type that holds it, whose
     * result the code that calls it is meant to drop.
@@ -269,9 +312,13 @@ private[analysis] object JavaConversion {
       parents: Set[String],
       exported: Boolean,
       invariant: Algebra.Predicate = Algebra.Predicate.Known(true),
+      returns: Set[String] = Set.empty,
       construction: Option[JavaModel.Construction] = None
   ): Algebra.Product =
-    constructed(Algebra.Product(name, node, fields, parents, invariant, Algebra.Access.Open, exported), construction)
+    constructed(
+      Algebra.Product(name, node, fields, parents, invariant, Algebra.Access.Open, exported, returns = returns),
+      construction
+    )
 
   private def constructed(product: Algebra.Product, construction: Option[JavaModel.Construction]): Algebra.Product =
     construction.fold(product) { construction =>

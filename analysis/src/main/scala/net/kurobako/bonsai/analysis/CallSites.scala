@@ -54,7 +54,7 @@ private[analysis] class CallSites(symbols: Symbols) {
 
   def spared: Vector[Smells.Spare] = spares.toVector
 
-  /** Classifies the calls kept, with `subjects` the name and arity of each callee that has a model, and notes the
+  /** Classifies the calls kept, with `subjects` the key and arity of each callee that has a model, and notes the
     * default arguments they repeat and the defaults no call overrides.
     */
   private def site(call: Pending, arguments: Vector[Algebra.Argument] = Vector.empty): Algebra.Site =
@@ -65,12 +65,12 @@ private[analysis] class CallSites(symbols: Symbols) {
   ): Unit = {
     for {
       (callee, recorded) <- pending.groupBy(_.callee)
-      (name, arity)      <- subjects.get(callee)
+      (key, arity)       <- subjects.get(callee)
       aligned = recorded.filter(_.arguments.size == arity) if aligned.nonEmpty
-    } sites(name) = aligned.map(call => site(call, call.arguments.map(classify(_)).toVector)).toVector
+    } sites(key) = aligned.map(call => site(call, call.arguments.map(classify(_)).toVector)).toVector
     for {
       call              <- pending if call.method.name != nme.copy && defaulted(call.method)
-      (argument, index) <- call.arguments.zipWithIndex if !omitted(argument)
+      (argument, index) <- call.arguments.zipWithIndex if !omitted(argument) && droppable(call.arguments, index)
       default           <- defaults.get(defaultGetter(call.method, index))
       value             <- same(argument, default)
       parameter         <- fieldsOf(call.callee).lift(index)
@@ -273,6 +273,13 @@ private[analysis] class CallSites(symbols: Symbols) {
       })
     symbol.exists && (getter(symbol.name.toTermName) || bindings.get(symbol).exists(omitted(_)))
   }
+
+  // Dropping an argument would shift any written positional argument after it.
+  private def droppable(arguments: List[tpd.Tree], index: Int)(using Context): Boolean =
+    arguments.drop(index + 1).forall {
+      case tpd.NamedArg(_, _) => true
+      case argument           => omitted(argument)
+    }
 
   // A case class `apply` shares the constructor's default getters in the companion.
   private def defaultGetter(method: Symbol, index: Int)(using Context): Symbol = {

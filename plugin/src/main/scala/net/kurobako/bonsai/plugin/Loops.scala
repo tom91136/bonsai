@@ -11,7 +11,6 @@ import dotty.tools.dotc.core.Names.Name
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.MethodType
 import dotty.tools.dotc.core.Types.MethodicType
@@ -23,6 +22,7 @@ import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.collections.Methods
 import net.kurobako.bonsai.effects.Axioms
 import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.Classes
 import net.kurobako.bonsai.lifting.Parameters
 import net.kurobako.bonsai.lifting.Purity
 import scala.collection.mutable
@@ -71,24 +71,24 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
 
   private val MaximumUnswitched = 12
 
-  private val IterableOnce      = requiredClass("scala.collection.IterableOnce")
-  private val IterableOnceOps   = requiredClass("scala.collection.IterableOnceOps")
-  private val Iterable          = requiredClass("scala.collection.Iterable")
-  private val Seq               = requiredClass("scala.collection.Seq")
-  private val LinearSeq         = requiredClass("scala.collection.LinearSeq")
-  private val ImmutableLinear   = requiredClass("scala.collection.immutable.LinearSeq")
-  private val View              = requiredClass("scala.collection.View")
-  private val LazyList          = requiredClass("scala.collection.immutable.LazyList")
-  private val Range             = requiredClass("scala.collection.immutable.Range")
-  private val NumericRange      = requiredClass("scala.collection.immutable.NumericRange")
-  private val ArrayOps          = requiredClass("scala.collection.ArrayOps")
-  private val StringOps         = requiredClass("scala.collection.StringOps")
-  private val ImmutableIterable = requiredClass("scala.collection.immutable.Iterable")
-  private val Growable          = requiredClass("scala.collection.mutable.Growable")
-  private val ArraySeq          = requiredClass("scala.collection.immutable.ArraySeq")
-  private val Map               = requiredClass("scala.collection.Map")
-  private val IndexedSeq        = requiredClass("scala.collection.IndexedSeq")
-  private val Iterator          = requiredClass("scala.collection.Iterator")
+  private val IterableOnce      = Classes.required("scala.collection.IterableOnce")
+  private val IterableOnceOps   = Classes.required("scala.collection.IterableOnceOps")
+  private val Iterable          = Classes.required("scala.collection.Iterable")
+  private val Seq               = Classes.required("scala.collection.Seq")
+  private val LinearSeq         = Classes.required("scala.collection.LinearSeq")
+  private val ImmutableLinear   = Classes.required("scala.collection.immutable.LinearSeq")
+  private val View              = Classes.required("scala.collection.View")
+  private val LazyList          = Classes.required("scala.collection.immutable.LazyList")
+  private val Range             = Classes.required("scala.collection.immutable.Range")
+  private val NumericRange      = Classes.required("scala.collection.immutable.NumericRange")
+  private val ArrayOps          = Classes.required("scala.collection.ArrayOps")
+  private val StringOps         = Classes.required("scala.collection.StringOps")
+  private val ImmutableIterable = Classes.required("scala.collection.immutable.Iterable")
+  private val Growable          = Classes.required("scala.collection.mutable.Growable")
+  private val ArraySeq          = Classes.required("scala.collection.immutable.ArraySeq")
+  private val Map               = Classes.required("scala.collection.Map")
+  private val IndexedSeq        = Classes.required("scala.collection.IndexedSeq")
+  private val Iterator          = Classes.required("scala.collection.Iterator")
 
   private val LeftFolds  = Set("foldLeft", "scanLeft", "fold", "scan", "reduceLeft", "reduce")
   private val RightFolds = Set("foldRight", "scanRight", "reduceRight")
@@ -108,16 +108,24 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
   private val once = mutable.Map.empty[Symbol, Boolean]
 
   private class Callers extends tpd.TreeTraverser {
+    // The definitions whose right-hand side is being traversed, and the right-hand sides to enter.
+    private val open   = mutable.Map.empty[Symbol, tpd.DefDef]
+    private val bodies = java.util.IdentityHashMap[tpd.Tree, tpd.DefDef]()
+
     override def traverse(tree: tpd.Tree)(using Context): Unit = {
+      val entered = bodies.remove(tree)
+      if (entered != null) open(entered.symbol) = entered
       tree match {
-        case reference @ (_: tpd.Ident | _: tpd.Select)
-            if reference.symbol.is(Flags.Method) && confined(reference.symbol) =>
-          callers.getOrElseUpdate(reference.symbol, mutable.ListBuffer.empty) += enclosing
-        case definition: tpd.DefDef if references(definition.rhs, definition.symbol) =>
-          recursive(definition.symbol) = definition
-        case _ => ()
+        case reference @ (_: tpd.Ident | _: tpd.Select) =>
+          val symbol = reference.symbol
+          if (symbol.is(Flags.Method) && confined(symbol))
+            callers.getOrElseUpdate(symbol, mutable.ListBuffer.empty) += enclosing
+          open.get(symbol).foreach(recursive(symbol) = _)
+        case definition: tpd.DefDef if !definition.rhs.isEmpty => bodies.put(definition.rhs, definition): Unit
+        case _                                                 => ()
       }
       traverseChildren(tree)
+      if (entered != null) open -= entered.symbol: Unit
     }
   }
 
@@ -985,7 +993,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
 
   private val Scans = Searches ++ Set("filter", "filterNot", "count", "collect", "collectFirst")
 
-  private val SetClass = requiredClass("scala.collection.Set")
+  private val SetClass = Classes.required("scala.collection.Set")
 
   /** Scans of a collection the loop leaves as it is: of the one it iterates, which makes the loop quadratic, or one
     * whose elements the predicate relates to a value of the loop by equality or membership, which an index built once
@@ -1079,7 +1087,7 @@ private class Loops(checks: Checks, hot: String => Boolean, hotDeclared: Boolean
     for {
       definition    <- recursive.get(method).filterNot(_ => method.isConstructor)
       (variants, _) <- recursion(definition)
-      parameters = method.paramSymss.filter(_.headOption.exists(_.isTerm))
+      parameters = Trees.termParameters(method)
       if parameters.map(_.size) == lists.map(_.size)
       pairs =
         parameters.flatten.zip(lists.flatten).filterNot((parameter, _) => parameter.isOneOf(Flags.GivenOrImplicit))

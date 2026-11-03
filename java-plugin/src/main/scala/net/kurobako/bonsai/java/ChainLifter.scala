@@ -365,6 +365,8 @@ object ChainLifter {
                 family == (if copied == "java.util.Map" then Family.Map else Family.Collection)
               }
               if kind.name.startsWith("java.util.")
+              (_, built) <- site.family(new TreePath(site.path, construction))
+              if !(built.ordered && (built.distinct || built.keyed))
               (_, to) <- site.family(site.path)
             } yield Link(site.invocation, source, site.name, Vector.empty, kind, to, site.typed, walks = false)
           case _ => None

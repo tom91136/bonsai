@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.java
 
 import java.nio.file.Files
+import net.kurobako.bonsai.collections.Sink
 import net.kurobako.bonsai.testing.Scratch
 
 class ModelSuite extends munit.FunSuite {
@@ -41,16 +42,16 @@ class ModelSuite extends munit.FunSuite {
               7,
               Step.Loop("this.items", callback = true, absorbs = 1, Vector(Node(8, Step.Op(Kind.Concat(2), Unknown))))
             ),
-            Node(9, Step.Call("demo.Outer.stop()V", Static, Vector("$0", Unknown)))
+            Node(9, Step.Call("demo.Outer.stop()V", Static, Vector("$0", Unknown), Sink.Dropped))
           )
         )
       ),
-      Node(10, Step.Op(Kind.Sort, "$0")),
-      Node(11, Step.Op(Kind.Shift, "$0")),
+      Node(10, Step.Op(Kind.Sort, "$0", Sink.Stored)),
+      Node(11, Step.Op(Kind.Shift, "$0", Sink(2, returned = true, stored = true))),
       Node(
         12,
         Step.Exit(Vector(
-          Node(13, Step.Op(Kind.Search, "$0")),
+          Node(13, Step.Op(Kind.Search, "$0", Sink(1, returned = false, stored = false))),
           Node(14, Step.Call("demo.Outer.stop()V", Static, Vector.empty))
         ))
       )
@@ -68,13 +69,15 @@ class ModelSuite extends munit.FunSuite {
         Some("demo.Outer"),
         Set("empty-method", "pointless-boolean"),
         entry = true,
-        generated = true
+        generated = true,
+        constructible = true
       )
     ),
     methods = Vector(
       Model.Method(
         "demo.Outer",
         "run",
+        "demo.Outer.run()I",
         exported = true,
         Set(0, 2),
         Vector(count),
@@ -108,7 +111,7 @@ class ModelSuite extends munit.FunSuite {
         reach = "demo.Outer"
       )
     ),
-    products = Vector(Model.Product("demo.Outer", "Outer", Vector(count), Set("demo.Base"), exported = true)),
+    products = Vector(Model.Product("demo.Outer", "Outer", Vector(count), Set("demo.Base"))),
     sums = Vector(Model.Sum("demo.Shape", "Shape", Vector(Model.Variant("Circle")))),
     lints = Vector(Model.Lint("empty-method", "demo.Outer", "demo.Outer.run", "Outer.java", 5, "a\tb\nc")),
     reflections = Vector(Model.Reflection("demo.Outer.run", "demo.Hidden", "Outer.java:7")),
@@ -137,6 +140,13 @@ class ModelSuite extends munit.FunSuite {
         costTree
       ),
       Model.Cost("demo.Outer", "demo.Outer.stop", "demo.Outer.stop()V", 9, Set.empty, Vector.empty, Vector.empty)
+    ),
+    instances = Vector(
+      Model.Instance("demo.Test.run", "demo.Outer", "demo.Outer.<init>(I)V", Vector("true", "text:a,b"), "Test.java:6")
+    ),
+    stores = Vector(
+      Model.Store("demo.Outer", "demo.Outer.<init>(I)V", "count", Model.Stored.Parameter(0)),
+      Model.Store("demo.Outer", "demo.Outer.<init>(I)V", "owned", Model.Stored.Constant("text:a,b"))
     )
   )
 
@@ -192,7 +202,9 @@ class ModelSuite extends munit.FunSuite {
       "precondition" -> "a precondition holds",
       "reassignable" -> "a reassignable field holds",
       "write"        -> "a write holds",
-      "cost"         -> "a cost holds"
+      "cost"         -> "a cost holds",
+      "instance"     -> "a construction holds",
+      "store"        -> "a store holds"
     )
     short.foreach { (tag, message) =>
       val failure = read(s"$tag\tonly-one-field").swap.getOrElse(fail(s"a short $tag record was read"))
@@ -244,8 +256,8 @@ class ModelSuite extends munit.FunSuite {
     val text = Model.Cost.render(costTree)
     assertEquals(
       text,
-      "{loop 6 $1.items {each:1 7 this.items {op 8 concat:2 ?}} {call 9 demo.Outer.stop()V - $0 ?}} " +
-        "{op 10 sort $0} {op 11 shift $0} {exit 12 {op 13 search $0} {call 14 demo.Outer.stop()V -}}"
+      "{loop 6 $1.items {each:1 7 this.items {op 8 concat:2 ?}} {call 9 demo.Outer.stop()V - $0 ? @-}} " +
+        "{op 10 sort $0 @0s} {op 11 shift $0 @2rs} {exit 12 {op 13 search $0 @1} {call 14 demo.Outer.stop()V -}}"
     )
     assertEquals(Model.Cost.parse(text), Some(costTree))
     assertEquals(Model.Cost.parse(""), Some(Vector.empty))
@@ -262,6 +274,11 @@ class ModelSuite extends munit.FunSuite {
       "{exit 1",
       "{op 1 weave $0}",
       "{op 1 sort}",
+      "{op 1 sort $0 @x}",
+      "{op 1 sort $0 @- @-}",
+      "{op 1 sort $0 -}",
+      "{call 1 key - $0 @0 @0}",
+      "{call 1 key - @0q}",
       "{call 1 key}",
       "loop 1 $0",
       "{} {}"

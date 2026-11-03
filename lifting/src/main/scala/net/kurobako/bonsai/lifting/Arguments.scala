@@ -10,7 +10,6 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.collections.Arg
 import net.kurobako.bonsai.collections.Comparison
@@ -262,7 +261,7 @@ private[lifting] object Argument {
   }
 
   private def immutableSet(tree: tpd.Tree)(using Context): Boolean =
-    tree.tpe.widen.dealias.classSymbol == requiredClass("scala.collection.immutable.Set")
+    tree.tpe.widen.dealias.classSymbol == Classes.required("scala.collection.immutable.Set")
 }
 
 /** The patterns of generators and of the functions the compiler writes for them. */

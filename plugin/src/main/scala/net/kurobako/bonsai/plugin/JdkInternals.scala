@@ -7,6 +7,7 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import net.kurobako.bonsai.lifting.Calls
+import scala.collection.mutable
 
 /** The uses of JDK types and members that the JDK does not support, named in the code or by a lookup of a constant
   * name.
@@ -72,8 +73,10 @@ private class JdkInternals(checks: Checks) extends tpd.TreeTraverser {
       symbol.enclosingPackageClass.fullName.toString
     )
 
+  private val reasons = mutable.HashMap.empty[Symbol, Option[String]]
+
   private def unsupported(symbol: Symbol)(using Context): Option[String] =
-    packageOf(symbol).flatMap(JdkPackages.unsupported)
+    reasons.getOrElseUpdate(symbol, packageOf(symbol).flatMap(JdkPackages.unsupported))
 
   private def named(tree: tpd.Tree)(using Context): Boolean = unsupported(tree.symbol).isDefined
 
@@ -93,14 +96,14 @@ private class JdkInternals(checks: Checks) extends tpd.TreeTraverser {
   private def lookup(function: tpd.Tree, arguments: List[tpd.Tree])(using Context): Option[(String, String, String)] =
     function match {
       case tpd.Select(qualifier, _)
-          if function.symbol.owner.fullName.toString == "java.lang.Class" &&
-            Lookups(function.symbol.name.toString) =>
+          if Lookups(function.symbol.name.toString) &&
+            function.symbol.owner.fullName.toString == "java.lang.Class" =>
         receiver(qualifier).map((owner, why) =>
           (constantName(arguments).getOrElse(function.symbol.name.toString), owner, why)
         )
       case tpd.Select(_, _)
-          if function.symbol.owner.fullName.toString == "java.lang.invoke.MethodHandles.Lookup" &&
-            function.symbol.name.toString.startsWith("find") && function.symbol.name.toString != "findClass" =>
+          if function.symbol.name.toString.startsWith("find") && function.symbol.name.toString != "findClass" &&
+            function.symbol.owner.fullName.toString == "java.lang.invoke.MethodHandles.Lookup" =>
         arguments.headOption.flatMap(argument => receiver(argument)).map((owner, why) =>
           (arguments.lift(1).flatMap(constantOf).getOrElse(function.symbol.name.toString), owner, why)
         )

@@ -68,6 +68,172 @@ class MembersSuite extends AnalysisSuite {
   }
 
   test(
+    "a case class derived at an inline call, including one a parent takes, or from a summoned mirror has every field read"
+  ) {
+    val found = findings(
+      Seq(
+        entry(
+          """import Wires.given
+            |  println(Forms.encode[Form] + Mirrors.of[Summoned] + Rows.name + Wires.need[Wired] + Plain(1, 2).a)
+            |  println(List.empty[Listed].size + Option.empty[Held].size + Forms.label[Labelled].length + Boxes.name)""".stripMargin
+        ),
+        "Support.scala" ->
+          """object Forms {
+            |  inline def encode[A]: String = scala.compiletime.summonInline[scala.deriving.Mirror.Of[A]].toString
+            |  inline def label[A]: String = "label"
+            |}
+            |object Mirrors { def of[A](using scala.deriving.Mirror.Of[A]): String = "mirror" }
+            |trait Codec[A]
+            |object Wires {
+            |  inline given auto[A]: Codec[A] = scala.compiletime.summonFrom {
+            |    case _: scala.deriving.Mirror.Of[A] => new Codec[A] {}
+            |    case _                               => new Codec[A] {}
+            |  }
+            |  def need[A](using Codec[A]): String = "wire"
+            |}
+            |class Table[T](using Codec[T]) { def name: String = "table" }
+            |class Box[T] { def name: String = "box" }""".stripMargin,
+        "Rows.scala" ->
+          """import Wires.given
+            |object Rows extends Table[Stored]
+            |object Boxes extends Box[Boxed]
+            |case class Form(user: String, secret: String)
+            |case class Summoned(x: Int, y: Int)
+            |case class Stored(id: Int, created: Long)
+            |case class Wired(left: Int, right: Int)
+            |case class Plain(a: Int, b: Int)
+            |case class Listed(c: Int, d: Int)
+            |case class Held(e: Int, f: Int)
+            |case class Labelled(g: Int, h: Int)
+            |case class Boxed(i: Int, j: Int)""".stripMargin
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnreadField => finding.detail }.sorted,
+      Vector(
+        "Plain.b is a field nothing reads; remove it, or read it",
+        "Listed.c is a field nothing reads; remove it, or read it",
+        "Listed.d is a field nothing reads; remove it, or read it",
+        "Held.e is a field nothing reads; remove it, or read it",
+        "Held.f is a field nothing reads; remove it, or read it",
+        "Labelled.g is a field nothing reads; remove it, or read it",
+        "Labelled.h is a field nothing reads; remove it, or read it",
+        "Boxed.i is a field nothing reads; remove it, or read it",
+        "Boxed.j is a field nothing reads; remove it, or read it"
+      ).sorted
+    )
+  }
+
+  test("case classes a derived class is built from have every field read, and so do the cases of a derived sum") {
+    val found = findings(
+      Seq(
+        entry(
+          """val outer = Outer(Inner(1, 2, Deeper(3, 4)), Some(Optional(5, 6)), Vector(Listed(7, 8)), Map("k" -> Keyed(9, 10)), Circle(1, 2, Mark(3, 4)))
+            |  val choice: Choice = Choice.Left(1, 2)
+            |  println(outer.getClass.getName + choice.getClass.getName + Square(1, 2).getClass.getName + Choice.Right(1).getClass.getName)
+            |  println(Stray(1, 2).p + Holder(Held(1, 2)).held.getClass.getName.length)""".stripMargin
+        ),
+        "Support.scala" ->
+          """trait Codec[A]
+            |object Codec { def derived[A](using scala.deriving.Mirror.Of[A]): Codec[A] = new Codec[A] {} }
+            |case class Outer(
+            |    inner: Inner,
+            |    maybe: Option[Optional],
+            |    many: Vector[Listed],
+            |    keyed: Map[String, Keyed],
+            |    shape: Shape
+            |) derives Codec
+            |case class Inner(a: Int, b: Int, deeper: Deeper)
+            |case class Deeper(c: Int, d: Int)
+            |case class Optional(e: Int, f: Int)
+            |case class Listed(g: Int, h: Int)
+            |case class Keyed(i: Int, j: Int)
+            |sealed trait Shape
+            |case class Circle(radius: Int, centre: Int, mark: Mark) extends Shape
+            |case class Square(side: Int, corner: Int) extends Shape
+            |case class Mark(k: Int, l: Int)
+            |sealed trait Choice derives Codec
+            |object Choice { case class Left(m: Int, n: Int) extends Choice; case class Right(o: Int) extends Choice }
+            |case class Stray(p: Int, q: Int)
+            |case class Held(x: Int, y: Int)
+            |case class Holder(held: Held)""".stripMargin
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnreadField => finding.detail }.sorted,
+      Vector(
+        "Held.x is a field nothing reads; remove it, or read it",
+        "Held.y is a field nothing reads; remove it, or read it",
+        "Stray.q is a field nothing reads; remove it, or read it"
+      ).sorted
+    )
+  }
+
+  test("case classes a derived class holds through Option and List have every field read") {
+    val found = findings(
+      Seq(
+        entry(
+          """val outer = Outer(Some(Inner(1, 2)), List(Inner(3, 4)))
+            |  println(outer.getClass.getName + Stray(1, 2).p)""".stripMargin
+        ),
+        "Support.scala" ->
+          """trait Codec[A]
+            |object Codec { def derived[A](using scala.deriving.Mirror.Of[A]): Codec[A] = new Codec[A] {} }
+            |case class Outer(maybe: Option[Inner], many: List[Inner]) derives Codec
+            |case class Inner(a: Int, b: Int)
+            |case class Stray(p: Int, q: Int)""".stripMargin
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnreadField => finding.detail }.sorted,
+      Vector("Stray.q is a field nothing reads; remove it, or read it")
+    )
+  }
+
+  test("a field read by name through selectDynamic on a type built from its case class is read") {
+    val found = findings(
+      Seq(
+        entry("println(Query.row.id + Query.row.title.length)"),
+        "Query.scala" ->
+          """class Record[T](values: Map[String, Any]) extends Selectable {
+            |  def selectDynamic(name: String): Any = values(name)
+            |}
+            |case class Item(id: Int, title: String, hidden: Int)
+            |object Query {
+            |  type Row = Record[Item] { val id: Int; val title: String }
+            |  val row: Row = new Record[Item](Map("id" -> 1, "title" -> "t")).asInstanceOf[Row]
+            |}""".stripMargin
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnreadField => finding.detail }.sorted,
+      Vector("Item.hidden is a field nothing reads; remove it, or read it")
+    )
+  }
+
+  test("a field main code reads through selectDynamic is not test-only when tests read it plainly") {
+    val found = findings(
+      Seq(
+        entry("println(Query.row.id)"),
+        "Query.scala" ->
+          """class Record[T](values: Map[String, Any]) extends Selectable {
+            |  def selectDynamic(name: String): Any = values(name)
+            |}
+            |case class Item(id: Int, title: String)
+            |object Query {
+            |  type Row = Record[Item] { val id: Int }
+            |  val row: Row = new Record[Item](Map("id" -> 1)).asInstanceOf[Row]
+            |}""".stripMargin
+      ),
+      Seq("ItemTest.scala" -> "object ItemTest { def check(): Int = Item(1, \"t\").id + Item(2, \"u\").title.length }")
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.TestOnlyMember => finding.detail },
+      Vector("Item.title is referenced only from tests")
+    )
+  }
+
+  test(
     "fields of case classes collected into buffers and read by projection are unread when no projection names them"
   ) {
     val found = findings(
@@ -478,7 +644,53 @@ class MembersSuite extends AnalysisSuite {
       Finding.Level.Info
     )
     assertFinding(found, "unused-member", "Poly.Spare is never referenced")
+    val spare = only(found, "unused-member", "Poly.Spare")
+    assertEquals(spare.detail, "Poly.Spare is never referenced")
+    assertEquals(spare.node.line, 2)
     assertNoFinding(found)(_.detail.contains("Units.Metres"))
+  }
+
+  private def aliases(start: String, extra: String = "") = Seq(
+    entry("println(engine.Engine.start)"),
+    "Attempt.scala" ->
+      """package provider
+        |case class Attempt(id: Int)
+        |object Attempt { def key(id: Int): String = id.toString }""".stripMargin,
+    "Aliases.scala" ->
+      """package recovery
+        |type Attempt = provider.Attempt
+        |val Attempt: provider.Attempt.type = provider.Attempt
+        |type Spare = provider.Attempt
+        |val Idle: provider.Attempt.type = provider.Attempt""".stripMargin,
+    "Engine.scala" ->
+      s"""package engine
+        |import recovery.*
+        |object Engine { def start: String = $start$extra }""".stripMargin
+  )
+
+  test("a top-level alias pair is used when the terms or the types naming it are") {
+    val found = findings(aliases("Attempt.key(Attempt(1).id) + of(null)", "; def of(a: Attempt): Int = a.id"))
+    assertNoFinding(found)(_.detail.contains("recovery.Attempt"))
+  }
+
+  private def only(found: Vector[Finding], rule: String, text: String): Finding =
+    found.filter(finding => finding.rule.id == rule && finding.detail.contains(text)) match {
+      case Vector(single) => single
+      case other          => fail(s"expected one finding containing '$text', found ${other.mkString("\n")}")
+    }
+
+  test("a top-level type alias nothing names is unused beside its used term alias") {
+    val found   = findings(aliases("Attempt.key(Attempt(1).id)"))
+    val finding = only(found, "unused-member", "recovery.Attempt")
+    assertEquals(finding.detail, "the type alias recovery.Attempt is never referenced; the value of that name is")
+    assertEquals(finding.node.line, 2)
+  }
+
+  test("a top-level value nothing uses is reported at its own line beside its used type alias") {
+    val found   = findings(aliases("of(null).toString", "; def of(a: Attempt): Int = 1"))
+    val finding = only(found, "unused-member", "recovery.Attempt")
+    assertEquals(finding.detail, "recovery.Attempt is never referenced")
+    assertEquals(finding.node.line, 3)
   }
 
   test("type forwarders created by exports are not judged") {

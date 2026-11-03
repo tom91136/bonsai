@@ -57,7 +57,9 @@ object Algebra {
       parents: Set[String],
       invariant: Predicate,
       access: Access,
-      exported: Boolean
+      exported: Boolean,
+      derived: Boolean = false,
+      returns: Set[String] = Set.empty
   ) {
     def validated: Boolean = access != Access.Open || invariant != Predicate.Known(true)
 
@@ -98,12 +100,14 @@ object Algebra {
   /** Whether every site is test code, so a conclusion drawn from them says more about tests than the design. */
   def onlyTests(sites: Vector[Site]): Boolean = sites.nonEmpty && sites.forall(_.test)
 
-  /** Products and sums of the build; preconditions treat a method's parameters like the fields of a product. */
+  /** Products and sums of the build; preconditions treat a method's parameters like the fields of a product, keyed by
+    * the method key that `sites` uses.
+    */
   case class Model(
       products: Vector[Product],
       sums: Vector[Sum],
       sites: Map[String, Vector[Site]],
-      preconditions: Vector[Product],
+      preconditions: Map[String, Product],
       enumerations: Vector[Enumeration]
   )
 
@@ -167,9 +171,16 @@ object Algebra {
       }
     }
 
+    val byNode = model.products.map(product => product.node -> product).toMap
+    // A builder returns the type it is nested in, so the two share their shape by design.
+    def builder(product: Product): Boolean =
+      nodes.get(product.node).flatMap(_.outer).flatMap(byNode.get).exists(outer =>
+        product.returns(Finding.simple(outer.name)) && product.shape.key == outer.shape.key
+      )
+
     val duplicates =
       model.products.sortBy(_.name).filter(product =>
-        product.parents.isEmpty && product.shape.weight >= MinimumDuplicateWeight
+        product.parents.isEmpty && product.shape.weight >= MinimumDuplicateWeight && !builder(product)
       )
         .groupBy(_.shape.key).values.view
         .flatMap { group =>
@@ -185,7 +196,8 @@ object Algebra {
           named ++ unnamed
         }
         .filter((_, group) =>
-          group.map(_.node).distinct.size > 1 && !sameParent(group) && !intended.settles(group.map(_.name))
+          group.map(_.node).distinct.size > 1 && !group.forall(_.derived) && !sameParent(group) &&
+            !intended.settles(group.map(_.name))
         )
         .toVector.sortBy((named, group) => (!named, -group.head.shape.weight)).flatMap { (named, group) =>
           val kind      = if (named) "with the same field names" else "with different field names"
@@ -204,7 +216,7 @@ object Algebra {
           Finding.at(nodes, group.head.node, Finding.Rule.DuplicateShape, detail, level)
         }
     // Other builds construct a library's public products, so the constructions here do not settle their shape.
-    val constructions = model.products.view.filterNot(_.exported).flatMap { product =>
+    val constructions = model.products.view.filterNot(product => product.exported || product.derived).flatMap { product =>
       model.sites.get(product.name).toVector.flatMap { sites =>
         construction(product, sites).flatMap((rule, detail) =>
           Finding.at(nodes, product.node, rule, detail, onlyTests = onlyTests(sites))

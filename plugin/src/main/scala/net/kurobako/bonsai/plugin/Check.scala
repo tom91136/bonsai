@@ -90,12 +90,15 @@ private object Check {
   val StringRoundTrip         = check("string-round-trip")
   val RepeatedSubexpression   = check("repeated-subexpression")
 
-  private lazy val laws: Map[String, Check] =
+  private lazy val byLaw: Map[String, Check] =
     Laws.ids.map(id => id -> new Check(id, true, Severity.Warning)).toMap
 
   /** The check named by the id of a law of collection chains, which reports what the law finds. */
-  def law(id: String): Check = laws(id)
+  def law(id: String): Check = byLaw(id)
+
+  /** The checks for the laws of collection chains. */
+  def laws: List[Check] = byLaw.values.toList
 
   /** Every check, including one for each law of collection chains. */
-  lazy val all: List[Check] = declared.toList ++ laws.values
+  lazy val all: List[Check] = declared.toList ++ byLaw.values
 }

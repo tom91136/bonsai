@@ -6,11 +6,11 @@ import dotty.tools.dotc.core.Annotations.Annotation
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.MethodType
 import dotty.tools.dotc.core.Types.PolyType
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 
 /** Reports leftovers of reshuffling code to satisfy detectors: a private, local or inline method that only calls
@@ -20,7 +20,7 @@ import scala.collection.mutable
   * parameters must fit a function type, is left alone.
   */
 private class Aliases(checks: Checks)(using Context) {
-  private val Unused = requiredClass("scala.annotation.unused")
+  private val Unused = Classes.required("scala.annotation.unused")
 
   def run(tree: tpd.Tree): Unit = {
     val methods = mutable.ListBuffer.empty[tpd.DefDef]

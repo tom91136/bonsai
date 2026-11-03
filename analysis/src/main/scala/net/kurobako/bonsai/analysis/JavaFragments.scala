@@ -46,7 +46,7 @@ object JavaFragments {
       Clones.Literal(
         value.text,
         reference = true,
-        parameter = Option.when(value.parameter >= 0)(Clones.Binding(value.parameter, value.suffix))
+        parameter = Option.when(value.parameter >= 0)(Clones.Binding(value.parameter, value.suffix)())
       )(value.shown)
     else Clones.Literal(value.text, string = value.kind == 'S')()
 }

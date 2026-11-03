@@ -13,7 +13,6 @@ import dotty.tools.dotc.core.Names.termName
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.AndType
 import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.OrType
@@ -26,6 +25,7 @@ import dotty.tools.dotc.util.NoSourcePosition
 import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.effects.Partials
 import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 
 /** Lints that need the types of expressions, which SemanticDB does not record: array comparisons, conversions to the
@@ -36,7 +36,7 @@ private class LintPhase(
     wildcards: Int,
     checks: Checks,
     partials: Map[String, Partials.Partial],
-    throwing: Deferred[List[(scala.util.matching.Regex, List[String])]],
+    throwing: Deferred[ThrowingTable],
     hot: String => Boolean,
     hotDeclared: Boolean,
     cold: String => Boolean,
@@ -59,6 +59,12 @@ private class LintPhase(
   // Compiler-generated methods are not the author's code, but lambdas, which are synthetic methods too, are.
   private def authored(using Context): Boolean = !ctx.owner.is(Flags.Synthetic) || ctx.owner.isAnonymousFunction
 
+  private val positionals = checks.owning(
+    List(Check.LongArguments, Check.SameTypeArguments, Check.SwappedArguments, Check.BooleanArgument)
+  )
+  private val classifications = checks.owning(List(Check.MessageClassification))
+  private val identities      = checks.owning(List(Check.IdentityToken))
+
   private def refinements(using Context): Refinements =
     Refinements(
       checks,
@@ -66,25 +72,52 @@ private class LintPhase(
       Trees.enclosedBy(ctx.owner, owner => hot(Calls.qualified(owner)))
     )
 
+  // A pass runs only when some check it reports is enabled, and reports no other.
+  private def pass(owned: Check*)(run: Checks => Unit): Unit = {
+    val owning = checks.owning(owned)
+    if (owning.active) run(owning)
+  }
+
   override def transformUnit(tree: tpd.Tree)(using Context): tpd.Tree = {
-    Loops(checks, hot, hotDeclared).run(tree)
-    Chains(checks).run(tree)
-    Repeats(checks).run(tree)
-    Exceptions(checks, partials, throwing.value).run(tree)
-    Effects(checks).run(tree)
-    Implied(checks).run(tree)
-    Concurrency(checks).traverse(tree)
-    Fields(checks).run(tree)
-    Equality(checks).run(tree)
-    Nowarns(checks).run(tree)
-    Lambdas(checks, hot, cold).run(tree)
-    Aliases(checks).run(tree)
-    Bundles(checks).run(tree)
-    JdkInternals(checks).traverse(tree)
-    Branches(checks).run(tree)
-    Bindings(checks).run(tree)
-    Lazies(checks).run(tree)
-    RoundTrips(checks).run(tree)
+    pass(
+      Check.AccumulatingConcat,
+      Check.BoxingFold,
+      Check.InlineSetMembership,
+      Check.InvariantInLoop,
+      Check.KeyedLookupInLoop,
+      Check.LinearInLoop,
+      Check.LiteralTableInDef,
+      Check.LoopBoxing,
+      Check.RegexInDef,
+      Check.TupleDestructure
+    )(Loops(_, hot, hotDeclared).run(tree))
+    pass(Check.laws*)(Chains(_).run(tree))
+    pass(Check.RepeatedSubexpression)(Repeats(_).run(tree))
+    pass(
+      Check.BroadCatch,
+      Check.DiscardedCause,
+      Check.LocalThrow,
+      Check.PartialInTry,
+      Check.RedundantTry,
+      Check.ThrowInDefault,
+      Check.ThrowingHelper
+    )(Exceptions(_, partials, throwing.value).run(tree))
+    pass(Check.EagerEffect)(Effects(_).run(tree))
+    pass(Check.ImpliedCondition)(Implied(_).run(tree))
+    pass(Check.BlockingCommonPool, Check.OrphanThread, Check.ReimplementedJoin, Check.UnboundedWait)(
+      Concurrency(_).traverse(tree)
+    )
+    pass(Check.WriteOnlyField)(Fields(_).run(tree))
+    pass(Check.UnstableEquality)(Equality(_).run(tree))
+    pass(Check.NowarnSuppression)(Nowarns(_).run(tree))
+    pass(Check.FunctionAppliedOnce, Check.LambdaTrait)(Lambdas(_, hot, cold).run(tree))
+    pass(Check.ForwardingAlias, Check.UnusedPrivateParam)(Aliases(_).run(tree))
+    pass(Check.ParameterObjectUnpacked)(Bundles(_).run(tree))
+    pass(Check.JdkInternal)(JdkInternals(_).traverse(tree))
+    pass(Check.IdenticalBranches, Check.RepeatedBranchCall)(Branches(_).run(tree))
+    pass(Check.BindingInOneBranch)(Bindings(_).run(tree))
+    pass(Check.HandWrittenLazy)(Lazies(_).run(tree))
+    pass(Check.StringRoundTrip)(RoundTrips(_).run(tree))
     tree
   }
 
@@ -138,18 +171,19 @@ private class LintPhase(
   }
 
   override def transformTemplate(tree: tpd.Template)(using Context): tpd.Tree = {
-    if (authored) tokens(tree)
+    if (identities.active && authored) tokens(tree)
     tree
   }
 
   override def transformIf(tree: tpd.If)(using Context): tpd.Tree = {
     // Inline methods such as assert expand to conditionals whose source is the method's own.
-    if (authored && tree.source == ctx.compilationUnit.source) classification(tree.cond, Set.empty)
+    if (classifications.active && authored && tree.source == ctx.compilationUnit.source)
+      classification(tree.cond, Set.empty)
     tree
   }
 
   override def transformCaseDef(tree: tpd.CaseDef)(using Context): tpd.Tree = {
-    if (authored && !tree.guard.isEmpty) classification(tree.guard, messages(tree.pat))
+    if (classifications.active && authored && !tree.guard.isEmpty) classification(tree.guard, messages(tree.pat))
     tree
   }
 
@@ -238,7 +272,7 @@ private class LintPhase(
   }
 
   private def iterator(tpe: Type)(using Context): Boolean =
-    tpe.derivesFrom(defn.IteratorClass) || tpe.derivesFrom(requiredClass("java.util.Iterator"))
+    tpe.derivesFrom(defn.IteratorClass) || tpe.derivesFrom(Classes.required("java.util.Iterator"))
 
   private val OrderedComparisons: Set[Name] = Set(termName("sameElements"), termName("corresponds"))
 
@@ -253,7 +287,7 @@ private class LintPhase(
 
   // Sorted and sequenced maps, and sets kept sorted or in insertion order, define their iteration order.
   private def orderless(tpe: Type)(using Context): Boolean = {
-    def derives(name: String) = tpe.derivesFrom(requiredClass(name))
+    def derives(name: String) = tpe.derivesFrom(Classes.required(name))
     derives("scala.collection.Set") &&
     !List("scala.collection.SortedSet", "scala.collection.immutable.ListSet", "scala.collection.mutable.LinkedHashSet")
       .exists(derives(_)) ||
@@ -269,17 +303,19 @@ private class LintPhase(
     * meaning to add.
     */
   private def arguments(tree: tpd.Apply)(using Context): Unit = {
-    val method     = tree.fun.symbol
+    val method = tree.fun.symbol
+    if (positionals.active && tree.args.lengthCompare(1) > 0 && method.exists && !standard(method)) positional(tree)
+  }
+
+  private def positional(tree: tpd.Apply)(using Context): Unit = {
     val parameters = Trees.parameters(tree)
     val contextual = parameters.exists(_.isOneOf(Flags.Given | Flags.Implicit))
     val repeated   = parameters.exists(_.info.isRepeatedParam)
     val written    = tree.args.zip(parameters).takeWhile((argument, _) =>
-      !argument.isInstanceOf[tpd.NamedArg] && !LintPhase.labelled(argument) &&
-        !argument.symbol.name.is(DefaultGetterName) &&
-        argument.span.exists &&
-        !argument.span.isSynthetic
+      !argument.isInstanceOf[tpd.NamedArg] && argument.span.exists && !argument.span.isSynthetic &&
+        !argument.symbol.name.is(DefaultGetterName) && !LintPhase.labelled(argument)
     )
-    if (method.exists && !standard(method) && !contextual && !repeated && written.size > 1) {
+    if (!contextual && !repeated && written.size > 1) {
       // A placeholder cannot be named: `f(x = _)` is a function of its own.
       val unlabelled = written.filter((argument, parameter) =>
         !named(argument, parameter) && !argument.symbol.name.is(WildcardParamName) && meaningful(parameter) &&
@@ -288,7 +324,7 @@ private class LintPhase(
       // Each call gets its most specific warning: a long list, then swapped names, then ambiguous neighbours.
       val long = unlabelled.size > MaximumPositional && written.size == tree.args.size
       if (long)
-        checks(
+        positionals(
           Check.LongArguments,
           s"${unlabelled.size} positional arguments; name them",
           tree.srcPos,
@@ -298,7 +334,7 @@ private class LintPhase(
         case Seq((first, left), (second, right))
             if !long && literal(first) && literal(second) && left.info =:= right.info &&
               meaningful(left) && meaningful(right) =>
-          checks(
+          positionals(
             Check.SameTypeArguments,
             s"${left.name} and ${right.name} share a type; name the arguments, or take them together as a named tuple " +
               "or a case class, so they cannot be swapped",
@@ -313,12 +349,12 @@ private class LintPhase(
           other != parameter && named(argument, other) && named(crossed, parameter) &&
             argument.tpe.widen <:< other.info.widen && !deliberate(argument, crossed)
         ).foreach((_, other) =>
-          checks(Check.SwappedArguments, s"${other.name} is passed to ${parameter.name}", argument.srcPos)
+          positionals(Check.SwappedArguments, s"${other.name} is passed to ${parameter.name}", argument.srcPos)
         )
         argument match {
           case tpd.Literal(constant)
               if constant.tag == Constants.BooleanTag && parameter.info.isRef(defn.BooleanClass) =>
-            checks(
+            positionals(
               Check.BooleanArgument,
               s"name the Boolean argument ${parameter.name}",
               argument.srcPos,
@@ -356,7 +392,7 @@ private class LintPhase(
       argument.symbol.owner == crossed.symbol.owner && argument.symbol.owner == ctx.owner.enclosingMethod
 
   private def standard(symbol: Symbol)(using Context): Boolean =
-    Vector("scala.", "java.", "javax.").exists(symbol.fullName.toString.startsWith(_))
+    Vector("scala.", "java.", "javax.").exists(Calls.qualified(symbol).startsWith(_))
 
   // A parameter of an override of a library method takes the type the library fixes, which the build cannot change.
   private def fixedByLibrary(selector: tpd.Tree)(using Context): Boolean =
@@ -515,7 +551,7 @@ private class LintPhase(
 
   private def unitInMap(tree: tpd.Tree, receiver: tpd.Tree, function: tpd.Tree)(using Context): Unit = {
     val source = receiver.tpe.widen
-    val mapped = source.derivesFrom(requiredClass("scala.collection.IterableOnce")) ||
+    val mapped = source.derivesFrom(Classes.required("scala.collection.IterableOnce")) ||
       source.derivesFrom(defn.OptionClass)
     val results = function.tpe.widen.argInfos
     if (mapped && defn.isFunctionType(function.tpe.widen) && results.lastOption.exists(_.isRef(defn.UnitClass)))
@@ -567,7 +603,7 @@ private class LintPhase(
         val owner  = symbol.owner.companionClass
         Wrappers.get(Calls.qualified(owner)).filter((java, converter) =>
           (symbol.name == nme.apply || symbol.name.toString == converter) &&
-            argument.tpe.widen.derivesFrom(requiredClass(java))
+            argument.tpe.widen.derivesFrom(Classes.required(java))
         ).foreach { _ =>
           val simple = Trees.text(argument).matches("[A-Za-z_][A-Za-z0-9_.]*")
           checks(
@@ -583,7 +619,7 @@ private class LintPhase(
   }
 
   private def nested(tree: tpd.Tree, tpe: Type)(using Context): Unit = {
-    val future: Symbol = requiredClass("scala.concurrent.Future")
+    val future: Symbol = Classes.required("scala.concurrent.Future")
     tpe.widen.dealias match {
       case AppliedType(outer, List(AppliedType(inner, _)))
           if outer.typeSymbol == future && inner.typeSymbol == future =>
@@ -601,13 +637,17 @@ private class LintPhase(
     * parameters are not declarations, and classes the build leaves out of its hot ones, such as test suites, may box.
     */
   private def unspecialised(tree: tpd.ValDef)(using Context): Unit = {
-    val symbol    = tree.symbol
-    val function  = tree.tpt.tpe.dealias
+    val symbol   = tree.symbol
+    val function = tree.tpt.tpe.dealias
+    if (symbol.exists && defn.isPlainFunctionClass(function.typeSymbol)) unspecialised(tree, symbol, function)
+  }
+
+  private def unspecialised(tree: tpd.ValDef, symbol: Symbol, function: Type)(using Context): Unit = {
     val arguments = function.argInfos
     if (
-      symbol.exists && !symbol.isOneOf(Flags.Synthetic | Flags.Inline | Flags.ParamAccessor) && !coldCode &&
+      !symbol.isOneOf(Flags.Synthetic | Flags.Inline | Flags.ParamAccessor) && !coldCode &&
       !(symbol.is(Flags.Param) && (symbol.owner.isAnonymousFunction || symbol.owner.allOverriddenSymbols.hasNext)) &&
-      !symbol.allOverriddenSymbols.hasNext && defn.isPlainFunctionClass(function.typeSymbol) &&
+      !symbol.allOverriddenSymbols.hasNext &&
       arguments.exists(argument => Trees.primitive(argument) && !argument.isRef(defn.BooleanClass)) &&
       !defn.isSpecializableFunctionSAM(arguments.init, arguments.last)
     ) {
@@ -644,7 +684,7 @@ private class LintPhase(
         Classifications(name.toString) && (message(receiver) && text(argument) || message(argument) && text(receiver))
       case _ => false
     }.foreach(comparison =>
-      checks(
+      classifications(
         Check.MessageClassification,
         "classifying an error by its message text breaks when the wording changes; give the error a distinct case or type",
         comparison.srcPos
@@ -668,8 +708,8 @@ private class LintPhase(
     * a `Using.Manager` registered closes on every path, as does one an earlier statement already closes.
     */
   private def closing(statements: List[tpd.Tree])(using Context): Unit = {
-    val all     = statements.toVector
-    val closers = all.zipWithIndex.flatMap((statement, at) =>
+    val all          = statements.toVector
+    lazy val closers = all.zipWithIndex.flatMap((statement, at) =>
       statement.filterSubTrees(closed(_).isDefined).flatMap(closed(_)).distinct.map(_ -> at)
     ).groupMap(_._1)(_._2)
     all.zipWithIndex.foreach {
@@ -713,7 +753,7 @@ private class LintPhase(
       template.body.foreach {
         case field: tpd.ValDef
             if candidates(field.symbol) && uses.compared(field.symbol) && !uses.other(field.symbol) =>
-          checks(
+          identities(
             Check.IdentityToken,
             s"${field.name} is an Object() compared only by identity; make the operation a method of its owner, or " +
               "compare the owners",
@@ -752,16 +792,51 @@ private class LintPhase(
 }
 
 private object LintPhase {
-  private val Preceded = """(?s).*[(,]\s*[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*""".r
-  private val Labelled = """(?s)[A-Za-z_$][A-Za-z0-9_$]*\s*=[^=>].*""".r
+  private def space(char: Char): Boolean = char == ' ' || (char >= '\t' && char <= '\r')
+
+  private def identifierStart(char: Char): Boolean =
+    char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char == '_' || char == '$'
+
+  private def identifierPart(char: Char): Boolean = identifierStart(char) || char >= '0' && char <= '9'
+
+  /** Whether the 256 characters of `content` before `end` finish with `(name = ` or `, name = `. */
+  private def preceded(content: Array[Char], end: Int): Boolean = {
+    val from = (end - 256).max(0)
+    var at   = end.min(content.length) - 1
+    while (at >= from && space(content(at))) at -= 1
+    if (at < from || content(at) != '=') false
+    else {
+      at -= 1
+      while (at >= from && space(content(at))) at -= 1
+      val last = at
+      while (at >= from && identifierPart(content(at))) at -= 1
+      if (at == last || !identifierStart(content(at + 1))) false
+      else {
+        while (at >= from && space(content(at))) at -= 1
+        at >= from && (content(at) == '(' || content(at) == ',')
+      }
+    }
+  }
+
+  /** Whether the text of `content` from `start` until `end` begins `name = value`. */
+  private def begins(content: Array[Char], start: Int, end: Int): Boolean = {
+    val limit = end.min(content.length)
+    var at    = start
+    if (at >= limit || !identifierStart(content(at))) false
+    else {
+      while (at < limit && identifierPart(content(at))) at += 1
+      while (at < limit && space(content(at))) at += 1
+      at + 1 < limit && content(at) == '=' && content(at + 1) != '=' && content(at + 1) != '>'
+    }
+  }
 
   /** Whether an argument was written as `name = value`, which typing can erase, as overload resolution does. Its span
     * may start at the value or at the name.
     */
   private def labelled(argument: tpd.Tree)(using Context): Boolean = argument.span.exists &&
     !argument.span.isSynthetic && {
-      val start = argument.span.start
-      Preceded.matches(argument.source.content.slice((start - 256).max(0), start).mkString) ||
-      Labelled.matches(Trees.text(argument))
+      val position = argument.sourcePos
+      preceded(argument.source.content(), argument.span.start) ||
+      begins(position.source.content(), position.start, position.end)
     }
 }

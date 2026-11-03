@@ -95,7 +95,9 @@ case class Polynomial(terms: Map[Polynomial.Monomial, BigInt]) {
 
   @targetName("times")
   def *(that: Polynomial): Polynomial =
-    if (terms.size * that.terms.size > MaxTerms) opaque(Vector(key, that.key).sorted.mkString("(", ")*(", ")"))
+    if (that.isOne && terms.size <= MaxTerms) this
+    else if (isOne && that.terms.size <= MaxTerms) that
+    else if (terms.size * that.terms.size > MaxTerms) opaque(Vector(key, that.key).sorted.mkString("(", ")*(", ")"))
     else {
       val rights   = that.terms.toVector
       val products = for {
@@ -106,6 +108,8 @@ case class Polynomial(terms: Map[Polynomial.Monomial, BigInt]) {
       } -> leftCount * rightCount
       Polynomial(products.groupMapReduce(_._1)(_._2)(_ + _))
     }
+
+  private def isOne: Boolean = terms.size == 1 && terms.head._1.isEmpty && terms.head._2 == 1
 
   /** Number of atom and variable occurrences in the largest term, a rough measure of structural weight. */
   def weight: Int = terms.keys.map(_.values.sum).maxOption.getOrElse(0)

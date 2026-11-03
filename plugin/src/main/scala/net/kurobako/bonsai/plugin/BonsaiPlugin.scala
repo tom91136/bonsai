@@ -62,8 +62,10 @@ class BonsaiPlugin extends StandardPlugin {
     problems ++= parsed.collect { case Left(problem) => problem }
     val edits    = parsed.collect { case Right(edit) => edit }
     val throwing = Deferred(
-      edits.foldLeft(Throwing.throws(platform))((table, edit) => edit(table)).toList.map((pattern, exceptions) =>
-        pattern.r -> exceptions
+      ThrowingTable(
+        edits.foldLeft(Throwing.throws(platform))((table, edit) => edit(table)).toList.map((pattern, exceptions) =>
+          pattern.r -> exceptions
+        )
       )
     )
     // `checked=<type>` names, by its qualified name, a refinement type whose checked operations the others bypass.

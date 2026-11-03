@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.analysis
 
+import net.kurobako.bonsai.collections.Sink
 import scala.collection.mutable
 
 /** The bounds and charges the cost model of either language is made of. */
@@ -10,7 +11,7 @@ private object Charges {
     val Unknown: Bound = Bound(Atoms.Unknown, Atoms.Unknown)
   }
 
-  /** Time and allocation bounds; allocation counts the copies of collections an operation makes. */
+  /** Time and space bounds; space counts the copies of collections an operation makes that outlive the call. */
   case class Bound(time: Polynomial, space: Polynomial) {
     def +(that: Bound): Bound = Bound(time + that.time, space + that.space)
 
@@ -41,7 +42,7 @@ private object Charges {
   def linearIn(time: Polynomial): Boolean = Atoms.terms(time).exists(_.degree == 1)
 
   private def sum(charges: Iterable[Charge]): Bound =
-    charges.foldLeft(Bound.Zero)((total, charge) => total + Bound(charge.time, charge.space))
+    charges.foldLeft(Bound.Zero)((total, charge) => total + Bound(charge.time, charge.escaping))
 
   final class Memo[K] {
     private val summaries = mutable.Map.empty[K, Bound]
@@ -107,30 +108,35 @@ private object Charges {
     }
   }
 
-  /** One costly operation, its cost already multiplied by the turns of the loops around it. */
+  /** One costly operation, its cost already multiplied by the turns of the loops around it. Its space is what is live
+    * at once, which only the loops it is kept across multiply; `escaping` is the space a caller inherits, which is the
+    * part the method returns or stores.
+    */
   case class Charge(
       what: String,
       within: Option[String],
       time: Polynomial,
       space: Polynomial,
+      escaping: Polynomial,
       linear: Boolean,
       callback: Boolean,
       terminal: Boolean,
       line: Int
   ) {
     def scaled(factor: Polynomial): Charge =
-      if (terminal) this else copy(time = time * factor, space = space * factor)
+      if (terminal) this else copy(time = time * factor, space = space * factor, escaping = escaping * factor)
 
     def hit(terms: Vector[Complexity.Term]): Complexity.Hit = Complexity.Hit(terms, what, within, line)
   }
 
   object Charge {
-    def at(scope: Scope, counted: Scope, work: Work, line: Int): Charge =
+    def at(scope: Scope, counted: Scope, work: Work, line: Int, sink: Sink = Sink.Returned): Charge =
       Charge(
         work.what,
         scope.loops.findLast(!_.hidden).map(_.label),
         counted.factor * work.time,
-        counted.factor * work.space,
+        counted.factorFrom(sink.level) * work.space,
+        if (sink.escapes) counted.factor * work.space else Polynomial.Zero,
         work.linear,
         scope.callback,
         scope.terminal,

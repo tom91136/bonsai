@@ -5,17 +5,17 @@ import dotty.tools.dotc.ast.tpd.TreeOps
 import dotty.tools.dotc.core.Annotations.Annotation
 import dotty.tools.dotc.core.Constants.Constant
 import dotty.tools.dotc.core.Contexts.Context
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.AnnotatedType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import dotty.tools.dotc.util.Spans.Span
+import net.kurobako.bonsai.lifting.Classes
 
 /** Reports `@nowarn` annotations whose filters name only bonsai messages, on definitions and ascribed to expressions,
   * since a build without bonsai reports them as unused. `@SuppressWarnings` suppresses the same checks without it.
   */
 private class Nowarns(checks: Checks)(using Context) {
-  private val Nowarn  = requiredClass("scala.annotation.nowarn")
+  private val Nowarn  = Classes.required("scala.annotation.nowarn")
   private val Message = """msg=bonsai(?::([a-z][a-z0-9-]*))?""".r
 
   def run(tree: tpd.Tree): Unit = tree.foreachSubTree {

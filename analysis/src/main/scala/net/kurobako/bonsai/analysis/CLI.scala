@@ -9,7 +9,8 @@ import java.util.concurrent.TimeUnit
 object CLI {
   private val usage =
     "usage: bonsai-analysis --manifest <file> [--generated <glob>]... [--info] [--purity] [--mode dev|ci] " +
-      "[--disable <rule>]... [--error <rule>]... [--warn <rule>]... [--baseline <file>] [--write-baseline <file>] " +
+      "[--disable <rule>]... [--generated-disable <rule>|*]... [--error <rule>]... [--warn <rule>]... " +
+      "[--baseline <file>] [--write-baseline <file>] " +
       "[--purity-lock <file>] [--write-purity-lock <file>] [--effects <prefix>=<kind>,...]... [--concurrent <method>]... " +
       "[--reflective <glob>]... [--hot <glob>]... [--intended <glob>=<glob>]... " +
       "[--bounded <member> <max> <reason>]... " +
@@ -32,6 +33,7 @@ object CLI {
       generated: Vector[String] = Vector.empty,
       info: Boolean = false,
       disabled: Set[String] = Set.empty,
+      generatedDisabled: Set[String] = Set.empty,
       errors: Set[String] = Set.empty,
       warnings: Set[String] = Set.empty,
       mode: Mode = Mode.Dev,
@@ -101,7 +103,14 @@ object CLI {
       val baseline = options.baseline.filter(Files.exists(_)).fold(Set.empty[String])(file =>
         Report.keys(Files.readString(file))
       )
-      val report = Report.Options(options.disabled, options.failing, baseline, options.info, options.warnings)
+      val report = Report.Options(
+        options.disabled,
+        options.failing,
+        baseline,
+        options.info,
+        options.warnings,
+        options.generatedDisabled
+      )
       options.record.foreach(file =>
         Files.writeString(file, Report.write(Report(findings, result.graph.nodes, report.copy(info = false)))): Unit
       )
@@ -215,12 +224,15 @@ object CLI {
       parse(rest, options.copy(generated = options.generated :+ s"glob:$pattern"))
     case "--mode" :: mode :: _ if !Mode.values.exists(_.id == mode) => Left(s"unknown mode: $mode\n$usage")
     case "--mode" :: mode :: rest => parse(rest, options.copy(mode = Mode.values.find(_.id == mode).get))
-    case "--disable" :: rule :: _ if !rules(rule)              => Left(s"unknown rule: $rule\n$usage")
-    case "--warn" :: rule :: _ if !rules(rule)                 => Left(s"unknown rule: $rule\n$usage")
-    case "--error" :: rule :: _ if rule != "*" && !rules(rule) => Left(s"unknown rule: $rule\n$usage")
-    case "--disable" :: rule :: rest => parse(rest, options.copy(disabled = options.disabled + rule))
-    case "--warn" :: rule :: rest    => parse(rest, options.copy(warnings = options.warnings + rule))
-    case "--error" :: rule :: rest   => parse(rest, options.copy(errors = options.errors + rule))
-    case other :: _                  => Left(s"unknown argument: $other\n$usage")
+    case "--disable" :: rule :: _ if !rules(rule)                          => Left(s"unknown rule: $rule\n$usage")
+    case "--generated-disable" :: rule :: _ if rule != "*" && !rules(rule) => Left(s"unknown rule: $rule\n$usage")
+    case "--warn" :: rule :: _ if !rules(rule)                             => Left(s"unknown rule: $rule\n$usage")
+    case "--error" :: rule :: _ if rule != "*" && !rules(rule)             => Left(s"unknown rule: $rule\n$usage")
+    case "--disable" :: rule :: rest           => parse(rest, options.copy(disabled = options.disabled + rule))
+    case "--generated-disable" :: rule :: rest =>
+      parse(rest, options.copy(generatedDisabled = options.generatedDisabled + rule))
+    case "--warn" :: rule :: rest  => parse(rest, options.copy(warnings = options.warnings + rule))
+    case "--error" :: rule :: rest => parse(rest, options.copy(errors = options.errors + rule))
+    case other :: _                => Left(s"unknown argument: $other\n$usage")
   }
 }

@@ -156,10 +156,14 @@ class JavaPluginSuite extends munit.FunSuite {
       |""".stripMargin)
 
     val dropped =
-      model.sites.find(site => site.callee == "demo.Service.helper" && site.caller == "demo.Service.run").get
+      model.sites.find(site =>
+        site.callee == "demo.Service.helper()Ljava/lang/String;" && site.caller == "demo.Service.run()V"
+      ).get
     assert(dropped.discarded, "the result of the call is dropped")
 
-    val used = model.sites.find(site => site.callee == "demo.Service.helper" && site.caller == "demo.Service.use").get
+    val used = model.sites.find(site =>
+      site.callee == "demo.Service.helper()Ljava/lang/String;" && site.caller == "demo.Service.use()Ljava/lang/String;"
+    ).get
     assert(!used.discarded, "the result of the call is used")
   }
 
@@ -184,10 +188,13 @@ class JavaPluginSuite extends munit.FunSuite {
       |""".stripMargin)
 
     val inverted =
-      model.sites.find(site => site.callee == "demo.Service.expired" && site.caller == "demo.Service.inverted").get
+      model.sites.find(site =>
+        site.callee == "demo.Service.expired()Z" && site.caller == "demo.Service.inverted()Z"
+      ).get
     assert(inverted.negated, "the code inverts the result of the call")
 
-    val read = model.sites.find(site => site.callee == "demo.Service.expired" && site.caller == "demo.Service.read").get
+    val read =
+      model.sites.find(site => site.callee == "demo.Service.expired()Z" && site.caller == "demo.Service.read()Z").get
     assert(!read.negated, "the code reads the result of the call as it is")
   }
 
@@ -207,8 +214,8 @@ class JavaPluginSuite extends munit.FunSuite {
       |}
       |""".stripMargin)
 
-    val site = model.sites.find(_.callee == "demo.Service.helper").get
-    assertEquals(site.caller, "demo.Service.find")
+    val site = model.sites.find(_.callee == "demo.Service.helper(Ljava/lang/String;ZI)Ljava/lang/String;").get
+    assertEquals(site.caller, "demo.Service.find(Ljava/lang/String;)Ljava/lang/String;")
     assertEquals(site.arguments, Vector("unknown", "true", "number:3"))
   }
 
@@ -228,7 +235,7 @@ class JavaPluginSuite extends munit.FunSuite {
       |}
       |""".stripMargin)
 
-    val site = model.sites.find(_.callee == "demo.Service.helper").get
+    val site = model.sites.find(_.callee == "demo.Service.helper(Ljava/lang/String;)Ljava/lang/String;").get
     assertEquals(site.arguments, Vector("text:a\nb"))
 
     // The model is written as records a line each, and read back as it was.
@@ -236,7 +243,10 @@ class JavaPluginSuite extends munit.FunSuite {
       val file = directory.resolve("model.tsv")
       Model.write(model, file)
       val read = Model.read(file).fold(error => fail(error), identity)
-      assertEquals(read.sites.find(_.callee == "demo.Service.helper").get.arguments, Vector("text:a\nb"))
+      assertEquals(
+        read.sites.find(_.callee == "demo.Service.helper(Ljava/lang/String;)Ljava/lang/String;").get.arguments,
+        Vector("text:a\nb")
+      )
     }
   }
 
@@ -582,9 +592,9 @@ class JavaPluginSuite extends munit.FunSuite {
       |}
       |""".stripMargin)
 
-    val takes = model.sites.filter(_.callee == "demo.Service.take").map(_.arguments)
+    val takes = model.sites.filter(_.callee == "demo.Service.take(Ljava/util/Optional;)V").map(_.arguments)
     assertEquals(takes, Vector(Vector("absent"), Vector("present:"), Vector("unknown"), Vector("unknown")))
-    val counts = model.sites.filter(_.callee == "demo.Service.count").map(_.arguments)
+    val counts = model.sites.filter(_.callee == "demo.Service.count(Ljava/util/OptionalInt;)V").map(_.arguments)
     assertEquals(counts, Vector(Vector("absent"), Vector("present:")))
   }
 
@@ -609,7 +619,7 @@ class JavaPluginSuite extends munit.FunSuite {
       |}
       |""".stripMargin)
 
-    val takes = model.sites.filter(_.callee == "demo.Service.take").map(_.arguments)
+    val takes = model.sites.filter(_.callee == "demo.Service.take(Ljava/util/Optional;)V").map(_.arguments)
     assertEquals(takes, Vector(Vector("unknown"), Vector("unknown")))
   }
 
@@ -630,7 +640,7 @@ class JavaPluginSuite extends munit.FunSuite {
         |""".stripMargin)*
     )
 
-    val site = model.sites.find(_.callee == "demo.Service.take").get
+    val site = model.sites.find(_.callee == "demo.Service.take(Ljava/lang/String;Ljava/lang/String;I)V").get
     assertEquals(site.arguments, Vector("unknown", "unknown", "present:count"))
   }
 
@@ -653,7 +663,7 @@ class JavaPluginSuite extends munit.FunSuite {
         |""".stripMargin)*
     )
 
-    val site = model.sites.find(_.callee == "demo.Service.take").get
+    val site = model.sites.find(_.callee == "demo.Service.take(Ljava/lang/String;Ljava/lang/String;)V").get
     assertEquals(site.arguments, Vector("unknown", "present:plain"))
   }
 
@@ -680,7 +690,7 @@ class JavaPluginSuite extends munit.FunSuite {
         |""".stripMargin)*
     )
 
-    val site = model.sites.find(_.callee == "demo.Service.take").get
+    val site = model.sites.find(_.callee == "demo.Service.take(Ljava/lang/String;ILjava/lang/String;)V").get
     assertEquals(site.arguments, Vector("unknown", "present:size", "present:field"))
   }
 
@@ -708,7 +718,7 @@ class JavaPluginSuite extends munit.FunSuite {
     )
 
     val sites = model.sites.filter(_.callee == "demo.Point")
-    assertEquals(sites.map(_.caller), Vector("demo.Use", "demo.Use.make"))
+    assertEquals(sites.map(_.caller), Vector("demo.Use", "demo.Use.make(I)Ldemo/Point;"))
     assertEquals(sites.map(_.arguments), Vector(Vector("number:1", "number:-2"), Vector("present:x", "number:0")))
   }
 
@@ -1358,11 +1368,11 @@ class JavaPluginSuite extends munit.FunSuite {
     )
 
     assertEquals(
-      found("demo.Service.take").guard,
+      found("demo.Service.take(II)I").guard,
       Model.Guard.Compare("count", ">=", BigDecimal(0)).and(Model.Guard.Not(Model.Guard.Unknown))
     )
-    assertEquals(found("demo.Service.give").guard, Model.Guard.Compare("step", ">", BigDecimal(1)))
-    assertEquals(found("demo.Service.keep").guard, Model.Guard.Compare("count", ">", BigDecimal(3)))
+    assertEquals(found("demo.Service.give(I)I").guard, Model.Guard.Compare("step", ">", BigDecimal(1)))
+    assertEquals(found("demo.Service.keep(I)I").guard, Model.Guard.Compare("count", ">", BigDecimal(3)))
   }
 
   test("a method that is only a check of a flag or of presence has no precondition") {
@@ -1397,7 +1407,7 @@ class JavaPluginSuite extends munit.FunSuite {
         |""".stripMargin
     )
 
-    assertEquals(found.keySet, Set("demo.Checks.both"))
+    assertEquals(found.keySet, Set("demo.Checks.both(ZI)V"))
   }
 
   test("a method that overrides another has no precondition") {
@@ -1467,7 +1477,7 @@ class JavaPluginSuite extends munit.FunSuite {
         |""".stripMargin
     )
 
-    assertEquals(found.keySet, Set("demo.Closed.take", "demo.Pair.take"))
+    assertEquals(found.keySet, Set("demo.Closed.take(I)I", "demo.Pair.take(I)I"))
   }
 
   test("an overloaded method has no precondition") {
@@ -1582,11 +1592,14 @@ class JavaPluginSuite extends munit.FunSuite {
     assertEquals(
       classSites(model, "demo.Interval").map(_.arguments),
       Vector(
-        Vector("number:1", "number:9", "text:a", "unknown"),
-        Vector("number:-2", "present:top", "text:b", "unknown")
+        Vector("number:1", "number:9", "text:a"),
+        Vector("number:-2", "present:top", "text:b")
       )
     )
-    assertEquals(classSites(model, "demo.Interval").map(_.caller), Vector("demo.Use", "demo.Use.make"))
+    assertEquals(
+      classSites(model, "demo.Interval").map(_.caller),
+      Vector("demo.Use", "demo.Use.make(I)Ldemo/Interval;")
+    )
   }
 
   test("a construction through a constructor that does not store its parameters has arguments that are unknown") {
@@ -2093,7 +2106,7 @@ class JavaPluginSuite extends munit.FunSuite {
       |}
       |""".stripMargin)
 
-    val sites = model.sites.filter(_.callee == "demo.Two.helper")
+    val sites = model.sites.filter(_.callee == "demo.Two.helper()Ljava/lang/String;")
     assertEquals(sites.size, 1, s"the call is recorded once: ${model.sites.mkString("\n")}")
   }
 
@@ -2200,5 +2213,54 @@ class JavaPluginSuite extends munit.FunSuite {
     )
 
     assertEquals(helpers(model).map(_.reach), Vector("demo.Local"))
+  }
+
+  test("a parameter that a method passes only to constructors is stored, and one it also reads is not") {
+    val model = Fixtures.collect("Use" -> """
+      |package demo;
+      |
+      |public class Use {
+      |  record Box(Object source, boolean flag) {}
+      |  Box last;
+      |  void keep(Object source, boolean flag) { last = new Box(source, (flag)); }
+      |  void branch(Object source, boolean flag) { last = new Box(source, flag); if (flag) last = null; }
+      |  void ignore(Object source, boolean flag) { last = new Box(source, false); }
+      |  void wrap(boolean flag) { last = new Box(new Object(), flag); }
+      |  abstract static class Base { abstract void open(boolean flag); }
+      |}
+      |""".stripMargin)
+    def stored(name: String) = model.methods.find(_.name == s"demo.Use.$name").map(_.stored)
+
+    assertEquals(stored("keep"), Some(Set(0, 1)))
+    assertEquals(stored("branch"), Some(Set(0)))
+    assertEquals(stored("ignore"), Some(Set(0)))
+    assertEquals(stored("wrap"), Some(Set(0)))
+    assertEquals(model.methods.find(_.name.endsWith("open")).map(_.stored), Some(Set.empty[Int]))
+  }
+
+  test("what the constructors of a class keep in its fields is recorded, and the constructions of it are sites") {
+    val declared = guarded("Session" -> """
+      |package demo;
+      |
+      |public class Session {
+      |  private final String name;
+      |  private final boolean owned;
+      |  public Session(String name) { this(name, true); }
+      |  public Session(String name, boolean owned) {
+      |    if (name == null) throw new IllegalArgumentException();
+      |    this.name = name;
+      |    this.owned = owned;
+      |  }
+      |  static Session made() { return new Session("a", false); }
+      |}
+      |""".stripMargin)
+
+    assertEquals(declared.sites.filter(_.callee == "demo.Session").map(_.arguments), Vector(Vector("text:a", "false")))
+    assertEquals(
+      declared.stores.filter(_.field == "owned").map(_.kept).toSet,
+      Set(Model.Stored.Parameter(1), Model.Stored.Constant("true"))
+    )
+    assertEquals(declared.instances.filter(_.owner == "demo.Session"), Vector.empty)
+    assertEquals(declared.instances.filter(_.owner.startsWith("java.")), Vector.empty)
   }
 }

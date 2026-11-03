@@ -5,7 +5,6 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.effects.Axioms
@@ -30,7 +29,7 @@ object Purity {
   ) ++ Axioms.Randoms
 
   def stateful(tpe: Type)(using Context): Boolean =
-    tpe.derivesFrom(defn.ArrayClass) || Stateful.exists(name => tpe.derivesFrom(requiredClass(name)))
+    tpe.derivesFrom(defn.ArrayClass) || Stateful.exists(name => tpe.derivesFrom(Classes.required(name)))
 
   /** Purity from the syntax alone: literals, references to values, operators of the standard library on those, field
     * selections, tuples and matches that destructure a tuple or case class are pure, and any other call is not.

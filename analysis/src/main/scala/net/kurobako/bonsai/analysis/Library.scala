@@ -8,21 +8,24 @@ import dotty.tools.dotc.core.Types.Type
 
 /** What the cost model knows of library types. */
 private class Library(using Context) {
-  private val IterableOnce = requiredClass("scala.collection.IterableOnce")
-  private val ArrayOps     = requiredClass("scala.collection.ArrayOps")
-  private val StringOps    = requiredClass("scala.collection.StringOps")
-  private val LinearSeq    = requiredClass("scala.collection.LinearSeq")
-  private val Seq          = requiredClass("scala.collection.Seq")
-  private val Range        = requiredClass("scala.collection.immutable.Range")
-  private val ListBuffer   = requiredClass("scala.collection.mutable.ListBuffer")
-  private val ArrayBuffer  = requiredClass("scala.collection.mutable.ArrayBuffer")
-  private val List         = requiredClass("scala.collection.immutable.List")
-  private val Vector       = requiredClass("scala.collection.immutable.Vector")
-  private val ImmSeq       = requiredClass("scala.collection.immutable.Seq")
-  private val ImmIndexed   = requiredClass("scala.collection.immutable.IndexedSeq")
-  private val ImmSet       = requiredClass("scala.collection.immutable.Set")
-  private val ImmMap       = requiredClass("scala.collection.immutable.Map")
-  private val MutableIter  = requiredClass("scala.collection.mutable.Iterable")
+  private val traversals     = Traversals()
+  private val IterableOnce   = requiredClass("scala.collection.IterableOnce")
+  private val ArrayOps       = requiredClass("scala.collection.ArrayOps")
+  private val StringOps      = requiredClass("scala.collection.StringOps")
+  private val LinearSeq      = requiredClass("scala.collection.LinearSeq")
+  private val Seq            = requiredClass("scala.collection.Seq")
+  private val Range          = requiredClass("scala.collection.immutable.Range")
+  private val ListBuffer     = requiredClass("scala.collection.mutable.ListBuffer")
+  private val ArrayBuffer    = requiredClass("scala.collection.mutable.ArrayBuffer")
+  private val List           = requiredClass("scala.collection.immutable.List")
+  private val Vector         = requiredClass("scala.collection.immutable.Vector")
+  private val ImmSeq         = requiredClass("scala.collection.immutable.Seq")
+  private val ImmIndexed     = requiredClass("scala.collection.immutable.IndexedSeq")
+  private val ImmSet         = requiredClass("scala.collection.immutable.Set")
+  private val ImmMap         = requiredClass("scala.collection.immutable.Map")
+  private val MutableIter    = requiredClass("scala.collection.mutable.Iterable")
+  private val JavaCollection = requiredClass("java.util.Collection")
+  private val JavaMap        = requiredClass("java.util.Map")
 
   private def derives(tpe: Type, cls: Symbol): Boolean = tpe.widen.derivesFrom(cls)
 
@@ -32,11 +35,13 @@ private class Library(using Context) {
 
   def text(tpe: Type): Boolean = derives(tpe, defn.StringClass) || derives(tpe, StringOps)
 
-  def traversal(tpe: Type): Boolean = Traversals.collection(tpe)
+  def traversal(tpe: Type): Boolean = traversals.collection(tpe)
 
   def linked(tpe: Type): Boolean = derives(tpe, LinearSeq)
 
   def array(tpe: Type): Boolean = derives(tpe, defn.ArrayClass) || derives(tpe, ArrayOps)
+
+  def javaContainer(tpe: Type): Boolean = derives(tpe, JavaCollection) || derives(tpe, JavaMap)
 
   def growable(tpe: Type): Boolean = derives(tpe, MutableIter)
 

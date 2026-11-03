@@ -167,6 +167,46 @@ class SmellsSuite extends AnalysisSuite {
     assertNoFinding(found)(_.rule == Finding.Rule.IgnoredResult)
   }
 
+  test("overloads that share parameter names keep their own ignored results") {
+    val found = findings(
+      "Overloads.scala" -> "object Overloads { def f(x: Int): Int = x + 1; def f(x: String): String = x + \"!\" }",
+      "Main.scala"      ->
+        "object Main { def run(): String = { Overloads.f(1); Overloads.f(2); Overloads.f(\"a\") } }"
+    )
+    assertFinding(found, "ignored-result", "Overloads.f(x): its Int result is discarded at all 2 calls")
+    assertNoFinding(found)(finding => finding.rule == Finding.Rule.IgnoredResult && finding.detail.contains("String"))
+  }
+
+  test("overloads that share parameter names keep their own constant arguments") {
+    val found = findings(
+      "Overloads.scala" -> "object Overloads { def f(x: Int): Int = x + 1; def f(x: String): String = x + \"!\" }",
+      "Main.scala"      ->
+        """object Main {
+          |  val first  = Overloads.f("a")
+          |  val second = Overloads.f("b")
+          |  val third  = Overloads.f(1)
+          |  val fourth = Overloads.f(1)
+          |}""".stripMargin
+    )
+    assertFinding(found, "constant-argument", "Overloads.f(x).x is always 1 across 2 calls")
+    assert(found.count(_.rule == Finding.Rule.ConstantArgument) == 1, found.mkString("\n"))
+  }
+
+  test("numeric overloads that share parameter names keep their own constant arguments") {
+    val found = findings(
+      "Overloads.scala" -> "object Overloads { def f(x: Int): Int = x + 1; def f(x: Long): Long = x + 1L }",
+      "Main.scala"      ->
+        """object Main {
+          |  val first  = Overloads.f(1)
+          |  val second = Overloads.f(1)
+          |  val third  = Overloads.f(2L)
+          |  val fourth = Overloads.f(3L)
+          |}""".stripMargin
+    )
+    assertFinding(found, "constant-argument", "Overloads.f(x).x is always 1 across 2 calls")
+    assert(found.count(_.rule == Finding.Rule.ConstantArgument) == 1, found.mkString("\n"))
+  }
+
   test("a boolean method every caller negates is inverted") {
     assertFinding(
       findings(
@@ -361,6 +401,39 @@ class SmellsSuite extends AnalysisSuite {
     )
     assertFinding(found, "unused-default", "Render.render(text, width, fill).fill")
     assertNoFinding(found)(finding => finding.rule.id == "unused-default" && finding.detail.contains(".width"))
+  }
+
+  test("a default that calls pass explicitly is redundant rather than unused") {
+    val found = findings(
+      "Layout.scala" -> "object Layout { def pad(text: String, size: Int = 16): String = text.take(size) }",
+      "Main.scala"   ->
+        """object Main {
+          |  val first  = Layout.pad("a", 16)
+          |  val second = Layout.pad("b", 16)
+          |  val third  = Layout.pad("c", 16)
+          |  val fourth = Layout.pad("d", 20)
+          |  val fifth  = Layout.pad("e", 20)
+          |}""".stripMargin
+    )
+    assertFinding(
+      found,
+      "redundant-default",
+      "Layout.pad(text, size).size is passed its default 16 explicitly at 3 calls"
+    )
+    assertNoFinding(found)(_.rule.id == "unused-default")
+  }
+
+  test("a default that no call relies on and no call passes explicitly is still unused") {
+    val found = findings(
+      "Layout.scala" -> "object Layout { def pad(text: String, size: Int = 16): String = text.take(size) }",
+      "Main.scala"   ->
+        """object Main {
+          |  val first  = Layout.pad("a", 20)
+          |  val second = Layout.pad("b", 30)
+          |}""".stripMargin
+    )
+    assertFinding(found, "unused-default", "Layout.pad(text, size).size")
+    assertNoFinding(found)(_.rule.id == "redundant-default")
   }
 
   test("a default that only a test relies on is used") {
@@ -754,6 +827,45 @@ class SmellsSuite extends AnalysisSuite {
     assertNoFinding(found)(_.detail.contains("default 443"))
   }
 
+  test("a positional argument followed by a positional argument is not redundant") {
+    val found = findings(
+      "Net.scala"  -> "object Net { def f(a: Int, b: Option[Int] = None, c: Int = 3): Int = a }",
+      "Main.scala" -> """object Main {
+                        |  val first = Net.f(1, None, 3)
+                        |}""".stripMargin
+    )
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.RedundantDefault && finding.detail.contains("b is passed its default Absent")
+    )
+    assertFinding(found, "redundant-default", "c is passed its default 3 explicitly at 1 calls")
+  }
+
+  test("a trailing positional argument equal to its default is redundant") {
+    val found = findings(
+      "Net.scala"  -> "object Net { def f(a: Int, b: Int = 2, c: Option[Int] = None): Int = a }",
+      "Main.scala" -> """object Main {
+                        |  val first = Net.f(1, 2, None)
+                        |}""".stripMargin
+    )
+    assertFinding(found, "redundant-default", "c is passed its default Absent explicitly at 1 calls")
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.RedundantDefault && finding.detail.contains("b is passed its default 2")
+    )
+  }
+
+  test("named arguments equal to their defaults are redundant, as are positional ones followed only by named") {
+    val found = findings(
+      "Net.scala"  -> "object Net { def f(a: Int, b: Option[Int] = None, c: Int = 3): Int = a }",
+      "Main.scala" -> """object Main {
+                        |  val first = Net.f(1, b = None, c = 3)
+                        |  val second = Net.f(1, c = 3, b = None)
+                        |  val third = Net.f(1, None, c = 3)
+                        |}""".stripMargin
+    )
+    assertFinding(found, "redundant-default", "Net.f(a, b, c).b is passed its default Absent explicitly at 3 calls")
+    assertFinding(found, "redundant-default", "Net.f(a, b, c).c is passed its default 3 explicitly at 3 calls")
+  }
+
   test("defaults the compiler fills in, as inside a quote, and arguments differing inside Some are not redundant") {
     val found = findings(
       "Codec.scala" -> """import scala.quoted.*
@@ -788,7 +900,7 @@ class SmellsSuite extends AnalysisSuite {
     Node(key, "m", Output.Scope.Main, s"$key.scala", line = 1, generated = generated, exported = false, outer = None)
 
   private def method(name: String, owner: String, fields: Vector[Algebra.Field]): Smells.Method =
-    Smells.Method(name, name, owner, fields, overriding = false, exported = false, test = false)
+    Smells.Method(name, name, name, owner, fields, overriding = false, exported = false, test = false)
 
   private def field(name: String, kind: Algebra.Kind = Algebra.Kind.Number): Algebra.Field =
     Algebra.Field(name, Polynomial.atom("Int"), kind)
@@ -935,15 +1047,40 @@ class SmellsSuite extends AnalysisSuite {
     assertEquals(finding.node.line, 12)
   }
 
-  test("an implementation in another module than its abstraction is information") {
+  test("an abstraction implemented only in another module is a port, and is not reported") {
     val found = smells(model(abstractions =
       Vector(
         Smells.Abstraction("lib.Store", "lib.Store", "core", Vector("app.Memory" -> "app")),
         Smells.Abstraction("lib.Codec", "lib.Codec", "core", Vector("lib.Hex" -> "core"))
       )
     ))
-    assertFinding(found, "single-implementation", "lib.Store has a single implementation")(using Finding.Level.Info)
-    assertFinding(found, "single-implementation", "lib.Codec has a single implementation")
+    assertNoFinding(found)(_.detail.contains("lib.Store"))
+    assertFinding(found, "single-implementation", "lib.Codec has a single implementation, lib.Hex")
+  }
+
+  private val JsStandIns =
+    """package scala.scalajs.js
+      |trait Any
+      |class Object extends Any
+      |class native extends scala.annotation.StaticAnnotation""".stripMargin
+
+  test("Scala.js facades are not abstractions") {
+    val found = findings(
+      "Js.scala"      -> JsStandIns,
+      "Facades.scala" ->
+        """package lib
+          |import scala.scalajs.js
+          |@js.native trait Window extends js.Object { def title: String }
+          |@js.native class Console extends Window { def title: String = ??? }
+          |trait Options extends js.Object { def depth: Int }
+          |object Options { def apply(): Options = new Options { def depth = 1 } }
+          |trait Store { def get: Int }
+          |class Memory extends Store { def get = 1 }""".stripMargin
+    )
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.SingleImplementation && !finding.detail.startsWith("lib.Store")
+    )
+    assertFinding(found, "single-implementation", "lib.Store has a single implementation, lib.Memory")
   }
 
   test("constant and flag arguments need every value known, and flags count both values") {
@@ -981,6 +1118,30 @@ class SmellsSuite extends AnalysisSuite {
       found.head.detail
     )
     assertEquals(found.map(_.node.name), Vector("four.P.many"))
+  }
+
+  test("a data clump names the same product whichever order the products arrive in") {
+    val fields   = Vector("a", "b", "c").map(field(_))
+    val methods  = group("take", "a", "b", "c")("one.Alpha", "two.Beta", "three.Gamma")
+    val products = Vector("lib.Metadata", "lib.UploadSession", "lib.Session").map { name =>
+      Algebra.Product(
+        name,
+        name,
+        fields :+ field(name.takeRight(4)),
+        Set.empty,
+        Algebra.Predicate.Known(true),
+        Algebra.Access.Open,
+        exported = false
+      )
+    }
+    val nodes = methods.map(_.node).map(key => key -> node(key)).toMap
+    val named = products.permutations.map { order =>
+      Smells.findings(model(methods = methods), order, nodes).collect {
+        case finding if finding.rule == Finding.Rule.DataClump => finding.detail
+      }
+    }.toSet
+    assertEquals(named.size, 1, named.mkString("\n"))
+    assert(named.head.exists(_.endsWith("already the fields of Metadata")), named.head.mkString("\n"))
   }
 
   test("overlapping data clumps over mostly the same methods are reported once, and disjoint ones each") {

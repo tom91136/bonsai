@@ -39,7 +39,9 @@ object Texts {
       neutral: Option[Regex],
       message: Option[String]
   ) {
-    lazy val terms: Vector[(String, Regex)] = words.map(word => word -> term(word))
+    // The forms a word is spelt in are searched for before its pattern is matched.
+    lazy val terms: Vector[(String, Regex, Vector[String])] =
+      words.map(word => (word, term(word), Vector(word, word.capitalize, word.toUpperCase(java.util.Locale.ROOT))))
   }
 
   // Git's own test for a binary file.
@@ -211,7 +213,8 @@ object Texts {
         case Kind.Terms =>
           lines.zipWithIndex.flatMap { (line, index) =>
             rule.terms.collect {
-              case (word, regex) if regex.findFirstIn(line).isDefined && !noticed(index) =>
+              case (word, regex, forms)
+                  if forms.exists(line.contains) && regex.findFirstIn(line).isDefined && !noticed(index) =>
                 index -> rule.message.fold(s"$word is a forbidden term")(message => s"$word: $message")
             }
           }
