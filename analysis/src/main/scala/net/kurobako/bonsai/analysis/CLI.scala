@@ -71,49 +71,75 @@ object CLI {
     Report.Disable(if (rule == "*") Report.Selector.All else Report.Selector.Named(rule), scope)
 
   def main(args: Array[String]): Unit = {
-    val result = parse(args.toList).flatMap(options =>
-      Using.resource(Parallel(options.parallelism))(parallel => analyse(options, parallel))
+    val status = run(args.toList)
+    if (status != 0) sys.exit(status)
+  }
+
+  /** Runs the analysis, printing the report to the console, and returns the exit status. */
+  def run(args: List[String]): Int = {
+    val result = parse(args).flatMap(options =>
+      Using.resource(Parallel(options.parallelism))(parallel => analyse(args, options, parallel))
     )
     result match {
       case Left(error) =>
         Console.err.println(error)
-        sys.exit(1)
-      case Right(lines) =>
-        lines.foreach(line => println(line.show))
-        if (lines.exists(_.failing)) sys.exit(1)
+        1
+      case Right(outcome) =>
+        outcome.record.diagnostics.foreach(Console.err.println(_))
+        outcome.scanProblem.foreach(problem => Console.err.println(s"problem: $problem"))
+        outcome.record.report.foreach(shown => println(shown.text))
+        if (outcome.reused) Console.err.println(Reuse.Marker)
+        if (outcome.record.report.exists(_.failing)) 1 else 0
     }
   }
 
-  private def analyse(options: Options, parallel: Parallel): Either[String, Vector[Report.Line]] =
+  private case class Outcome(record: Reuse.Record, scanProblem: Option[String], reused: Boolean)
+
+  private type Scan = () => (Either[String, Vector[Finding]], Vector[Finding])
+
+  private def analyse(args: List[String], options: Options, parallel: Parallel): Either[String, Outcome] =
     for {
       path     <- options.manifest.toRight(usage)
       manifest <- Manifest.read(path)
       scanned = scanning(manifest)
-      result <-
-        Extraction.read(
+      keyed   = Option.when(options.record.isEmpty && options.relock.isEmpty)(
+        Reuse.store(path) -> Reuse.key(
+          args,
+          path,
           manifest,
-          options.generated,
-          options.concurrent,
-          options.reflective,
-          options.hot,
-          options.bounded,
-          parallel
-        ).left.map(_.mkString("\n"))
+          (options.baseline ++ options.lock).toVector,
+          parallel,
+          () => Reuse.rendered(scanned()._1, scanned()._2)
+        )
+      )
+      kept = keyed.flatMap(Reuse.load(_, _))
+      record <- kept.toRight(()).left.flatMap(_ => extract(manifest, options, parallel, scanned))
     } yield {
-      result.problems.foreach(problem => Console.err.println(s"problem: $problem"))
-      if (options.purity) Purity.summary(result.purity).foreach(Console.err.println(_))
+      if (kept.isEmpty) keyed.foreach(Reuse.save(_, _, record))
+      Outcome(record, scanned()._1.left.toOption, kept.isDefined)
+    }
+
+  private def extract(
+      manifest: Manifest,
+      options: Options,
+      parallel: Parallel,
+      scanned: Scan
+  ): Either[String, Reuse.Record] =
+    Extraction.read(
+      manifest,
+      options.generated,
+      options.concurrent,
+      options.reflective,
+      options.hot,
+      options.bounded,
+      parallel
+    ).left.map(_.mkString("\n")).map { result =>
       val locked = options.lock.filter(Files.exists(_)).fold(Set.empty[String])(file =>
         Report.keys(Files.readString(file))
       )
       val (scannedTexts, excluded) = scanned()
-      val texts                    = scannedTexts.fold(
-        problem => {
-          Console.err.println(s"problem: $problem")
-          Vector.empty
-        },
-        identity
-      )
-      val findings = Report.findings(result, Intended(options.intended), options.nesting, parallel) ++
+      val texts                    = scannedTexts.getOrElse(Vector.empty)
+      val findings                 = Report.findings(result, Intended(options.intended), options.nesting, parallel) ++
         Build.duplicates(manifest) ++
         Build.unused(result.unusedBounds) ++ texts ++
         excluded ++
@@ -128,11 +154,15 @@ object CLI {
       options.record.foreach(file =>
         Files.writeString(file, Report.write(Report(findings, result.graph.nodes, report.copy(info = false)))): Unit
       )
-      Report(findings, result.graph.nodes, report)
+      Reuse.Record(
+        result.problems.map(problem => s"problem: $problem") ++
+          (if (options.purity) Purity.summary(result.purity) else Vector.empty),
+        Report(findings, result.graph.nodes, report).map(line => Reuse.Shown(line.failing, line.show))
+      )
     }
 
-  // The sources are read apart from the build's classes, so the scan runs while those are extracted.
-  private def scanning(manifest: Manifest): () => (Either[String, Vector[Finding]], Vector[Finding]) =
+  // The sources are read apart from the build's classes, so the scan runs while those are hashed or extracted.
+  private def scanning(manifest: Manifest): Scan =
     background(() => scan(manifest))
 
   /** Runs `work` on a thread of its own, and returns what joins it: the result, or whatever `work` threw. */
