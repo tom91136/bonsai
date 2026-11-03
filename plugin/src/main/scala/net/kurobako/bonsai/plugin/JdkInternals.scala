@@ -9,6 +9,10 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
+private object JdkInternals {
+  val Checks: Set[Check] = Set(Check.JdkInternal)
+}
+
 /** The uses of JDK types and members that the JDK does not support, named in the code or by a lookup of a constant
   * name.
   */

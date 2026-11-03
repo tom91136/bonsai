@@ -9,6 +9,10 @@ import dotty.tools.dotc.core.Symbols.defn
 import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
+private object Lambdas {
+  val Checks: Set[Check] = Set(Check.FunctionAppliedOnce, Check.LambdaTrait)
+}
+
 /** Reports indirection that only passes a call on: a private single-method trait nothing but lambdas implement, however
   * many, which a function type would state, and a private or local method that takes a function, applies it once on
   * every path through its body to arguments its callers have, and is only ever given lambdas forwarding to a method, so

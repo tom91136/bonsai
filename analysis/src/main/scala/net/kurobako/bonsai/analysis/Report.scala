@@ -67,12 +67,12 @@ object Report {
             !suppressed(finding, nodes, Some(finding.node.name)) &&
             (options.info || finding.level != Finding.Level.Info) =>
         val id        = finding.rule.id
-        val escalated = !baselined(Finding.unnumbered(finding.key)) &&
+        val escalated =
           (finding.level match {
             case Finding.Level.Error   => !options.lenient(id)
             case Finding.Level.Warning => options.failing(id)
             case Finding.Level.Info    => false
-          })
+          }) && !baselined(Finding.unnumbered(finding.key))
         val level = if (finding.level == Finding.Level.Info) "info" else "warning"
         Line(if (escalated) "error" else level, finding, repeat)
     }.toVector

@@ -29,7 +29,6 @@ private[java] final class CostFlow(sinks: collection.Map[Tree, Sink]) {
 private[java] final class CostFlows(
     trees: Trees,
     root: TreePath,
-    derives: (TypeMirror, Seq[String]) => Boolean,
     assigned: collection.Set[Element]
 ) {
   private val sinks    = mutable.Map.empty[Tree, Sink]
@@ -39,13 +38,8 @@ private[java] final class CostFlows(
   private var returns  = Sink.Returned
   private var yields   = Sink.Returned
 
-  private val Variables = Set(
-    ElementKind.LOCAL_VARIABLE,
-    ElementKind.PARAMETER,
-    ElementKind.EXCEPTION_PARAMETER,
-    ElementKind.RESOURCE_VARIABLE,
-    ElementKind.BINDING_VARIABLE
-  )
+  private val Voids = Set(TypeKind.VOID, TypeKind.NONE, TypeKind.NULL)
+  private val Atoms = Seq("java.lang.String", "java.lang.Number", "java.lang.Boolean", "java.lang.Character")
 
   def run(): CostFlow = {
     var rounds = 0
@@ -57,24 +51,21 @@ private[java] final class CostFlows(
     CostFlow(sinks)
   }
 
-  private def elementOf(tree: Tree): Element = trees.getElement(new TreePath(root, tree))
+  private def elementOf(tree: Tree): Element = Lints.elementOf(trees, root, tree)
 
-  private def typeOf(tree: Tree): Option[TypeMirror] = Option(trees.getTypeMirror(new TreePath(root, tree)))
+  private def typeOf(tree: Tree): Option[TypeMirror] = Option(Lints.typeOf(trees, root, tree))
 
   private def scalar(tree: Tree): Boolean = typeOf(tree).exists { tpe =>
-    tpe.getKind.isPrimitive || Set(TypeKind.VOID, TypeKind.NONE, TypeKind.NULL)(tpe.getKind) ||
-    derives(tpe, Seq("java.lang.String", "java.lang.Number", "java.lang.Boolean", "java.lang.Character"))
+    tpe.getKind.isPrimitive || Voids(tpe.getKind) || CostTrees.derives(tpe, Atoms*)
   }
-
-  private def collection(tree: Tree): Boolean =
-    typeOf(tree).exists(derives(_, Seq("java.util.Collection", "java.util.Map")))
 
   private def carried(tree: Tree, sink: Sink): Sink = if scalar(tree) then Sink.Dropped else sink
 
   private def use(element: Element, sink: Sink): Unit =
-    if element != null && Variables(element.getKind) then {
-      val joined = uses.get(element).fold(sink)(_.join(sink))
-      if !uses.get(element).contains(joined) then {
+    if Effects.local(element) then {
+      val before = uses.getOrElse(element, Sink.Dropped)
+      val joined = before.join(sink)
+      if joined != before then {
         uses(element) = joined
         changed = true
       }
@@ -123,13 +114,8 @@ private[java] final class CostFlows(
         flow(branch.getCondition, Sink.Dropped, depth)
         flow(branch.getThenStatement, Sink.Dropped, depth)
         Option(branch.getElseStatement).foreach(flow(_, Sink.Dropped, depth))
-      case loop: WhileLoopTree =>
-        flow(loop.getCondition, Sink.Dropped, depth + 1)
-        flow(loop.getStatement, Sink.Dropped, depth + 1)
-      case loop: DoWhileLoopTree =>
-        flow(loop.getStatement, Sink.Dropped, depth + 1)
-        flow(loop.getCondition, Sink.Dropped, depth + 1)
-      case loop: ForLoopTree =>
+      case loop: (WhileLoopTree | DoWhileLoopTree) => children(loop, Sink.Dropped, depth + 1)
+      case loop: ForLoopTree                       =>
         flows(loop.getInitializer, Sink.Dropped, depth)
         Option(loop.getCondition).foreach(flow(_, Sink.Dropped, depth + 1))
         flows(loop.getUpdate, Sink.Dropped, depth + 1)
@@ -248,15 +234,16 @@ private[java] final class CostFlows(
     val receiver  = selected.flatMap(_._1)
     val name      = selected.fold("")(_._2)
     val arguments = Lints.arguments(call)
-    val holder    = receiver.exists(collection)
+    val kind      = receiver.flatMap(typeOf)
+    val holder    = kind.exists(CostTrees.collection)
     val mutating  = Methods.Mutators(name) && holder
-    val traversal = receiver.exists(stream => typeOf(stream).exists(derives(_, Seq("java.util.stream.BaseStream")))) ||
+    val traversal = kind.exists(CostTrees.derives(_, "java.util.stream.BaseStream")) ||
       (CostTrees.Visits(name) && holder)
-    val kept = receiver.filter(_ => mutating).map(target)
+    val kept = if mutating then receiver.map(target) else None
     kept.foreach(into => sinks(call) = sink.join(into))
     receiver.foreach(flow(_, result, depth))
-    val collected = if Methods.Accumulating(name) then result else Sink.Dropped
-    if traversal then passed(arguments, kept.getOrElse(result), collected, depth + 1, depth)
-    else passed(arguments, kept.getOrElse(result), result, depth, depth)
+    val collected         = if Methods.Accumulating(name) then result else Sink.Dropped
+    val (function, inner) = if traversal then (collected, depth + 1) else (result, depth)
+    passed(arguments, kept.getOrElse(result), function, inner, depth)
   }
 }

@@ -26,12 +26,11 @@ private[analysis] class References(components: Components, fragments: Fragments)
   // Synthetic methods such as case class `apply` and `copy` forward their parameters, which says nothing about callers.
   private val synthetic = mutable.Stack(false)
   // Inline expansion happens after pickling, so the givens it summons are only visible through their imports.
-  private val imports    = mutable.Stack(mutable.Set.empty[String])
-  private val traversals = Traversals()
-  private val methodsOf  = mutable.HashMap.empty[Symbol, Map[String, List[Symbol]]]
-  private val parents    = mutable.Set.empty[tpd.Tree]
-  private var parent     = false
-  private val types      = TypeReferences { symbol =>
+  private val imports   = mutable.Stack(mutable.Set.empty[String])
+  private val methodsOf = mutable.HashMap.empty[Symbol, Map[String, List[Symbol]]]
+  private val parents   = mutable.Set.empty[tpd.Tree]
+  private var parent    = false
+  private val types     = TypeReferences { symbol =>
     symbols.refer(owner, symbol)
     read(symbol)
     if (!parent) dispatching.asType(symbol)
@@ -175,7 +174,8 @@ private[analysis] class References(components: Components, fragments: Fragments)
           traverse(body)
         }
       }
-    case tpd.Apply(function, arguments) if traversals.traversal(function) =>
+    case tpd.Apply(function, arguments)
+        if Calls.selected(function).exists(select => library.traversal(select.qualifier.tpe)) =>
       traverse(function)
       arguments.foreach { argument =>
         val lambda = Calls.lambda(argument).isDefined
@@ -212,16 +212,14 @@ private[analysis] class References(components: Components, fragments: Fragments)
   private def family(symbol: Symbol)(using Context): String = {
     val owner = symbol.owner
     if (symbol.is(Flags.Method) && owner.isClass) {
-      val name  = unsized(symbol.name.toString)
+      val name  = Finding.numberless(symbol.name.toString)
       val alike = methodsOf.getOrElseUpdate(
         owner,
-        owner.info.decls.toList.filter(_.is(Flags.Method)).groupBy(member => unsized(member.name.toString))
+        owner.info.decls.toList.filter(_.is(Flags.Method)).groupBy(member => Finding.numberless(member.name.toString))
       ).getOrElse(name, Nil)
       if (alike.map(_.info.firstParamTypes.map(_.show)).distinct.size > 1) s"${owner.fullName}.$name" else ""
     } else ""
   }
-
-  private def unsized(name: String): String = Finding.numberless(name)
 
   // An inline method that expands inline methods on literals specialises them, as staged code does.
   private def specialising(symbol: Symbol, body: tpd.Tree)(using Context): Boolean =

@@ -195,9 +195,7 @@ object Smells {
         onlyTests = Algebra.onlyTests(default.sites)
       )
     }
-    val redundantParameters = model.defaults.map(default => default.node -> default.parameter).toSet
-    // Redundant arguments are dropped first, so an unused default only shows once they are gone.
-    val spare = model.spares.filterNot(spare => redundantParameters((spare.node, spare.parameter))).flatMap { spare =>
+    val spare = model.spares.flatMap { spare =>
       val detail = s"${spare.owner}.${spare.parameter} has a default that none of its ${spare.sites.size} calls " +
         "relies on; remove the default"
       Finding.at(

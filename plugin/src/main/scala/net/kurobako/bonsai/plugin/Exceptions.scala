@@ -27,6 +27,18 @@ private class ThrowingTable(patterns: List[(Regex, List[String])]) {
     matched.computeIfAbsent(name, _ => patterns.filter((pattern, _) => pattern.matches(name)))
 }
 
+private object Exceptions {
+  val Checks: Set[Check] = Set(
+    Check.BroadCatch,
+    Check.DiscardedCause,
+    Check.LocalThrow,
+    Check.PartialInTry,
+    Check.RedundantTry,
+    Check.ThrowInDefault,
+    Check.ThrowingHelper
+  )
+}
+
 /** Exceptions used for control flow where a result type can carry the failure: throws a surrounding handler turns into
   * a result, throws standing in for an Option or Either's absent value, helpers that throw only for their callers'
   * handlers, partial calls inside handlers, catch-alls around calls with a documented exception, and handlers that drop

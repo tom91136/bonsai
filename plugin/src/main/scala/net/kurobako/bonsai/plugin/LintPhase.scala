@@ -59,11 +59,9 @@ private class LintPhase(
   // Compiler-generated methods are not the author's code, but lambdas, which are synthetic methods too, are.
   private def authored(using Context): Boolean = !ctx.owner.is(Flags.Synthetic) || ctx.owner.isAnonymousFunction
 
-  private val positionals = checks.owning(
-    List(Check.LongArguments, Check.SameTypeArguments, Check.SwappedArguments, Check.BooleanArgument)
-  )
-  private val classifications = checks.owning(List(Check.MessageClassification))
-  private val identities      = checks.owning(List(Check.IdentityToken))
+  private val positionals     = checks.owning(LintPhase.Positionals)
+  private val classifications = checks.owning(LintPhase.Classifications)
+  private val identities      = checks.owning(LintPhase.Identities)
 
   private def refinements(using Context): Refinements =
     Refinements(
@@ -73,51 +71,30 @@ private class LintPhase(
     )
 
   // A pass runs only when some check it reports is enabled, and reports no other.
-  private def pass(owned: Check*)(run: Checks => Unit): Unit = {
-    val owning = checks.owning(owned)
+  private def pass(declared: Set[Check])(run: Checks => Unit): Unit = {
+    val owning = checks.owning(declared)
     if (owning.active) run(owning)
   }
 
   override def transformUnit(tree: tpd.Tree)(using Context): tpd.Tree = {
-    pass(
-      Check.AccumulatingConcat,
-      Check.BoxingFold,
-      Check.InlineSetMembership,
-      Check.InvariantInLoop,
-      Check.KeyedLookupInLoop,
-      Check.LinearInLoop,
-      Check.LiteralTableInDef,
-      Check.LoopBoxing,
-      Check.RegexInDef,
-      Check.TupleDestructure
-    )(Loops(_, hot, hotDeclared).run(tree))
-    pass(Check.laws*)(Chains(_).run(tree))
-    pass(Check.RepeatedSubexpression)(Repeats(_).run(tree))
-    pass(
-      Check.BroadCatch,
-      Check.DiscardedCause,
-      Check.LocalThrow,
-      Check.PartialInTry,
-      Check.RedundantTry,
-      Check.ThrowInDefault,
-      Check.ThrowingHelper
-    )(Exceptions(_, partials, throwing.value).run(tree))
-    pass(Check.EagerEffect)(Effects(_).run(tree))
-    pass(Check.ImpliedCondition)(Implied(_).run(tree))
-    pass(Check.BlockingCommonPool, Check.OrphanThread, Check.ReimplementedJoin, Check.UnboundedWait)(
-      Concurrency(_).traverse(tree)
-    )
-    pass(Check.WriteOnlyField)(Fields(_).run(tree))
-    pass(Check.UnstableEquality)(Equality(_).run(tree))
-    pass(Check.NowarnSuppression)(Nowarns(_).run(tree))
-    pass(Check.FunctionAppliedOnce, Check.LambdaTrait)(Lambdas(_, hot, cold).run(tree))
-    pass(Check.ForwardingAlias, Check.UnusedPrivateParam)(Aliases(_).run(tree))
-    pass(Check.ParameterObjectUnpacked)(Bundles(_).run(tree))
-    pass(Check.JdkInternal)(JdkInternals(_).traverse(tree))
-    pass(Check.IdenticalBranches, Check.RepeatedBranchCall)(Branches(_).run(tree))
-    pass(Check.BindingInOneBranch)(Bindings(_).run(tree))
-    pass(Check.HandWrittenLazy)(Lazies(_).run(tree))
-    pass(Check.StringRoundTrip)(RoundTrips(_).run(tree))
+    pass(Loops.Checks)(Loops(_, hot, hotDeclared).run(tree))
+    pass(Chains.Checks)(Chains(_).run(tree))
+    pass(Repeats.Checks)(Repeats(_).run(tree))
+    pass(Exceptions.Checks)(Exceptions(_, partials, throwing.value).run(tree))
+    pass(Effects.Checks)(Effects(_).run(tree))
+    pass(Implied.Checks)(Implied(_).run(tree))
+    pass(Concurrency.Checks)(Concurrency(_).traverse(tree))
+    pass(Fields.Checks)(Fields(_).run(tree))
+    pass(Equality.Checks)(Equality(_).run(tree))
+    pass(Nowarns.Checks)(Nowarns(_).run(tree))
+    pass(Lambdas.Checks)(Lambdas(_, hot, cold).run(tree))
+    pass(Aliases.Checks)(Aliases(_).run(tree))
+    pass(Bundles.Checks)(Bundles(_).run(tree))
+    pass(JdkInternals.Checks)(JdkInternals(_).traverse(tree))
+    pass(Branches.Checks)(Branches(_).run(tree))
+    pass(Bindings.Checks)(Bindings(_).run(tree))
+    pass(Lazies.Checks)(Lazies(_).run(tree))
+    pass(RoundTrips.Checks)(RoundTrips(_).run(tree))
     tree
   }
 
@@ -272,7 +249,7 @@ private class LintPhase(
   }
 
   private def iterator(tpe: Type)(using Context): Boolean =
-    tpe.derivesFrom(defn.IteratorClass) || tpe.derivesFrom(Classes.required("java.util.Iterator"))
+    tpe.derivesFrom(defn.IteratorClass) || Classes.derives(tpe, "java.util.Iterator")
 
   private val OrderedComparisons: Set[Name] = Set(termName("sameElements"), termName("corresponds"))
 
@@ -286,13 +263,16 @@ private class LintPhase(
       )
 
   // Sorted and sequenced maps, and sets kept sorted or in insertion order, define their iteration order.
-  private def orderless(tpe: Type)(using Context): Boolean = {
-    def derives(name: String) = tpe.derivesFrom(Classes.required(name))
-    derives("scala.collection.Set") &&
-    !List("scala.collection.SortedSet", "scala.collection.immutable.ListSet", "scala.collection.mutable.LinkedHashSet")
-      .exists(derives(_)) ||
-    derives("scala.collection.Map") && !List("scala.collection.SortedMap", "scala.collection.SeqMap").exists(derives(_))
-  }
+  private def orderless(tpe: Type)(using Context): Boolean =
+    Classes.derives(tpe, "scala.collection.Set") &&
+      !Classes.derives(
+        tpe,
+        "scala.collection.SortedSet",
+        "scala.collection.immutable.ListSet",
+        "scala.collection.mutable.LinkedHashSet"
+      ) ||
+      Classes.derives(tpe, "scala.collection.Map") &&
+      !Classes.derives(tpe, "scala.collection.SortedMap", "scala.collection.SeqMap")
 
   private val MaximumPositional = 4
 
@@ -368,6 +348,7 @@ private class LintPhase(
 
   private val Ordinals = Set("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth")
   private val Indexed  = "[A-Za-z]+[0-9]+".r
+  private val Standard = Vector("scala.", "java.", "javax.")
 
   // A name of a letter or two, or one that only says where the parameter is, gives an argument nothing to add.
   private def meaningful(parameter: Symbol)(using Context): Boolean = {
@@ -392,7 +373,7 @@ private class LintPhase(
       argument.symbol.owner == crossed.symbol.owner && argument.symbol.owner == ctx.owner.enclosingMethod
 
   private def standard(symbol: Symbol)(using Context): Boolean =
-    Vector("scala.", "java.", "javax.").exists(Calls.qualified(symbol).startsWith(_))
+    Standard.exists(Calls.qualified(symbol).startsWith(_))
 
   // A parameter of an override of a library method takes the type the library fixes, which the build cannot change.
   private def fixedByLibrary(selector: tpd.Tree)(using Context): Boolean =
@@ -502,7 +483,7 @@ private class LintPhase(
   private def positional(unapply: tpd.UnApply)(using Context): Unit = {
     val extractor = unapply.fun.symbol
     val cls       = extractor.owner.companionClass
-    val fields    = cls.primaryConstructor.paramSymss.find(_.headOption.exists(_.isTerm)).getOrElse(Nil)
+    val fields    = Calls.termClauses(cls.primaryConstructor).headOption.getOrElse(Nil)
     val matched   = fields.zip(unapply.patterns).filterNot((_, pattern) => wildcard(pattern))
     val skipped   = unapply.patterns.count(wildcard(_))
     // A named pattern reaches the typed tree positionally, with the fields it omits filled by synthetic wildcards.
@@ -550,11 +531,12 @@ private class LintPhase(
   }
 
   private def unitInMap(tree: tpd.Tree, receiver: tpd.Tree, function: tpd.Tree)(using Context): Unit = {
-    val source = receiver.tpe.widen
-    val mapped = source.derivesFrom(Classes.required("scala.collection.IterableOnce")) ||
-      source.derivesFrom(defn.OptionClass)
+    val source  = receiver.tpe.widen
     val results = function.tpe.widen.argInfos
-    if (mapped && defn.isFunctionType(function.tpe.widen) && results.lastOption.exists(_.isRef(defn.UnitClass)))
+    if (
+      defn.isFunctionType(function.tpe.widen) && results.lastOption.exists(_.isRef(defn.UnitClass)) &&
+      (source.derivesFrom(defn.OptionClass) || Classes.derives(source, "scala.collection.IterableOnce"))
+    )
       checks(Check.UnitMap, "map with a function returning Unit builds a container of Unit; use foreach", tree.srcPos)
   }
 
@@ -603,7 +585,7 @@ private class LintPhase(
         val owner  = symbol.owner.companionClass
         Wrappers.get(Calls.qualified(owner)).filter((java, converter) =>
           (symbol.name == nme.apply || symbol.name.toString == converter) &&
-            argument.tpe.widen.derivesFrom(Classes.required(java))
+            Classes.derives(argument.tpe.widen, java)
         ).foreach { _ =>
           val simple = Trees.text(argument).matches("[A-Za-z_][A-Za-z0-9_.]*")
           checks(
@@ -618,15 +600,14 @@ private class LintPhase(
     }
   }
 
-  private def nested(tree: tpd.Tree, tpe: Type)(using Context): Unit = {
-    val future: Symbol = Classes.required("scala.concurrent.Future")
+  private def nested(tree: tpd.Tree, tpe: Type)(using Context): Unit =
     tpe.widen.dealias match {
-      case AppliedType(outer, List(AppliedType(inner, _)))
-          if outer.typeSymbol == future && inner.typeSymbol == future =>
-        checks(Check.NestedFuture, "a future of a future is usually a missing flatMap or flatten", tree.srcPos)
+      case AppliedType(outer, List(AppliedType(inner, _))) =>
+        val future: Symbol = Classes.required("scala.concurrent.Future")
+        if (outer.typeSymbol == future && inner.typeSymbol == future)
+          checks(Check.NestedFuture, "a future of a future is usually a missing flatMap or flatten", tree.srcPos)
       case _ => ()
     }
-  }
 
   private def coldCode(using Context): Boolean =
     Trees.enclosedBy(ctx.owner, owner => cold(Calls.qualified(owner)))
@@ -661,7 +642,7 @@ private class LintPhase(
     }
   }
 
-  private val Classifications =
+  private val ClassifyingMethods =
     Set("contains", "startsWith", "endsWith", "matches", "equals", "equalsIgnoreCase", "==", "!=")
   private val Messages = Set("getMessage", "getLocalizedMessage", "message")
 
@@ -681,7 +662,8 @@ private class LintPhase(
     }
     condition.filterSubTrees {
       case tpd.Apply(tpd.Select(receiver, name), List(argument)) =>
-        Classifications(name.toString) && (message(receiver) && text(argument) || message(argument) && text(receiver))
+        ClassifyingMethods(name.toString) &&
+        (message(receiver) && text(argument) || message(argument) && text(receiver))
       case _ => false
     }.foreach(comparison =>
       classifications(
@@ -697,8 +679,7 @@ private class LintPhase(
     case _: tpd.UnApply => true
     case _              => false
   }.collect { case unapply: tpd.UnApply =>
-    val fields =
-      unapply.fun.symbol.owner.companionClass.primaryConstructor.paramSymss.find(_.headOption.exists(_.isTerm))
+    val fields = Calls.termClauses(unapply.fun.symbol.owner.companionClass.primaryConstructor).headOption
     fields.getOrElse(Nil).zip(unapply.patterns).collect {
       case (field, binding: tpd.Bind) if Messages(field.name.toString) => binding.symbol
     }
@@ -792,6 +773,13 @@ private class LintPhase(
 }
 
 private object LintPhase {
+  val Positionals: Set[Check] =
+    Set(Check.LongArguments, Check.SameTypeArguments, Check.SwappedArguments, Check.BooleanArgument)
+
+  val Classifications: Set[Check] = Set(Check.MessageClassification)
+
+  val Identities: Set[Check] = Set(Check.IdentityToken)
+
   private def space(char: Char): Boolean = char == ' ' || (char >= '\t' && char <= '\r')
 
   private def identifierStart(char: Char): Boolean =

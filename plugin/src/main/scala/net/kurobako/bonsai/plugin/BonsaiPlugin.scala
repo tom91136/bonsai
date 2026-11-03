@@ -71,12 +71,12 @@ class BonsaiPlugin extends StandardPlugin {
     // `checked=<type>` names, by its qualified name, a refinement type whose checked operations the others bypass.
     // `hot=<glob>` marks the classes whose code runs hot, by the qualified name of the class or object, and
     // `hot=!<glob>` leaves out classes the others mark, such as the suites of a hot package.
-    val hot         = Globs.heat(values("hot"))
+    val isCold      = Globs.cold(values("hot"))
+    val hot         = Globs.heat(isCold, values("hot"))
     val escalated   = strict ++ errors -- warnings
     val matchers    = Instrumented.map(Globs.matcher)
     val phaseChecks =
       Checks(disabled, escalated, warnings, path => matchers.exists(_.matches(path)), analysis.suppressions)
-    val isCold = Globs.cold(values("hot"))
     List(
       // A cycle through a mutation-testing copy still ties together the sources on it.
       AcyclicPhase(analysis, phaseChecks, problems.toList),

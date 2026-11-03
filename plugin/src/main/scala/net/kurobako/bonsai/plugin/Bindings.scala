@@ -10,6 +10,10 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import net.kurobako.bonsai.lifting.Calls
 
+private object Bindings {
+  val Checks: Set[Check] = Set(Check.BindingInOneBranch)
+}
+
 /** Reports a `val` of a block that only one branch of a later `if` or `match` uses, when its initialiser reads
   * immutable values and calls the standard library without effects, so computing it in that branch is the same program
   * that computes it less often. The fix moves the definition into the branch.

@@ -102,7 +102,7 @@ object Designs {
   /** Sibling methods named and typed alike but for a width, one per width where one generic method would do. */
   private def numbered(methods: Vector[Method], nodes: Map[String, Node]): Vector[Finding] =
     methods.filter(method => Finding.Numbers.findAllIn(method.short).size == 1)
-      .groupBy(method => (method.owner, Finding.Numbers.replaceAllIn(method.short, "#"))).toVector.sortBy(
+      .groupBy(method => (method.owner, Finding.numberless(method.short))).toVector.sortBy(
         _._1
       ).flatMap {
         (_, members) =>

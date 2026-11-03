@@ -11,6 +11,10 @@ import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.lifting.Classes
 
+private object Nowarns {
+  val Checks: Set[Check] = Set(Check.NowarnSuppression)
+}
+
 /** Reports `@nowarn` annotations whose filters name only bonsai messages, on definitions and ascribed to expressions,
   * since a build without bonsai reports them as unused. `@SuppressWarnings` suppresses the same checks without it.
   */

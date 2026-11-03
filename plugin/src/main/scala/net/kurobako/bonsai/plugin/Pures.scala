@@ -85,7 +85,7 @@ private object Pures {
     val symbol = tpe.dealias.classSymbol
     symbol.exists && {
       val name = Calls.qualified(symbol)
-      Purity.stateful(tpe) || name != "java.lang.String" && Outside.exists(name.startsWith)
+      name != "java.lang.String" && Outside.exists(name.startsWith) || Purity.stateful(tpe)
     }
   }
 

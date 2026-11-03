@@ -7,6 +7,10 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import scala.collection.mutable
 
+private object Fields {
+  val Checks: Set[Check] = Set(Check.WriteOnlyField)
+}
+
 /** Reports private fields nothing reads for a purpose: written, checked by `require` or `assert` as the object is
   * built, or shown and compared by the methods describing the object, but never otherwise used. Every use of a private
   * field is in its unit. Constructor parameters are left alone, since one only checked as the object is built is not

@@ -17,7 +17,7 @@ private class AcyclicPhase(analysis: Analysis, checks: Checks, problems: List[St
   override val runsBefore: Set[String]  = Set("pickler")
   override def run(using Context): Unit = ()
 
-  private val cycles = checks.owning(List(Check.Acyclic))
+  private val cycles = checks.owning(AcyclicPhase.Checks)
 
   // 3.4.0 does not suspend compilations, and does not say so.
   private def suspended(using Context): Boolean =
@@ -78,6 +78,8 @@ private class AcyclicPhase(analysis: Analysis, checks: Checks, problems: List[St
 }
 
 private object AcyclicPhase {
+  val Checks: Set[Check] = Set(Check.Acyclic)
+
   // Iterative Kosaraju traversal avoids overflowing on long dependency chains.
   private def components(graph: Map[String, Set[String]]): Vector[Vector[String]] = {
     val visited  = mutable.Set.empty[String]

@@ -40,7 +40,7 @@ public class ScalafixMojo extends BonsaiMojo {
     Path file = work.resolve("scalafix.conf");
     write(file, List.of(Scalafix.configuration(configuration, ids(tools, plugin, rules))));
 
-    Path root = Path.of(session.getExecutionRootDirectory());
+    Path root = root();
     List<Path> sources = sources(project.getCompileSourceRoots());
     sources.addAll(sources(project.getTestCompileSourceRoots()));
     List<String> files = new ArrayList<>();
@@ -70,7 +70,7 @@ public class ScalafixMojo extends BonsaiMojo {
     command.add(String.join(java.io.File.pathSeparator, classpath));
     // `--files` takes a single path, so repeating it would leave all but one source of the module unchecked
     command.addAll(files);
-    boolean dev = mode().equals("dev");
+    boolean dev = dev();
     run("the scalafix rules", command, root.toFile(), code -> dev && (code & ~(LINTER_ERROR | TEST_ERROR)) == 0);
   }
 }

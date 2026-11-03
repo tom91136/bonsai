@@ -9,6 +9,10 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
 
+private object Equality {
+  val Checks: Set[Check] = Set(Check.UnstableEquality)
+}
+
 /** Reports case class fields whose types compare by reference or change after construction, so `equals` and `hashCode`
   * stop describing the value: arrays, functions, mutable collections, and open traits whose one abstract method lambdas
   * implement, unless an object of the unit implements the trait, which makes it a strategy.

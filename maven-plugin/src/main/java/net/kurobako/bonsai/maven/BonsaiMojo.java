@@ -214,6 +214,16 @@ public abstract class BonsaiMojo extends AbstractMojo {
     return tools.analysis(version);
   }
 
+  /** The directory the build was started in. */
+  protected Path root() {
+    return Path.of(session.getExecutionRootDirectory());
+  }
+
+  /** Whether the tools run in the dev mode. */
+  protected boolean dev() {
+    return mode().equals("dev");
+  }
+
   /** The directory the goals write their files to. */
   protected Path work() throws MojoExecutionException {
     return directory(Path.of(project.getBuild().getDirectory()).resolve("bonsai"));

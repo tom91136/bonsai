@@ -34,18 +34,18 @@ private case class Scope(
     levels: Map[Symbol, Int] = Map.empty,
     resets: Set[Symbol] = Set.empty,
     loops: Vector[Scope.Loop] = Vector.empty,
+    visible: Vector[Int] = Vector.empty,
     callback: Boolean = false,
     terminal: Boolean = false,
     inFallback: Boolean = false,
     amortized: Option[Int] = None
 ) {
-  def factor: Polynomial = factorOf(loops)
+  lazy val factor: Polynomial = factorOf(loops)
 
   /** The turns of the loops from the `level`-th one inwards, which is how often a value kept across them is built. */
   def factorFrom(level: Int): Polynomial =
     if (level <= 0) factor
-    else
-      factorOf(loops.drop(loops.zipWithIndex.filterNot(_._1.hidden).lift(level).fold(loops.size)(_._2)))
+    else factorOf(loops.drop(visible.lift(level).getOrElse(loops.size)))
 
   private def factorOf(inner: Vector[Scope.Loop]): Polynomial =
     Polynomial.product(inner.foldLeft(Vector.empty[Polynomial])((turns, loop) =>
@@ -55,5 +55,8 @@ private case class Scope(
   def tracking(symbol: Symbol, variable: Scope.Variable): Scope = copy(variables = variables.updated(symbol, variable))
 
   def pushed(loop: Scope.Loop): Scope =
-    copy(loops = loops :+ (if amortized.contains(loops.size) then loop.copy(trips = Polynomial.One) else loop))
+    copy(
+      loops = loops :+ (if amortized.contains(loops.size) then loop.copy(trips = Polynomial.One) else loop),
+      visible = if (loop.hidden) visible else visible :+ loops.size
+    )
 }

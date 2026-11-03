@@ -6,11 +6,13 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.StdNames.tpnme
 import dotty.tools.dotc.core.Symbols.Symbol
-import dotty.tools.dotc.core.Symbols.requiredClass
+import dotty.tools.dotc.core.Symbols.defn
+import dotty.tools.dotc.core.Symbols.requiredPackage
 import dotty.tools.dotc.core.Types.RefinedType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeTraverser
 import dotty.tools.dotc.inlines.Inlines
+import net.kurobako.bonsai.lifting.Classes
 import scala.annotation.tailrec
 import scala.collection.mutable
 
@@ -45,16 +47,15 @@ private[analysis] object Derivations {
       else Nil
     val subclasses =
       if (cls.is(Flags.Sealed))
-        cls.children.map(child => if (child.isTerm) child.moduleClass else child).filter(_.isClass)
+        Symbols.childClasses(cls).filter(_.isClass)
       else Nil
     (fields ++ subclasses).toSet
   }
 
   // Generic derivation of an instance reads every field of a class, which no use shows; `CanEqual` reads none.
   private def declared(cls: Symbol)(using Context): Boolean =
-    cls.companionModule.exists && cls.companionModule.moduleClass.info.decls.toList.exists { member =>
-      val name = member.name.toString
-      name.startsWith("derived$") && name != "derived$CanEqual"
+    cls.companionModule.exists && cls.companionModule.moduleClass.info.decls.exists { member =>
+      member.name.toString.startsWith("derived$") && member.info.finalResultType.classSymbol != defn.CanEqualClass
     }
 
   // The type a summoned mirror stands for is a refinement of the mirror type, which no other expression has.
@@ -84,11 +85,12 @@ private[analysis] class Derivations(defined: Symbol => Context ?=> Boolean) {
     method.is(Flags.Inline) && generics.getOrElseUpdate(
       method,
       method.is(Flags.Macro) ||
-        method.paramSymss.flatten.exists(_.info.widen.derivesFrom(requiredClass("scala.deriving.Mirror"))) ||
+        method.paramSymss.flatten.exists(_.info.widen.derivesFrom(Classes.required("scala.deriving.Mirror"))) ||
         Inlines.hasBodyToInline(method) && Inlines.bodyToInline(method).existsSubTree {
           case tpd.Splice(_)                  => true
           case tree: (tpd.Ident | tpd.Select) =>
-            tree.symbol.exists && tree.symbol.owner.fullName.toString.startsWith("scala.compiletime")
+            tree.symbol.exists &&
+            tree.symbol.owner.ownersIterator.contains(requiredPackage("scala.compiletime").moduleClass)
           case tree: tpd.Match => tree.isInline
           case tree: tpd.If    => tree.isInline
           case _               => false
@@ -104,8 +106,9 @@ private[analysis] class Derivations(defined: Symbol => Context ?=> Boolean) {
       val cls = pending.pop()
       if (defined(cls) && visited.add(cls)) pending.pushAll(components(cls))
     }
-    spread = Some(visited.toSet)
-    visited.toSet
+    val found = visited.toSet
+    spread = Some(found)
+    found
   }
 
   /** Records what a tree derives: the type arguments of an inline or macro call, which survive pickling although the

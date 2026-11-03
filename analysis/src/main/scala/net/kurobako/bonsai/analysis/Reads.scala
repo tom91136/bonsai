@@ -4,12 +4,13 @@ import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.core.Constants.Constant
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
+import dotty.tools.dotc.core.Names.termName
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeTraverser
+import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 
 /** The reads of the fields of a case class that showing, comparing and hashing a value make, passed to `use` as uses of
@@ -17,17 +18,6 @@ import scala.collection.mutable
   */
 private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) => Context ?=> Unit) {
   import symbols.qualifiedName
-
-  private val classes = java.util.HashMap[String, Symbol]()
-
-  private def named(name: String)(using Context): Symbol = {
-    var found = classes.get(name)
-    if (found eq null) {
-      found = requiredClass(name)
-      classes.put(name, found)
-    }
-    found
-  }
 
   // Printing, interpolating, appending or putting a value in a message calls its toString, which a case class writes
   // from every field.
@@ -93,9 +83,9 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
   def selected(application: tpd.Apply, from: Option[String])(using Context): Unit = application match {
     case tpd.Apply(tpd.Select(receiver, name), List(tpd.Literal(Constant(field: String))))
         if name == nme.selectDynamic =>
+      val target = termName(field)
       Derivations.cases(receiver.tpe).foreach(
-        _.info.decls.toList.filter(member => member.is(Flags.ParamAccessor) && member.name.toString == field)
-          .foreach(use(_, from))
+        _.info.decls.filter(member => member.is(Flags.ParamAccessor) && member.name == target).foreach(use(_, from))
       )
     case _ => ()
   }
@@ -109,7 +99,7 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
       callee.exists &&
       (name match {
         case "mkString" | "formatted" | "productIterator" => Renders(qualifiedName(callee))
-        case "distinct" => select.qualifier.tpe.widen.derivesFrom(named("scala.collection.Iterable"))
+        case "distinct" => select.qualifier.tpe.widen.derivesFrom(Classes.required("scala.collection.Iterable"))
         case _          => false
       })
     ) read(List(select.qualifier.tpe), from)
@@ -142,7 +132,7 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
     )
 
   private def derivesFromAny(cls: Symbol, names: String*)(using Context): Boolean =
-    names.exists(name => cls.derivesFrom(named(name)))
+    names.exists(name => cls.derivesFrom(Classes.required(name)))
 
   // A shown container shows its elements, whose types its type arguments name.
   private def read(types: List[Type], from: Option[String])(using Context): Unit = {
@@ -155,7 +145,7 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
     def show(cls: Symbol): Unit = if (cls.isClass && seen.add(cls)) {
       if (cls.is(Flags.Sealed)) cls.sealedDescendants.foreach(show(_))
       if (cls.is(Flags.CaseClass))
-        cls.info.decls.toList.filter(_.is(Flags.ParamAccessor)).foreach { field =>
+        cls.info.decls.filter(_.is(Flags.ParamAccessor)).foreach { field =>
           use(field, from)
           showType(field.info.finalResultType)
         }

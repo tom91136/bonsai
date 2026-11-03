@@ -137,9 +137,10 @@ private class Sizes(
     case select: tpd.Select if library.sized(tree.tpe) && field(select.symbol) =>
       construction(select.qualifier, scope).flatMap { application =>
         val constructor = application.symbol
-        val known = Shapes.termClauses(constructor).flatten.zip(arguments(application)).flatMap((parameter, argument) =>
-          size(argument, scope).map(parameter -> _)
-        )
+        val known       =
+          Calls.termClauses(constructor).flatten.zip(Calls.arguments(application)).flatMap((parameter, argument) =>
+            size(argument, scope).map(parameter -> _)
+          )
         val bound = known.flatMap((parameter, count) =>
           (parameter :: constructor.owner.info.decls.toList.filter(member =>
             member.isTerm && member.is(Flags.ParamAccessor) && member.name == parameter.name
@@ -204,18 +205,12 @@ private class Sizes(
     case application: tpd.Apply                                        =>
       Calls.selected(application.fun) match {
         case Some(select) if library.traversal(select.qualifier.tpe) =>
-          resulting(select, arguments(application), scope)
+          resulting(select, Calls.arguments(application), scope)
         case Some(select) if Ranges(select.name.toString) && library.sized(application.tpe) =>
-          arguments(application).headOption.flatMap(lengthOf(_, scope))
+          Calls.arguments(application).headOption.flatMap(lengthOf(_, scope))
         case _ => constructed(application, scope)
       }
     case _ => None
-  }
-
-  private def arguments(application: tpd.Apply): List[tpd.Tree] = application.fun match {
-    case inner: tpd.Apply                   => arguments(inner) ++ application.args
-    case tpd.TypeApply(inner: tpd.Apply, _) => arguments(inner) ++ application.args
-    case _                                  => application.args
   }
 
   private def constructed(application: tpd.Apply, scope: Scope): Option[Polynomial] = {
@@ -226,7 +221,7 @@ private class Sizes(
     if (!library.sized(application.tpe)) None
     else if (function.isConstructor && application.args.isEmpty) Some(Polynomial.One)
     else if (factory && Sized(function.name.toString))
-      arguments(application).headOption.flatMap(lengthOf(_, scope))
+      Calls.arguments(application).headOption.flatMap(lengthOf(_, scope))
     else if (factory && Set("apply", "empty")(function.name.toString))
       application.args match {
         case List(tpd.Typed(tpd.SeqLiteral(_, _), _))                  => Some(Polynomial.One)
@@ -457,7 +452,7 @@ private class Sizes(
       (tree match {
         case application: tpd.Apply =>
           Calls.selected(application.fun).filter(select => Joins(select.name.toString)).toList.flatMap { select =>
-            val operands = select.qualifier :: arguments(application).take(1)
+            val operands = select.qualifier :: Calls.arguments(application).take(1)
             if (operands.exists(self(_)))
               operands.collect { case operand if !self(operand) => size(operand, scope).getOrElse(Atoms.Unknown) }
             else Nil

@@ -58,7 +58,7 @@ public class AnalyseMojo extends BonsaiMojo {
       scalacOptions(),
       configuration.library());
 
-    Path root = Path.of(session.getExecutionRootDirectory());
+    Path root = root();
     List<String> fragment = Analysis.manifest(root, List.of(module), configuration.text());
 
     // The fragments of the modules are kept apart, and the manifest of the whole build is made of all of them.
@@ -107,7 +107,7 @@ public class AnalyseMojo extends BonsaiMojo {
 
   /** The directory the fragments of the modules are kept in, which is at the root of the build. */
   private Path fragments() throws MojoExecutionException {
-    return directory(Path.of(session.getExecutionRootDirectory()).resolve("target").resolve("bonsai").resolve("manifests"));
+    return directory(root().resolve("target").resolve("bonsai").resolve("manifests"));
   }
 
   /**

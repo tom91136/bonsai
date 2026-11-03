@@ -10,6 +10,10 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
+private object Bundles {
+  val Checks: Set[Check] = Set(Check.ParameterObjectUnpacked)
+}
+
 /** Reports a private case class that is built at one call, passed to a method, and unpacked there at once into its
   * fields, so that nothing but the parameter count of that method needed it. The class must have at least four fields,
   * appear in no other signature, value or construction, and the method must not touch the parameter after unpacking.

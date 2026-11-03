@@ -52,7 +52,11 @@ private[analysis] class CallSites(symbols: Symbols) {
 
   def recorded: Map[String, Vector[Algebra.Site]] = sites.toMap
 
-  def spared: Vector[Smells.Spare] = spares.toVector
+  // Redundant arguments are dropped first, so an unused default only shows once they are gone.
+  def spared(defaults: Vector[Smells.Default]): Vector[Smells.Spare] = {
+    val redundant = defaults.map(default => default.node -> default.parameter).toSet
+    spares.filterNot(spare => redundant((spare.node, spare.parameter))).toVector
+  }
 
   /** Classifies the calls kept, with `subjects` the key and arity of each callee that has a model, and notes the
     * default arguments they repeat and the defaults no call overrides.
@@ -252,10 +256,8 @@ private[analysis] class CallSites(symbols: Symbols) {
           )
         ) {
           val position = application.sourcePos
-          val location = if (position.exists)
-            s"${position.source.path}:${Lines.at(position.source, position.point) + 1}"
-          else "unknown"
-          val own = if (constructed.exists) owner.isDefined && owner == key(callee) else enclosing(callee)
+          val location = Lines.location(position)
+          val own      = if (constructed.exists) owner.isDefined && owner == key(callee) else enclosing(callee)
           pending += Pending(callee, method, application.args, test, own, location)
         }
     }

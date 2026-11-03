@@ -924,22 +924,16 @@ object Model {
       text.underlying.append(value, 0, index)
       while index < value.length do {
         val char = value.charAt(index)
-        char match {
-          case '\\' => text ++= "\\\\"
-          case ','  => text ++= "\\c"
-          case '|'  => text ++= "\\p"
-          case '\t' => text ++= "\\t"
-          case '\n' => text ++= "\\n"
-          case '\r' => text ++= "\\r"
-          case high
-              if Character.isHighSurrogate(high) && index + 1 < value.length &&
+        replacement(char) match {
+          case Some(escaped) => text ++= escaped
+          case None
+              if Character.isHighSurrogate(char) && index + 1 < value.length &&
                 Character.isLowSurrogate(value.charAt(index + 1)) =>
-            text += high
+            text += char
             index += 1
             text += value.charAt(index)
-          case lone if lone >= Character.MIN_SURROGATE && lone <= Character.MAX_SURROGATE =>
-            text ++= f"\\u${lone.toInt}%04x"
-          case other => text += other
+          case None if Character.isSurrogate(char) => text ++= f"\\u${char.toInt}%04x"
+          case None                                => text += char
         }
         index += 1
       }
@@ -947,10 +941,17 @@ object Model {
     }
   }
 
-  private def needsEscape(char: Char): Boolean = char match {
-    case '\\' | ',' | '|' | '\t' | '\n' | '\r' => true
-    case _                                     => char >= Character.MIN_SURROGATE && char <= Character.MAX_SURROGATE
+  private def replacement(char: Char): Option[String] = char match {
+    case '\\' => Some("\\\\")
+    case ','  => Some("\\c")
+    case '|'  => Some("\\p")
+    case '\t' => Some("\\t")
+    case '\n' => Some("\\n")
+    case '\r' => Some("\\r")
+    case _    => None
   }
+
+  private def needsEscape(char: Char): Boolean = replacement(char).isDefined || Character.isSurrogate(char)
 
   /** A text the format held whole. */
   private def unescape(value: String): String = {

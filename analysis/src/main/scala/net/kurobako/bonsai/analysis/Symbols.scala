@@ -154,7 +154,7 @@ private[analysis] final class Symbols(
 
   /** The line `symbol` is declared at, or 0 when unknown. */
   def lineOf(symbol: Symbol)(using Context): Int =
-    if (symbol.source.exists && symbol.span.exists) Lines.at(symbol.source, symbol.span.point) + 1 else 0
+    if (symbol.source.exists && symbol.span.exists) Lines.line(symbol.source, symbol.span.point) else 0
 
   /** The key of an analysed node, recording the node on first sight. */
   def register(symbol: Symbol)(using Context): Option[String] =
@@ -239,4 +239,9 @@ private[analysis] final class Symbols(
       names(symbol) = name
       name
   }
+}
+
+private[analysis] object Symbols {
+  def childClasses(parent: Symbol)(using Context): List[Symbol] =
+    parent.children.map(child => if (child.isTerm) child.moduleClass else child)
 }

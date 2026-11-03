@@ -12,6 +12,10 @@ import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
+private object Lazies {
+  val Checks: Set[Check] = Set(Check.HandWrittenLazy)
+}
+
 /** Reports a parameterless method that fills a private variable on its first call and returns it afterwards: guarded by
   * a flag variable that it sets, or by the variable still being `null`. Nothing else writes or reads the variables, so
   * a `lazy val` does the same. The fix replaces the method and the variables with the `lazy val`.

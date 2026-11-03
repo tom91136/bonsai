@@ -100,5 +100,5 @@ private object Check {
   def laws: List[Check] = byLaw.values.toList
 
   /** Every check, including one for each law of collection chains. */
-  lazy val all: List[Check] = declared.toList ++ byLaw.values
+  lazy val all: List[Check] = declared.toList ++ laws
 }

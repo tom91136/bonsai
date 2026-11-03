@@ -16,6 +16,10 @@ import net.kurobako.bonsai.lifting.Lifter
 import net.kurobako.bonsai.lifting.Purity
 import scala.collection.mutable
 
+private object Chains {
+  val Checks: Set[Check] = Check.laws.toSet
+}
+
 /** Chains of collection calls that the laws of the collections module find a cheaper or clearer form of. The chains are
   * lifted from the typed trees, the laws decide what to do with them, and an exact rewrite becomes the fix of its
   * warning. A run that a view fuses is reported here only where its functions are pure and the plugin can write the

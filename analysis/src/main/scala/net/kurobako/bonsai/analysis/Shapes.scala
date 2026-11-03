@@ -9,6 +9,7 @@ import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.TermRef
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeRef
+import net.kurobako.bonsai.lifting.Calls
 
 /** Algebraic shapes of types: standard sums, products and functions are interpreted, every other type is an atom. */
 object Shapes {
@@ -62,12 +63,9 @@ object Shapes {
   def parameters(method: Symbol)(using Context): Vector[Algebra.Field] =
     clauses(method).headOption.getOrElse(Vector.empty)
 
-  def termClauses(method: Symbol)(using Context): List[List[Symbol]] =
-    method.paramSymss.filter(_.headOption.exists(_.isTerm))
-
   /** The term parameter lists of a method, in order. */
   def clauses(method: Symbol)(using Context): Vector[Vector[Algebra.Field]] =
-    termClauses(method).toVector.map(_.toVector.map { parameter =>
+    Calls.termClauses(method).toVector.map(_.toVector.map { parameter =>
       Algebra.Field(
         parameter.name.toString,
         of(parameter.info),

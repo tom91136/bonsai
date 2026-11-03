@@ -162,18 +162,19 @@ object LintErrors {
     names.toSet
   }
 
-  private def carries(context: Context)(tree: Tree): Boolean =
-    Option(context.elements.getTypeElement("java.lang.Throwable")).exists { throwable =>
-      val typed = context.typeOf(tree)
-      Lints.subtype(context, typed, throwable.asType()) || Lints.subtype(context, throwable.asType(), typed)
-    }
+  private def carries(context: Context): Tree => Boolean = {
+    val throwable = Option(context.elements.getTypeElement("java.lang.Throwable")).map(_.asType())
+    tree =>
+      throwable.exists { base =>
+        val typed = context.typeOf(tree)
+        Lints.subtype(context, typed, base) || Lints.subtype(context, base, typed)
+      }
+  }
 
   private def handsOn(block: BlockTree, names: Set[String]): Boolean = {
-    def passes(expression: ExpressionTree): Boolean = expression match {
-      case parenthesized: ParenthesizedTree => passes(parenthesized.getExpression)
-      case cast: TypeCastTree               => passes(cast.getExpression)
-      case id: IdentifierTree               => names.contains(id.getName.toString)
-      case _                                => false
+    def passes(expression: ExpressionTree): Boolean = Lint.unwrapped(expression) match {
+      case id: IdentifierTree => names.contains(id.getName.toString)
+      case _                  => false
     }
     var found = false
     new TreeScanner[Unit, Unit] {
@@ -214,8 +215,8 @@ object LintErrors {
       val catchTree = tree.asInstanceOf[CatchTree]
       val caught    = context.typeOf(catchTree.getParameter)
       val generic   = Lints.isType(caught, "java.lang.Throwable") || Lints.isType(caught, "java.lang.Error")
-      val derived   = derivedNames(catchTree.getBlock, catchTree.getParameter.getName.toString, carries(context))
-      if generic && !handsOn(catchTree.getBlock, derived) then
+      val name      = catchTree.getParameter.getName.toString
+      if generic && !handsOn(catchTree.getBlock, derivedNames(catchTree.getBlock, name, carries(context))) then
         Vector(context.found("the exception is caught so generally that the failures of the program are hidden"))
       else Vector.empty
     }

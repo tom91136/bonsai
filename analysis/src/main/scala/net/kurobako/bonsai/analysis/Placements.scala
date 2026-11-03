@@ -174,9 +174,9 @@ private class Placements(resolver: Symbols)(using Context) extends tpd.TreeTrave
     symbol.is(Flags.ExtensionMethod) &&
       symbol.paramSymss.flatten.find(_.isTerm).exists(_.info.typeSymbol.is(Flags.Opaque))
 
-  private def extent(definition: tpd.MemberDef)(using Context): Int =
-    if (definition.span.exists) Lines.at(definition.source, definition.span.end) -
-      Lines.at(definition.source, definition.span.start) + 1
+  private def extent(definition: tpd.MemberDef): Int =
+    if (definition.span.exists) Lines.line(definition.source, definition.span.end) -
+      Lines.line(definition.source, definition.span.start) + 1
     else 0
 
   private def holds(name: String, symbol: Symbol, definition: tpd.MemberDef)(using Context): Unit = {
@@ -218,7 +218,7 @@ private class Placements(resolver: Symbols)(using Context) extends tpd.TreeTrave
     } else {
       val owner = Option.unless(symbol.owner.isTopLevelDefinitionsObject)(unit(symbol.owner)).flatten
       described(owner.getOrElse(name)).foreach { node =>
-        val line   = if (definition.span.exists) definition.sourcePos.line + 1 else node.line
+        val line   = if (definition.span.exists) Lines.line(definition.sourcePos) else node.line
         val public = node.exported && !symbol.isOneOf(Flags.Private | Flags.Protected) && !symbol.privateWithin.exists
         members(name) = Held(
           Node(name, node.module, node.scope, node.source, line, node.generated, exported = public, owner, all),

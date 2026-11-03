@@ -180,8 +180,6 @@ private[java] final class DataFlow(context: Context) {
   private def inObjects(element: Element): Boolean =
     Option(element.getEnclosingElement).exists(_.toString == "java.util.Objects")
 
-  private def typeOf(tree: Tree): TypeMirror = context.typeOf(tree)
-
   /** The array type of an expression, preferring the declaration of a variable, which keeps the annotations of its
     * elements that the type of its uses may not.
     */
@@ -190,7 +188,7 @@ private[java] final class DataFlow(context: Context) {
       case _: IdentifierTree | _: MemberSelectTree => element(Lints.unparenthesised(tree)).map(_.asType)
       case _                                       => None
     }
-    declaredType.orElse(Option(typeOf(tree))).collect { case array: ArrayType => array }
+    declaredType.orElse(Option(context.typeOf(tree))).collect { case array: ArrayType => array }
   }
 
   /** The type a variable declares for the array its initializer lists. */
@@ -312,7 +310,7 @@ private[java] final class DataFlow(context: Context) {
             val (value, after) = Option(variable.getInitializer) match {
               case Some(initializer) =>
                 val (value, after) = expression(initializer, env)
-                unboxing(initializer, typeOf(variable))
+                unboxing(initializer, context.typeOf(variable))
                 (Some(value), after)
               case None => (None, env)
             }
@@ -575,7 +573,7 @@ private[java] final class DataFlow(context: Context) {
     if target != null && target.getKind.isPrimitive then unbox(tree)
 
   private def unbox(tree: ExpressionTree): Unit =
-    if boxed(typeOf(tree)) then use(tree, "an unboxing conversion")
+    if boxed(context.typeOf(tree)) then use(tree, "an unboxing conversion")
 
   private def boxed(tpe: TypeMirror): Boolean =
     tpe != null && tpe.getKind == TypeKind.DECLARED &&
@@ -637,8 +635,8 @@ private[java] final class DataFlow(context: Context) {
       else {
         val (_, after) = expression(select.getExpression, env)
         val what       =
-          if select.getIdentifier.contentEquals("length") && typeOf(select.getExpression) != null &&
-            typeOf(select.getExpression).getKind == TypeKind.ARRAY
+          if select.getIdentifier.contentEquals("length") && context.typeOf(select.getExpression) != null &&
+            context.typeOf(select.getExpression).getKind == TypeKind.ARRAY
           then "an array"
           else "a field"
         use(select.getExpression, what)
@@ -669,7 +667,9 @@ private[java] final class DataFlow(context: Context) {
       val dimensions =
         newArray.getDimensions.asScala.foldLeft(env)((current, dimension) => expression(dimension, current)._2)
       val component =
-        (if newArray.getType == null then initialized(newArray) else None).orElse(Option(typeOf(newArray))) match {
+        (if newArray.getType == null then initialized(newArray) else None).orElse(Option(
+          context.typeOf(newArray)
+        )) match {
           case Some(array: ArrayType) => array.getComponentType
           case _                      => null
         }
@@ -723,7 +723,7 @@ private[java] final class DataFlow(context: Context) {
             expression(assignment.getExpression, a)
           case _ => expression(assignment.getExpression, env)
         }
-      unboxing(assignment.getExpression, typeOf(assignment.getVariable))
+      unboxing(assignment.getExpression, context.typeOf(assignment.getVariable))
       val after = variableOf(assignment.getVariable).fold(afterRight) { el =>
         val target = el.fields.lastOption.getOrElse(el.root)
         val kept   =
@@ -778,7 +778,7 @@ private[java] final class DataFlow(context: Context) {
 
     case cast: TypeCastTree =>
       val (value, after) = expression(cast.getExpression, env)
-      unboxing(cast.getExpression, typeOf(cast))
+      unboxing(cast.getExpression, context.typeOf(cast))
       (value, after)
 
     case instanceOf: InstanceOfTree =>
@@ -878,7 +878,7 @@ private[java] final class DataFlow(context: Context) {
     else if method.getReturnType.getKind == TypeKind.TYPEVAR then {
       val bound = binding(invocation, method)
       if Nullness.hasAnnotation(method.getReturnType, Nullness.Nullable) || bound.exists(Nullness.nullableType) ||
-        Nullness.nullableType(typeOf(invocation))
+        Nullness.nullableType(context.typeOf(invocation))
       then Value(Null.Maybe)
       else if bound.exists(tpe => tpe.getKind != TypeKind.TYPEVAR) && marked(method) then Value.NonNull
       else Value.Unknown
@@ -905,8 +905,8 @@ private[java] final class DataFlow(context: Context) {
     method.getParameters.asScala.zip(Lints.arguments(invocation)).iterator.flatMap { (parameter, argument) =>
       val actual = Lints.unparenthesised(argument) match {
         case _: IdentifierTree | _: MemberSelectTree =>
-          element(Lints.unparenthesised(argument)).map(_.asType).orElse(Option(typeOf(argument)))
-        case other => Option(typeOf(other))
+          element(Lints.unparenthesised(argument)).map(_.asType).orElse(Option(context.typeOf(argument)))
+        case other => Option(context.typeOf(other))
       }
       actual.flatMap(unify(parameter.asType, _))
     }.nextOption()
@@ -939,7 +939,7 @@ private[java] final class DataFlow(context: Context) {
     }
 
   private def isText(tree: ExpressionTree): Boolean = {
-    val tpe = typeOf(tree)
+    val tpe = context.typeOf(tree)
     tpe != null && tpe.getKind == TypeKind.DECLARED && tpe.toString == "java.lang.String"
   }
 
@@ -1023,8 +1023,8 @@ private[java] final class DataFlow(context: Context) {
           case None =>
             val (left, first)  = expression(binary.getLeftOperand, env)
             val (right, after) = expression(binary.getRightOperand, first)
-            val lt             = typeOf(binary.getLeftOperand)
-            val rt             = typeOf(binary.getRightOperand)
+            val lt             = context.typeOf(binary.getLeftOperand)
+            val rt             = context.typeOf(binary.getRightOperand)
             if lt != null && rt != null then {
               if lt.getKind.isPrimitive then unbox(binary.getRightOperand)
               if rt.getKind.isPrimitive then unbox(binary.getLeftOperand)

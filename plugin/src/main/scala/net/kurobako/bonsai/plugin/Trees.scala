@@ -32,15 +32,12 @@ private object Trees {
   }
 
   /** The term parameter lists of a method. */
-  def termParameters(method: Symbol)(using Context): List[List[Symbol]] =
-    method.paramSymss.filter(_.headOption.exists(_.isTerm))
+  def termParameters(method: Symbol)(using Context): List[List[Symbol]] = Calls.termClauses(method)
 
   /** The elements of a collection built in place by the apply of a companion, as `Set(a, b)` or `Vector(a, b)`. */
   def built(tree: tpd.Tree)(using Context): Option[List[tpd.Tree]] = {
     val collection = Calls.peelInlined(tree).tpe.widen
-    if (
-      collection.derivesFrom(Classes.required("scala.collection.Iterable")) || collection.derivesFrom(defn.ArrayClass)
-    )
+    if (collection.derivesFrom(defn.ArrayClass) || Classes.derives(collection, "scala.collection.Iterable"))
       varargs(Calls.peelInlined(tree))
     else None
   }
@@ -94,15 +91,13 @@ private object Trees {
 
   /** Option, Either and Try hold a failure, or an absent value, as a value. */
   def optional(tpe: Type)(using Context): Boolean =
-    tpe.derivesFrom(defn.OptionClass) || tpe.derivesFrom(Classes.required("scala.util.Either")) ||
-      tpe.derivesFrom(Classes.required("scala.util.Try"))
+    tpe.derivesFrom(defn.OptionClass) || Classes.derives(tpe, "scala.util.Either", "scala.util.Try")
 
   /** Whether the functions passed to a call run before it returns, as those passed to Option, Either, Try and strict
     * collections do.
     */
   def eager(function: tpd.Tree)(using Context): Boolean = Calls.selected(function).exists { select =>
     val receiver = select.qualifier.tpe.widen
-    optional(receiver) || receiver.derivesFrom(Classes.required("scala.collection.IterableOnce")) ||
-    receiver.derivesFrom(Classes.required("scala.collection.ArrayOps"))
+    optional(receiver) || Classes.derives(receiver, "scala.collection.IterableOnce", "scala.collection.ArrayOps")
   }
 }

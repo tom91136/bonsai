@@ -251,8 +251,7 @@ object Clones {
       cost: Int,
       copies: Vector[Candidate],
       holes: Vector[Vector[Literal]],
-      helper: Option[Helper] = None,
-      anchor: Option[Candidate] = None
+      helper: Option[(Helper, Candidate)] = None
   )
 
   /** Copies in one file that differ in few places, some of which are references, as one function of them would do. */
@@ -281,7 +280,7 @@ object Clones {
           _.filter(helper => outside(site, helper) && instance(helper, site))
             .minByOption(helper => (-helper.cost, helper.fragment.path, helper.fragment.start))
             .map(helper =>
-              Found(site.cost, Vector(site), Vector.empty, Some(Helper(helper.fragment, helper.reach)), Some(helper))
+              Found(site.cost, Vector(site), Vector.empty, Some((Helper(helper.fragment, helper.reach), helper)))
             )
         )
       }.toVector
@@ -299,8 +298,7 @@ object Clones {
       val bound = parts.indices.map { index =>
         val part = parts(index)
         part.parameter match {
-          case Some(binding) =>
-            val Binding(parameter, suffix) = binding
+          case Some(binding @ Binding(parameter, suffix)) =>
             Option.when(
               values(index).text.endsWith(suffix) && (values(index).reference || suffix.isEmpty) &&
                 accepted(binding, values(index))
@@ -397,13 +395,13 @@ object Clones {
           else
             (
               spans(reported, copies),
-              spans(anchored, found.anchor.toVector),
+              spans(anchored, found.helper.map(_._2).toVector),
               groups :+ Group(
                 found.cost,
                 copies.map(_.fragment),
                 found.holes.map(_.distinct.map(_.shown)),
                 copies.exists(_.mapping),
-                found.helper,
+                found.helper.map(_._1),
                 found.holes.exists(_.exists(_.reference))
               )
             )

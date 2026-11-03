@@ -91,8 +91,10 @@ private[analysis] object JavaConversion {
                 case node if node.constructible && nodes.get(node.name).exists(_.exported) => node.name
               }.toSet
             else Set.empty[String]
+          val returning = mutable.Map.empty[String, Set[String]]
           collected.methods.foreach { method =>
-            val owner = method.owner
+            val owner  = method.owner
+            val result = returns(method)
             methods += Smells.Method(
               method.name,
               method.key,
@@ -111,11 +113,11 @@ private[analysis] object JavaConversion {
               suppressed = method.suppressed
             )
             // The type the method returns, which the rules that need every call site read by.
-            returns(method).foreach(returned => results(method.key) = returned)
+            result.foreach { value =>
+              results(method.key) = value
+              returning(owner) = returning.getOrElse(owner, Set.empty) + value
+            }
           }
-          val returning = collected.methods
-            .flatMap(method => returns(method).map(method.owner -> _))
-            .groupMapReduce(_._1)(pair => Set(pair._2))(_ ++ _)
           val constructions = collected.constructions.map(construction => construction.owner -> construction).toMap
           val recorded      = collected.products.map(_.name).toSet
           collected.fields.groupBy(_.owner).filterNot((owner, _) => recorded(owner)).foreach { (owner, fields) =>
@@ -185,9 +187,9 @@ private[analysis] object JavaConversion {
           }
           // A class is constructed by the code of any module, but only the module that declares it knows what its
           // constructors keep in its fields.
-          collected.instances.foreach(instance => instances += instance -> test): Unit
-          collected.constructions.foreach(construction => constructed += construction.owner): Unit
-          collected.fields.groupBy(_.owner).foreach((owner, found) => members(owner) = found)
+          instances ++= collected.instances.map(instance => instance -> test): Unit
+          constructed ++= collected.constructions.map(_.owner): Unit
+          members ++= collected.fields.groupBy(_.owner): Unit
           collected.stores.foreach { store =>
             val key = store.owner -> store.constructor
             kept(key) = kept.getOrElse(key, Map.empty) + (store.field -> store.kept)
@@ -195,7 +197,7 @@ private[analysis] object JavaConversion {
           collected.edges.foreach { edge =>
             edges.getOrElseUpdate(edge.from, mutable.LinkedHashSet.empty) += edge.to: Unit
           }
-          collected.fragments.foreach(fragment => fragments += fragment -> test): Unit
+          fragments ++= collected.fragments.map(fragment => fragment -> test): Unit
           // The lints of the Java code are reported as findings of their own, with the module and the scope of the
           // model they were found in.
           collected.lints.foreach(lint =>
@@ -214,7 +216,7 @@ private[analysis] object JavaConversion {
             written += write.owner                            -> write.name
             if !write.constructor then outside += write.owner -> write.name
           }
-          collected.reflections.foreach(reflection => reflections += reflection): Unit
+          reflections ++= collected.reflections: Unit
           collected.costs.foreach(cost => costs.getOrElseUpdate(cost.key, cost)): Unit
       }
     }

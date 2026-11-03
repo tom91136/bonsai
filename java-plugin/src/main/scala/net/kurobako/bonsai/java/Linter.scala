@@ -62,7 +62,7 @@ class Linter(trees: Trees, elements: Elements, types: Types, enabled: Set[String
         lint.check(context, compilation).view.filterNot { finding =>
           val lines = noinspections.getOrElse(Linter.line(trees, compilation, finding), Set.empty[String])
           val id    = finding.reportedAs(lint)
-          lines("*") || lines(id) || imports(finding.at) && (declared("*") || declared(id))
+          lines(JavaLint.Wildcard) || lines(id) || imports(finding.at) && (declared(JavaLint.Wildcard) || declared(id))
         }.map(finding => Linter.found(lint, context, finding))
       }.toVector
     }
@@ -192,9 +192,7 @@ object Linter {
 
           val candidates = lints.getOrElse(kind, Vector.empty)
           val applicable =
-            if activeSuppressed.isEmpty then candidates
-            else if activeSuppressed("*") then Vector.empty
-            else candidates.filterNot(lint => activeSuppressed(lint.id))
+            candidates.filterNot(lint => activeSuppressed(JavaLint.Wildcard) || activeSuppressed(lint.id))
           if applicable.nonEmpty then {
             val context = new Context(
               trees,
@@ -215,7 +213,7 @@ object Linter {
                 val findingLine      = Linter.line(trees, compilation, finding)
                 val atLineSuppressed = noinspections.getOrElse(findingLine, Set.empty[String])
                 val id               = finding.reportedAs(lint)
-                if (!atLineSuppressed("*") && !atLineSuppressed(id) && !activeSuppressed(id)) {
+                if (!atLineSuppressed(JavaLint.Wildcard) && !atLineSuppressed(id) && !activeSuppressed(id)) {
                   found += Linter.found(lint, context, finding)
                 }
               }

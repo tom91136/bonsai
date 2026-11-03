@@ -121,17 +121,16 @@ final class Context(
   def element: Element = trees.getElement(path)
 
   /** The element a tree of the code names, which is the variable or the member it holds. */
-  def elementOf(tree: Tree): Element = trees.getElement(new TreePath(path, tree))
+  def elementOf(tree: Tree): Element = Lints.elementOf(trees, path, tree)
 
   /** Whether a tree of the code, under the path, names the element. */
-  def refers(path: TreePath, tree: Tree, element: Element): Boolean =
-    trees.getElement(new TreePath(path, tree)) == element
+  def refers(path: TreePath, tree: Tree, element: Element): Boolean = Lints.elementOf(trees, path, tree) == element
 
   /** The type of the code the lint is asked about. */
   def typeOf: TypeMirror = trees.getTypeMirror(path)
 
   /** The type of a tree of the code, which the lints compare the types of the code by. */
-  def typeOf(tree: Tree): TypeMirror = trees.getTypeMirror(new TreePath(path, tree))
+  def typeOf(tree: Tree): TypeMirror = Lints.typeOf(trees, path, tree)
 
   /** The type of a tree of the file, if the compiler attributed one. */
   def mirrorOf(tree: Tree): Option[TypeMirror] =
@@ -227,6 +226,12 @@ object Lints {
 
   /** The path of a tree under the path of the tree that holds it. */
   def child(path: TreePath, tree: Tree): TreePath = new TreePath(path, tree)
+
+  /** The element a tree under the path names. */
+  def elementOf(trees: Trees, path: TreePath, tree: Tree): Element = trees.getElement(child(path, tree))
+
+  /** The type a tree under the path has. */
+  def typeOf(trees: Trees, path: TreePath, tree: Tree): TypeMirror = trees.getTypeMirror(child(path, tree))
 
   /** The declaration of the type the compiler has just attributed, which the file holds. */
   def declaration(trees: Trees, compilation: CompilationUnitTree, typeElement: TypeElement): Option[ClassTree] = {

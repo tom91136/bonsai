@@ -9,6 +9,10 @@ import dotty.tools.dotc.core.Types.ExprType
 import net.kurobako.bonsai.lifting.Calls
 import net.kurobako.bonsai.lifting.Classes
 
+private object Implied {
+  val Checks: Set[Check] = Set(Check.ImpliedCondition)
+}
+
 /** Reports an `if` whose condition an enclosing `if` of the same method already decided, so one of its branches never
   * runs. Conditions are the same when written the same: comparisons and sums of literals, immutable values and
   * parameters, and emptiness tests of options, strings and immutable collections. Anything a call or an assignment
@@ -18,8 +22,9 @@ private class Implied(checks: Checks)(using Context) {
   private val Comparisons = Set("==", "!=", "<", "<=", ">", ">=")
   private val Arithmetic  = Set("+", "-", "*")
   private val Emptiness   = Set("isEmpty", "nonEmpty", "isDefined")
-  private val Immutable   =
-    List("scala.Option", "java.lang.String", "scala.collection.immutable.Iterable").map(Classes.required(_))
+  private val OptionClass = Classes.required("scala.Option")
+  private val StringClass = Classes.required("java.lang.String")
+  private val Immutable   = List(OptionClass, StringClass, Classes.required("scala.collection.immutable.Iterable"))
 
   /** A condition as a fact: the expression compared, and whether the condition holds when the expression does. */
   private case class Atom(key: String, holds: Boolean)
@@ -124,8 +129,7 @@ private class Implied(checks: Checks)(using Context) {
   // twice finds the same value.
   private def comparable(left: tpd.Tree, right: tpd.Tree)(using Context): Boolean = {
     val tpe = left.tpe.widen
-    Trees.primitive(tpe) || tpe.derivesFrom(Classes.required("java.lang.String")) ||
-    tpe.derivesFrom(Classes.required("scala.Option")) || nothing(right)
+    Trees.primitive(tpe) || tpe.derivesFrom(StringClass) || tpe.derivesFrom(OptionClass) || nothing(right)
   }
 
   private def nothing(tree: tpd.Tree)(using Context): Boolean = Calls.peelInlined(tree) match {

@@ -13,6 +13,10 @@ import net.kurobako.bonsai.lifting.Calls
 import net.kurobako.bonsai.lifting.Purity
 import scala.collection.mutable
 
+private object Repeats {
+  val Checks: Set[Check] = Set(Check.RepeatedSubexpression)
+}
+
 /** Reports a chain of library reads on values that no one assigns, written out twice or more in one method, where a
   * value computes it once. A chain is a read when each call is one of the standard library on immutable receivers and
   * arguments; the occurrences are those the first of them reaches whenever the others run, so a val before it stands

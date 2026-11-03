@@ -11,6 +11,7 @@ import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 
 private object Memberships {
+  val Checks: Set[Check] = Set(Check.InlineSetMembership)
 
   /** Whether a tree runs once each time the code around it runs, or once per iteration of a loop. */
   enum Repetition {

@@ -61,13 +61,7 @@ private class Flows(
 
   private def scalar(tpe: Type): Boolean = {
     val cls = tpe.widenExpr.widen.classSymbol
-    cls == defn.StringClass || cls == defn.NothingClass || defn.ScalaValueClasses().contains(cls)
-  }
-
-  private def argumentLists(application: tpd.Apply): List[tpd.Tree] = application.fun match {
-    case inner: tpd.Apply                   => argumentLists(inner) ++ application.args
-    case tpd.TypeApply(inner: tpd.Apply, _) => argumentLists(inner) ++ application.args
-    case _                                  => application.args
+    cls == defn.StringClass || cls == defn.NothingClass || cls.isPrimitiveValueClass
   }
 
   private class Pass(definition: tpd.DefDef) {
@@ -88,8 +82,9 @@ private class Flows(
 
     private def use(symbol: Symbol, sink: Sink): Unit =
       if (symbol.isTerm && !symbol.is(Flags.Method)) {
-        val joined = uses.get(symbol).fold(sink)(_.join(sink))
-        if (!uses.get(symbol).contains(joined)) {
+        val previous = uses.get(symbol)
+        val joined   = previous.fold(sink)(_.join(sink))
+        if (!previous.contains(joined)) {
           uses(symbol) = joined
           changed = true
         }
@@ -184,7 +179,8 @@ private class Flows(
       val name      = method.name.toString
       val callee    = Option.when(definitions.contains(method) && !method.isConstructor)(method)
       select.foreach(selected => flow(selected.qualifier, result, depth))
-      argumentLists(application).zipWithIndex.foreach { (argument, index) =>
+      val mutator = select.filter(selected => Methods.Mutators(name) && !internal && holder(selected))
+      Calls.arguments(application).zipWithIndex.foreach { (argument, index) =>
         Calls.lambda(argument) match {
           case Some(function) =>
             val body =
@@ -194,13 +190,14 @@ private class Flows(
             flow(function.rhs, body, if (traversal) depth + 1 else depth)
           case None =>
             val into =
-              if (Methods.Mutators(name) && !internal && select.exists(holder))
-                select.fold(Sink.Stored)(selected => target(selected.qualifier))
-              else
-                callee.fold(result) { found =>
-                  val used = fate(found, index)
-                  (if (used.returned) result else Sink.Dropped).join(if (used.stored) Sink.Stored else Sink.Dropped)
-                }
+              mutator match {
+                case Some(selected) => target(selected.qualifier)
+                case None           =>
+                  callee.fold(result) { found =>
+                    val used = fate(found, index)
+                    (if (used.returned) result else Sink.Dropped).join(if (used.stored) Sink.Stored else Sink.Dropped)
+                  }
+              }
             flow(argument, into, depth)
         }
       }

@@ -177,7 +177,7 @@ object Finding {
 
   /** A key with the numbers of its detail left out, so a moved line or a changed count still matches the baseline. */
   def unnumbered(key: String): String = key.split("\t", 3) match {
-    case Array(rule, name, detail) => s"$rule\t$name\t${Numbers.replaceAllIn(detail, "#")}"
+    case Array(rule, name, detail) => s"$rule\t$name\t${numberless(detail)}"
     case _                         => key
   }
 
@@ -207,7 +207,7 @@ case class Finding(
     * apart.
     */
   def id: String = {
-    val words = Finding.Numbers.replaceAllIn(detail, "#")
+    val words = Finding.numberless(detail)
     val text  = s"${rule.id}\t${node.name}\t${node.source}\t$words"
     MessageDigest.getInstance("SHA-256").digest(text.getBytes(UTF_8)).take(Finding.IdBytes)
       .map(byte => f"$byte%02x").mkString

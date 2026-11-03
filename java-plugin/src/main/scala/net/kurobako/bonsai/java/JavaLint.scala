@@ -261,6 +261,9 @@ object JavaLint {
   /** The ids of every lint of the Java code. */
   val ids: Set[String] = values.map(_.id).toSet ++ chains
 
+  /** The suppression id that matches every rule. */
+  val Wildcard = "*"
+
   /** The IntelliJ inspection short names and their corresponding bonsai rule ids.
     *
     * The names are taken from the inspection export files in cef4j/lints and from IntelliJ documented ids.
@@ -303,8 +306,8 @@ object JavaLint {
     "ZeroIndexToHead" -> Set("list-front-edit-in-loop"),
 
     // Documented inspection short names and aliases
-    "ALL"                                              -> Set("*"),
-    "all"                                              -> Set("*"),
+    "ALL"                                              -> Set(Wildcard),
+    "all"                                              -> Set(Wildcard),
     "BusyWait"                                         -> Set("busy-wait"),
     "CallToPrintStackTrace"                            -> Set("print-stack-trace"),
     "CanBeFinal"                                       -> Set("can-be-final"),
@@ -372,7 +375,7 @@ object JavaLint {
 
   /** The rule ids a suppression name names, with `*` for all rules. */
   def resolve(name: String): Set[String] =
-    if (name == "bonsai") Set("*")
+    if (name == "bonsai") Set(Wildcard)
     else if (name.startsWith("bonsai:")) Set(name.drop("bonsai:".length))
     else IntelliJ.getOrElse(name, ErrorProne.getOrElse(name, Set(name)))
 }

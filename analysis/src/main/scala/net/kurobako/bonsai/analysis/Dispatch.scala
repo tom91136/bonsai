@@ -4,10 +4,10 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Symbols.getClassIfDefined
 import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.lifting.Calls
+import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 
 /** The classes of the build, what implements each abstraction, and the calls that dispatch to more than one class.
@@ -60,8 +60,8 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
 
   // A Scala.js facade describes a JavaScript API, which Scala does not implement; the library may be off the classpath.
   private def facade(cls: Symbol)(using Context): Boolean = {
-    val native = getClassIfDefined("scala.scalajs.js.native")
-    val any    = getClassIfDefined("scala.scalajs.js.Any")
+    val native = Classes.named("scala.scalajs.js.native")
+    val any    = Classes.named("scala.scalajs.js.Any")
     native.exists && cls.hasAnnotation(native) || any.exists && cls.derivesFrom(any)
   }
 

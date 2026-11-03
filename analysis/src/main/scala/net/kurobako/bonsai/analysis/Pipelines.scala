@@ -59,7 +59,7 @@ object Pipelines {
             name,
             node,
             found.chain,
-            found.ends.map(extent => Lines.at(found.file, extent.start) + 1),
+            found.ends.map(extent => Lines.line(found.file, extent.start)),
             suppressed
           )
         }

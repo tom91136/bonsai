@@ -61,7 +61,9 @@ object CLI {
     }
   }
 
-  private val rules = Finding.Rule.values.map(_.id).toSet
+  private val rules         = Finding.Rule.values.map(_.id).toSet
+  private val ruleFlags     = Set("--disable", "--generated-disable", "--warn", "--error")
+  private val wildcardFlags = Set("--generated-disable", "--error")
 
   def main(args: Array[String]): Unit = {
     val result = for {
@@ -224,10 +226,8 @@ object CLI {
       parse(rest, options.copy(generated = options.generated :+ s"glob:$pattern"))
     case "--mode" :: mode :: _ if !Mode.values.exists(_.id == mode) => Left(s"unknown mode: $mode\n$usage")
     case "--mode" :: mode :: rest => parse(rest, options.copy(mode = Mode.values.find(_.id == mode).get))
-    case "--disable" :: rule :: _ if !rules(rule)                          => Left(s"unknown rule: $rule\n$usage")
-    case "--generated-disable" :: rule :: _ if rule != "*" && !rules(rule) => Left(s"unknown rule: $rule\n$usage")
-    case "--warn" :: rule :: _ if !rules(rule)                             => Left(s"unknown rule: $rule\n$usage")
-    case "--error" :: rule :: _ if rule != "*" && !rules(rule)             => Left(s"unknown rule: $rule\n$usage")
+    case flag :: rule :: _ if ruleFlags(flag) && !(wildcardFlags(flag) && rule == "*") && !rules(rule) =>
+      Left(s"unknown rule: $rule\n$usage")
     case "--disable" :: rule :: rest           => parse(rest, options.copy(disabled = options.disabled + rule))
     case "--generated-disable" :: rule :: rest =>
       parse(rest, options.copy(generatedDisabled = options.generatedDisabled + rule))

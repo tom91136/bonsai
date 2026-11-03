@@ -13,6 +13,10 @@ import net.kurobako.bonsai.lifting.Calls
 import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 
+private object Aliases {
+  val Checks: Set[Check] = Set(Check.ForwardingAlias, Check.UnusedPrivateParam)
+}
+
 /** Reports leftovers of reshuffling code to satisfy detectors: a private, local or inline method that only calls
   * another with exactly its own parameters, an object whose members all only pass their parameters on to other objects,
   * and a parameter of a private or local method marked `@unused`, which nothing in the method needs. A method that is

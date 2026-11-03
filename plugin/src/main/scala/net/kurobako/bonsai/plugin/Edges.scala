@@ -22,9 +22,8 @@ private class Edges(path: String, sourceOf: Symbol => Option[String], analysis: 
   private val files = Array.fill(2)(mutable.HashSet.empty[String])
   private val types =
     Array.fill(2)(java.util.Collections.newSetFromMap(java.util.IdentityHashMap[Type, java.lang.Boolean]()))
-  private var from: tpd.Tree = tpd.EmptyTree
 
-  private val typeEdges = new TypeTraverser {
+  private def typeEdges(from: tpd.Tree): TypeTraverser = new TypeTraverser {
     def traverse(tpe: Type): Unit = if (types(spliced).add(tpe)) {
       add(tpe.typeSymbol, from)
       tpe match {
@@ -73,8 +72,5 @@ private class Edges(path: String, sourceOf: Symbol => Option[String], analysis: 
       if (source != path && files(spliced).add(source)) analysis.reference(path, source, spliced == 1, tree.sourcePos)
     }
 
-  private def addType(tree: tpd.Tree): Unit = if (tree.hasType) {
-    from = tree
-    typeEdges.traverse(tree.tpe)
-  }
+  private def addType(tree: tpd.Tree): Unit = if (tree.hasType) typeEdges(tree).traverse(tree.tpe)
 }

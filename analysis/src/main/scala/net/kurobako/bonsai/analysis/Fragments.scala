@@ -460,12 +460,6 @@ class Fragments(using Context) {
       case _                                => ""
     }
 
-    def depth(tree: tpd.Tree): Int = tree match {
-      case tpd.Select(qualifier, nme.apply) => depth(qualifier)
-      case tpd.Select(qualifier, _)         => 1 + depth(qualifier)
-      case _                                => 0
-    }
-
     def types(tree: tpd.Tree): Vector[Clones.Typed] = tree match {
       case tpd.Select(qualifier, nme.apply) => types(qualifier)
       case tpd.Select(qualifier, _)         => types(qualifier) :+ typed(tree.tpe)
@@ -474,12 +468,13 @@ class Fragments(using Context) {
 
     def variable(tree: tpd.Tree): Clones.Literal = {
       val (key, shown) = text(tree)
+      val chain        = types(tree)
       val parameter    = Option(head(tree).symbol).collect {
         case symbol if parameters.contains(symbol) =>
           val index = parameters.indexOf(symbol)
-          Clones.Binding(index, selections(tree))(depth(tree), accepted(symbol))
+          Clones.Binding(index, selections(tree))(chain.size - 1, accepted(symbol))
       }
-      Clones.Literal(key, reference = true, parameter = parameter)(shown, types(tree))
+      Clones.Literal(key, reference = true, parameter = parameter)(shown, chain)
     }
 
     def go(tree: tpd.Tree, covered: Boolean): Unit = {
@@ -495,12 +490,10 @@ class Fragments(using Context) {
     found.result()
   }
 
-  private def rendered(constant: Constant): Clones.Literal = {
-    val types = Vector(typed(Types.ConstantType(constant)))
+  private def rendered(constant: Constant): Clones.Literal =
     if (constant.tag == Constants.StringTag)
-      Clones.Literal(constant.stringValue, string = true)(constant.show, types)
-    else Clones.Literal(constant.show)(types = types)
-  }
+      Clones.Literal(constant.stringValue, string = true)(constant.show, Vector(typed(Types.ConstantType(constant))))
+    else Clones.Literal(constant.show)(types = Vector(typed(Types.ConstantType(constant))))
 
   private final class Typing(val tpe: Types.Type) extends Clones.Typed {
     def conforms(to: Clones.Typed): Boolean = to match {
@@ -622,7 +615,7 @@ class Fragments(using Context) {
     case tpd.Select(_, name) =>
       val symbol = function.symbol
       symbol.exists && name.isOperatorName &&
-      (defn.ScalaValueClasses().contains(symbol.owner) || symbol.owner == defn.StringClass)
+      (symbol.owner.isPrimitiveValueClass || symbol.owner == defn.StringClass)
     case _ => false
   }
 
@@ -647,8 +640,8 @@ class Fragments(using Context) {
       val fragment = Clones.Fragment(
         piece.origin.node,
         first.source.path,
-        Lines.at(first.source, first.span.start) + 1,
-        Lines.at(last.source, last.span.end) + 1,
+        Lines.line(first.source, first.span.start),
+        Lines.line(last.source, last.span.end),
         piece.origin.test,
         piece.origin.family,
         piece.origin.specialised,

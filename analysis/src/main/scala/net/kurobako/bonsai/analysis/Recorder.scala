@@ -49,5 +49,6 @@ private[analysis] case class Components(
     derivations: Derivations,
     dispatching: Dispatch,
     structure: StructureObserver,
+    library: Library,
     recorder: Recorder
 )

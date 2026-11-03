@@ -53,12 +53,13 @@ final class Registry(named: Option[Int] = None) {
     */
   def agreed(kind: String, detail: String => String): Vector[Model.Lint] = {
     val kindId = if (kind == Registry.Empty) JavaLint.EmptyMethod.id else JavaLint.SameReturnValue.id
-    declared.view.filter(d => d.kind == kind && !d.suppressed("*") && !d.suppressed(kindId)).flatMap { found =>
-      val others = overriders.get((kind, found.method)).fold(Vector.empty[Option[String]])(_.toVector)
-      (found.value.toVector.map(Option(_)) ++ others).distinct match {
-        case Vector(Some(value)) if found.value.isDefined || others.nonEmpty => Some(found.report(detail(value)))
-        case _                                                               => None
-      }
+    declared.view.filter(d => d.kind == kind && !d.suppressed(JavaLint.Wildcard) && !d.suppressed(kindId)).flatMap {
+      found =>
+        val others = overriders.get((kind, found.method)).fold(Vector.empty[Option[String]])(_.toVector)
+        (found.value.toVector.map(Option(_)) ++ others).distinct match {
+          case Vector(Some(value)) if found.value.isDefined || others.nonEmpty => Some(found.report(detail(value)))
+          case _                                                               => None
+        }
     }.toVector
   }
 }

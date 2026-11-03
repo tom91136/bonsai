@@ -115,7 +115,8 @@ private[analysis] class Collector(
   override def runOn(units: List[CompilationUnit])(using Context): List[CompilationUnit] = {
     val fragments  = Fragments()
     val placing    = Placements(symbols)
-    val components = Components(symbols, callSites, reads, derivations, dispatching, structure, this)
+    val library    = Library()
+    val components = Components(symbols, callSites, reads, derivations, dispatching, structure, library, this)
     placements = Some(placing)
     units.foreach { unit =>
       try {
@@ -168,7 +169,7 @@ private[analysis] class Collector(
     clones ++= fragments.groups()
     dispatching.resolve()
     val declared = Complexity.Declared(bounded)
-    val costs    = Costs(bodies ++ constructors, initialisers, declared, JavaCosts(javaCosts, declared))
+    val costs    = Costs(bodies ++ constructors, initialisers, declared, JavaCosts(javaCosts, declared), library)
     complexityList ++= costed.flatMap(method =>
       costs.summary(method).flatMap(bounds =>
         key(method).map(Complexity.Summary(qualifiedName(method), _, bounds, suppressions(method)))
@@ -176,7 +177,7 @@ private[analysis] class Collector(
     )
     complexityList ++= costs.javaSummaries
     unusedList ++= declared.unmatched
-    val effects = inference()
+    val effects = inference(library)
     val chains  = Pipelines.Chains(effects)
     pipelineList ++= bodies.view.filter((method, _) => ownMethod(method)).flatMap((method, definition) =>
       key(method).toVector.flatMap(
@@ -215,17 +216,20 @@ private[analysis] class Collector(
       enumerations.toVector
     )
 
-  def smells: Smells.Model = Smells.Model(
-    methods.toVector.map((symbol, method) =>
-      if (overridden.getOrElse(symbol, 0) > 1) method.copy(shared = true) else method
-    ).sortBy(method => (method.name, method.node)),
-    callSites.recorded,
-    callSites.usages(methods),
-    dispatching.abstractions,
-    callSites.instantiations,
-    callSites.defaulting(products, methods),
-    spares = callSites.spared
-  )
+  def smells: Smells.Model = {
+    val defaults = callSites.defaulting(products, methods)
+    Smells.Model(
+      methods.toVector.map((symbol, method) =>
+        if (overridden.getOrElse(symbol, 0) > 1) method.copy(shared = true) else method
+      ).sortBy(method => (method.name, method.node)),
+      callSites.recorded,
+      callSites.usages(methods),
+      dispatching.abstractions,
+      callSites.instantiations,
+      defaults,
+      spares = callSites.spared(defaults)
+    )
+  }
 
   def complexities: Vector[Complexity.Summary] = complexityList.toVector
 
@@ -237,21 +241,14 @@ private[analysis] class Collector(
 
   def purity: Purity.Model = purityModel
 
-  private def inference()(using Context): Purity.Inference = {
-    val effects = Purity.Inference(bodies, templates, dispatching.implementations(_), concurrent)
+  private def inference(library: Library)(using Context): Purity.Inference = {
+    val effects = Purity.Inference(bodies, templates, dispatching.implementations(_), concurrent, library)
     effects.run()
     effects
   }
 
   private def purity(effects: Purity.Inference)(using Context): Purity.Model = {
-    def site(method: Symbol, tree: tpd.Tree) =
-      key(method).map {
-        node =>
-          val position = tree.sourcePos
-          node ->
-            (if (position.exists) s"${position.source.path}:${Lines.at(position.source, position.point) + 1}"
-             else "unknown")
-      }
+    def site(method: Symbol, tree: tpd.Tree) = key(method).map(node => node -> Lines.location(tree.sourcePos))
     Purity.Model(
       effects.pointless.flatMap((method, callee, tree) =>
         site(method, tree).map((node, location) => Purity.Discard(callee, node, location, suppressions(method)))
@@ -371,7 +368,7 @@ private[analysis] class Collector(
     * instances, which nothing extends and which belong to no other sealed hierarchy.
     */
   private def enumeration(parent: Symbol, name: String, key: String)(using Context): Option[Algebra.Enumeration] = {
-    val cases                         = parent.children.map(child => if (child.isTerm) child.moduleClass else child)
+    val cases                         = Symbols.childClasses(parent)
     def plain(child: Symbol): Boolean =
       child.isClass && child.is(Flags.Case) && !child.isOneOf(Flags.Sealed | Flags.Trait | Flags.Abstract) &&
         !dispatching.implemented(child) && !bodied(child) &&
@@ -405,7 +402,7 @@ private[analysis] class Collector(
         exported(method),
         info.test,
         stored(method, body),
-        Shapes.termClauses(method).flatten.zipWithIndex.collect {
+        Calls.termClauses(method).flatten.zipWithIndex.collect {
           case (parameter, index) if parameter.is(Flags.Inline) => index
         }.toSet,
         method.is(Flags.Inline) || method.owner.isTerm && method.owner.is(Flags.Inline),
@@ -427,7 +424,7 @@ private[analysis] class Collector(
       case reference: tpd.Ident => reference.symbol == parameter
       case _                    => false
     }.size
-    Shapes.termClauses(method).headOption.getOrElse(Nil).zipWithIndex.collect {
+    Calls.termClauses(method).headOption.getOrElse(Nil).zipWithIndex.collect {
       case (parameter, index) if uses(parameter) > 0 && uses(parameter) == passes.getOrElse(parameter, 0) => index
     }.toSet
   }
@@ -443,7 +440,7 @@ private[analysis] class Collector(
       !method.isSetter && !method.name.is(DefaultGetterName) && !method.allOverriddenSymbols.hasNext
     )
       nodeOf(method).foreach { info =>
-        val parameters = Shapes.termClauses(method).headOption.getOrElse(Nil)
+        val parameters = Calls.termClauses(method).headOption.getOrElse(Nil)
         val first      = parameters.headOption
         designed += Designs.Method(
           qualifiedName(method),
@@ -647,7 +644,7 @@ private[analysis] class Collector(
     val extractor = unapply.fun.symbol
     val cls       = Calls.owner(extractor).companionClass
     if (cls.is(Flags.CaseClass) && extractor.is(Flags.Synthetic)) {
-      val fields = Shapes.termClauses(cls.primaryConstructor).headOption.getOrElse(Nil)
+      val fields = Calls.termClauses(cls.primaryConstructor).headOption.getOrElse(Nil)
       // A field named like a method of the class, as `copy` is, stands beside it.
       val accessors = cls.info.decls.toList.filter(_.is(Flags.ParamAccessor)).groupBy(_.name)
       fields.zip(unapply.patterns).foreach((field, pattern) =>

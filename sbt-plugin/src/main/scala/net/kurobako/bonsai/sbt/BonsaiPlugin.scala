@@ -414,13 +414,20 @@ object BonsaiPlugin extends AutoPlugin {
         ManifestLines.outputs(entry.project, entry.scope, entry.classes, entry.library)
       )
       val analysedOutputs = kept.map(_.classes).toSet
-      val libraries       = external.all(analysed).value.groupMap(_._1)(_._2).toSeq.sortBy(_._1).map {
-        (id, entries) => id -> entries.flatten.distinct.filterNot(analysedOutputs)
+      val libraries       = external.all(analysed).value.groupMap(_._1)(_._2).toSeq.sortBy(_._1).map { (id, entries) =>
+        val kept = entries.flatten.distinct.filterNot(analysedOutputs)
+        (id, kept, kept.collect { case Javalib(version) => version })
       }
       val log        = streams.value.log
       val resolution = dependencyResolution.value
-      val classpath  = libraries.flatMap((id, entries) =>
-        ManifestLines.classpath(id, entries ++ javalibInterface(entries, resolution, target.value, log))
+      val interfaces = libraries.flatMap(_._3).distinct.map { version =>
+        version -> javalibInterface(version, resolution, target.value, log)
+      }.toMap
+      val classpath = libraries.flatMap((id, entries, versions) =>
+        ManifestLines.classpath(
+          id,
+          entries ++ versions.headOption.map(interfaces).getOrElse(Vector.empty)
+        )
       )
       val platform        = platforms.toSeq.sorted.map(id => s"platform\t$id")
       val compilerOptions = Def.task {
@@ -480,20 +487,19 @@ object BonsaiPlugin extends AutoPlugin {
   // Scala Native's javalib ships its interface to the runtime as NIR only, which inline expansions in a twin's classes
   // reference, so the analysis reads the published class files of the same version.
   private def javalibInterface(
-      libraries: Seq[String],
+      version: String,
       resolution: DependencyResolution,
       target: File,
       log: Logger
-  ): Vector[String] =
-    libraries.collectFirst { case Javalib(version) => version }.toVector.flatMap { version =>
-      val module = ("org.scala-native" % "javalib-intf" % version).intransitive()
-      resolution.retrieve(module, None, target / "bonsai" / "javalib-intf", log) match {
-        case Right(files)  => files.map(_.toString)
-        case Left(warning) =>
-          log.warn(s"bonsai: cannot resolve javalib-intf $version: ${warning.resolveException.getMessage}")
-          Vector.empty
-      }
+  ): Vector[String] = {
+    val module = ("org.scala-native" % "javalib-intf" % version).intransitive()
+    resolution.retrieve(module, None, target / "bonsai" / "javalib-intf", log) match {
+      case Right(files)  => files.toVector.map(_.toString)
+      case Left(warning) =>
+        log.warn(s"bonsai: cannot resolve javalib-intf $version: ${warning.resolveException.getMessage}")
+        Vector.empty
     }
+  }
 
   private def analysisClasspath(
       resolution: DependencyResolution,

@@ -10,6 +10,10 @@ import dotty.tools.dotc.rewrites.Rewrites.ActionPatch
 import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
+private object Branches {
+  val Checks: Set[Check] = Set(Check.IdenticalBranches, Check.RepeatedBranchCall)
+}
+
 /** Reports branches of an `if` chain, a `match` or the handlers of a `try` that run the same code: adjacent branches
   * with equal bodies, whose conditions or patterns join, a branch equal to the default one, which decides nothing, and
   * three or more branches that each call the same method with a few arguments set apart, which one call can make. The

@@ -15,6 +15,10 @@ import net.kurobako.bonsai.effects.Receiver
 import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
+private object Effects {
+  val Checks: Set[Check] = Set(Check.EagerEffect)
+}
+
 /** Reports side effects a method returning an effect performs when it is called rather than when the effect runs, so
   * running the effect again, or discarding it, neither repeats nor skips them. An effect is a value of an abstract type
   * constructor, as in tagless final code, or of a known effect type; an opaque type is abstract only outside its scope.

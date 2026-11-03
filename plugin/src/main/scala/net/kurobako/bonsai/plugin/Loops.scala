@@ -27,6 +27,20 @@ import net.kurobako.bonsai.lifting.Parameters
 import net.kurobako.bonsai.lifting.Purity
 import scala.collection.mutable
 
+private object Loops {
+  val Checks: Set[Check] = Memberships.Checks ++ Set(
+    Check.AccumulatingConcat,
+    Check.BoxingFold,
+    Check.InvariantInLoop,
+    Check.KeyedLookupInLoop,
+    Check.LinearInLoop,
+    Check.LiteralTableInDef,
+    Check.LoopBoxing,
+    Check.RegexInDef,
+    Check.TupleDestructure
+  )
+}
+
 /** Reports work repeated on every iteration of a loop: a `while` body, or a function passed to a collection's
   * traversal. Linear operations there multiply the loop's cost, strict transformation chains allocate their
   * intermediate collections each time, primitives passed to the generic parameters of collections box each time, work

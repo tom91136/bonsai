@@ -8,7 +8,6 @@ import dotty.tools.dotc.core.Types.Type
 
 /** What the cost model knows of library types. */
 private class Library(using Context) {
-  private val traversals     = Traversals()
   private val IterableOnce   = requiredClass("scala.collection.IterableOnce")
   private val ArrayOps       = requiredClass("scala.collection.ArrayOps")
   private val StringOps      = requiredClass("scala.collection.StringOps")
@@ -35,7 +34,11 @@ private class Library(using Context) {
 
   def text(tpe: Type): Boolean = derives(tpe, defn.StringClass) || derives(tpe, StringOps)
 
-  def traversal(tpe: Type): Boolean = traversals.collection(tpe)
+  /** Whether values of a type can be traversed: collections and arrays, but not options. */
+  def traversal(tpe: Type): Boolean =
+    !derives(tpe, defn.OptionClass) &&
+      (derives(tpe, IterableOnce) || derives(tpe, defn.ArrayClass) ||
+        derives(tpe, ArrayOps) || derives(tpe, StringOps))
 
   def linked(tpe: Type): Boolean = derives(tpe, LinearSeq)
 

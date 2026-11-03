@@ -25,10 +25,14 @@ object Globs {
   }
 
   /** Whether `name` is selected by one of the `globs` and by none of the `!`-prefixed ones. */
-  def heat(globs: Seq[String]): String => Boolean = {
-    val isCold = cold(globs)
-    val hot    = globs.collect { case glob if !glob.startsWith("!") => qualifiedNames(glob) }
-    memoised(name => !isCold(name) && hot.exists(matches(_, name)))
+  def heat(globs: Seq[String]): String => Boolean = heat(cold(globs), globs)
+
+  /** Whether `name` is selected by one of the `globs` and by none of the `!`-prefixed ones, where `isCold` is
+    * `cold(globs)`.
+    */
+  def heat(isCold: String => Boolean, globs: Seq[String]): String => Boolean = {
+    val hot = globs.collect { case glob if !glob.startsWith("!") => qualifiedNames(glob) }
+    name => !isCold(name) && hot.exists(matches(_, name))
   }
 
   private def memoised(test: String => Boolean): String => Boolean = {

@@ -9,6 +9,10 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import net.kurobako.bonsai.lifting.Calls
 import scala.collection.mutable
 
+private object RoundTrips {
+  val Checks: Set[Check] = Set(Check.StringRoundTrip)
+}
+
 /** Reports a string built by an interpolation and parsed back, in the same method, by a pattern interpolation with the
   * same parts, when the strings the pattern matches come from the interpolation through values of the method. The
   * values the string was built from are at hand, so parsing it only recovers them. A pattern over strings from

@@ -1,15 +1,26 @@
 package net.kurobako.bonsai.analysis
 
 import dotty.tools.dotc.util.SourceFile
+import dotty.tools.dotc.util.SourcePosition
 import java.util.Arrays
-import java.util.IdentityHashMap
+import java.util.WeakHashMap
 
 /** Lines of offsets in sources, taken from the source's own text. The compiler's line table of a source read back from
   * TASTy is replaced by that of the last class read from it, so the lines it gives depend on the order classes were
   * read in.
   */
 private[analysis] object Lines {
-  private val starts = IdentityHashMap[SourceFile, Array[Int]]()
+  private val starts = WeakHashMap[SourceFile, Array[Int]]()
+
+  /** The one-based line `position` is on, or 0 when it does not exist. */
+  def line(position: SourcePosition): Int = if (position.exists) line(position.source, position.point) else 0
+
+  /** The one-based line `offset` is on. */
+  def line(source: SourceFile, offset: Int): Int = at(source, offset) + 1
+
+  /** The `path:line` `position` is on, or `unknown` when it does not exist. */
+  def location(position: SourcePosition): String =
+    if (position.exists) s"${position.source.path}:${line(position)}" else "unknown"
 
   /** The zero-based line `offset` is on. */
   def at(source: SourceFile, offset: Int): Int = {

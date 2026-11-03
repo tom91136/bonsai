@@ -27,11 +27,11 @@ private class Costs(
     definitions: collection.Map[Symbol, tpd.DefDef],
     initialisers: collection.Map[Symbol, tpd.Tree],
     declared: Complexity.Declared,
-    java: JavaCosts
+    java: JavaCosts,
+    library: Library
 )(using Context) {
   import Charges.*
 
-  private val library  = Library()
   private val memo     = new Memo[Symbol]
   private val subtrees = Children()
   private val flows    =
@@ -125,17 +125,6 @@ private class Costs(
   private def sizeOf(parameter: Symbol): Polynomial =
     declaredSize(parameter).getOrElse(Atoms.size(name(parameter)))
 
-  private def line(tree: tpd.Tree): Int = {
-    val position = tree.sourcePos
-    if (position.exists) Lines.at(position.source, position.point) + 1 else 0
-  }
-
-  private def argumentLists(application: tpd.Apply): List[tpd.Tree] = application.fun match {
-    case inner: tpd.Apply                   => argumentLists(inner) ++ application.args
-    case tpd.TypeApply(inner: tpd.Apply, _) => argumentLists(inner) ++ application.args
-    case _                                  => application.args
-  }
-
   /** How a method recurs on itself: not at all, once per element of a parameter that shrinks, or unboundedly. */
   private def recursion(method: Symbol, definition: tpd.DefDef, calls: Vector[(tpd.Apply, Scope)]): Recursion =
     if (calls.isEmpty) Recursion.Absent
@@ -146,7 +135,7 @@ private class Costs(
         case (parameter, index)
             if library.sized(parameter.tpt.tpe) &&
               calls.forall((call, scope) =>
-                argumentLists(call).lift(index).exists(shrunk(sizes, _, parameter.symbol, scope))
+                Calls.arguments(call).lift(index).exists(shrunk(sizes, _, parameter.symbol, scope))
               ) => Recursion.Bounded(sizeOf(parameter.symbol))
       }.orElse(counted(definition, calls, sizes)).getOrElse(Recursion.Unbounded)
     }
@@ -160,7 +149,9 @@ private class Costs(
     definition.termParamss.flatten.zipWithIndex.collectFirst {
       case (parameter, index) if parameter.tpt.tpe.widen.derivesFrom(defn.IntClass) =>
         def all(operator: String): Boolean =
-          calls.forall((call, _) => argumentLists(call).lift(index).exists(sizes.steps(_, parameter.symbol, operator)))
+          calls.forall((call, _) =>
+            Calls.arguments(call).lift(index).exists(sizes.steps(_, parameter.symbol, operator))
+          )
         if (all("-")) Some(Recursion.Bounded(sizeOf(parameter.symbol)))
         else if (all("+")) sizes.limit(definition.rhs, parameter.symbol, entry(definition)).map(Recursion.Bounded(_))
         else None
@@ -245,7 +236,7 @@ private class Costs(
     }
 
     private def label(tree: tpd.Tree, operation: String, count: Option[Polynomial]): String =
-      s"$operation over ${count.fold("?")(Atoms.show)} (line ${line(tree)})"
+      s"$operation over ${count.fold("?")(Atoms.show)} (line ${Lines.line(tree.sourcePos)})"
 
     // a branch taken when two values are equal runs for few of the turns of the loops around it
     private def guarded(condition: tpd.Tree, scope: Scope): Scope =
@@ -262,7 +253,7 @@ private class Costs(
 
     private def charge(tree: tpd.Tree, work: Work, scope: Scope, counted: Scope): Unit = {
       val cause = if (scope.inFallback) work.copy(what = s"${work.what} (in orElse fallback)") else work
-      charges += Charge.at(scope, counted, cause, line(tree), flow.of(tree))
+      charges += Charge.at(scope, counted, cause, Lines.line(tree.sourcePos), flow.of(tree))
     }
 
     private val exits = mutable.Set.empty[tpd.Tree]
@@ -384,7 +375,7 @@ private class Costs(
     private def applied(application: tpd.Apply, scope: Scope): Unit = {
       val method    = application.fun.symbol
       val select    = Calls.selected(application.fun)
-      val arguments = argumentLists(application)
+      val arguments = Calls.arguments(application)
       val functions = arguments.flatMap(Calls.lambda(_))
       select.foreach(selected => visit(selected.qualifier, scope))
       val isFallback = Set("orElse", "getOrElse")(method.name.toString)
@@ -424,7 +415,7 @@ private class Costs(
         scope: Scope
     ): Unit = {
       val roots = known(method).fold(
-        Shapes.termClauses(method).flatten.map(name)
+        Calls.termClauses(method).flatten.map(name)
       )(_.roots)
       val receiver = select.fold(Some("this"))(selected => sizes.path(selected.qualifier, scope))
       val bindings = roots.zip(arguments).map { (root, argument) =>
@@ -439,7 +430,7 @@ private class Costs(
       val space     = Atoms.rebind(inherited.space, bindings)
       charge(
         application,
-        Work(s"call of ${method.name} (line ${line(application)})", time, space, linearIn(time)),
+        Work(s"call of ${method.name} (line ${Lines.line(application.sourcePos)})", time, space, linearIn(time)),
         scope,
         scope
       )

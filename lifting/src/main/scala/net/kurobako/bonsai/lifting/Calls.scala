@@ -7,24 +7,22 @@ import dotty.tools.dotc.core.NameKinds.DefaultGetterName
 import dotty.tools.dotc.core.Symbols.NoSymbol
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
-import dotty.tools.dotc.core.Symbols.getClassIfDefined
 import net.kurobako.bonsai.effects.Axioms
 import net.kurobako.bonsai.effects.Effect
 import net.kurobako.bonsai.effects.Kind
 import net.kurobako.bonsai.effects.Receiver
-import scala.collection.mutable
 
 /** Presents the calls of typed trees to the effect axioms. */
 final class Calls(using Context) {
-  private val classes = mutable.Map.empty[String, Symbol]
-
-  private def named(name: String): Symbol = classes.getOrElseUpdate(name, getClassIfDefined(name))
 
   /** `method` called on `qualifier`, if it has one. */
   def of(method: Symbol, qualifier: Option[tpd.Tree]): Axioms.Call = {
     val operand = qualifier.map { tree =>
       val tpe = Calls.unconverted(tree).tpe.widen
-      Axioms.Operand(name => named(name).exists && tpe.derivesFrom(named(name)), tree.symbol.is(Flags.Module))
+      Axioms.Operand(
+        name => Classes.named(name).exists && tpe.derivesFrom(Classes.named(name)),
+        tree.symbol.is(Flags.Module)
+      )
     }
     Axioms.Call(
       Calls.qualified(Calls.owner(method)),
@@ -54,6 +52,10 @@ object Calls {
 
   /** The owner of `symbol`, or `NoSymbol` where the classpath lacks the class `symbol` was read from. */
   def owner(symbol: Symbol)(using Context): Symbol = if (symbol.exists) symbol.owner else NoSymbol
+
+  /** The term parameter lists of a method. */
+  def termClauses(method: Symbol)(using Context): List[List[Symbol]] =
+    method.paramSymss.filter(_.headOption.exists(_.isTerm))
 
   @annotation.tailrec
   def unconverted(tree: tpd.Tree)(using Context): tpd.Tree = peel(tree) match {
@@ -85,6 +87,13 @@ object Calls {
         case tpd.Block(Nil, expression) => peelWith(expression, extra)
         case other                      => other
       }
+
+  /** The arguments of each application in a chain of applications, innermost first. */
+  def arguments(application: tpd.Apply): List[tpd.Tree] = application.fun match {
+    case inner: tpd.Apply                   => arguments(inner) ++ application.args
+    case tpd.TypeApply(inner: tpd.Apply, _) => arguments(inner) ++ application.args
+    case _                                  => application.args
+  }
 
   /** The method a function written in place defines. */
   def lambda(tree: tpd.Tree)(using Context): Option[tpd.DefDef] = peelInlined(tree) match {

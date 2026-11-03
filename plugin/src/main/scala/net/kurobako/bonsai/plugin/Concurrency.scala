@@ -10,6 +10,11 @@ import net.kurobako.bonsai.lifting.Calls
 import net.kurobako.bonsai.lifting.Classes
 import scala.collection.mutable
 
+private object Concurrency {
+  val Checks: Set[Check] =
+    Set(Check.BlockingCommonPool, Check.OrphanThread, Check.ReimplementedJoin, Check.UnboundedWait)
+}
+
 /** Reports blocking work handed to a shared pool sized for computation, waits with no limit, threads nothing stops, and
   * an interruptible wait retried by hand where an uninterruptible one exists.
   */
