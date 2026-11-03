@@ -1142,8 +1142,7 @@ class LintSuite extends FunSuite {
         "redundant-try",
         "broad-catch",
         "discarded-cause",
-        "shadowed-extension",
-        "unstable-equality"
+        "shadowed-extension"
       ) ++ Laws.ids
     )
     assertEquals(
@@ -2882,105 +2881,5 @@ class LintSuite extends FunSuite {
     val source = "object Lints {\n  def same(a: Array[Int], b: Array[Int]): Boolean = a == b\n}"
     assertEquals(tagged(warningsAt("src/main/scala/Lints.scala", source), "array-equality").size, 1)
     assertEquals(tagged(warningsAt("stryker4s-8113/src/main/scala/Lints.scala", source), "array-equality"), Nil)
-  }
-
-  test("case class fields that compare by reference or change after construction give unstable equality") {
-    val found = tagged(
-      warnings(
-        """import scala.collection.mutable
-          |object Lints {
-          |  case class Samples(
-          |      name: String,
-          |      values: Array[Double],
-          |      transform: Double => Double,
-          |      cache: mutable.Map[String, Int]
-          |  )
-          |  case class Active(client: String, var request: Vector[Byte])
-          |  case class Target(endpoint: String, closeFn: () => Unit)
-          |  case class Plain(name: String, values: Vector[Double], cache: Map[String, Int])
-          |  trait Reduction { def apply(a: Int, b: Int): Int }
-          |  trait Named { def name: String }
-          |  sealed trait Shape { def scale(by: Double): Shape }
-          |  case class Kernel(name: String, expected: Reduction)
-          |  case class Labelled(label: Named, shape: Shape)
-          |  class Holder(values: Array[Double])
-          |  trait Thunk { def apply(): Unit }
-          |  case class Deferred(name: String, thunk: Thunk)
-          |  case class Job(name: String, task: Runnable)
-          |  case class Mapper(name: String, transform: java.util.function.Function[Int, Int])
-          |  case class Aliased(values: Aliases.Numbers, buffer: Aliases.Buffer)
-          |  object Aliases { type Numbers = Array[Int]; type Buffer = mutable.ArrayBuffer[Int] }
-          |  case class Generic[A](items: Array[A], head: A)
-          |  case class Multiple(first: Int)(val second: Array[Int])
-          |  trait Strategy { def choose(values: List[Int]): Int }
-          |  object Smallest extends Strategy { def choose(values: List[Int]): Int = values.min }
-          |  case class Planned(name: String, strategy: Strategy)
-          |  case class Sorted(name: String, order: Ordering[Int], same: Equiv[Int], by: java.util.Comparator[Int])
-          |  case class Ranked(name: String, rank: Comparable[Int])
-          |}""".stripMargin
-      ),
-      "unstable-equality"
-    ).map(_.stripSuffix(" [bonsai:unstable-equality]"))
-    assertEquals(
-      found,
-      List(
-        "buffer: mutable fields change the value after construction, so Aliased has unstable equality",
-        "cache: mutable fields change the value after construction, so Samples has unstable equality",
-        "closeFn: functions compare by reference, so Target has unstable equality",
-        "expected: single-method traits that lambdas implement compare by reference, so Kernel has unstable equality",
-        "items: arrays compare by reference, so Generic has unstable equality",
-        "task: single-method traits that lambdas implement compare by reference, so Job has unstable equality",
-        "thunk: single-method traits that lambdas implement compare by reference, so Deferred has unstable equality",
-        "transform: functions compare by reference, so Samples has unstable equality",
-        "transform: single-method traits that lambdas implement compare by reference, so Mapper has unstable equality",
-        "values: arrays compare by reference, so Aliased has unstable equality",
-        "values: arrays compare by reference, so Samples has unstable equality"
-      ).sorted
-    )
-  }
-
-  test("case class fields of library types with mutable state give unstable equality") {
-    val found = tagged(
-      warnings(
-        """package fix {
-          |  object Libraries {
-          |    case class Json(value: ujson.Value)
-          |    case class Document(root: ujson.Obj, items: ujson.Arr)
-          |    case class Text(value: String)
-          |  }
-          |}
-          |package ujson {
-          |  sealed trait Value
-          |  final class Obj extends Value
-          |  final class Arr extends Value
-          |}""".stripMargin
-      ),
-      "unstable-equality"
-    ).map(_.stripSuffix(" [bonsai:unstable-equality]"))
-    assertEquals(
-      found,
-      List(
-        "items: mutable fields change the value after construction, so Document has unstable equality",
-        "root: mutable fields change the value after construction, so Document has unstable equality",
-        "value: mutable fields change the value after construction, so Json has unstable equality"
-      )
-    )
-  }
-
-  test("private case classes are not reported, since their values do not leave the scope that declares them") {
-    val found = tagged(
-      warnings(
-        """package fix {
-          |  object Lints {
-          |    private case class Device(name: String, handler: () => Unit, values: Array[Int])
-          |    private[Lints] case class Pinned(values: Array[Int])
-          |    private[fix] case class Scoped(transform: Int => Int)
-          |    case class Open(values: Array[Int])
-          |  }
-          |}""".stripMargin
-      ),
-      "unstable-equality"
-    ).map(_.stripSuffix(" [bonsai:unstable-equality]"))
-    assertEquals(found, List("values: arrays compare by reference, so Open has unstable equality"))
   }
 }

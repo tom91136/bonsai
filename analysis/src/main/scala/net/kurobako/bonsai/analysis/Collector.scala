@@ -62,6 +62,7 @@ private[analysis] class Collector(
   private val derivations = Derivations(symbol => symbols.key(symbol).isDefined)
   private val dispatching = Dispatch(symbols, bodies.contains(_))
   private val structure   = StructureObserver(symbols, () => dispatching.classes, lines)
+  private val comparing   = Comparisons(symbols, () => dispatching.classes, lines)
   import symbols.*
 
   private val products       = mutable.Map.empty[Symbol, Algebra.Product]
@@ -109,7 +110,8 @@ private[analysis] class Collector(
     val fragments  = Fragments(lines)
     val placing    = Placements(symbols, lines)
     val library    = Library()
-    val components = Components(symbols, callSites, reads, derivations, dispatching, structure, library, this)
+    val components =
+      Components(symbols, callSites, reads, derivations, dispatching, structure, comparing, library, this)
     placements = Some(placing)
     units.foreach { unit =>
       try {
@@ -183,6 +185,7 @@ private[analysis] class Collector(
     )
     purityModel = purity(effects)
     structure.finish()
+    comparing.finish()
     units
   }
 
@@ -560,6 +563,8 @@ private[analysis] class Collector(
   }
 
   def structures: Structures.Model = structure.structures
+
+  def equality: Equality.Model = comparing.equality
 
   /** Whether construction is private, open beside companion factories returning the class in an effect, or open. */
   private def access(cls: Symbol, fields: Vector[Algebra.Field])(using Context): Algebra.Access = {

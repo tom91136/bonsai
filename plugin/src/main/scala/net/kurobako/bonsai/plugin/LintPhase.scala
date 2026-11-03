@@ -176,7 +176,6 @@ private class LintPhase(
     pass(Implied.Checks)(Implied(_).run(tree))
     pass(Concurrency.Checks)(Concurrency(_).traverse(tree))
     pass(Fields.Checks)(Fields(_).run(tree))
-    pass(Equality.Checks)(Equality(_).run(tree))
     pass(Nowarns.Checks)(Nowarns(_).run(tree))
     pass(Lambdas.Checks)(Lambdas(_, hot, cold).run(tree))
     pass(Aliases.Checks)(Aliases(_).run(tree))

@@ -8,6 +8,7 @@ private[analysis] case class Components(
     derivations: Derivations,
     dispatching: Dispatch,
     structure: StructureObserver,
+    comparisons: Comparisons,
     library: Library,
     recorder: Recorder
 )

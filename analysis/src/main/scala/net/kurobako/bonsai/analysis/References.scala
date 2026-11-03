@@ -63,6 +63,7 @@ private[analysis] class References(components: Components, fragments: Fragments)
         case typed @ tpd.TypeDef(_, template: tpd.Template) if symbol.isClass =>
           recorder.define(symbol, template)
           structure.define(symbol, typed, template)
+          comparisons.define(symbol)
         case value: tpd.ValDef if symbol.is(Flags.Synthetic) && !symbol.owner.isClass =>
           callSites.bind(symbol, value.rhs)
         case method: tpd.DefDef if symbol.name.is(DefaultGetterName) => callSites.default(symbol, method.rhs)
@@ -148,7 +149,11 @@ private[analysis] class References(components: Components, fragments: Fragments)
       recorder.mention(tree)
       derivations.observe(tree)
       structure.observe(tree, owner)
-      reads.keyed(tree.tpe, owner)
+      val keys = reads.keyed(tree.tpe, owner)
+      if (!synthetic.top) {
+        comparisons.observe(tree, owner)
+        comparisons.keyed(keys, tree, owner)
+      }
       tree match {
         case select: tpd.Select => reads.rendered(select, owner)
         case _                  => ()

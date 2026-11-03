@@ -67,6 +67,7 @@ object Finding {
     val UnusedDefault: Rule           = rule("unused-default")
     val WeakerAccess: Rule            = rule("weaker-access")
     val VarCouldBeVal: Rule           = rule("var-could-be-val", strict = true)
+    val UnstableEquality: Rule        = rule("unstable-equality", strict = true)
     val RegistryDrift: Rule           = rule("registry-drift")
     val AnonymousGiven: Rule          = rule("anonymous-given")
     val CommonFactor: Rule            = rule("common-factor")

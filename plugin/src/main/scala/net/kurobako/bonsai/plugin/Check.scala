@@ -27,7 +27,6 @@ private object Check {
   val SwappedArguments: Check        = check("swapped-arguments", strict = true)
   val BooleanArgument: Check         = check("boolean-argument", strict = true)
   val OpenTypeTest: Check            = check("open-type-test")
-  val UnstableEquality: Check        = check("unstable-equality", strict = true)
   val ExtractorTypeTest: Check       = check("extractor-type-test", strict = true)
   val NamedPattern: Check            = check("named-pattern", strict = true)
   val UnitMap: Check                 = check("unit-map", strict = true)

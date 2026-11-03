@@ -105,14 +105,22 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
     ) read(List(select.qualifier.tpe), from)
   }
 
-  /** Records the fields of the keys and elements of the hashed maps and sets a type names, which hashing reads. */
-  def keyed(tpe: Type, from: Option[String])(using Context): Unit =
-    KeyTypes(key => read(List(key), from)).traverse(tpe)
+  /** Records the fields of the keys and elements of the hashed maps and sets a type names, which hashing reads, and
+    * gives those keys.
+    */
+  def keyed(tpe: Type, from: Option[String])(using Context): List[Type] = {
+    val keys = KeyTypes()
+    keys.traverse(tpe)
+    keys.found.foreach(key => read(List(key), from))
+    keys.found.toList
+  }
 
-  private class KeyTypes(found: Type => Unit)(using Context) extends TypeTraverser {
+  private class KeyTypes(using Context) extends TypeTraverser {
+    val found: mutable.ArrayBuffer[Type] = mutable.ArrayBuffer.empty
+
     def traverse(tpe: Type): Unit = {
       tpe match {
-        case AppliedType(constructor, key :: _) if hashed(constructor.classSymbol) => found(key)
+        case AppliedType(constructor, key :: _) if hashed(constructor.classSymbol) => found += key
         case _                                                                     => ()
       }
       traverseChildren(tpe)

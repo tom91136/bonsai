@@ -81,7 +81,8 @@ class CLISuite extends FunSuite {
       "method-limit",
       "intermediate-collections",
       "purity-regression",
-      "effect-policy"
+      "effect-policy",
+      "unstable-equality"
     ) ++ LintId.chains
     assertEquals(
       CLI.parse(List("--mode", "ci", "--error", "complexity")).map(_.failing),
