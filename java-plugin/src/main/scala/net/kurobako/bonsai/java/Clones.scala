@@ -421,8 +421,15 @@ object Clones {
   /** The hash of a name in the build, so the same field or method is the same everywhere. */
   def nameHash(name: String): Long = (MurmurHash3.stringHash(name).toLong << 32) | (name.hashCode & 0xffffffffL)
 
-  def combine(seed: Long, hashes: Iterable[Long]): Long =
-    hashes.foldLeft(seed)((hash, child) => mix(hash * 31 + child))
+  // a loop, as boxing every hash and allocating a closure for each call costs more than the whole hashing does
+  // scalafix:off DisableSyntax.var, BannedSyntax.no-iterator
+  inline def combine[A](seed: Long, items: Iterable[A])(inline hash: A => Long): Long = {
+    var chained = seed
+    val it      = items.iterator
+    while (it.hasNext) chained = mix(chained * 31 + hash(it.next()))
+    chained
+  }
+  // scalafix:on DisableSyntax.var, BannedSyntax.no-iterator
 
   /** A node of the code, which the hashes take. */
   private class Node(val trees: Trees, val tree: Tree, val path: TreePath) {

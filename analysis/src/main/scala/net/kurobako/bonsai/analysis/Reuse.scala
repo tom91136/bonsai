@@ -1,14 +1,17 @@
 package net.kurobako.bonsai.analysis
 
 import java.io.File
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import scala.annotation.tailrec
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
+import scala.util.Using
 import scala.util.matching.Regex
 
 /** Keeps the report of a run beside the manifest, so that a run whose inputs are the same prints it again instead of
@@ -75,9 +78,23 @@ private[analysis] object Reuse {
   private def hashed(label: String, content: Option[Path]): Array[Byte] = {
     val digest = MessageDigest.getInstance("SHA-256")
     digest.update(label.getBytes(UTF_8))
-    content.foreach(file => digest.update(Files.readAllBytes(file)))
+    content.foreach { file =>
+      val buffer = Buffers.get()
+      Using.resource(Files.newInputStream(file))(feed(_, digest, buffer))
+    }
     digest.digest
   }
+
+  @tailrec
+  private def feed(in: InputStream, digest: MessageDigest, buffer: Array[Byte]): Unit = {
+    val read = in.read(buffer)
+    if (read >= 0) {
+      digest.update(buffer, 0, read)
+      feed(in, digest, buffer)
+    }
+  }
+
+  private val Buffers = ThreadLocal.withInitial(() => Array.ofDim[Byte](1 << 16))
 
   /** The record `file` holds for `key`, unless it holds another key or cannot be read. */
   def load(file: Path, key: String): Option[Record] =

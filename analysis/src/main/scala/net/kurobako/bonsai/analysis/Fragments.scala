@@ -66,6 +66,8 @@ class Fragments(lines: Lines)(using Context) {
 
   private case class Shaped(hash: Long, loose: Long, broad: Long, cost: Int, applications: Int)
 
+  private class Hashes(val exact: Long, val loose: Long, val call: Long)
+
   // A single dense expression is worth reporting from two lines.
   private val ExpressionLines = 2
   private val FamilyCost      = 12
@@ -151,14 +153,14 @@ class Fragments(lines: Lines)(using Context) {
 
   private def candidate(piece: Piece, crowded: Boolean): Option[Clones.Candidate] =
     locate(piece).map { (fragment, span) =>
-      val trees                 = piece.trees
-      val (exact, loose, broad) = numbered(trees)
+      val trees  = piece.trees
+      val hashes = numbered(trees)
       Clones.Candidate(
         fragment,
         span,
         piece.cost,
-        exact = exact,
-        loose = loose,
+        exact = hashes.exact,
+        loose = hashes.loose,
         literals = Clones.Deferred(literals(trees).map(rendered(_))),
         minimumLines =
           if (trees.size > 1) Clones.WindowLines else if (piece.cost >= CloneCost.Expression) ExpressionLines else 1,
@@ -168,7 +170,7 @@ class Fragments(lines: Lines)(using Context) {
         callee = Clones.Deferred(callee(trees)),
         listing = piece.listing,
         mapping = trees.exists(hasMap(_)),
-        broad = if (trees.size == 1) broad else 0L,
+        broad = if (trees.size == 1) hashes.call else 0L,
         variables = Clones.Deferred(variables(trees, piece.origin.parameters)),
         small = piece.roles.small,
         tiny = piece.roles.tiny,
@@ -227,10 +229,10 @@ class Fragments(lines: Lines)(using Context) {
     }
     val cost         = weight(tree) + shapes.map(_.cost).sum
     val applications = (tree match { case tpd.Apply(_, _) => 1; case _ => 0 }) + shapes.map(_.applications).sum
-    val (ownHash, ownLoose, ownBroad) = own(tree, None)
-    val hash                          = combine(ownHash, shapes.map(_.hash))
-    val loose                         = combine(ownLoose, shapes.map(_.loose))
-    val broad = if (reference(tree) || literal(tree)) Reference else combine(ownBroad, shapes.map(_.broad))
+    val base         = own(tree, None)
+    val hash         = combine(base.exact, shapes)(_.hash)
+    val loose        = combine(base.loose, shapes)(_.loose)
+    val broad        = if (reference(tree) || literal(tree)) Reference else combine(base.call, shapes)(_.broad)
     if (!pattern && tree.isTerm) {
       val roles = rolesOf(tree, origin, entire, cost, applications)
       if (
@@ -247,8 +249,8 @@ class Fragments(lines: Lines)(using Context) {
         val items = (statements :+ expression).zip(shapes).toVector
         CloneCost.windows(items.map(_._2.cost)).foreach { (start, end) =>
           val run   = items.slice(start, end)
-          val hash  = combine(Seed, run.map(_._2.hash))
-          val loose = combine(Seed, run.map(_._2.loose))
+          val hash  = combine(Seed, run)(_._2.hash)
+          val loose = combine(Seed, run)(_._2.loose)
           keep(loose, Piece(run.map(_._1).toList, run.map(_._2.cost).sum, origin, hash, loose, Windowed, None))
         }
       case _ => ()
@@ -405,21 +407,33 @@ class Fragments(lines: Lines)(using Context) {
   /** The hashes of a fragment, with and without its literal values and then without its references too, with its locals
     * numbered in order of first occurrence.
     */
-  private def numbered(trees: List[tpd.Tree]): (Long, Long, Long) = {
-    val locals = mutable.Map.empty[Symbol, Long]
+  private def numbered(trees: List[tpd.Tree]): Hashes = {
+    val locals  = mutable.Map.empty[Symbol, Long]
+    val tracked = Some(locals)
 
-    def go(tree: tpd.Tree, covered: Boolean): (Long, Long, Long) = {
-      val (exact, loose, call) = own(tree, Some(locals))
-      val named                = !covered && reference(tree)
-      val children             = subtrees.of(tree).map(go(_, covered || named || enumerated(tree)))
-      (
-        combine(exact, children.map(_._1)),
-        combine(loose, children.map(_._2)),
-        if (named || literal(tree)) Reference else combine(call, children.map(_._3))
-      )
+    def go(tree: tpd.Tree, covered: Boolean): Hashes = {
+      val base    = own(tree, tracked)
+      val named   = !covered && reference(tree)
+      val inside  = covered || named || enumerated(tree)
+      var exact   = base.exact        // scalafix:ok DisableSyntax.var
+      var loose   = base.loose        // scalafix:ok DisableSyntax.var
+      var call    = base.call         // scalafix:ok DisableSyntax.var
+      var pending = subtrees.of(tree) // scalafix:ok DisableSyntax.var
+      while (pending.nonEmpty) {
+        val child = go(pending.head, inside)
+        exact = mix(exact * 31 + child.exact)
+        loose = mix(loose * 31 + child.loose)
+        call = mix(call * 31 + child.call)
+        pending = pending.tail
+      }
+      Hashes(exact, loose, if (named || literal(tree)) Reference else call)
     }
     val hashes = trees.map(go(_, covered = false))
-    (combine(Seed, hashes.map(_._1)), combine(Seed, hashes.map(_._2)), combine(Seed, hashes.map(_._3)))
+    Hashes(
+      combine(Seed, hashes)(_.exact),
+      combine(Seed, hashes)(_.loose),
+      combine(Seed, hashes)(_.call)
+    )
   }
 
   /** The literals and references that the last hash of `numbered` leaves out, with locals numbered in order of first
@@ -574,7 +588,7 @@ class Fragments(lines: Lines)(using Context) {
   /** The hashes of `tree` itself, with and without the value of a literal; `locals` numbers the symbols local to a
     * fragment in order of first occurrence, which are otherwise all alike.
     */
-  private def own(tree: tpd.Tree, locals: Option[mutable.Map[Symbol, Long]]): (Long, Long, Long) = {
+  private def own(tree: tpd.Tree, locals: Option[mutable.Map[Symbol, Long]]): Hashes = {
     val symbol = tree match {
       case typeTree: tpd.TypeTree => typeTree.tpe.typeSymbol
       case other                  => other.symbol
@@ -587,11 +601,13 @@ class Fragments(lines: Lines)(using Context) {
       case Some(numbers) if symbol.exists && symbol.owner.isTerm => numbers.getOrElseUpdate(symbol, numbers.size + 1L)
       case _                                                     => shared
     }
-    val (valued, shaped) = tree match {
-      case tpd.Literal(constant) =>
-        val value = constant.tag * 31L + String.valueOf(constant.value).hashCode
-        (value, if (hole(constant)) constant.tag.toLong else value)
-      case _ => (0L, 0L)
+    val valued = tree match {
+      case tpd.Literal(constant) => constant.tag * 31L + String.valueOf(constant.value).hashCode
+      case _                     => 0L
+    }
+    val shaped = tree match {
+      case tpd.Literal(constant) if hole(constant) => constant.tag.toLong
+      case _                                       => valued
     }
     val kind = tree.getClass.getName.hashCode.toLong * 31
     val node = mix(kind + reference)
@@ -601,7 +617,7 @@ class Fragments(lines: Lines)(using Context) {
       case tpd.Apply(_, _) | tpd.TypeApply(_, _) | tpd.TypeTree() => mix(kind)
       case _                                                      => mix(kind + shared)
     }
-    (mix(node * 31 + valued), mix(node * 31 + shaped), call)
+    Hashes(mix(node * 31 + valued), mix(node * 31 + shaped), call)
   }
 
   // Overloads share a full name, so methods also hash their signature.
