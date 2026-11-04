@@ -678,6 +678,24 @@ class RepeatedCodeSuite extends AnalysisSuite {
     assertFinding(found, "inlined-helper", "Main.scala", "docOf")
   }
 
+  private def counted(site: String) = Seq(
+    "Emitter.scala" ->
+      """import scala.collection.immutable.ArraySeq
+        |object Emitter {
+        |  extension [A](values: ArraySeq[A]) def counted: Int = values.size.max(1).min(Int.MaxValue - 1)
+        |}""".stripMargin,
+    "Main.scala" ->
+      s"""import scala.collection.immutable.ArraySeq
+         |object Main {
+         |  def run(labels: $site[String]): Int = labels.size.max(1).min(Int.MaxValue - 1) + 1
+         |}""".stripMargin
+  )
+
+  test("a helper over a type parameter is no helper for a value its parameter's class does not accept") {
+    assertEquals(reported(findings(counted("Vector")), "inlined-helper"), Vector.empty)
+    assertFinding(findings(counted("ArraySeq")), "inlined-helper", "Main.scala", "counted")
+  }
+
   private val BaseChain =
     """name.trim.toLowerCase.stripPrefix("cef_").stripSuffix("_t")
       |      .replace("-", "_").replace(" ", "_").filter(_ != '.').take(64).mkString""".stripMargin

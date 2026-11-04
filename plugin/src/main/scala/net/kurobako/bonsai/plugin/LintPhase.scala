@@ -372,7 +372,7 @@ private class LintPhase(
     * adjacent numeric literals of one type, pairs of arguments each named after the other's parameter, and bare Boolean
     * literals. An argument named after its own parameter already reads as named. Standard library calls keep their
     * conventional positional style, and parameters named with one or two letters, or by position alone, carry no
-    * meaning to add.
+    * meaning to add. A method local to a block declares its parameters next to the literals passed to them.
     */
   private def arguments(tree: tpd.Apply)(using Context): Unit = {
     val method = tree.fun.symbol
@@ -404,7 +404,8 @@ private class LintPhase(
         )
       written.sliding(2).foreach {
         case Seq((first, left), (second, right))
-            if !long && literal(first) && literal(second) && left.info =:= right.info &&
+            if !long && !tree.fun.symbol.owner.isTerm && literal(first) && literal(second) &&
+              left.info =:= right.info &&
               meaningful(left) && meaningful(right) =>
           positionals(
             Check.SameTypeArguments,

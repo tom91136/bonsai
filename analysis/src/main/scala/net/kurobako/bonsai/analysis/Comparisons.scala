@@ -93,15 +93,16 @@ private[analysis] class Comparisons(symbols: Symbols, classes: () => Iterable[Sy
   /** Records the comparison a tree makes. */
   def observe(tree: tpd.Tree, from: Option[String])(using Context): Unit = tree match {
     case tpd.Apply(select @ tpd.Select(receiver, name), List(argument))
-        if Binary(name.toString) && universal(select.symbol) && !nulled(receiver, argument) =>
+        if Binary(name.toString) && universal(select.symbol) && !nulled(receiver, argument) &&
+          !singular(receiver, argument) =>
       record(List(receiver, argument), s"by $name", tree, from)
     case select @ tpd.Select(receiver, name) if Hashing(name.toString) && universal(select.symbol) =>
       record(List(receiver), s"by $name", tree, from)
     case tpd.Apply(tpd.Select(receiver, name), arguments)
         if Elementwise(name.toString) && container(receiver.tpe) =>
-      record(receiver :: arguments, s"by $name", tree, from)
+      store(searched(receiver.tpe) ++ arguments.flatMap(argument => elements(argument.tpe)), s"by $name", tree, from)
     case select @ tpd.Select(receiver, name) if Elementwise(name.toString) && container(receiver.tpe) =>
-      record(List(receiver), s"by $name", select, from)
+      store(searched(receiver.tpe), s"by $name", select, from)
     case application: tpd.Apply if application.symbol.exists && Assertions(application.symbol.name.toString) =>
       val receiver = application.fun match {
         case tpd.Select(receiver, _) => List(receiver)
@@ -115,10 +116,7 @@ private[analysis] class Comparisons(symbols: Symbols, classes: () => Iterable[Sy
 
   /** Records the key types of the hashed maps and sets a tree's type names. */
   def keyed(keys: List[Type], tree: tpd.Tree, from: Option[String])(using Context): Unit =
-    if (keys.nonEmpty) {
-      val types = keys.flatMap(elements(_)).toSet
-      if (types.nonEmpty) store(types, "as a set element or map key", tree, from)
-    }
+    store(keys.flatMap(elements(_)).toSet, "as a set element or map key", tree, from)
 
   /** Builds the model, once every class is declared. */
   def finish()(using Context): Unit = {
@@ -146,13 +144,11 @@ private[analysis] class Comparisons(symbols: Symbols, classes: () => Iterable[Sy
     )
   }
 
-  private def record(trees: List[tpd.Tree], how: String, at: tpd.Tree, from: Option[String])(using Context): Unit = {
-    val types = trees.flatMap(tree => elements(tree.tpe)).toSet
-    if (types.nonEmpty) store(types, how, at, from)
-  }
+  private def record(trees: List[tpd.Tree], how: String, at: tpd.Tree, from: Option[String])(using Context): Unit =
+    store(trees.flatMap(tree => elements(tree.tpe)).toSet, how, at, from)
 
   private def store(types: Set[Symbol], how: String, at: tpd.Tree, from: Option[String])(using Context): Unit =
-    from.flatMap(nodes.get).foreach(info =>
+    if (types.nonEmpty) from.flatMap(nodes.get).foreach(info =>
       comparisons.getOrElseUpdate((types, how, info.name), (lines.line(at.sourcePos), info)): Unit
     )
 
@@ -165,6 +161,12 @@ private[analysis] class Comparisons(symbols: Symbols, classes: () => Iterable[Sy
     case tpd.Literal(constant) => constant.tag == Constants.NullTag
     case _                     => false
   }
+
+  // A module, or a case of an enum without parameters, equals itself alone, whatever the other side holds.
+  private def singular(trees: tpd.Tree*)(using Context): Boolean = trees.exists(tree =>
+    tree.symbol.exists && tree.symbol.isTerm && tree.symbol.isOneOf(Flags.Module | Flags.Enum) &&
+      !tree.symbol.is(Flags.Method)
+  )
 
   private def container(tpe: Type)(using Context): Boolean = Classes.derives(tpe.widenDealias, Containers*)
 
@@ -181,6 +183,15 @@ private[analysis] class Comparisons(symbols: Symbols, classes: () => Iterable[Sy
       else if (container(widened)) widened.argInfos.flatMap(argument => elements(argument.hiBound)).toSet
       else Set.empty
   }
+
+  /** The build classes a search of a container compares: the keys of a map, and the elements of the others. */
+  private def searched(tpe: Type)(using Context): Set[Symbol] =
+    if (Classes.derives(tpe.widenDealias, "scala.collection.Map"))
+      tpe.widenDealias.baseType(Classes.required("scala.collection.Map")).argInfos.headOption.fold(Set.empty[Symbol])(
+        key =>
+          elements(key.hiBound)
+      )
+    else elements(tpe)
 
   /** The stable identifiers a pattern compares the scrutinee with. */
   private def identifiers(pattern: tpd.Tree)(using Context): List[tpd.Tree] = pattern match {

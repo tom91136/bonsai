@@ -38,6 +38,22 @@ class EqualitySuite extends AnalysisSuite {
     assertFinding(found, "unstable-equality", "a value of ByHash is compared by ## at Use (line 11)")
   }
 
+  test("a comparison with a singleton compares identity, not the values a case holds") {
+    val found = findings(source(
+      """case class Bits(lanes: Array[Long])
+        |enum Status {
+        |  case Running
+        |  case Waiting(bits: Bits)
+        |}
+        |case object Idle
+        |object Use {
+        |  def running(status: Status): Boolean = status == Status.Running
+        |  def idle(state: Status | Idle.type): Boolean = state != Idle
+        |}""".stripMargin
+    ))
+    assertEquals(reported(found), Vector.empty)
+  }
+
   test("the finding is at the declaration of the class") {
     val found = findings(source(
       """object Holder {
@@ -111,6 +127,19 @@ class EqualitySuite extends AnalysisSuite {
     )
     assertFinding(found, "unstable-equality", "a value of Contained is compared by contains at Use (line 10)")
     assertFinding(found, "unstable-equality", "a value of Distinct is compared by distinct at Use (line 12)")
+  }
+
+  test("a lookup in a map compares its keys and not its values") {
+    val found = findings(source(
+      """case class Key(values: Array[Int])
+        |case class Value(values: Array[Int])
+        |object Use {
+        |  def scala(all: Map[Key, Value], one: Key): Boolean = all.contains(one)
+        |  def byValue(all: Map[Int, Value], one: Int): Boolean = all.contains(one)
+        |  def mutable(all: collection.mutable.HashMap[Int, Value]): Boolean = all.contains(1)
+        |}""".stripMargin
+    ))
+    assertEquals(reported(found), Vector("Key"))
   }
 
   test("a stable identifier pattern compares the scrutinee with a value of the class") {

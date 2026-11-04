@@ -80,6 +80,28 @@ class LoopsSuite extends FunSuite {
     assertEquals(tagged(found, "invariant-in-loop"), Nil, found.mkString("\n"))
   }
 
+  test("work that calls a local method reading what the recursion changes is not invariant") {
+    val found = warnings(
+      """object Lints {
+        |  def render(fields: Vector[String], operands: Vector[String], depth: Int): Int = {
+        |    def spell(field: String) = operands.lift(field.length)
+        |    val spelt = fields.map(spell(_).getOrElse("")).size
+        |    if (depth == 0) spelt else spelt + render(fields, operands :+ "x", depth - 1)
+        |  }
+        |  def fixed(fields: Vector[String], operands: Vector[String], depth: Int): Int = {
+        |    def spell(field: String) = operands.lift(field.length)
+        |    val spelt = fields.map(spell(_).getOrElse("")).size
+        |    if (depth == 0) spelt else spelt + fixed(fields, operands, depth - 1)
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "invariant-in-loop"),
+      List("fields.map(spell(_).getOrElse(\"\")) does not depend on what the recursion of fixed changes"),
+      found.mkString("\n")
+    )
+  }
+
   test("a recursion that calls itself on another receiver is not a loop over its fields") {
     val found = warnings(
       """class Node(val children: List[Node], val tags: Vector[String]) {
@@ -369,6 +391,55 @@ class LoopsSuite extends FunSuite {
     assertEquals(tagged(warnings(source), "keyed-lookup-in-loop").size, 2)
     assertEquals(tagged(warnings(source, "bounded=Table.items:4"), "keyed-lookup-in-loop").size, 1)
     assertEquals(tagged(warnings(source, "bounded=Table.*:4"), "keyed-lookup-in-loop"), Nil)
+  }
+
+  test("a value derived from a bounded member by an operation that cannot grow it is bounded too") {
+    val source =
+      """case class Row(isa: String, id: Int)
+        |object Lints {
+        |  def merge(isa: String, overrides: Vector[Row], ids: Vector[Int]): Vector[Option[Row]] = {
+        |    val rows = overrides.filter(_.isa == isa)
+        |    ids.map(id => rows.find(_.id == id))
+        |  }
+        |  def chained(overrides: Vector[Row], ids: Vector[Int]): Vector[Option[Row]] = {
+        |    val rows = overrides.sortBy(_.id).take(8)
+        |    ids.map(id => rows.find(_.id == id))
+        |  }
+        |  def grown(overrides: Vector[Row], ids: Vector[Int]): Vector[Option[Row]] = {
+        |    val rows = overrides.flatMap(row => Vector(row, row))
+        |    ids.map(id => rows.find(_.id == id))
+        |  }
+        |}""".stripMargin
+    def reported(options: String*) = tagged(warnings(source, options*), "keyed-lookup-in-loop").size
+    assertEquals(reported(), 3)
+    assertEquals(reported("bounded=Lints.merge.overrides:4"), 2)
+    assertEquals(reported("bounded=Lints.*.overrides:4"), 1)
+    assertEquals(reported("bounded=Lints.chained.overrides:4"), 2)
+    assertEquals(reported("bounded=Lints.merge.ids:4"), 3)
+  }
+
+  test("the body of a case of collectFirst runs at most once, so only its pattern and guard are loops") {
+    val found = warnings(
+      """case class Field(binding: String)
+        |case class Failure(binding: String)
+        |object Lints {
+        |  def bodies(failures: Vector[Failure], fields: Vector[Field], names: Vector[String]): Option[Int] =
+        |    failures.collectFirst {
+        |      case Failure(binding) if binding.isEmpty => names.map(_.toUpperCase).size
+        |      case Failure(binding)                    => fields.find(_.binding == binding).size
+        |    }
+        |  def guards(failures: Vector[Failure], fields: Vector[Field]): Option[Int] =
+        |    failures.collectFirst { case Failure(binding) if fields.exists(_.binding == binding) => 1 }
+        |  def predicates(failures: Vector[Failure], fields: Vector[Field]): Option[Failure] =
+        |    failures.find(failure => fields.exists(_.binding == failure.binding))
+        |}""".stripMargin
+    )
+    assertEquals(tagged(found, "invariant-in-loop"), Nil, found.mkString("\n"))
+    assertEquals(
+      tagged(found, "keyed-lookup-in-loop").map(_.takeWhile(_ != ' ')),
+      List("exists", "exists"),
+      found.mkString("\n")
+    )
   }
 
   test("a scan inside a lambda that depends neither on its parameters nor on the loop is hoistable") {

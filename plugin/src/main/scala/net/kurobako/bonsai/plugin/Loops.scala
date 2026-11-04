@@ -109,6 +109,7 @@ private class Loops(
   private val Iterator          = Classes.required("scala.collection.Iterator")
 
   private val LeftFolds  = Set("foldLeft", "scanLeft", "fold", "scan", "reduceLeft", "reduce")
+  private val Stopping   = Set("collectFirst")
   private val RightFolds = Set("foldRight", "scanRight", "reduceRight")
 
   def run(tree: tpd.Tree): Unit = {
@@ -126,6 +127,10 @@ private class Loops(
   private val recursions = mutable.Map.empty[Symbol, Option[(Set[Symbol], List[Span])]]
   // Whether each private or local method runs once, false while it is decided.
   private val once = mutable.Map.empty[Symbol, Boolean]
+  // The right-hand sides of the values that never change, which a bounded collection may be derived through.
+  private val bindings = mutable.Map.empty[Symbol, tpd.Tree]
+  // The bodies of the cases of functions that stop at the first case matching, which run at most once.
+  private val stopped = mutable.Set.empty[Span]
 
   private class Callers extends tpd.TreeTraverser {
     // The definitions whose right-hand side is being traversed, and the right-hand sides to enter.
@@ -144,6 +149,8 @@ private class Loops(
         case definition: tpd.DefDef if !definition.rhs.isEmpty =>
           definitions(definition.symbol) = definition
           bodies.put(definition.rhs, definition): Unit
+        case value: tpd.ValDef if !value.rhs.isEmpty && !value.symbol.is(Flags.Mutable) =>
+          bindings(value.symbol) = value.rhs
         case _ => ()
       }
       traverseChildren(tree)
@@ -185,6 +192,11 @@ private class Loops(
           )
           carried ++= accumulators(function, argument)
           written ++= writes(argument)
+          if (Stopping(Calls.selected(function).fold("")(_.name.toString)))
+            Calls.lambda(argument).map(_.rhs).foreach {
+              case tpd.Match(_, cases) => stopped ++= cases.map(_.body.span).filter(_.exists)
+              case _                   => ()
+            }
           within(mutable.Set.empty, argument, over = over)(traverse(argument))
         } else passed(application, argument, index)
       }
@@ -215,7 +227,11 @@ private class Loops(
         guarding.pop()
         guarded.pop(): Unit
       }
-      traverse(clause.body)
+      if (stopped(clause.body.span)) {
+        looping.push(false)
+        try traverse(clause.body)
+        finally looping.pop(): Unit
+      } else traverse(clause.body)
     case assignment: tpd.Assign =>
       accumulated(assignment)
       traverseChildren(tree)
@@ -769,10 +785,21 @@ private class Loops(
 
   private def varying(symbol: Symbol): Boolean = bound.top(symbol) || carried(symbol) || written(symbol)
 
-  private def varies(tree: tpd.Tree)(using Context): Boolean = tree.existsSubTree {
-    case reference: tpd.Ident => varying(reference.symbol) || Trees.byName(reference.symbol)
-    case _                    => false
+  private def varies(tree: tpd.Tree, entered: Set[Symbol] = Set.empty)(using Context): Boolean = tree.existsSubTree {
+    case reference: tpd.Ident =>
+      varying(reference.symbol) || Trees.byName(reference.symbol) || captures(reference.symbol, entered)
+    case _ => false
   }
+
+  private def captures(method: Symbol, entered: Set[Symbol])(using Context): Boolean =
+    method.is(Flags.Method) && method.owner.isTerm && !method.isAnonymousFunction && !entered(method) &&
+      definitions.get(method).exists { definition =>
+        val own = definition.filterSubTrees(_.isInstanceOf[tpd.DefTree]).map(_.symbol).toSet
+        definition.rhs.existsSubTree {
+          case reference: tpd.Ident => !own(reference.symbol) && varies(reference, entered + method)
+          case _                    => false
+        }
+      }
 
   // The arguments a call is written with, in every argument list, without the implicit ones and the defaults.
   private def supplied(tree: tpd.Tree)(using Context): List[tpd.Tree] = tree match {
@@ -1445,14 +1472,40 @@ private class Loops(
     case other                               => other
   }
 
-  /** Whether the build declares the collection a member holds to be small. */
+  private val Shrinking = Set(
+    "filter",
+    "filterNot",
+    "take",
+    "drop",
+    "takeWhile",
+    "dropWhile",
+    "slice",
+    "distinct",
+    "distinctBy",
+    "tail",
+    "init",
+    "reverse",
+    "sorted",
+    "sortBy",
+    "sortWith",
+    "collect"
+  )
+
+  /** Whether the build declares the collection a member holds to be small, or the collection is taken from one that is
+    * by an operation that cannot grow it, directly or through a value.
+    */
   private def bounded(tree: tpd.Tree)(using Context): Boolean = {
     val member = converted(tree).symbol
-    member.exists && (member.owner.isClass || member.is(Flags.Param)) && {
+    shrunk(converted(tree)) ||
+    member.exists &&
+    ((member.owner.isClass || member.is(Flags.Param)) && {
       val owner = Calls.qualified(member.owner)
       declared(s"$owner.${member.name}", owner)
-    }
+    } || bindings.get(member).exists(shrunk(_)))
   }
+
+  private def shrunk(tree: tpd.Tree)(using Context): Boolean =
+    Calls.selected(tree).exists(select => Shrinking(select.name.toString) && bounded(select.qualifier))
 
   private def heated(using Context): Boolean =
     Trees.enclosedBy(ctx.owner, owner => !owner.isAnonymousClass && hot(Calls.qualified(owner)))

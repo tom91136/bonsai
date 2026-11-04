@@ -880,6 +880,10 @@ class LintSuite extends FunSuite {
         |  val expressed   = Geometry.rectangle(height, width * 2)
         |  val ordinal     = Geometry.blend(1, 2, 3, 4, 5)
         |  val indexed     = Geometry.pair(1, 2)
+        |  val local       = {
+        |    def area(width: Int, height: Int) = width * height
+        |    area(3, 4)
+        |  }
         |}""".stripMargin
     )
     assertEquals(

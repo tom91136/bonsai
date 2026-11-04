@@ -507,14 +507,29 @@ class Fragments(lines: Lines)(using Context) {
 
   private def typed(tpe: Types.Type): Clones.Typed = Typing(Option(tpe).fold(defn.AnyType)(_.widenExpr.widen))
 
-  // A type that mentions the parameters or type parameters of the method is not one a call elsewhere can be held to.
+  // A type that mentions the parameters of the method is not one a call elsewhere can be held to; its type parameters
+  // stand for any type within their bounds.
   private def accepted(parameter: Symbol): Option[Clones.Typed] = {
-    val tpe = parameter.info.widenExpr
+    val method = parameter.owner
+    val tpe    = parameter.info.widenExpr
     Option.unless(tpe.existsPart {
-      case reference: Types.NamedType => reference.symbol.exists && reference.symbol.owner == parameter.owner
-      case _: Types.ParamRef          => true
-      case _                          => false
-    })(typed(tpe))
+      case reference: Types.TermRef => reference.symbol.exists && reference.symbol.owner == method
+      case Types.TermParamRef(_, _) => true
+      case _                        => false
+    })(typed(Opened(method)(tpe) match {
+      case bounds: Types.TypeBounds => bounds.hiBound
+      case other                    => other
+    }))
+  }
+
+  /** Types with the type parameters of `method` opened to any type within their bounds. */
+  private class Opened(method: Symbol)(using Context) extends Types.TypeMap {
+    def apply(tpe: Types.Type): Types.Type = tpe match {
+      case reference: Types.TypeRef if reference.symbol.exists && reference.symbol.owner == method =>
+        reference.symbol.info.bounds
+      case Types.TypeParamRef(_, _) => Types.TypeBounds.empty
+      case _                        => mapOver(tpe)
+    }
   }
 
   private def applications(trees: List[tpd.Tree]): Boolean = trees match {
