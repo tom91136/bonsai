@@ -282,7 +282,7 @@ private class LintPhase(
       if (!(scrutinee <:< tpt.tpe)) {
         typeTest(typed, tpt.tpe, scrutinee, fixed)
         unrelated(typed, tpt.tpe, scrutinee)
-        if (!bound && wildcard(expression)) extractable(typed)
+        if (!bound && PatternShapes.ignored(expression)) extractable(typed)
       }
       patterns(expression, tpt.tpe, bound)
     case unapply: tpd.UnApply =>
@@ -577,8 +577,8 @@ private class LintPhase(
     val extractor = unapply.fun.symbol
     val cls       = extractor.owner.companionClass
     val fields    = Calls.termClauses(cls.primaryConstructor).headOption.getOrElse(Nil)
-    val matched   = fields.zip(unapply.patterns).filterNot((_, pattern) => wildcard(pattern))
-    val skipped   = unapply.patterns.count(wildcard(_))
+    val matched   = fields.zip(unapply.patterns).filterNot((_, pattern) => PatternShapes.ignored(pattern))
+    val skipped   = unapply.patterns.count(PatternShapes.ignored(_))
     // A named pattern reaches the typed tree positionally, with the fields it omits filled by synthetic wildcards.
     val named = fields.zip(unapply.patterns).exists((field, pattern) =>
       pattern.span.isSynthetic || Trees.text(pattern).matches(s"(?s)${field.name}\\s*=[^=].*")
@@ -594,8 +594,8 @@ private class LintPhase(
       // Each wildcard goes with the separator after it, or before it when no field follows, and each kept pattern
       // gains its field's name, so patterns nested inside keep their own fixes.
       val fix = fields.zip(patterns).zipWithIndex.map { case ((field, pattern), index) =>
-        if (!wildcard(pattern)) ActionPatch(pattern.sourcePos.startPos, s"${label(field.name)} = ")
-        else if (patterns.drop(index + 1).exists(!wildcard(_)))
+        if (!PatternShapes.ignored(pattern)) ActionPatch(pattern.sourcePos.startPos, s"${label(field.name)} = ")
+        else if (patterns.drop(index + 1).exists(!PatternShapes.ignored(_)))
           ActionPatch(pattern.sourcePos.withSpan(Span(pattern.span.start, patterns(index + 1).span.start)), "")
         else ActionPatch(pattern.sourcePos.withSpan(Span(patterns(index - 1).span.end, pattern.span.end)), "")
       }
@@ -607,11 +607,6 @@ private class LintPhase(
         fix
       )
     }
-  }
-
-  private def wildcard(pattern: tpd.Tree): Boolean = pattern match {
-    case tpd.Ident(nme.WILDCARD) => true
-    case _                       => false
   }
 
   private def named(argument: tpd.Tree, parameter: Symbol)(using Context): Boolean =

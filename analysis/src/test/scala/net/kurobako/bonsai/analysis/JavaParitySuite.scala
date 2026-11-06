@@ -74,7 +74,7 @@ class JavaParitySuite extends AnalysisSuite {
   test("a Java method of generated code is reported, and labelled as generated") {
     val result = readJavaModel(
       service(source = "/build/src/generated/Service.java"),
-      generated = Vector("glob:**/src/generated/**")
+      generated = Vector("**/src/generated/**")
     )
     val found = Report.findings(result).filter(_.rule.id == "ignored-result")
 

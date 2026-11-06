@@ -7,8 +7,8 @@ import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
 
 /** The patterns of generators and of the functions the compiler writes for them. */
-private[lifting] object PatternShapes {
-  private def ignored(pattern: tpd.Tree): Boolean = pattern match {
+object PatternShapes {
+  def ignored(pattern: tpd.Tree): Boolean = pattern match {
     case tpd.Ident(name) => name.toString == "_"
     case _               => false
   }

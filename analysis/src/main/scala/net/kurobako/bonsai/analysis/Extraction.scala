@@ -11,7 +11,6 @@ import dotty.tools.dotc.fromtasty.ReadTasty
 import dotty.tools.dotc.fromtasty.TASTYCompiler
 import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
-import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import net.kurobako.bonsai.java.{Model => JavaModel}
@@ -131,7 +130,7 @@ object Extraction {
     val skipped      =
       unreadable.map(file => s"class file ${file.getFileName.toString.stripSuffix(".tasty")} could not be read")
     val roots           = manifest.outputs.flatMap(output => Outputs.entryPoints(output.path)).toSet
-    val matchers        = generated.map(FileSystems.getDefault.getPathMatcher(_))
+    val matchers        = Texts.matchers(generated)
     val reflectiveGlobs = reflective.map(Globs.qualifiedNames)
     val java            = JavaConversion.collected(manifest, matchers, parallel, reflectiveGlobs)
     val moduleUses      = Modules.uses(manifest, java.nodes, java.reflections)

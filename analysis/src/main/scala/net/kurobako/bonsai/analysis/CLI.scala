@@ -261,7 +261,7 @@ object CLI {
         case Right(parsed) => parse(rest, options.copy(policies = options.policies :+ parsed))
       }
     case "--generated" :: pattern :: rest =>
-      parse(rest, options.copy(generated = options.generated :+ s"glob:$pattern"))
+      parse(rest, options.copy(generated = options.generated :+ pattern))
     case "--mode" :: mode :: _ if !Mode.values.exists(_.id == mode) => Left(s"unknown mode: $mode\n$usage")
     case "--mode" :: mode :: rest => parse(rest, options.copy(mode = Mode.values.find(_.id == mode).get))
     case flag :: rule :: _ if ruleFlags(flag) && !(wildcardFlags(flag) && rule == "*") && !rules(rule) =>

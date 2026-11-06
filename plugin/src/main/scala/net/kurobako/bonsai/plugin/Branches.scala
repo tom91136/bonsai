@@ -96,30 +96,32 @@ private class Branches(checks: Checks)(using Context) {
     !trivial(left) && sameness(Calls.peelInlined(left), Calls.peelInlined(right))
   }
 
-  private def identical(arms: Vector[tpd.If]): Unit = {
+  /** The runs of two or more consecutive arms that each match the first of the run and follow the arm before it. */
+  private def runs[A](arms: Vector[A])(matches: (A, A) => Boolean, adjacent: (A, A) => Boolean): List[Vector[A]] = {
     @annotation.tailrec
     def extent(from: Int, to: Int): Int =
-      if (
-        to + 1 < arms.size && same(arms(from).thenp, arms(to + 1).thenp) &&
-        plain(arms(to).thenp.span.end, arms(to + 1).cond.span.start)
-      ) extent(from, to + 1)
+      if (to + 1 < arms.size && matches(arms(from), arms(to + 1)) && adjacent(arms(to), arms(to + 1)))
+        extent(from, to + 1)
       else to
     @annotation.tailrec
-    def scan(from: Int): Unit = if (from < arms.size - 1) {
-      val to = extent(from, from)
-      if (to > from) {
-        val run = arms.slice(from, to + 1)
-        checks(
-          Check.IdenticalBranches,
-          s"the branches for ${run.size} consecutive conditions are the same; join the conditions with ||",
-          arms(from).cond.srcPos,
-          joined(run)
-        )
+    def scan(from: Int, found: List[Vector[A]]): List[Vector[A]] =
+      if (from >= arms.size) found.reverse
+      else {
+        val to = extent(from, from)
+        scan(to + 1, if (to > from) arms.slice(from, to + 1) :: found else found)
       }
-      scan(to + 1)
-    }
-    scan(0)
+    scan(0, Nil)
   }
+
+  private def identical(arms: Vector[tpd.If]): Unit =
+    runs(arms)((a, b) => same(a.thenp, b.thenp), (a, b) => plain(a.thenp.span.end, b.cond.span.start)).foreach(run =>
+      checks(
+        Check.IdenticalBranches,
+        s"the branches for ${run.size} consecutive conditions are the same; join the conditions with ||",
+        run.head.cond.srcPos,
+        joined(run)
+      )
+    )
 
   private def joined(run: Vector[tpd.If]): List[ActionPatch] = {
     val first    = run.head
@@ -244,31 +246,15 @@ private class Branches(checks: Checks)(using Context) {
     }
   }
 
-  private def merge(cases: List[tpd.CaseDef]): Unit = {
-    val arms = cases.toVector
-    @annotation.tailrec
-    def extent(from: Int, to: Int): Int =
-      if (
-        to + 1 < arms.size && alike(arms(from), arms(to + 1)) &&
-        plain(arms(to).span.end, arms(to + 1).span.start)
-      ) extent(from, to + 1)
-      else to
-    @annotation.tailrec
-    def scan(from: Int): Unit = if (from < arms.size - 1) {
-      val to = extent(from, from)
-      if (to > from) {
-        val run = arms.slice(from, to + 1)
-        checks(
-          Check.IdenticalBranches,
-          s"${run.size} consecutive cases have the same body; match them with one pattern",
-          run.head.pat.srcPos,
-          alternatives(run)
-        )
-      }
-      scan(to + 1)
-    }
-    scan(0)
-  }
+  private def merge(cases: List[tpd.CaseDef]): Unit =
+    runs(cases.toVector)(alike(_, _), (a, b) => plain(a.span.end, b.span.start)).foreach(run =>
+      checks(
+        Check.IdenticalBranches,
+        s"${run.size} consecutive cases have the same body; match them with one pattern",
+        run.head.pat.srcPos,
+        alternatives(run)
+      )
+    )
 
   private def alternatives(run: Vector[tpd.CaseDef]): List[ActionPatch] = {
     val shapes = run.flatMap(arm => shape(arm.pat))
@@ -305,7 +291,7 @@ private class Branches(checks: Checks)(using Context) {
       case application: tpd.Apply =>
         val (head, lists, types) = peel(application, Nil, Nil)
         val method               = head.symbol
-        val parameters           = Trees.termParameters(method).flatten.toVector
+        val parameters           = Calls.termClauses(method).flatten.toVector
         val arguments            = lists.flatten.toVector
         Option.when(
           method.exists && method.is(Flags.Method) && !Trees.constructs(method) && parameters.size == arguments.size

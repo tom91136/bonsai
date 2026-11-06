@@ -669,11 +669,6 @@ private[analysis] class Collector(
 
   private def memberName(symbol: Symbol)(using Context): String = Placements.signed(symbol, qualifiedName(symbol))
 
-  private def wildcard(pattern: tpd.Tree): Boolean = pattern match {
-    case tpd.Ident(nme.WILDCARD) => true
-    case _                       => false
-  }
-
   /** Records the fields of a case class that a pattern on it binds or tests, which read them. */
   def matched(unapply: tpd.UnApply, from: Option[String])(using Context): Unit = {
     val extractor = unapply.fun.symbol
@@ -683,7 +678,7 @@ private[analysis] class Collector(
       // A field named like a method of the class, as `copy` is, stands beside it.
       val accessors = cls.info.decls.toList.filter(_.is(Flags.ParamAccessor)).groupBy(_.name)
       fields.zip(unapply.patterns).foreach((field, pattern) =>
-        if (!wildcard(pattern)) accessors.getOrElse(field.name, Nil).foreach(use(_, from))
+        if (!PatternShapes.ignored(pattern)) accessors.getOrElse(field.name, Nil).foreach(use(_, from))
       )
     }
   }

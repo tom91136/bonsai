@@ -8,7 +8,6 @@ import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.NoSymbol
 import dotty.tools.dotc.core.Symbols.Symbol
-import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.io.AbstractFile
 import java.nio.file.Path
 import java.nio.file.PathMatcher
@@ -137,9 +136,9 @@ private[analysis] class Symbols(
       else
         Set(symbol, symbol.companionClass, symbol.companionModule, symbol.companionModule.moduleClass) ++
           Option.when(symbol.is(Flags.ModuleClass))(symbol.sourceModule)
-    val Suppress                        = requiredClass("java.lang.SuppressWarnings")
-    val Nowarn                          = requiredClass("scala.annotation.nowarn")
-    val Unused                          = requiredClass("scala.annotation.unused")
+    val Suppress                        = Classes.required("java.lang.SuppressWarnings")
+    val Nowarn                          = Classes.required("scala.annotation.nowarn")
+    val Unused                          = Classes.required("scala.annotation.unused")
     def strings(annotation: Annotation) = annotation.tree.filterSubTrees {
       case tpd.Literal(constant) => constant.tag == Constants.StringTag
       case _                     => false

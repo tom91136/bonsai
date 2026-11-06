@@ -76,7 +76,7 @@ public final class Versions {
     return value.trim();
   }
 
-  private static String resource(File jar, String name) throws IOException {
+  static String resource(File jar, String name) throws IOException {
     try (ZipFile file = new ZipFile(jar)) {
       ZipEntry entry = file.getEntry("META-INF/bonsai/" + name);
       if (entry == null) {

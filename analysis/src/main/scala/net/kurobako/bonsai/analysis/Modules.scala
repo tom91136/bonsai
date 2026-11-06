@@ -81,13 +81,13 @@ object Modules {
 
   /** Whether the module reads the other one, directly or through a module it reads that re-exports it. */
   private def reads(from: String, target: String, modules: Map[String, Descriptor]): Boolean = {
-    def visit(module: String, root: Boolean, seen: Set[String]): Boolean =
+    def visit(module: String, seen: Set[String]): Boolean =
       if (seen(module)) false
       else
         modules.get(module).exists(_.requires.exists { (dependency, transitive) =>
-          dependency == target || ((root || transitive) && visit(dependency, root = false, seen + module))
+          dependency == target || ((seen.isEmpty || transitive) && visit(dependency, seen + module))
         })
-    visit(from, root = true, Set.empty)
+    visit(from, Set.empty)
   }
 
   /** The file and line a location names, which the model writes as `path:line`. */

@@ -149,13 +149,17 @@ private class Placements(resolver: Symbols, lines: Lines)(using Context) extends
   private def static(owner: Symbol)(using Context): Boolean =
     owner.is(Flags.Package) || owner.is(Flags.ModuleClass) && static(owner.owner)
 
-  private def opaque(owner: Symbol)(using Context): Boolean =
+  private val opaques = mutable.HashMap.empty[Symbol, Boolean]
+
+  private def opaque(owner: Symbol)(using Context): Boolean = opaques.getOrElseUpdate(
+    owner,
     owner.isClass && owner.info.decls.toList.exists(declared => declared.isType && declared.is(Flags.Opaque))
+  )
 
   // A method, value or alias of an object that nothing about it ties down.
   private def key(symbol: Symbol)(using Context): Option[String] = {
     val owner = symbol.owner
-    val tied  =
+    def tied  =
       if (symbol.isTerm)
         symbol.isOneOf(
           Flags.Synthetic | Flags.Given | Flags.Implicit | Flags.Inline | Flags.Mutable | Flags.Deferred |
@@ -164,7 +168,7 @@ private class Placements(resolver: Symbols, lines: Lines)(using Context) extends
         symbol.paramSymss.flatten.exists(_.is(Flags.HasDefault)) || receivesOpaque(symbol) ||
         ctx.platform.isMainMethod(symbol) || symbol.hasAnnotation(defn.MainAnnot)
       else !symbol.isAliasType || symbol.isOneOf(Flags.Opaque | Flags.Synthetic | Flags.Deferred | Flags.Exported)
-    if (!symbol.exists || symbol.isClass || tied || !owner.is(Flags.ModuleClass) || !static(owner.owner)) None
+    if (!symbol.exists || symbol.isClass || !owner.is(Flags.ModuleClass) || !static(owner.owner) || tied) None
     else if (owner.isTopLevelDefinitionsObject)
       resolver.key(symbol).collect { case key if described(key).exists(!_.test) => Placements.signed(symbol, key) }
     else unit(owner).map(name => Placements.signed(symbol, s"$name.${symbol.name}"))

@@ -58,7 +58,7 @@ public final class Tools {
   }
 
   /** The jar of the artifact, which the build resolves without the artifacts it depends on. */
-  public File artifact(String groupId, String artifactId, String version) throws MojoExecutionException {
+  private File artifact(String groupId, String artifactId, String version) throws MojoExecutionException {
     Artifact artifact = new DefaultArtifact(groupId, artifactId, null, "jar", version);
     try {
       return repositorySystem.resolveArtifact(session, new ArtifactRequest(artifact, repositories, null))

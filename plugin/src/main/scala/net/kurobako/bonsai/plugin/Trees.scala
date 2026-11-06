@@ -27,11 +27,8 @@ private object Trees {
       case tpd.TypeApply(inner, _) => depth(inner, applied)
       case _                       => applied
     }
-    termParameters(application.fun.symbol).lift(depth(application.fun, 0)).getOrElse(Nil)
+    Calls.termClauses(application.fun.symbol).lift(depth(application.fun, 0)).getOrElse(Nil)
   }
-
-  /** The term parameter lists of a method. */
-  def termParameters(method: Symbol)(using Context): List[List[Symbol]] = Calls.termClauses(method)
 
   /** The elements of a collection built in place by the apply of a companion, as `Set(a, b)` or `Vector(a, b)`. */
   def built(tree: tpd.Tree)(using Context): Option[List[tpd.Tree]] = {

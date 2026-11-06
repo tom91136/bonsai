@@ -127,8 +127,13 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
     }
   }
 
-  private def hashed(cls: Symbol)(using Context): Boolean = cls.isClass && !sorted(cls) &&
-    derivesFromAny(cls, "scala.collection.Map", "scala.collection.Set", "java.util.Map", "java.util.Set")
+  private val hashedClasses = mutable.HashMap.empty[Symbol, Boolean]
+
+  private def hashed(cls: Symbol)(using Context): Boolean = hashedClasses.getOrElseUpdate(
+    cls,
+    cls.isClass && !sorted(cls) &&
+      derivesFromAny(cls, "scala.collection.Map", "scala.collection.Set", "java.util.Map", "java.util.Set")
+  )
 
   private def sorted(cls: Symbol)(using Context): Boolean =
     derivesFromAny(

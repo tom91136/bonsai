@@ -74,9 +74,10 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   private val stopping  = mutable.Stack(Int.MaxValue)
   private val executing = mutable.Stack(false)
   // The waits of a losing branch of a once-guard, by the start of their call.
-  private val onced  = mutable.Set.empty[Int]
-  private val Finish = Set("isDone", "run", "destroyForcibly", "orTimeout", "completeOnTimeout")
-  private val Waits  = Set("await", "join")
+  private val onced    = mutable.Set.empty[Int]
+  private val Timeouts = Set("orTimeout", "completeOnTimeout")
+  private val Finish   = Set("isDone", "run", "destroyForcibly") ++ Timeouts
+  private val Waits    = Set("await", "join")
 
   override def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
     case definition: tpd.DefDef if definition.symbol.is(Flags.Synthetic) && !definition.symbol.isAnonymousFunction =>
@@ -226,7 +227,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   // A future finished before the wait, or given a timeout by the call it comes from.
   private def bounded(future: tpd.Tree): Boolean = done.top(future.symbol) ||
     (Calls.peelInlined(future) match {
-      case application: tpd.Apply => Set("orTimeout", "completeOnTimeout")(application.fun.symbol.name.toString)
+      case application: tpd.Apply => Timeouts(application.fun.symbol.name.toString)
       case _                      => false
     })
 

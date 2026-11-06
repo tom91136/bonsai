@@ -135,7 +135,7 @@ class CLISuite extends FunSuite {
       CLI.parse(List("--generated", "**/src/generated/**", "--purity")).map(options =>
         (options.generated, options.purity)
       ),
-      Right((Vector("glob:**/src/generated/**"), true))
+      Right((Vector("**/src/generated/**"), true))
     )
   }
 

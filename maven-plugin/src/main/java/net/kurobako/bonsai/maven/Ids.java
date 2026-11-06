@@ -2,7 +2,6 @@ package net.kurobako.bonsai.maven;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,8 +9,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 
 /**
  * The ids the tools accept, which each tool publishes in a resource, so that a plugin cannot drift from them.
@@ -77,16 +74,7 @@ public final class Ids {
 
   /** The ids the resource of the jar holds, one a line. */
   private static Set<String> read(File jar, String name) throws IOException {
-    try (ZipFile file = new ZipFile(jar)) {
-      ZipEntry entry = file.getEntry("META-INF/bonsai/" + name);
-      if (entry == null) {
-        throw new IOException("bonsai: " + jar + " does not publish " + name + "; the tools are not the ones this " +
-          "plugin knows");
-      }
-      try (InputStream stream = file.getInputStream(entry)) {
-        return parse(new String(stream.readAllBytes(), StandardCharsets.UTF_8));
-      }
-    }
+    return parse(Versions.resource(jar, name));
   }
 
   /** The ids the text holds, one a line. */

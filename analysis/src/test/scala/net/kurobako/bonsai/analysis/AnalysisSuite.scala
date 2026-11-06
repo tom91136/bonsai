@@ -136,7 +136,7 @@ trait AnalysisSuite extends FunSuite {
   )
 
   /** The pattern a build passes to mark `src/generated` as generated. */
-  protected val GeneratedSources: Vector[String] = Vector("glob:**/src/generated/**")
+  protected val GeneratedSources: Vector[String] = Vector("**/src/generated/**")
 
   protected def assertFinding(found: Vector[Finding], rule: String, fragments: String*)(using
       level: Finding.Level = Finding.Level.Warning

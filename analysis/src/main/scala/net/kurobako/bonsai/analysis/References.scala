@@ -209,7 +209,7 @@ private[analysis] class References(components: Components, fragments: Fragments)
 
   private def body(symbol: Symbol, tree: tpd.Tree, node: Option[String])(using Context): Unit =
     node.flatMap(symbols.described(_)).foreach(info =>
-      if (!tree.isEmpty && !symbols.suppressions(symbol).exists(Set("*", Finding.Rule.DuplicateCode.id)))
+      if (!tree.isEmpty && !symbols.suppressions(symbol).exists(id => id == "*" || id == Finding.Rule.DuplicateCode.id))
         fragments.add(tree, info.name, info.test, symbol, family(symbol), specialising(symbol, tree))
     )
 
@@ -224,7 +224,9 @@ private[analysis] class References(components: Components, fragments: Fragments)
         owner,
         owner.info.decls.toList.filter(_.is(Flags.Method)).groupBy(member => Finding.numberless(member.name.toString))
       ).getOrElse(name, Nil)
-      if (alike.map(_.info.firstParamTypes.map(_.show)).distinct.size > 1) s"${owner.fullName}.$name" else ""
+      if (alike.sizeIs > 1 && alike.map(_.info.firstParamTypes.map(_.show)).distinct.size > 1)
+        s"${owner.fullName}.$name"
+      else ""
     } else ""
   }
 

@@ -1192,7 +1192,7 @@ private class Loops(
     for {
       definition    <- recursive.get(method).filterNot(_ => method.isConstructor)
       (variants, _) <- recursion(definition)
-      parameters = Trees.termParameters(method)
+      parameters = Calls.termClauses(method)
       if parameters.map(_.size) == lists.map(_.size)
       pairs =
         parameters.flatten.zip(lists.flatten).filterNot((parameter, _) => parameter.isOneOf(Flags.GivenOrImplicit))

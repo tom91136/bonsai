@@ -125,7 +125,7 @@ class JavaModelSuite extends AnalysisSuite {
           |clone	demo.First	demo/First.java	8	14	100	140	30	123456	123456	
           |clone	demo.Second	demo/Second.java	8	14	200	240	30	123456	123456	
           |""".stripMargin,
-      generated = Vector("glob:**/First.java")
+      generated = Vector("**/First.java")
     )
 
     val findings = Clones.findings(result.clones, result.graph.nodes)
