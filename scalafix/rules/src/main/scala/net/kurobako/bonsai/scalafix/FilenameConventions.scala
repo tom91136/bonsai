@@ -21,7 +21,11 @@ class FilenameConventions extends SyntacticRule("FilenameConventions") {
       val edges         = declarations.groupMapReduce(_.name)(d => referenced(d.stat, declared))(_ ++ _)
       val fromNamesake  = reachable(expected, edges)
       val sealedParents = declarations.collect { case Declaration(name, _, stat) if isSealed(stat) => name }.toSet
-      declarations.filter(_.name != expected).filterNot { stray =>
+      // PackageNaming reports these, and its rename also resolves the file mismatch.
+      val prefixed = document.tree.collect {
+        case pkg: Pkg => pkg.body.stats.flatMap(stat => PackageNaming.redundant(stat, pkg)).map(_.pos.start)
+      }.flatten.toSet
+      declarations.filter(_.name != expected).filterNot(stray => prefixed(stray.position.start)).filterNot { stray =>
         fromNamesake.contains(stray.name) && reachable(stray.name, edges).contains(expected)
       }.distinctBy(_.name).map { stray =>
         parents(stray.stat).find(sealedParents) match {
@@ -35,7 +39,7 @@ class FilenameConventions extends SyntacticRule("FilenameConventions") {
           case None =>
             lint(
               "top-level-filename",
-              s"top-level declaration ${stray.name} in $fileName must be named $expected",
+              s"top-level declaration ${stray.name} in $fileName must be named $expected or nested in object $expected",
               stray.position
             )
         }

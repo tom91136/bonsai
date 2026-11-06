@@ -12,7 +12,10 @@ object GivenPlacement {
   }
 
   object Instances {
-    given Ordering[Celsius]           = Ordering.by(-_.value)          // assert: GivenPlacement.orphan-given
+    given Ordering[Celsius]           = Ordering.by(-_.value)          /* assert: GivenPlacement.orphan-given
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+an instance outside the companions of its types must be imported and may differ between call sites; for types the project does not own, suppress with `// scalafix:ok GivenPlacement`
+*/
     given Int                         = 42                             // assert: GivenPlacement.ambient-given
     given Conversion[String, Celsius] = text => Celsius(text.toDouble) // assert: GivenPlacement.conversion-placement
   }

@@ -50,7 +50,8 @@ class GivenPlacement extends SemanticRule("GivenPlacement") {
     else if (arguments.nonEmpty && !companions.contains(owner))
       lint(
         "orphan-given",
-        "an instance outside the companions of its types must be imported and may differ between call sites",
+        "an instance outside the companions of its types must be imported and may differ between call sites; " +
+          "for types the project does not own, suppress with `// scalafix:ok GivenPlacement`",
         tree.pos
       )
     else Patch.empty
