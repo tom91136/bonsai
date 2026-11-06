@@ -269,6 +269,93 @@ class LintSuite extends FunSuite {
     assert(thrown(Throwing.Platform.Native, "sttp.client4.Request.send").contains("java.lang.RuntimeException"))
   }
 
+  test("a broad catch around partial calls does not advise a narrower catch that would miss their exceptions") {
+    val found = warnings(
+      """import java.time.LocalDate
+        |import scala.util.control.NonFatal
+        |object Lints {
+        |  def mixed(t: String, m: Map[String, Int]): Either[String, Int] =
+        |    try Right(LocalDate.parse(t).getYear + m(t)) catch { case NonFatal(e) => Left(e.getMessage) }
+        |  def pure(t: String): Either[String, Int] =
+        |    try Right(LocalDate.parse(t).getYear) catch { case NonFatal(e) => Left(e.getMessage) }
+        |}""".stripMargin
+    )
+    val broad = lines(found, "broad-catch")
+    assertEquals(broad.size, 2, found.mkString("\n"))
+    val (withPartial, without) = broad.partition(_.contains("replace"))
+    assertEquals(withPartial.size, 1, found.mkString("\n"))
+    assert(withPartial.head.contains("apply throws exceptions a catch for what parse throws would miss"), withPartial)
+    assert(withPartial.head.contains("replace it with get first"), withPartial)
+    assert(!withPartial.head.contains("DateTimeParseException"), withPartial)
+    assert(without.head.contains("catch DateTimeParseException, which parse throws"), without)
+  }
+
+  test("messages name one call in the singular and several in the plural") {
+    val found = warnings(
+      """object Lints {
+        |  def one(xs: List[Int]): Either[String, Int] =
+        |    try Right(xs.head) catch { case _: NoSuchElementException => Left("empty") }
+        |  def two(xs: List[Int], ys: List[Int]): Either[String, Int] =
+        |    try Right(xs.head + ys.last) catch { case _: NoSuchElementException => Left("empty") }
+        |}""".stripMargin
+    )
+    val partial = lines(found, "partial-in-try")
+    assertEquals(partial.size, 2, found.mkString("\n"))
+    assert(partial.exists(_.startsWith("head throws for missing")), partial)
+    assert(partial.exists(_.startsWith("head, last throw for missing")), partial)
+  }
+
+  test("error handlers of cats that drop the error for a unit are reported") {
+    val found = warnings(
+      """package cats.effect {
+        |  class IO[A] {
+        |    def handleError(f: Throwable => A): IO[A]              = this
+        |    def handleErrorWith(f: Throwable => IO[A]): IO[A]      = this
+        |    def recover(f: PartialFunction[Throwable, A]): IO[A]   = this
+        |    def redeem[B](recover: Throwable => B, map: A => B): IO[B] = ???
+        |    def attempt: IO[Either[Throwable, A]]                 = ???
+        |    def void: IO[Unit]                                     = ???
+        |  }
+        |  object IO {
+        |    val unit: IO[Unit]            = new IO[Unit]
+        |    def pure[A](a: A): IO[A]      = new IO[A]
+        |  }
+        |}
+        |package demo {
+        |  import cats.effect.IO
+        |  object Lints {
+        |    def log(error: Throwable): Unit = ()
+        |    def swallowed(io: IO[Unit]): List[IO[Unit]] = List(
+        |      io.handleErrorWith(_ => IO.unit),
+        |      io.handleErrorWith(_ => IO.pure(())),
+        |      io.handleError(_ => ()),
+        |      io.recover { case _ => () },
+        |      io.redeem(_ => (), _ => ()),
+        |      io.attempt.void
+        |    )
+        |    def kept(io: IO[Unit], other: IO[Int]): List[IO[?]] = List(
+        |      io.handleError(error => log(error)),
+        |      io.handleErrorWith(error => IO.pure(log(error))),
+        |      io.handleError { _ => println("failed"); () },
+        |      io.recover { case _: java.io.IOException => () },
+        |      other.handleError(_ => 0),
+        |      other.attempt,
+        |      io.void
+        |    )
+        |    @SuppressWarnings(Array("bonsai:discarded-effect-error"))
+        |    def expected(io: IO[Unit]): IO[Unit] = io.handleErrorWith(_ => IO.unit)
+        |  }
+        |}""".stripMargin
+    )
+    val swallowed = lines(found, "discarded-effect-error")
+    assertEquals(
+      swallowed.map(_.takeWhile(_ != ' ')).sorted,
+      List("handleErrorWith", "handleErrorWith", "handleError", "recover", "redeem", "attempt.void").sorted,
+      found.mkString("\n")
+    )
+    assert(swallowed.forall(_.contains("@SuppressWarnings(Array(\"bonsai:discarded-effect-error\"))")), swallowed)
+  }
+
   test("boundaries where an exception is the expected outcome are left alone") {
     val found = warnings(
       """import java.net.URI
@@ -1169,9 +1256,9 @@ class LintSuite extends FunSuite {
                    |  def parse(s: String) = "e+".r.matches(s)
                    |  def nested: Future[Future[Int]] = ???
                    |}""".stripMargin
-    assertEquals(warningsAt("src/main/scala/Lints.scala", source).size, 3)
-    assertEquals(warningsAt("src/generated/scala/Lints.scala", source).size, 3)
-    assertEquals(warningsAt("target/stryker4s-1234/src/main/scala/Lints.scala", source), Nil)
+    assertEquals(warningsAt("src/main/scala/Lints.scala", source, "hot=Lints").size, 3)
+    assertEquals(warningsAt("src/generated/scala/Lints.scala", source, "hot=Lints").size, 3)
+    assertEquals(warningsAt("target/stryker4s-1234/src/main/scala/Lints.scala", source, "hot=Lints"), Nil)
   }
 
   test("checks carry their id, and can be disabled, escalated or suppressed by it") {
@@ -1362,8 +1449,8 @@ class LintSuite extends FunSuite {
     assertEquals(tagged(warnings(loop, "hot=**.Other*"), "loop-boxing"), Nil)
   }
 
-  test("regexes compiled from literals on every call, or on every iteration, are reported") {
-    val found = warnings(
+  test("regexes compiled from literals on every call, or on every iteration, are reported in hot classes") {
+    val source =
       """class Lints {
         |  val field              = "a".r
         |  lazy val deferred      = java.util.regex.Pattern.compile("b")
@@ -1392,9 +1479,10 @@ class LintSuite extends FunSuite {
         |  def once(line: String)               = line.replaceAll("p+", "q")
         |  def variable(lines: Vector[String], separator: String) = lines.map(_.split(separator))
         |}""".stripMargin
-    )
+    assertEquals(tagged(warnings(source), "regex-in-def"), Nil)
+    assertEquals(tagged(warnings(source, "hot=Other"), "regex-in-def"), Nil)
     assertEquals(
-      tagged(found, "regex-in-def"),
+      tagged(warnings(source, "hot=Lints"), "regex-in-def"),
       List(
         "\"e+\".r compiles the pattern on every call",
         "\"f+\".r compiles the pattern on every call",
@@ -1628,7 +1716,8 @@ class LintSuite extends FunSuite {
         |    values.map { value => val Seq(a, b) = (Seq(value, value + 1): @unchecked); a + b }.sum
         |  def thrown(values: Vector[Int], flag: Boolean): Int =
         |    values.map { value => val (a, b) = if (flag) (value, 1) else throw IllegalStateException("x"); a + b }.sum
-        |}""".stripMargin
+        |}""".stripMargin,
+      "hot=Lints"
     )
     assertEquals(
       tagged(found, "tuple-destructure-in-loop"),
@@ -1668,7 +1757,8 @@ class LintSuite extends FunSuite {
         |    once(_ => (), { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high })
         |  def plain(flag: Boolean, sink: Array[Int]): Unit =
         |    call { lane => val (low, high) = if (flag) (lane, 1) else (1, lane); sink(lane) = low + high }
-        |}""".stripMargin
+        |}""".stripMargin,
+      "hot=Lanes"
     )
     assertEquals(tagged(found, "tuple-destructure-in-loop").size, 3, found.mkString("\n"))
   }
@@ -1703,7 +1793,7 @@ class LintSuite extends FunSuite {
   }
 
   test("tables of constants built on every call are reported once, at the outermost table") {
-    val found = warnings(
+    val source =
       """enum Shape { case Square, Wide }
         |object Lints {
         |  val shapes                          = Vector((2, 2), (3, 3))
@@ -1736,21 +1826,42 @@ class LintSuite extends FunSuite {
         |  val initial = shared()
         |  def again: List[String] = shared()
         |}""".stripMargin
+    val cold = List(
+      "Vector((2, 2), (3, 3), (2, 3)) is a table of constants built on every call",
+      "Map(\"a\" -> List(1, 2), \"b\" -> List(3)) is a table of constants built on every call",
+      "List(List(1, 2), List(3)) is a table of constants built on every call",
+      "List((1, 2), (3, 4)) is a table of constants built on every call"
     )
+    val tiny = List(
+      "Array(1, 2, 3) is a table of constants built on every call",
+      "List(\"x\", \"y\", \"z\") is a table of constants built on every call",
+      "List(\"A\", \"B\", \"C\") is a table of constants built on every call",
+      "List(\"p\", \"q\", \"r\") is a table of constants built on every call"
+    )
+    assertEquals(tagged(warnings(source), "literal-table-in-def"), cold.sorted)
+    assertEquals(tagged(warnings(source, "hot=Other"), "literal-table-in-def"), cold.sorted)
+    assertEquals(tagged(warnings(source, "hot=Lints", "hot=Generated"), "literal-table-in-def"), (cold ++ tiny).sorted)
+    assertEquals(tagged(warnings(source), "invariant-in-loop"), Nil)
+  }
+
+  test("a few constants are a table only in hot code, while a long table is one anywhere and is named by its factory") {
+    val source =
+      """object Lints {
+        |  def arguments: List[String] = List("auth", "status", "--json")
+        |  def months: Map[String, Int] = Map(
+        |    "Jan" -> 1, "Feb" -> 2, "Mar" -> 3, "Apr" -> 4, "May" -> 5, "Jun" -> 6,
+        |    "Jul" -> 7, "Aug" -> 8, "Sep" -> 9, "Oct" -> 10, "Nov" -> 11, "Dec" -> 12
+        |  )
+        |  def letters: List[String] = List("a", "b", "c", "d", "e")
+        |}""".stripMargin
+    val found = tagged(warnings(source), "literal-table-in-def")
     assertEquals(
-      tagged(found, "literal-table-in-def"),
-      List(
-        "Vector((2, 2), (3, 3), (2, 3)) is a table of constants built on every call",
-        "Array(1, 2, 3) is a table of constants built on every call",
-        "Map(\"a\" -> List(1, 2), \"b\" -> List(3)) is a table of constants built on every call",
-        "List(\"x\", \"y\", \"z\") is a table of constants built on every call",
-        "List(List(1, 2), List(3)) is a table of constants built on every call",
-        "List((1, 2), (3, 4)) is a table of constants built on every call",
-        "List(\"A\", \"B\", \"C\") is a table of constants built on every call",
-        "List(\"p\", \"q\", \"r\") is a table of constants built on every call"
-      ).sorted
+      found.map(_.takeWhile(_ != '(')).sorted,
+      List("List", "Map")
     )
-    assertEquals(tagged(found, "invariant-in-loop"), Nil)
+    assert(found.exists(_.startsWith("Map(...) is a table of constants")), found.mkString("\n"))
+    assert(tagged(warnings(source, "hot=Lints"), "literal-table-in-def").exists(_.startsWith("List(\"auth\"")))
+    assert(!found.exists(_.startsWith("List(\"auth\"")), found.mkString("\n"))
   }
 
   test("a settled match whose arms depend on the loop is reported only in hot code, where restructuring pays") {
@@ -2868,12 +2979,14 @@ class LintSuite extends FunSuite {
       "string-round-trip" ->
         "def trip(a: String, b: String): Option[String] = s\"$a:$b\" match { case s\"$x:$_\" => Some(x); case _ => None }"
     )
+    val heated = Set("regex-in-def", "tuple-destructure-in-loop")
     bodies.filter((id, _) => id != "unused-private-param" || Compilations.minor >= 7).foreach { (id, body) =>
-      val plain = warnings(s"object Lints {\n  $body\n}")
+      val hot   = Option.when(heated(id))("hot=Lints").toList
+      val plain = warnings(s"object Lints {\n  $body\n}", hot*)
       assert(plain.exists(_.contains(s"bonsai:$id")), s"$id\n${plain.mkString("\n")}")
       List(s"@scala.annotation.nowarn(\"msg=bonsai:$id\")", s"@SuppressWarnings(Array(\"bonsai:$id\"))")
         .foreach { annotation =>
-          val found = warnings(s"object Lints {\n  $annotation\n  $body\n}")
+          val found = warnings(s"object Lints {\n  $annotation\n  $body\n}", hot*)
           assert(!found.exists(_.contains(s"bonsai:$id")), s"$annotation\n${found.mkString("\n")}")
         }
     }

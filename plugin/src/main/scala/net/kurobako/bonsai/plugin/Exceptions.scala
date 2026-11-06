@@ -19,6 +19,7 @@ private object Exceptions {
   val Checks: Set[Check] = Set(
     Check.BroadCatch,
     Check.DiscardedCause,
+    Check.DiscardedEffectError,
     Check.LocalThrow,
     Check.PartialInTry,
     Check.RedundantTry,
@@ -30,7 +31,7 @@ private object Exceptions {
 /** Exceptions used for control flow where a result type can carry the failure: throws a surrounding handler turns into
   * a result, throws standing in for an Option or Either's absent value, helpers that throw only for their callers'
   * handlers, partial calls inside handlers, catch-alls around calls with a documented exception, and handlers that drop
-  * the exception an error value has a place for.
+  * the exception an error value has a place for, and effects whose error is dropped for a unit.
   */
 private class Exceptions(
     checks: Checks,
@@ -100,6 +101,7 @@ private class Exceptions(
       region(handler)(traverse(argument))
       finish(handler, application)
     case application @ tpd.Apply(function, arguments) if arguments.exists(handling(_).isDefined) =>
+      swallowed(application)
       val (lambda, rest) = arguments.partition(handling(_).isDefined)
       val handler        = Handler(lambda.flatMap(handling(_)).flatten, tried = false)
       // The earlier argument lists hold what the handler protects, even when they take it by name.
@@ -120,6 +122,7 @@ private class Exceptions(
     case application @ tpd.Apply(function, arguments) =>
       redundant(application)
       default(application)
+      swallowed(application)
       traverse(function)
       val parameters = Trees.parameters(application)
       arguments.zipWithIndex.foreach { (argument, index) =>
@@ -131,6 +134,7 @@ private class Exceptions(
       }
     case select: tpd.Select =>
       redundant(select)
+      voided(select)
       partialCall(select)
       helperCall(select.symbol)
       throwsCall(select)
@@ -373,12 +377,11 @@ private class Exceptions(
     if (
       catches && handler.partial.nonEmpty && !quiet(tree) && (!handler.tried || handler.partial.map(_.symbol).size > 1)
     ) {
-      val ordered      = handler.partial.sortBy(_.span.end)
-      val names        = ordered.map(_.symbol.name.toString).distinct
-      val alternatives = ordered.flatMap(select => partial(select.symbol).map(_.alternative)).distinct
+      val ordered               = handler.partial.sortBy(_.span.end)
+      val (names, alternatives) = replacements(handler)
       checks(
         Check.PartialInTry,
-        s"${names.mkString(", ")} throw for missing or malformed values inside a handler; use " +
+        s"${names.mkString(", ")} ${verb(names)} for missing or malformed values inside a handler; use " +
           s"${alternatives.mkString(", ")} and keep the handler for what must throw",
         ordered.head.srcPos
       )
@@ -390,14 +393,32 @@ private class Exceptions(
         if (handler.boundary.exists(_._3))
           " on this platform; other platforms throw differently, so cross-built code classifies them in one place"
         else ""
-      val message = s"catching everything here also turns defects into results; catch ${exceptions.mkString(" | ")}, " +
-        s"which ${callees.mkString(", ")} throw$platforms"
+      val message =
+        if (handler.partial.isEmpty)
+          s"catching everything here also turns defects into results; catch ${exceptions.mkString(" | ")}, " +
+            s"which ${callees.mkString(", ")} ${verb(callees)}$platforms"
+        else {
+          val (names, alternatives) = replacements(handler)
+          s"catching everything here also turns defects into results, but ${names.mkString(", ")} ${verb(names)} " +
+            s"exceptions a catch for what ${callees.mkString(", ")} ${verb(callees)} would miss; replace " +
+            s"${if (names.sizeIs == 1) "it" else "them"} with ${alternatives.mkString(", ")} first"
+        }
       handler.cases.filter(clause => catchAll(clause) && value(clause.body)).foreach(clause =>
         checks(Check.BroadCatch, message, clause.pat.srcPos)
       )
     }
     handler.cases.foreach(discarded(_))
   }
+
+  private def replacements(handler: Handler)(using Context): (List[String], List[String]) = {
+    val ordered = handler.partial.sortBy(_.span.end).toList
+    (
+      ordered.map(_.symbol.name.toString).distinct,
+      ordered.flatMap(select => partial(select.symbol).map(_.alternative)).distinct
+    )
+  }
+
+  private def verb(names: Iterable[String]): String = if (names.size == 1) "throws" else "throw"
 
   private def value(body: tpd.Tree)(using Context): Boolean = {
     val tpe = body.tpe.widen
@@ -435,6 +456,58 @@ private class Exceptions(
     val widened = tpe.widen
     widened <:< defn.ThrowableType ||
     widened.derivesFrom(defn.OptionClass) && widened.argInfos.headOption.exists(_ <:< defn.ThrowableType)
+  }
+
+  private val Handlers = Set("handleError", "handleErrorWith", "recover", "recoverWith", "redeem", "redeemWith")
+
+  private def cats(symbol: Symbol)(using Context): Boolean = symbol.exists &&
+    Calls.qualified(symbol).startsWith("cats.")
+
+  private def swallowed(application: tpd.Apply)(using Context): Unit = {
+    val method = application.symbol
+    if (cats(method) && Handlers(method.name.toString))
+      application.args.headOption.flatMap(Calls.lambda(_)).filter(ignoring(_)).foreach(_ =>
+        checks(Check.DiscardedEffectError, discarding(method.name.toString), application.srcPos)
+      )
+    else if (cats(method) && method.name.toString == "void" && application.args.headOption.exists(attempt(_)))
+      checks(Check.DiscardedEffectError, discarding("attempt.void"), application.srcPos)
+  }
+
+  private def voided(select: tpd.Select)(using Context): Unit =
+    if (cats(select.symbol) && select.name.toString == "void" && attempt(select.qualifier))
+      checks(Check.DiscardedEffectError, discarding("attempt.void"), select.srcPos)
+
+  private def attempt(tree: tpd.Tree)(using Context): Boolean = {
+    val symbol = Calls.unconverted(tree).symbol
+    cats(symbol) && symbol.name.toString == "attempt"
+  }
+
+  private def discarding(call: String): String =
+    s"$call drops the error and yields a unit; handle or log the error, or mark an expected failure with " +
+      "@SuppressWarnings(Array(\"bonsai:discarded-effect-error\"))"
+
+  private def ignoring(definition: tpd.DefDef)(using Context): Boolean = {
+    val parameters = definition.termParamss.flatten.map(_.symbol)
+    definition.rhs match {
+      case tpd.Match(selector, cases) if parameters.contains(selector.symbol) =>
+        cases.nonEmpty && cases.forall(clause =>
+          catchAll(clause) && clause.pat.filterSubTrees(_.isInstanceOf[tpd.Bind]).map(_.symbol).forall(bound =>
+            !clause.body.existsSubTree(_.symbol == bound)
+          ) && unitLike(clause.body)
+        )
+      case body =>
+        parameters.sizeIs == 1 && !body.existsSubTree(reference => parameters.contains(reference.symbol)) &&
+        unitLike(body)
+    }
+  }
+
+  private def unitLike(tree: tpd.Tree)(using Context): Boolean = Calls.peelInlined(tree) match {
+    case tpd.Literal(constant)                                            => constant.tag == Constants.UnitTag
+    case unit if cats(unit.symbol) && unit.symbol.name.toString == "unit" => true
+    case pure: tpd.Apply if cats(pure.symbol) && pure.symbol.name.toString == "pure" =>
+      Calls.arguments(pure).exists(unitLike(_)) ||
+      Calls.selected(pure.fun).exists(select => unitLike(Calls.unconverted(select.qualifier)))
+    case _ => false
   }
 
   private def dropped(argument: tpd.Tree)(using Context): Boolean = argument match {

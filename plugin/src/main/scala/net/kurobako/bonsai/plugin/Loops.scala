@@ -42,9 +42,9 @@ private object Loops {
   * traversal. Linear operations there multiply the loop's cost, strict transformation chains allocate their
   * intermediate collections each time, primitives passed to the generic parameters of collections box each time, work
   * that does not depend on the loop is redone, accumulators that copy on every append grow quadratically, and searches
-  * by key rescan what a map already indexes. Regexes compiled from literals on every call are reported wherever they
-  * are, and boxing folds in the classes the build marks hot. Boxed primitives in loops are reported only in those
-  * classes when the build marks any.
+  * by key rescan what a map already indexes. Regexes compiled from literals on every call, tuples destructured from
+  * branches, and boxing folds are reported in the classes the build marks hot. Boxed primitives in loops are reported
+  * only in those classes when the build marks any.
   */
 private class Loops(
     checks: Checks,
@@ -610,7 +610,7 @@ private class Loops(
       }
     )
 
-  private def recompiled(tree: tpd.Tree)(using Context): Unit = if (perCall)
+  private def recompiled(tree: tpd.Tree)(using Context): Unit = if (perCall && heated)
     checks(
       Check.RegexInDef,
       s"${Trees.text(tree)} compiles the pattern on every call; hoist the pattern into a val",
@@ -624,7 +624,7 @@ private class Loops(
     pattern.length == 1 && !".$|()[{^?*+\\".contains(pattern.head) ||
       pattern.length == 2 && pattern.head == '\\' && !pattern(1).isLetterOrDigit
 
-  private def reparsed(application: tpd.Apply)(using Context): Unit = if (iterating) application match {
+  private def reparsed(application: tpd.Apply)(using Context): Unit = if (iterating && heated) application match {
     case tpd.Apply(select @ tpd.Select(_, name), pattern :: _)
         if Matching(name.toString) && select.symbol.owner == defn.StringClass &&
           string(pattern).exists(pattern => name.toString != "split" || !verbatim(pattern)) =>
@@ -725,8 +725,7 @@ private class Loops(
   // merge, which escape analysis cannot remove, while one built directly is scalar-replaced.
   private def destructured(value: tpd.ValDef)(using Context): Unit =
     if (
-      iterating && (!hotDeclared || heated) && value.symbol.is(Flags.Synthetic) && defn.isTupleNType(value.tpt.tpe) &&
-      merged(value.rhs)
+      iterating && heated && value.symbol.is(Flags.Synthetic) && defn.isTupleNType(value.tpt.tpe) && merged(value.rhs)
     )
       checks(
         Check.TupleDestructure,
@@ -921,7 +920,8 @@ private class Loops(
   private def tabulated(application: tpd.Apply)(using Context): Unit =
     if (perCall && !exempt(application.span) && !hoisted.exists(_.contains(application.span)))
       Trees.built(application).filter(rows =>
-        rows.size > 1 && rows.forall(datum(_)) && (rows.size >= MinimumConstants || !rows.forall(Trees.constant(_)))
+        rows.size > 1 && rows.forall(datum(_)) && (rows.size >= MinimumConstants || !rows.forall(Trees.constant(_))) &&
+          !(tiny(application) && !heated)
       ).foreach { _ =>
         hoisted += application.span
         checks(
@@ -1015,7 +1015,13 @@ private class Loops(
     val text = Trees.text(tree)
     if (text.length <= 60 && !text.contains('\n')) text
     else if (tree.symbol.isConstructor) s"new ${tree.symbol.owner.name}(...)"
-    else s"${Calls.selected(tree).fold(tree.symbol.name.toString)(_.name.toString)}(...)"
+    else
+      Calls.selected(tree) match {
+        case Some(select @ tpd.Select(factory @ (_: tpd.Ident | _: tpd.Select), _))
+            if select.name == nme.apply && factory.symbol.exists =>
+          s"${factory.symbol.name.toString.stripSuffix("$")}(...)"
+        case other => s"${other.fold(tree.symbol.name.toString)(_.name.toString)}(...)"
+      }
   }
 
   private val Searches = Set("find", "exists", "indexWhere")

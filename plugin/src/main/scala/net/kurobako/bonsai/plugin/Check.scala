@@ -41,6 +41,7 @@ private object Check {
   val RedundantTry: Check            = check("redundant-try", strict = true)
   val BroadCatch: Check              = check("broad-catch", strict = true)
   val DiscardedCause: Check          = check("discarded-cause", strict = true)
+  val DiscardedEffectError: Check    = check("discarded-effect-error")
   val EagerEffect: Check             = check("eager-effect")
   val ImpliedCondition: Check        = check("implied-condition")
   val IdentityToken: Check           = check("identity-token")

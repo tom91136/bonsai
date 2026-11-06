@@ -313,7 +313,7 @@ class LoopsSuite extends FunSuite {
         |      cpp + suffix + descend(depth - 1, flag)
         |    }
         |}""".stripMargin
-    assertEquals(tagged(warnings(source), "tuple-destructure-in-loop").size, 1)
+    assertEquals(tagged(warnings(source), "tuple-destructure-in-loop"), Nil)
     assertEquals(tagged(warnings(source, "hot=Lints"), "tuple-destructure-in-loop").size, 1)
     assertEquals(tagged(warnings(source, "hot=Other"), "tuple-destructure-in-loop"), Nil)
   }
