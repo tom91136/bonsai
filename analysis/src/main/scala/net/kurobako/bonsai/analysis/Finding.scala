@@ -125,7 +125,7 @@ object Finding {
     */
   class Rule private (val id: String, val strict: Boolean, val ordinal: Int) {
     def suppressedBy(ids: Set[String]): Boolean =
-      ids("*") || ids(id) || ids.exists(other => LintId.IntelliJ.get(other).exists(_(id)))
+      ids("*") || ids(id)
 
     override def toString: String = id
   }

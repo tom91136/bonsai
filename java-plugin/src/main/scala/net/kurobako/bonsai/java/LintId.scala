@@ -125,8 +125,10 @@ object LintId {
   /** The rule ids a suppression name names, with `*` for all rules. */
   def resolve(name: String): Set[String] =
     if (name == "bonsai") Set(Wildcard)
-    else if (name.startsWith("bonsai:")) Set(name.drop("bonsai:".length))
-    else IntelliJ.getOrElse(name, ErrorProne.getOrElse(name, Set(name)))
+    else {
+      val lint = name.stripPrefix("bonsai:")
+      IntelliJ.getOrElse(lint, ErrorProne.getOrElse(lint, Set(lint)))
+    }
 }
 
 /** The lints the Java code is checked for, which the plugin finds in the code it compiles and the analysis reports the

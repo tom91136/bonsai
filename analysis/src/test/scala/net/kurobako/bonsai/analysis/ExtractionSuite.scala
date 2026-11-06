@@ -8,6 +8,7 @@ import java.nio.file.Path
 import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
 import java.util.jar.Manifest as JarManifest
+import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.testing.*
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
@@ -532,7 +533,7 @@ class ExtractionSuite extends AnalysisSuite {
     )).graph
     assertEquals(graph.nodes.keySet, Set("Pair", "Plain", "Tone", "Helpers", "limit"))
     assertEquals(graph.nodes("Pair").line, 3)
-    assertEquals(graph.nodes("Plain").suppressed, Set("unused"))
+    assertEquals(graph.nodes("Plain").suppressed, LintId.resolve("bonsai:unused"))
     assertEquals(graph.edges.get("limit"), Some(Set("Helpers")))
   }
 

@@ -1,5 +1,7 @@
 package net.kurobako.bonsai.analysis
 
+import net.kurobako.bonsai.java.*
+
 class SmellsSuite extends AnalysisSuite {
   private def findings(sources: (String, String)*): Vector[Finding] = {
     val result = extract(sources)
@@ -1122,7 +1124,7 @@ class SmellsSuite extends AnalysisSuite {
   test(
     "a method with @SuppressWarnings(UnusedReturnValue) is not reported as unused-return-value while an unsuppressed sibling is reported"
   ) {
-    val quiet = method("lib.Api.quiet", "lib.Api", Vector.empty).copy(suppressed = Set("UnusedReturnValue"))
+    val quiet = method("lib.Api.quiet", "lib.Api", Vector.empty).copy(suppressed = LintId.resolve("UnusedReturnValue"))
     val noisy = method("lib.Api.noisy", "lib.Api", Vector.empty)
     val found = smells(model(usages =
       Vector(

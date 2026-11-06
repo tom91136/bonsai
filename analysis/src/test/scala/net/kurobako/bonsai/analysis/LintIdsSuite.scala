@@ -24,4 +24,24 @@ class LintIdsSuite extends FunSuite {
   test("every rule of a lint has a lint of its own") {
     assertEquals(ruleIds.count(lintIds.contains), lintIds.size)
   }
+
+  private def suppresses(name: String, rule: String): Boolean =
+    Finding.Rule.values.exists(candidate => candidate.id == rule && candidate.suppressedBy(LintId.resolve(name)))
+
+  test("a suppression name suppresses the rule of the lint it names, however the name is written") {
+    val cases = Vector(
+      "bonsai:FallThrough"              -> "fallthrough-in-switch",
+      "bonsai:MissingOverride"          -> "missing-override",
+      "bonsai:SizeReplaceableByIsEmpty" -> "size-to-is-empty",
+      "bonsai:unused"                   -> "unused-member",
+      "bonsai:fallthrough"              -> "fallthrough-in-switch",
+      "FallThrough"                     -> "fallthrough-in-switch",
+      "fallthrough"                     -> "fallthrough-in-switch"
+    )
+    assertEquals(cases.filterNot((name, rule) => suppresses(name, rule)), Vector.empty[(String, String)])
+  }
+
+  test("a suppression name does not suppress a rule its lint does not name") {
+    assert(!suppresses("bonsai:size-to-is-empty", "size-to-non-empty"))
+  }
 }

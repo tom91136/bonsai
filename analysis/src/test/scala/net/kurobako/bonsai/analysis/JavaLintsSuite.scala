@@ -64,7 +64,7 @@ class JavaLintsSuite extends AnalysisSuite {
       "Counter.empty: use isEmpty() instead of a size comparison with zero: values.isEmpty()"
     )
     assert(finding.suppressedBy(Set("size-to-is-empty")))
-    assert(finding.suppressedBy(Set("SizeReplaceableByIsEmpty")))
+    assert(finding.suppressedBy(LintId.resolve("SizeReplaceableByIsEmpty")))
     assert(!finding.suppressedBy(Set("size-to-non-empty")))
   }
 
