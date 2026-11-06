@@ -1,7 +1,10 @@
 package net.kurobako.bonsai.java
 
+import com.sun.source.doctree.ReferenceTree
 import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
+import com.sun.source.util.DocTreeScanner
+import com.sun.source.util.DocTrees
 import com.sun.source.util.TreePath
 import com.sun.source.util.TreePathScanner
 import com.sun.source.util.TreeScanner
@@ -601,6 +604,7 @@ object LintRedundant {
               case variable: VariableTree
                   if (newClass.classBody.isEmpty || Release.atLeast(context, 9)) &&
                     variable.getType.isInstanceOf[ParameterizedTypeTree] &&
+                    explicitType(context, variable) &&
                     LintRedundant.rawType(context, variable.getType) ==
                     LintRedundant.rawType(context, newClass.getIdentifier) =>
                 context.found("the constructor type arguments are inferred from the target type; use <>")
@@ -623,6 +627,14 @@ object LintRedundant {
           }
         else true
       }
+
+    /** Whether the variable writes its type, rather than leaving it to `var`, whose type the compiler infers. */
+    private def explicitType(context: Context, variable: VariableTree): Boolean = {
+      val positions = context.trees.getSourcePositions
+      val start     = positions.getStartPosition(context.unit, variable.getType)
+      val end       = positions.getEndPosition(context.unit, variable.getType)
+      start >= 0 && end > start
+    }
   }
 
   private def rawType(context: Context, tree: Tree): Option[String] =
@@ -790,7 +802,7 @@ object LintRedundant {
 
     def check(context: Context, tree: Tree): Vector[Found] = {
       val unit = tree.asInstanceOf[CompilationUnitTree]
-      val used = LintRedundant.used(unit)
+      val used = LintRedundant.used(unit) ++ LintRedundant.documented(context, unit)
       unit.getImports.asScala.toVector.collect {
         case importTree: ImportTree
             if !importTree.isStatic && !importTree.getQualifiedIdentifier.toString.endsWith("*") =>
@@ -813,5 +825,45 @@ object LintRedundant {
       case node: MemberSelectTree => names += node.getIdentifier.toString
     }
     names.toSet
+  }
+
+  /** The names the Javadoc of the file references, which an import can be needed for even when the code does not use
+    * it.
+    */
+  private def documented(context: Context, unit: CompilationUnitTree): Set[String] = context.trees match {
+    case docs: DocTrees =>
+      val references = DocReferences()
+      DocComments(docs, references).scan(unit, ())
+      references.names.toSet
+    case _ => Set.empty
+  }
+
+  private val Identifier = """[A-Za-z_$][A-Za-z0-9_$]*""".r
+
+  private class DocReferences extends DocTreeScanner[Unit, Unit] {
+    val names: mutable.Set[String] = mutable.Set.empty
+
+    override def visitReference(node: ReferenceTree, unused: Unit): Unit =
+      names ++= Identifier.findAllIn(node.getSignature): Unit
+  }
+
+  private class DocComments(docs: DocTrees, references: DocReferences) extends TreePathScanner[Unit, Unit] {
+    private def read(): Unit =
+      Option(docs.getDocCommentTree(getCurrentPath)).foreach(comment => references.scan(comment, ()))
+
+    override def visitClass(node: ClassTree, unused: Unit): Unit = {
+      read()
+      super.visitClass(node, unused)
+    }
+
+    override def visitMethod(node: MethodTree, unused: Unit): Unit = {
+      read()
+      super.visitMethod(node, unused)
+    }
+
+    override def visitVariable(node: VariableTree, unused: Unit): Unit = {
+      read()
+      super.visitVariable(node, unused)
+    }
   }
 }

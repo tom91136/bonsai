@@ -381,6 +381,62 @@ class LintSuite extends munit.FunSuite {
     assertEquals(found.method, "", "the lint is of the file, not of a method of it")
   }
 
+  test("imports the Javadoc links are not unused") {
+    val model = compile("DocImports" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |import java.util.Map;
+      |
+      |/**
+      | * A list, as {@link List} describes it, and a map.
+      | *
+      | * @see Map
+      | */
+      |public class DocImports {}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "unused-import"), Vector.empty, model.lints.mkString("\n"))
+  }
+
+  test("imports Javadoc block and value tags reference are not unused") {
+    val model = compile("DocTags" -> """
+      |package demo;
+      |
+      |import java.io.IOException;
+      |import java.util.concurrent.TimeoutException;
+      |import java.util.Locale;
+      |
+      |/**
+      | * Reads the {@value Locale#ROOT} value.
+      | *
+      | * @exception TimeoutException when it stalls
+      | * @throws IOException when it fails
+      | */
+      |public class DocTags {}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "unused-import"), Vector.empty, model.lints.mkString("\n"))
+  }
+
+  test("an import Javadoc prose or a link label only mentions is unused") {
+    val model = compile("DocProse" -> """
+      |package demo;
+      |
+      |import java.util.List;
+      |import java.util.Map;
+      |
+      |/**
+      | * A Map, as {@link Object the List label} says.
+      | *
+      | * @see "List"
+      | */
+      |public class DocProse {}
+      |""".stripMargin)
+
+    assertEquals(model.lints.count(_.id == "unused-import"), 2, model.lints.mkString("\n"))
+  }
+
   test("a method that overrides the one of a supertype and does not say so") {
     val model = compile(
       "Shape" -> """
@@ -2219,6 +2275,88 @@ class LintSuite extends munit.FunSuite {
 
     val found = model.lints.filter(_.id == "optional-is-present")
     assertEquals(found.size, 1, model.lints.mkString("\n"))
+  }
+
+  test("an isPresent check whose else leaves the loop is not a functional expression") {
+    val model = compile("Optionals" -> """
+      |package demo;
+      |
+      |import java.util.Optional;
+      |
+      |public class Optionals {
+      |  public String loop(Optional<String> value) {
+      |    while (true) {
+      |      if (value.isPresent()) return value.get();
+      |      else break;
+      |    }
+      |    return "none";
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "optional-is-present"), Vector.empty, model.lints.mkString("\n"))
+  }
+
+  test("an isPresent check whose branch exits only an inner loop or switch is a functional expression") {
+    val model = compile("Optionals" -> """
+      |package demo;
+      |
+      |import java.util.Optional;
+      |
+      |public class Optionals {
+      |  public void loop(Optional<String> value) {
+      |    while (true) {
+      |      if (value.isPresent()) {
+      |        for (int i = 0; i < 2; i++) {
+      |          if (i == 1) continue;
+      |          break;
+      |        }
+      |        switch (value.get()) {
+      |          case "a":
+      |            break;
+      |          default:
+      |        }
+      |      }
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.count(_.id == "optional-is-present"), 1, model.lints.mkString("\n"))
+  }
+
+  test("an isPresent check whose branch continues the loop from a switch or breaks out by label is not one") {
+    val model = compile("Optionals" -> """
+      |package demo;
+      |
+      |import java.util.Optional;
+      |
+      |public class Optionals {
+      |  public void loop(Optional<String> value) {
+      |    while (true) {
+      |      if (value.isPresent()) {
+      |        switch (value.get()) {
+      |          case "a":
+      |            continue;
+      |          default:
+      |        }
+      |      }
+      |    }
+      |  }
+      |  public void labelled(Optional<String> value) {
+      |    outer:
+      |    while (true) {
+      |      if (value.isPresent()) {
+      |        for (int i = 0; i < 2; i++) {
+      |          if (value.get().isEmpty()) break outer;
+      |        }
+      |      }
+      |    }
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "optional-is-present"), Vector.empty, model.lints.mkString("\n"))
   }
 
   test("a nullable value used where a non-null one is required is reported unless a check proves it") {
@@ -6798,6 +6936,22 @@ class LintSuite extends munit.FunSuite {
 
     val found = model.lints.filter(_.id == "convert-2-diamond")
     assertEquals(found.map(_.line), Vector(20))
+  }
+
+  test("a constructor with explicit type arguments in a var declaration is not a diamond candidate") {
+    val model = compile("VarDiamond" -> """
+      |package demo;
+      |
+      |import java.util.ArrayList;
+      |
+      |public class VarDiamond {
+      |  public void run() {
+      |    var values = new ArrayList<String>();
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "convert-2-diamond"), Vector.empty, model.lints.mkString("\n"))
   }
 
   private val nullableReturn = "the method can return null: return Optional<T> (or OptionalInt, OptionalLong, " +

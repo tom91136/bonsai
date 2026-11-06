@@ -53,7 +53,10 @@ object LintOptionals {
       receiver(context, invocation, Set("isPresent", "isEmpty")).flatMap { receiver =>
         val present = invocation.getMethodSelect.asInstanceOf[MemberSelectTree].getIdentifier.contentEquals("isPresent")
         context.ancestors.collectFirst {
-          case ifTree: IfTree if within(context, ifTree.getCondition) =>
+          case ifTree: IfTree
+              if within(context, ifTree.getCondition) &&
+                !leavesLoop(ifTree.getThenStatement) &&
+                !ifTree.elseStatement.exists(leavesLoop(_)) =>
             (ifTree.getThenStatement, ifTree.elseStatement)
           case conditional: ConditionalExpressionTree if within(context, conditional.getCondition) =>
             (conditional.getTrueExpression, Some(conditional.getFalseExpression))
@@ -158,6 +161,25 @@ object LintOptionals {
     case ifTree: IfTree   =>
       ifTree.elseStatement.exists(other => exits(ifTree.getThenStatement) && exits(other))
     case _ => false
+  }
+
+  /** Whether the branch leaves the loop, which a functional expression of the optional cannot do. */
+  private def leavesLoop(branch: StatementTree): Boolean =
+    Scan.exists(branch) {
+      case exit: BreakTree    => exit.label.nonEmpty
+      case exit: ContinueTree => exit.label.nonEmpty
+    } ||
+      Scan.exists(branch, tree => !isLoop(tree) && !isSwitch(tree)) { case _: BreakTree => true } ||
+      Scan.exists(branch, tree => !isLoop(tree)) { case _: ContinueTree => true }
+
+  private def isLoop(tree: Tree): Boolean = tree match {
+    case _: ForLoopTree | _: EnhancedForLoopTree | _: WhileLoopTree | _: DoWhileLoopTree => true
+    case _                                                                               => false
+  }
+
+  private def isSwitch(tree: Tree): Boolean = tree match {
+    case _: SwitchTree | _: SwitchExpressionTree => true
+    case _                                       => false
   }
 
   /** Whether the code of the branch calls a getter of the optional whose text is `value`. */
