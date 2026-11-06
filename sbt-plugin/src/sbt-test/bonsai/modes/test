@@ -1,6 +1,11 @@
 # a cycle only warns while developing
 > compile
 > bonsaiCheck
+# a pending rewrite does not stop analysis in Dev
+> set bonsaiErrors += "unused-member"
+-> bonsaiCheck
+> set bonsaiErrors -= "unused-member"
+> bonsaiCheck
 > set ThisBuild / bonsaiMode := BonsaiMode.CI
 -> compile
 -> bonsaiCheck
@@ -16,3 +21,16 @@
 > compile
 > set bonsaiErrors += "acyclic"
 -> compile
+# classes a failed compile removed fail the analysis rather than read as a clean report
+> set bonsaiErrors -= "acyclic"
+-> bonsaiAnalyse
+> clean
+> bonsaiAnalyse
+# in CI a pending rewrite fails the check, even when its lint is a warning
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
+> set bonsaiDisabled += "acyclic"
+> set bonsaiWarnings += "RedundantCaseClassVal"
+> set bonsaiWarnings += "unused"
+> set bonsaiWarnings += "unused-member"
+> set bonsaiWarnings += "unread-field"
+-> bonsaiCheck

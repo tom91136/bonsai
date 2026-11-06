@@ -1,3 +1,5 @@
+# lints fail outside Dev, which only warns
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
 # the rules resolve: a rule with nothing to report passes
 > set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
 > scalafixAll --check

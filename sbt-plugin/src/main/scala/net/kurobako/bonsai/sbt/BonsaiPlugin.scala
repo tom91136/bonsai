@@ -118,7 +118,8 @@ object BonsaiPlugin extends AutoPlugin {
       settingKey[Set[String]]("Methods, by qualified name, that run the functions passed to them on other threads")
     val bonsaiHot: SettingKey[Set[String]] = settingKey[Set[String]](
       "Globs of the classes and objects whose code runs hot, by qualified name, with * for one name segment and ** " +
-        "for any number, and ! before a glob leaving out what it matches; boxing-fold, megamorphic-call, and " +
+        "for any number, and ! before a glob leaving out what it matches; boxing-fold, megamorphic-call, " +
+        "regex-in-def, tuple-destructure-in-loop, literal-table-in-def on tables of up to four constants, and " +
         "invariant-in-loop on matches whose arms vary, report only in them, while unspecialised-function and " +
         "lambda-trait leave out classes a ! glob matches and hot ones respectively"
     )
@@ -170,6 +171,8 @@ object BonsaiPlugin extends AutoPlugin {
 
   private val bonsaiScalafixConfig =
     taskKey[File]("Write the scalafix configuration of the selected rules").withRank(KeyRanks.Invisible)
+  private val bonsaiScalafixCheck =
+    taskKey[Unit]("Run scalafix --check, which only warns on failure in Dev mode").withRank(KeyRanks.Invisible)
   private val bonsaiValidated =
     settingKey[Unit]("Reject ids no tool knows when the build loads").withRank(KeyRanks.Invisible)
   private val bonsaiModeId =
@@ -190,8 +193,11 @@ object BonsaiPlugin extends AutoPlugin {
             sys.error(s"BONSAI_MODE must be one of ${BonsaiMode.values.mkString(", ")}, not $mode")
           )
         case None => if (sys.env.contains("CI")) BonsaiMode.CI else BonsaiMode.Dev
-      })
-  ) ++ addCommandAlias("bonsaiCheck", "; Test/compile ; scalafixAll --check ; bonsaiAnalyse")
+      }),
+    commands += Command.command("bonsaiCheck") { state =>
+      List("Test/compile", "bonsaiScalafixCheck", "bonsaiAnalyse") ::: state
+    }
+  )
 
   // Defaults live in ThisBuild so one assignment there configures every project, and a project can still override.
   override def buildSettings: Seq[Setting[?]] = Seq(
@@ -291,7 +297,7 @@ object BonsaiPlugin extends AutoPlugin {
       target.value / "bonsai" / "scalafix.conf",
       (ThisBuild / baseDirectory).value / ".scalafix.conf",
       Rules.filterNot(bonsaiDisabled.value),
-      Rules.filter(bonsaiWarnings.value),
+      if (bonsaiMode.value == BonsaiMode.Dev) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiWarnings.value),
       (if (bonsaiDisabled.value("DisableSyntax")) Nil else Bans).partition(!bonsaiDisabled.value(_))
     )),
     Compile / scalafix := (Compile / scalafix).dependsOn(bonsaiScalafixConfig).evaluated,
@@ -302,7 +308,15 @@ object BonsaiPlugin extends AutoPlugin {
       if (code != 0) throw MessageOnlyException("bonsai analysis failed")
     },
     bonsaiAnalyse / aggregate := false,
-    bonsaiBaselineWrite       := Def.uncached {
+    bonsaiScalafixCheck       := Def.uncached {
+      scalafixAll.toTask(" --check").result.value.toEither match {
+        case Right(_)                                      => ()
+        case Left(_) if bonsaiMode.value == BonsaiMode.Dev =>
+          streams.value.log.warn("scalafix --check failed; continuing in Dev mode")
+        case Left(incomplete) => throw incomplete
+      }
+    },
+    bonsaiBaselineWrite := Def.uncached {
       val _ = analyse((baseline, _) => Seq("--write-baseline", baseline.getAbsolutePath)).value
       bonsaiBaseline.value
     },

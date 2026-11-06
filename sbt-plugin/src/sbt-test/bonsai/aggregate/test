@@ -1,0 +1,4 @@
+# the check reaches aggregated projects, whose lint warns in Dev and fails in CI, though the root has no sources
+> bonsaiScalafixCheck
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
+-> bonsaiScalafixCheck

@@ -1,5 +1,10 @@
 # scalafix's DisableSyntax runs by default, without a .scalafix.conf
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
 -> scalafixAll --check
+# in Dev the same bans only warn
+> set ThisBuild / bonsaiMode := BonsaiMode.Dev
+> scalafixAll --check
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
 # each of its bans can be turned off by id
 > set ThisBuild / bonsaiDisabled += "DisableSyntax.noVars"
 > scalafixAll --check
