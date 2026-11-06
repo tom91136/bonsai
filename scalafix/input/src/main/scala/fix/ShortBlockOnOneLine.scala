@@ -13,7 +13,7 @@ object ShortBlockOnOneLine {
     else 0
 
   def conditioned(process: Process, alive: Boolean): Int =
-    if (// assert: ShortBlockOnOneLine.one-line-block
+    if (
       alive
     ) {
       process.destroyForcibly()
@@ -67,5 +67,36 @@ object ShortBlockOnOneLine {
     else {
       process.destroyForcibly()
       Integer.MIN_VALUE + Integer.MIN_VALUE + Integer.MIN_VALUE + Integer.MIN_VALUE + Integer.MIN_VALUE + Integer.MIN_VALUE
+    }
+
+  def both(process: Process, alive: Boolean): Int =
+    if (// assert: ShortBlockOnOneLine.one-line-block
+      alive
+    ) {
+      process.destroyForcibly()
+      -1
+    }
+    else {
+      process.destroyForcibly()
+      -2
+    }
+
+  def chain(process: Process, code: Int): Int =
+    if (code == 0) {
+      process.destroyForcibly()
+      -1
+    }
+    else if (code == 1) {
+      process.destroyForcibly()
+      -2
+    }
+    else 0
+
+  def guard(process: Process, alive: Boolean): Unit =
+    if (// assert: ShortBlockOnOneLine.one-line-block
+      alive
+    ) {
+      process.destroyForcibly()
+      process.destroyForcibly()
     }
 }

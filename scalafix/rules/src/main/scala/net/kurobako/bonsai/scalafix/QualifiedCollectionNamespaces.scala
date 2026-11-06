@@ -60,21 +60,9 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
     Configured.Ok(QualifiedCollectionNamespaces(QualifiedCollectionNamespaces.fromConfiguration(config)))
 
   override def fix(using document: SemanticDocument): Patch = {
-    val imported = document.tree.collect {
+    val members = document.tree.collect {
       case importer: Importer if importer.parent.exists(_.is[Import]) =>
-        namespace(importer.ref.symbol.value).toList.flatMap(space =>
-          importer.importees.collect {
-            case importee @ (_: Importee.Name | _: Importee.Rename | _: Importee.Wildcard) =>
-              lint(
-                "member-import",
-                s"import ${
-                    if (space.prefix == space.pkg) "nothing of" else space.parent
-                  } " +
-                  s"${space.pkg}; write its members as ${space.prefix}.${member(importee)}",
-                importee.pos
-              ) + Patch.removeImportee(importee)
-          }
-        )
+        namespace(importer.ref.symbol.value).map(space => (importer, space)).toList
     }.flatten
     val prefixed = document.tree.collect {
       case name: Name if reference(name) =>
@@ -90,12 +78,35 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
             )
         }
     }.flatten
-    val needed = prefixed.nonEmpty || imported.nonEmpty
-    val added  = namespaces.collect {
-      case space if space.prefix != space.pkg && needed && !importsPackage(space) =>
-        Patch.addGlobalImport(importer(space))
+    val needed    = prefixed.nonEmpty || members.nonEmpty
+    val missing   = namespaces.filter(space => space.prefix != space.pkg && needed && !importsPackage(space))
+    val replacing = missing.flatMap(space =>
+      members.collectFirst {
+        case (importer, owner) if owner == space && importer.importees.forall(memberImportee(_)) => (importer, space)
+      }
+    )
+    val added    = missing.filterNot(space => replacing.exists(_._2 == space))
+    val imported = members.flatMap { case (importer, space) =>
+      importer.importees.collect {
+        case importee @ (_: Importee.Name | _: Importee.Rename | _: Importee.Wildcard) =>
+          lint(
+            "member-import",
+            s"import ${
+                if (space.prefix == space.pkg) "nothing of" else space.parent
+              } " +
+              s"${space.pkg}; write its members as ${space.prefix}.${member(importee)}",
+            importee.pos
+          ) + (if (replacing.exists(_._1 eq importer)) Patch.empty else Patch.removeImportee(importee))
+      }
     }
-    (imported ++ prefixed ++ added).asPatch
+    val rewritten = replacing.map((importer, space) => Patch.replaceTree(importer, space.pkg))
+    (imported ++ prefixed ++ rewritten ++ references.placements(added.map(importing(_)))).asPatch
+  }
+
+  // The package and name an import of the namespace is split into.
+  private def importing(space: QualifiedCollectionNamespaces.Namespace): (String, String) = {
+    val cut = space.pkg.lastIndexOf('.')
+    (space.pkg.take(cut), space.pkg.drop(cut + 1))
   }
 
   private def namespace(owner: String): Option[QualifiedCollectionNamespaces.Namespace] =
@@ -105,6 +116,11 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
     case Importee.Name(name)      => name.value
     case Importee.Rename(name, _) => name.value
     case _                        => "<member>"
+  }
+
+  private def memberImportee(importee: Importee): Boolean = importee match {
+    case _: Importee.Name | _: Importee.Rename | _: Importee.Wildcard => true
+    case _                                                            => false
   }
 
   // A name standing for a reference in code, not a definition or part of an import; the names of a package clause
@@ -143,12 +159,4 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
           case _                   => false
         }
     }.contains(true)
-
-  private def importer(space: QualifiedCollectionNamespaces.Namespace): Importer = {
-    val path      = space.pkg.split('.').toList
-    val reference = path.init.tail.foldLeft[Term.Ref](Term.Name(path.head))((qualifier, segment) =>
-      Term.Select(qualifier, Term.Name(segment))
-    )
-    Importer(reference, List(Importee.Name(Name.Indeterminate(path.last))))
-  }
 }

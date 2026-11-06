@@ -7,13 +7,14 @@ import scalafix.v1.*
   *
   * Blocks with comments, nested blocks, or other than two single-line terms are left alone. So is a block whose opening
   * brace starts its line, which scalafmt joins back onto the keyword, and a block that shares its line with the other
-  * branch.
+  * branch. The then-branch of an `if` with an `else` is left alone too, so `else` never follows a one-line block.
   */
 class ShortBlockOnOneLine extends SyntacticRule("ShortBlockOnOneLine") {
   private val maxColumn = 120
 
   override def fix(using document: SyntacticDocument): Patch = document.tree.collect { case branch: Term.If =>
-    val replaced = List(branch.thenp, branch.elsep).flatMap {
+    val branches = if (hasElse(branch)) List(branch.elsep) else List(branch.thenp, branch.elsep)
+    val replaced = branches.flatMap {
       case block: Term.Block => oneLine(block).map(Patch.replaceTree(block, _))
       case _                 => None
     }
@@ -23,6 +24,9 @@ class ShortBlockOnOneLine extends SyntacticRule("ShortBlockOnOneLine") {
       branch.pos
     ))).asPatch
   }.asPatch
+
+  // a missing else is a zero-width unit, so an explicit else () still counts
+  private def hasElse(branch: Term.If): Boolean = branch.elsep.pos.start != branch.elsep.pos.end
 
   private def oneLine(block: Term.Block): Option[String] = block.stats match {
     case List(statement: Term, result: Term)
