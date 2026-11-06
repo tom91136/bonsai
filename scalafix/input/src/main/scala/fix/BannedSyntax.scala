@@ -39,6 +39,42 @@ object ExplicitNew {
   object Bare {
     def zero: Bare = new Bare(0) // assert: BannedSyntax.explicit-new
   }
+
+  trait Creates[T] {
+    def create(value: Int): T
+    def apply(value: Int): T = create(value)
+  }
+  class Inherited(val value: Int)
+  object Inherited extends Creates[Inherited] {
+    def create(value: Int): Inherited = new Inherited(value)
+  }
+
+  class ApplyDiffers(val value: Double)
+  object ApplyDiffers {
+    def apply(): String = "now"
+  }
+  val differs = new ApplyDiffers(1.0)
+
+  object Inferred {
+    def apply[A](value: => A): Inferred[A] = new Inferred(value)
+  }
+  class Inferred[A](value: => A)
+
+  class Given[A](val value: A)
+  object Given {
+    def apply[A](value: A): Given[A] = new Given[A](value)
+  }
+
+  class BareGeneric[A](val value: A)
+  val bareGeneric = new BareGeneric(1) // assert: BannedSyntax.explicit-new
+
+  case class Plain(value: Int)
+  val plain = new Plain(1) // assert: BannedSyntax.explicit-new
+
+  case class Guarded private (value: Int)
+  object Guarded {
+    def apply(value: Int): Guarded = new Guarded(value.max(0))
+  }
 }
 
 object ArrayAllocations {

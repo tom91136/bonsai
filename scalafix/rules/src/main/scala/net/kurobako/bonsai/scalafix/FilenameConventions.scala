@@ -6,9 +6,8 @@ import scalafix.v1.*
 /** Keeps named top-level declarations in the file named after them.
   *
   * This is intentionally a linter rather than a rewrite: grouped declarations are a structural decision and need to be
-  * reviewed before they are split. Each stray declaration gets its own diagnostic, so a suppression covers only what it
-  * names. A stray in a reference cycle with the namesake is exempt: moving it out would make the two files depend on
-  * each other.
+  * reviewed before they are split. Each stray name gets one diagnostic, so a suppression covers only what it names. A
+  * stray in a reference cycle with the namesake is exempt: moving it out would make the two files depend on each other.
   */
 class FilenameConventions extends SyntacticRule("FilenameConventions") {
   private case class Declaration(name: String, position: Position, stat: Stat)
@@ -16,19 +15,30 @@ class FilenameConventions extends SyntacticRule("FilenameConventions") {
   override def fix(using document: SyntacticDocument): Patch =
     sourceName(document.input).fold(Patch.empty) { fileName =>
       // scala-cli selects a source's scope and platforms by suffixes, which are not part of its name.
-      val expected     = fileName.stripSuffix(".scala").replaceFirst("""(\.(test|jvm|js|native))+$""", "")
-      val declarations = topLevelDeclarations(document.tree)
-      val declared     = declarations.map(_.name).toSet
-      val edges        = declarations.groupMapReduce(_.name)(d => referenced(d.stat, declared))(_ ++ _)
-      val fromNamesake = reachable(expected, edges)
+      val expected      = fileName.stripSuffix(".scala").replaceFirst("""(\.(test|jvm|js|native))+$""", "")
+      val declarations  = topLevelDeclarations(document.tree)
+      val declared      = declarations.map(_.name).toSet
+      val edges         = declarations.groupMapReduce(_.name)(d => referenced(d.stat, declared))(_ ++ _)
+      val fromNamesake  = reachable(expected, edges)
+      val sealedParents = declarations.collect { case Declaration(name, _, stat) if isSealed(stat) => name }.toSet
       declarations.filter(_.name != expected).filterNot { stray =>
         fromNamesake.contains(stray.name) && reachable(stray.name, edges).contains(expected)
-      }.map { stray =>
-        lint(
-          "top-level-filename",
-          s"top-level declaration ${stray.name} in $fileName must be named $expected",
-          stray.position
-        )
+      }.distinctBy(_.name).map { stray =>
+        parents(stray.stat).find(sealedParents) match {
+          case Some(parent) =>
+            lint(
+              "top-level-filename",
+              s"top-level declaration ${stray.name} in $fileName extends sealed $parent: nest it in the companion of " +
+                s"$parent or remove sealed from $parent",
+              stray.position
+            )
+          case None =>
+            lint(
+              "top-level-filename",
+              s"top-level declaration ${stray.name} in $fileName must be named $expected",
+              stray.position
+            )
+        }
       }.asPatch
     }
 
@@ -61,6 +71,20 @@ class FilenameConventions extends SyntacticRule("FilenameConventions") {
     case value: Defn.Given                                  => List(value.name)
     case value: Defn.GivenAlias                             => List(value.name)
     case _                                                  => Nil
+  }
+
+  private def isSealed(stat: Stat): Boolean = stat match {
+    case value: (Defn.Class | Defn.Trait) => value.mods.exists(_.is[Mod.Sealed])
+    case _                                => false
+  }
+
+  private def parents(stat: Stat): List[String] = stat match {
+    case value: (Defn.Class | Defn.Trait | Defn.Object) =>
+      value.templ.inits.map(_.tpe).collect {
+        case Type.Name(name)                            => name
+        case Type.Apply.After_4_6_0(Type.Name(name), _) => name
+      }
+    case _ => Nil
   }
 
   private def referenced(stat: Stat, declared: Set[String]): Set[String] =
