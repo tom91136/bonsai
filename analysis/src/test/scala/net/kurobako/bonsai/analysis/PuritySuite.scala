@@ -87,6 +87,65 @@ class PuritySuite extends AnalysisSuite {
     )
   }
 
+  test("a function stored in a mutable collection after it is built is not lost") {
+    val stored = extract(Seq(
+      "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Stored) }",
+      "Stored.scala" ->
+        """import scala.collection.mutable
+          |object Stored {
+          |  private val logging: Int => Int = y => { println(y); y }
+          |  def bufferUpdated: Int = { val b = mutable.ArrayBuffer[Int => Int](x => x); b(0) = logging; b(0)(1) }
+          |  def bufferAppended: Int = { val b = mutable.ArrayBuffer.empty[Int => Int]; b += logging; b.head(1) }
+          |  def mapUpdated: Int = { val m = mutable.Map.empty[Int, Int => Int]; m(0) = logging; m(0)(1) }
+          |  def arrayUpdated: Int = { val a = Array[Int => Int](x => x); a(0) = logging; a(0)(1) }
+          |  def upcast: Int = {
+          |    val b = mutable.ArrayBuffer[Int => Int](x => x)
+          |    val s: collection.Seq[Int => Int] = b
+          |    b(0) = logging
+          |    s(0)(1)
+          |  }
+          |  def constructed: Int = {
+          |    val b = new mutable.ArrayBuffer[Int => Int]()
+          |    val s: collection.Seq[Int => Int] = b
+          |    b += logging
+          |    s(0)(1)
+          |  }
+          |  def returnedUpcast: Int = { val s = viewed; s(0)(1) }
+          |  private def viewed: collection.Seq[Int => Int] = {
+          |    val b = mutable.ArrayBuffer[Int => Int](x => x)
+          |    b(0) = logging
+          |    b
+          |  }
+          |}""".stripMargin
+    ))
+    val names = Vector(
+      "Stored.bufferUpdated",
+      "Stored.bufferAppended",
+      "Stored.mapUpdated",
+      "Stored.arrayUpdated",
+      "Stored.upcast",
+      "Stored.returnedUpcast",
+      "Stored.constructed"
+    )
+    assertEquals(
+      names.filter(stored.purity.verdicts.getOrElse(_, fail("no verdict")) == Purity.Verdict.Pure),
+      Vector.empty
+    )
+  }
+
+  test("a function held by an immutable collection keeps the effects it was built with") {
+    val held = extract(Seq(
+      "Main.scala" -> "object Main { def main(args: Array[String]): Unit = println(Held) }",
+      "Held.scala" ->
+        """object Held {
+          |  def pure: Int = List[Int => Int](x => x).head(1)
+          |  def logging: Int = List[Int => Int](y => { println(y); y }).head(1)
+          |}""".stripMargin
+    ))
+    assertEquals(held.purity.verdicts("Held.pure"), Purity.Verdict.Pure)
+    assertEquals(held.purity.verdicts("Held.logging"), impure("calls scala.Predef.println"))
+  }
+
   test("effects of callees, of the functions they run, and on shared values make a method impure") {
     assertEquals(verdict("Pure.logged"), impure("calls scala.Predef.println"))
     assertEquals(verdict("Pure.pushed"), impure("calls scala.collection.mutable.Growable.+="))
@@ -482,6 +541,47 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(found.sorted, Vector("Future.apply", "Future.apply", "Pool.run"))
     assertFinding(contracts, "shared-write", "assigns count")
     assertFinding(contracts, "shared-write", "Pool.run runs", "assigns total")
+  }
+
+  private lazy val locked = extract(
+    Seq(
+      "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = () }",
+      "Locked.scala" ->
+        """import java.util.concurrent.locks.{ReentrantLock, ReentrantReadWriteLock}
+          |class Pool { def run(task: () => Unit): Unit = task() }
+          |class Locked {
+          |  var free = 0
+          |  private val lock = new ReentrantLock
+          |  private val rw = new ReentrantReadWriteLock
+          |  def guarded(pool: Pool): Unit = pool.run { () =>
+          |    lock.lock()
+          |    try { free = 1 } finally lock.unlock()
+          |  }
+          |  def written(pool: Pool): Unit = pool.run { () =>
+          |    rw.writeLock().lock()
+          |    try { free = 2 } finally rw.writeLock().unlock()
+          |  }
+          |  def bare(pool: Pool): Unit = pool.run(() => free = 3)
+          |  def after(pool: Pool): Unit = pool.run { () =>
+          |    lock.lock()
+          |    try { free = 4 } finally lock.unlock()
+          |    free = 5
+          |  }
+          |  def unreleased(pool: Pool): Unit = pool.run { () =>
+          |    lock.lock()
+          |    free = 6
+          |    lock.unlock()
+          |  }
+          |}""".stripMargin
+    ),
+    concurrent = Set("Pool.run")
+  )
+
+  test("assignments inside a lock held until a finally releases it are not shared writes") {
+    val found = Purity.findings(locked.purity, locked.graph.nodes).collect {
+      case finding if finding.rule == Finding.Rule.SharedWrite => finding.detail
+    }
+    assertEquals(found.map(_.split(" runs at ")(1).split(' ')(0).split(':').last.toInt).sorted, Vector(15, 19, 23))
   }
 
   test("a branch a constant condition rules out has no effects") {

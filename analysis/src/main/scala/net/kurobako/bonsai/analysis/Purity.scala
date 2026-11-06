@@ -629,6 +629,7 @@ object Purity {
     )
     private val View          = requiredClass("scala.collection.View")
     private val IteratorClass = requiredClass("scala.collection.Iterator")
+    private val LockClass     = requiredClass("java.util.concurrent.locks.Lock")
 
     /** How many library bodies the inference read. */
     def library: Int = explored.size
@@ -1351,7 +1352,8 @@ object Purity {
       val target = overriding(method, receiver)
       if (pure(target.owner) || target.owner.is(Flags.JavaDefined))
         // What may hold a function carries those that flowed into it, including ones the inference cannot follow.
-        if (carries(result)) several(carrying) else Value.Opaque
+        // A mutable collection may have been written to since it was built, however it is seen later.
+        if (carries(result) && !knowledge.growable(result)) several(carrying) else Value.Opaque
       else {
         val key = Returned(target, receiver.filter(_.isInstanceOf[Value.Object]), arguments)
         if (scratch.evaluating(key) || scratch.evaluating.size > MaximumNesting * 4) Value.Opaque
@@ -1786,6 +1788,13 @@ object Purity {
           extends tpd.TreeTraverser {
         override def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
           case application: tpd.Apply if application.fun.symbol == defn.Object_synchronized => ()
+          case tpd.Block(stats, expr)                                                       =>
+            val trees = (stats :+ expr).toVector
+            trees.zipWithIndex.foreach {
+              case (tpd.Try(_, _, finalizer), index) if index > 0 && released(trees(index - 1), finalizer) =>
+                traverse(finalizer)
+              case (other, _) => traverse(other)
+            }
           case assignment @ tpd.Assign(target, _)
               if target.symbol.is(Flags.Mutable) && !declared(target.symbol) &&
                 !target.symbol.hasAnnotation(defn.VolatileAnnot) =>
@@ -1794,6 +1803,26 @@ object Purity {
           case _ => traverseChildren(tree)
         }
       }
+
+      private def lockPath(tree: tpd.Tree): Option[List[Symbol]] = tree match {
+        case tpd.Apply(fun, Nil)        => lockPath(fun)
+        case tpd.Select(qualifier, _)   => lockPath(qualifier).map(_ :+ tree.symbol)
+        case tpd.Ident(_) | tpd.This(_) => Some(List(tree.symbol))
+        case _                          => None
+      }
+
+      private def lockCall(tree: tpd.Tree, names: Set[String]): Option[List[Symbol]] = tree match {
+        case tpd.Apply(tpd.Select(qualifier, name), Nil)
+            if names(name.toString) && qualifier.tpe.widen.derivesFrom(LockClass) =>
+          lockPath(qualifier)
+        case _ => None
+      }
+
+      // A lock taken by the statement before a try whose finally releases that same lock.
+      private def released(acquire: tpd.Tree, finalizer: tpd.Tree): Boolean =
+        lockCall(acquire, Set("lock", "lockInterruptibly")).exists(held =>
+          finalizer.existsSubTree(lockCall(_, Set("unlock")).contains(held))
+        )
 
       private def transformed(qualifier: Option[tpd.Tree]): Boolean = qualifier.exists { q =>
         val tpe = Calls.unconverted(q).tpe
