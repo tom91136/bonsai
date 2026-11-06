@@ -97,6 +97,14 @@ trait AnalysisSuite extends FunSuite {
 
   /** Compiles Java sources under the package `demo`, and reads the model the javac plugin collects from them. */
   protected def javaFacts(libraries: Set[String], sources: (String, String)*): Extraction.Result =
+    javaFactsReflective(libraries, Vector.empty, sources*)
+
+  /** Compiles Java sources as `javaFacts` does, with the types the build names only in strings. */
+  protected def javaFactsReflective(
+      libraries: Set[String],
+      reflective: Vector[String],
+      sources: (String, String)*
+  ): Extraction.Result =
     Scratch.using("bonsai-") { directory =>
       write(directory.resolve("src"), sources)
       val files   = sources.map((name, _) => directory.resolve("src").resolve(name))
@@ -105,7 +113,7 @@ trait AnalysisSuite extends FunSuite {
       JavaModel.write(javac(files, classes, classpath), model)
       val manifest =
         Manifest(Vector.empty, classpaths, libraries, models = Vector(Output("j", Output.Scope.Main, model)))
-      Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      Extraction.read(manifest, reflective = reflective).fold(errors => fail(errors.mkString("\n")), identity)
     }
 
   /** The model of the Java code of a build, read as the analysis reads it. */

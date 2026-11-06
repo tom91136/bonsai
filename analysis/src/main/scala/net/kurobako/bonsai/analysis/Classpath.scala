@@ -3,6 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.jar.JarFile
+import scala.util.Try
 import scala.util.Using
 
 /** The artifacts a classpath names. */
@@ -23,6 +24,17 @@ private[analysis] object Classpath {
         case Some((identity, _)) => if (copies(identity).head == path) winners(identity) else Vector.empty
       }
     )
+  }
+
+  /** The first root holding `file`, a class file path as the compiler reports it, in the compiler's search order. */
+  def holder(roots: Vector[String], file: String): Option[String] = roots.find(holds(_, file))
+
+  private def holds(root: String, file: String): Boolean = {
+    val directory = Path.of(root)
+    if (Files.isDirectory(directory)) Path.of(file).isAbsolute && Path.of(file).startsWith(directory)
+    else
+      Files.isRegularFile(directory) &&
+      Try(Using.resource(JarFile(directory.toFile))(jar => Option(jar.getEntry(file)).nonEmpty)).getOrElse(false)
   }
 
   /** The identity and numeric version of a jar, from its manifest or else its Maven-style repository layout. */

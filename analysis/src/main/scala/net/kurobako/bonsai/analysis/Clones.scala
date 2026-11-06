@@ -217,7 +217,15 @@ object Clones {
           val detail    =
             if (tests > 0 && tests < fragments.size) s"${entry.detail} (copies in main code and tests)"
             else entry.detail
-          Finding.at(nodes, fragments.head.node, entry.rule, detail, level, onlyTests = tests == fragments.size)
+          Finding.at(
+            nodes,
+            fragments.head.node,
+            entry.rule,
+            detail,
+            level,
+            onlyTests = tests == fragments.size,
+            line = fragments.head.start
+          )
         }
     val summaries = crowded.toVector.sortBy(_._1._1).flatMap { case ((path, rule), entries) =>
       val largest = entries.map(_.group).sortBy(group => -group.cost).take(ShownGroups).map(group =>
@@ -229,16 +237,17 @@ object Clones {
         rule,
         s"${entries.size} groups of copies repeat within $path, the largest at lines ${largest.mkString(", ")}; " +
           "they follow one template or table, so fix it at its source",
-        onlyTests = entries.forall(_.group.fragments.forall(_.test))
+        onlyTests = entries.forall(_.group.fragments.forall(_.test)),
+        line = entries.head.group.fragments.head.start
       )
     }
     single ++ summaries
   }
 
-  /** Confirmed groups of non-overlapping copies, without groups whose copies all lie inside a larger reported copy,
-    * then near duplicates that no larger near duplicate overlaps. Besides the copies of larger code, these are chains
-    * of calls repeated at many sites, bodies of members alike but too small to count as copies, and copies of a body of
-    * a method that its parameters make an instance of.
+  /** Confirmed groups, the largest first, without those whose copies all lie inside a larger reported copy. Near
+    * duplicates only need to overlap a larger one, as their holes rarely nest. Besides the copies of larger code, these
+    * are chains of calls repeated at many sites, bodies of members alike but too small to count as copies, and copies
+    * of a body of a method that its parameters make an instance of.
     */
   def groups(candidates: Seq[Candidate]): Vector[Group] = {
     def exact(alike: Iterable[Seq[Candidate]]) =
@@ -263,8 +272,7 @@ object Clones {
         .flatMap(referred(_))
     val identical = exact(candidates.filter(_.solid).groupBy(_.exact).values) ++
       (chains ++ tiny).map(copies => Found(copies.head.cost, copies, Vector.empty))
-    report(identical ++ inlined(candidates))((outer, inner) => outer._1 <= inner._1 && inner._2 <= outer._2) ++
-      report(near ++ referring)((outer, inner) => outer._1 < inner._2 && inner._1 < outer._2)
+    report(identical ++ inlined(candidates) ++ near ++ referring)
   }
 
   /** The modules the code of a node may share code with: those its module depends on, as the references of its nodes to
@@ -428,26 +436,37 @@ object Clones {
   private def listed(copies: Vector[Candidate]): Boolean = unanimous(copies.map(_.listing))
 
   /** The largest groups first, without those whose every copy is covered by a copy reported before. Of equal cost,
-    * calls of a helper come first, as the more specific advice, and the body of the helper counts as reported for the
-    * groups after it, though not for the calls.
+    * calls of a helper come first, as the more specific advice. The body of a helper covers the plain duplicates after
+    * it, though not the calls. Calls of a helper and near duplicates do not cover each other.
     */
-  private def report(confirmed: Vector[Found])(covers: ((Int, Int), (Int, Int)) => Boolean): Vector[Group] = {
-    def spans(seen: Map[String, Vector[(Int, Int)]], copies: Vector[Candidate]) =
+  private def report(confirmed: Vector[Found]): Vector[Group] = {
+    type Spans = Map[String, Vector[((Int, Int), Boolean, Boolean)]]
+    def spans(seen: Spans, copies: Vector[Candidate], near: Boolean, call: Boolean) =
       copies.foldLeft(seen)((seen, copy) =>
-        seen.updated(copy.fragment.path, seen.getOrElse(copy.fragment.path, Vector.empty) :+ copy.span)
+        seen.updated(copy.fragment.path, seen.getOrElse(copy.fragment.path, Vector.empty) :+ ((copy.span, near, call)))
       )
-    def within(seen: Map[String, Vector[(Int, Int)]], copy: Candidate) =
-      seen.get(copy.fragment.path).exists(_.exists(covers(_, copy.span)))
+    def within(seen: Spans, copy: Candidate, near: Boolean, call: Boolean) = {
+      val (copyStart, copyEnd) = copy.span
+      seen.get(copy.fragment.path).exists(_.exists { case ((start, end), reportedNear, reportedCall) =>
+        if (reportedCall && near || reportedNear && call) false
+        else if (reportedNear && near) start < copyEnd && copyStart < end
+        else start <= copyStart && copyEnd <= end
+      })
+    }
     confirmed.sortBy(found => (-found.cost, found.helper.isEmpty, -found.copies.size))
-      .foldLeft((Map.empty[String, Vector[(Int, Int)]], Map.empty[String, Vector[(Int, Int)]], Vector.empty[Group])) {
+      .foldLeft((Map.empty: Spans, Map.empty: Spans, Vector.empty[Group])) {
         case ((reported, anchored, groups), found) =>
-          val copies = found.copies
-          if (copies.forall(copy => within(reported, copy) || found.helper.isEmpty && within(anchored, copy)))
-            (reported, anchored, groups)
+          val copies  = found.copies
+          val near    = found.holes.nonEmpty
+          val call    = found.helper.nonEmpty
+          val covered = copies.forall(copy =>
+            within(reported, copy, near, call) || !near && !call && within(anchored, copy, near, call)
+          )
+          if (covered) (reported, anchored, groups)
           else
             (
-              spans(reported, copies),
-              spans(anchored, found.helper.map(_._2).toVector),
+              spans(reported, copies, near, call),
+              spans(anchored, found.helper.map(_._2).toVector, near = false, call = false),
               groups :+ Group(
                 found.cost,
                 copies.map(_.fragment),

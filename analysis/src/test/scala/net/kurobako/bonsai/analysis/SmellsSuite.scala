@@ -877,6 +877,7 @@ class SmellsSuite extends AnalysisSuite {
                         |  val first = Net.connect("a", 80)
                         |  val second = Net.connect("b", port = 443)
                         |  val third = Net.connect("c", secure = false)
+                        |  val fourth = Net.connect("d", secure = true)
                         |  val config = Config("x", 3)
                         |}""".stripMargin
     )
@@ -888,6 +889,19 @@ class SmellsSuite extends AnalysisSuite {
     assertFinding(found, "redundant-default", "secure is passed its default False explicitly at 1 calls")
     assertFinding(found, "redundant-default", "Config.retries is passed its default 3 explicitly at 1 calls")
     assertNoFinding(found)(_.detail.contains("default 443"))
+  }
+
+  test("a member finding is anchored at the member's line, not at its enclosing object") {
+    val found = findings(
+      "Net.scala" -> """object Net {
+                       |  def connect(host: String, port: Int = 80): String = host
+                       |}""".stripMargin,
+      "Main.scala" -> """object Main {
+                        |  val first = Net.connect("a", 80)
+                        |  val second = Net.connect("b", 443)
+                        |}""".stripMargin
+    )
+    assertEquals(found.filter(_.rule == Finding.Rule.RedundantDefault).map(_.node.line), Vector(2))
   }
 
   test("a positional argument followed by a positional argument is not redundant") {
@@ -923,10 +937,39 @@ class SmellsSuite extends AnalysisSuite {
                         |  val first = Net.f(1, b = None, c = 3)
                         |  val second = Net.f(1, c = 3, b = None)
                         |  val third = Net.f(1, None, c = 3)
+                        |  val fourth = Net.f(1, b = Some(2), c = 4)
                         |}""".stripMargin
     )
     assertFinding(found, "redundant-default", "Net.f(a, b, c).b is passed its default Absent explicitly at 3 calls")
     assertFinding(found, "redundant-default", "Net.f(a, b, c).c is passed its default 3 explicitly at 3 calls")
+  }
+
+  test("a named argument another call to the same method varies is not redundant, a positional one is") {
+    val found = findings(
+      "Net.scala"  -> "object Net { def connect(host: String, port: Int = 80): String = host }",
+      "Main.scala" -> """object Main {
+                        |  def varied(): String =
+                        |    Net.connect("a", port = 80) + Net.connect("b", port = 443) +
+                        |      Net.connect(port = 80, host = "e")
+                        |  def positional(): String = Net.connect("c", 80) + Net.connect("d", port = 443)
+                        |}""".stripMargin
+    )
+    assertFinding(found, "redundant-default", "port is passed its default 80 explicitly at 1 calls")
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.RedundantDefault && finding.detail.contains("at 2 calls")
+    )
+  }
+
+  test("a parameter every call passes its default to is constant, not redundant") {
+    val found = findings(
+      "Net.scala"  -> "object Net { def connect(host: String, port: Int = 80): String = host }",
+      "Main.scala" -> """object Main {
+                        |  val first = Net.connect("a", port = 80)
+                        |  val second = Net.connect("b", port = 80)
+                        |}""".stripMargin
+    )
+    assertFinding(found, "constant-argument", "Net.connect(host, port).port is always 80 across 2 calls")
+    assertNoFinding(found)(_.rule.id == "redundant-default")
   }
 
   test("defaults the compiler fills in, as inside a quote, and arguments differing inside Some are not redundant") {

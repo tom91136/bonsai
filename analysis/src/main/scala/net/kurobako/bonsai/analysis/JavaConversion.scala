@@ -2,7 +2,9 @@ package net.kurobako.bonsai.analysis
 
 import java.nio.file.PathMatcher
 import net.kurobako.bonsai.java.{Model => JavaModel}
+import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
+import scala.util.matching.Regex
 
 /** Converts the model the javac plugin collected for the Java code of a build into the model of the analysis. */
 private[analysis] object JavaConversion {
@@ -33,7 +35,12 @@ private[analysis] object JavaConversion {
   /** The graph of the Java code the javac plugin collected, which holds the nodes it found and the references between
     * them, and the methods, the fields and the calls it found.
     */
-  def collected(manifest: Manifest, generated: Vector[PathMatcher], parallel: Parallel): Collected = {
+  def collected(
+      manifest: Manifest,
+      generated: Vector[PathMatcher],
+      parallel: Parallel,
+      reflective: Vector[Regex]
+  ): Collected = {
     val nodes       = mutable.LinkedHashMap.empty[String, Node]
     val edges       = mutable.LinkedHashMap.empty[String, mutable.LinkedHashSet[String]]
     val roots       = mutable.LinkedHashSet.empty[String]
@@ -233,6 +240,17 @@ private[analysis] object JavaConversion {
           sites.getOrElseUpdate(instance.owner, mutable.ArrayBuffer.empty) +=
             Algebra.Site(values.map(argument(_)), test, isOwn(instance.caller, instance.owner), instance.location)
         }
+    }
+    // A type the build names only in a string is reached from outside it, as the Scala code the build names is, and
+    // the types inside it are reached with it.
+    @annotation.tailrec
+    def withInner(reached: Set[String]): Set[String] = {
+      val grown = reached ++ nodes.values.filter(_.outer.exists(reached)).map(_.name)
+      if (grown.size == reached.size) reached else withInner(grown)
+    }
+    withInner(nodes.keySet.filter(name => reflective.exists(Globs.matches(_, name))).toSet).foreach { name =>
+      nodes.get(name).foreach(node => nodes.update(name, node.copy(exported = true)))
+      roots += name
     }
     lints ++= JavaLints.unwritten(reassigned.toVector, written.toSet, outside.toSet, nodes.toMap)
     // The usages of the methods of the Java code, which the rules that need every call site read alike with the usages

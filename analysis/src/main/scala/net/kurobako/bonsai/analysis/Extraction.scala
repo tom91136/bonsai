@@ -103,7 +103,21 @@ object Extraction {
     // come first and the shared classes resolve to their copies.
     val (twins, primary) = manifest.outputs.partition(output => manifest.platforms(output.module))
     val listed           = (primary ++ twins).map(output => output -> Outputs.files(output.path))
-    val shared           = listed.collect {
+    // Test support compiles its main sources in the test scope, so one scope can hold an empty output beside a full one.
+    val sourced  = manifest.sources.map(source => (source.module, source.scope)).toSet
+    val compiled = listed.collect {
+      case (output, files) if files.exists(file => Set(".class", ".tasty").exists(file.toString.endsWith(_))) =>
+        (output.module, output.scope)
+    }.toSet
+    val uncompiled = (sourced -- compiled).filter(listed.map((output, _) =>
+      (output.module, output.scope)
+    ).toSet).toVector
+      .map((module, scope) =>
+        s"$module has ${scope.id} sources but no classes; a failed compile can leave them empty and a cached compile " +
+          "does not restore them, so run clean and compile again"
+      )
+      .sorted
+    val shared = listed.collect {
       case (output, files) if !manifest.platforms(output.module) => files.map(output.path.relativize(_))
     }.flatten.toSet
     val (copies, kept) = listed.flatMap((output, files) =>
@@ -116,12 +130,14 @@ object Extraction {
     val replacements = Twins.replacing(manifest, copies)
     val skipped      =
       unreadable.map(file => s"class file ${file.getFileName.toString.stripSuffix(".tasty")} could not be read")
-    val roots      = manifest.outputs.flatMap(output => Outputs.entryPoints(output.path)).toSet
-    val matchers   = generated.map(FileSystems.getDefault.getPathMatcher(_))
-    val java       = JavaConversion.collected(manifest, matchers, parallel)
-    val moduleUses = Modules.uses(manifest, java.nodes, java.reflections)
-    val javaCosts  = JavaCosts(java.costs, Complexity.Declared(bounded))
-    if (tasty.isEmpty && (skipped ++ java.problems).nonEmpty) Left(skipped ++ java.problems)
+    val roots           = manifest.outputs.flatMap(output => Outputs.entryPoints(output.path)).toSet
+    val matchers        = generated.map(FileSystems.getDefault.getPathMatcher(_))
+    val reflectiveGlobs = reflective.map(Globs.qualifiedNames)
+    val java            = JavaConversion.collected(manifest, matchers, parallel, reflectiveGlobs)
+    val moduleUses      = Modules.uses(manifest, java.nodes, java.reflections)
+    val javaCosts       = JavaCosts(java.costs, Complexity.Declared(bounded))
+    if (uncompiled.nonEmpty) Left(uncompiled)
+    else if (tasty.isEmpty && (skipped ++ java.problems).nonEmpty) Left(skipped ++ java.problems)
     else if (tasty.isEmpty)
       // A build of Java code alone has no TASTy to read, so the model the javac plugin collected is all of it.
       Right(Result(
@@ -153,7 +169,7 @@ object Extraction {
           manifest.libraries,
           matchers,
           concurrent,
-          reflective.map(Globs.qualifiedNames),
+          reflectiveGlobs,
           bounded,
           Globs.heat(hot),
           costs,

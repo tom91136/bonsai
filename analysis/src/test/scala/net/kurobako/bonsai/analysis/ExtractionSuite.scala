@@ -67,6 +67,25 @@ class ExtractionSuite extends AnalysisSuite {
     )
   }
 
+  test("sources without classes fail rather than read as a clean build") {
+    Scratch.using("bonsai-") { directory =>
+      val classes                       = Files.createDirectories(directory.resolve("classes"))
+      val source                        = Files.writeString(directory.resolve("A.scala"), "class A")
+      def read(sources: Vector[Output]) = Extraction.read(
+        Manifest(Vector(Output("m", Output.Scope.Main, classes)), classpaths, Set.empty, sources = sources)
+      )
+      assert(read(Vector(Output("m", Output.Scope.Main, source))).left.exists(_.exists(_.contains("no classes"))))
+      assert(read(Vector.empty).isRight)
+      assert(read(Vector(Output("m", Output.Scope.Test, source))).isRight)
+      val full = Files.createDirectories(directory.resolve("full"))
+      Files.writeString(full.resolve("A.class"), ""): Unit
+      val outputs = Vector(Output("m", Output.Scope.Main, classes), Output("m", Output.Scope.Main, full))
+      assert(Extraction.read(
+        Manifest(outputs, classpaths, Set.empty, sources = Vector(Output("m", Output.Scope.Main, source)))
+      ).left.forall(!_.exists(_.contains("no classes"))))
+    }
+  }
+
   test("modules whose classpaths hold different jars of one artifact each resolve their own") {
     Scratch.using("bonsai-") { directory =>
       def library(platform: String, name: String): Path = {
@@ -194,7 +213,10 @@ class ExtractionSuite extends AnalysisSuite {
       val manifest = Manifest(Vector(output), Map("m" -> (helper +: classpath)), Set.empty)
       val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       assert(result.graph.nodes.keySet.exists(_.contains("Use")), result.graph.nodes.keySet.toString)
-      assert(result.problems.exists(_.contains("helper.Helper.parse")), result.problems.toString)
+      assertEquals(
+        result.problems.filter(_.startsWith("could not read library bodies")),
+        Vector(s"could not read library bodies of helper.Helper in $helper")
+      )
     }
   }
 

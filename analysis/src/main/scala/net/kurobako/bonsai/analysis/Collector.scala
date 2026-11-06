@@ -126,9 +126,9 @@ private[analysis] class Collector(
     )
     enumerations ++= hierarchies.flatMap((parent, name, key) => enumeration(parent, name, key))
     callees ++= products.view.map((cls, product) =>
-      cls -> Callee(product.name, product.fields.size, Finding.simple(product.name), product.node, Set.empty)
+      cls -> Callee(product.name, product.fields.size, Finding.simple(product.name), product.node, Set.empty, 0)
     ).toMap ++ methods.view.map((symbol, method) =>
-      symbol -> Callee(method.key, method.fields.size, method.short, method.node, method.suppressed)
+      symbol -> Callee(method.key, method.fields.size, method.short, method.node, method.suppressed, method.line)
     )
     callSites.align(callees)
     usage ++= users.toVector.groupMapReduce((symbol, _) => memberName(symbol))((_, nodes) => nodes.toSet)(_ ++ _)
@@ -257,9 +257,9 @@ private[analysis] class Collector(
           Purity.Discard(callee, node, location, line, suppressions(method))
         )
       ),
-      effects.effectful.flatMap((method, operation, effect, tree, view) =>
+      effects.effectful.flatMap((method, operation, effect, tree, view, clock) =>
         site(method, tree).map((node, location, line) =>
-          Purity.Transform(operation, effect, node, location, line, view, suppressions(method))
+          Purity.Transform(operation, effect, node, location, line, view, clock, suppressions(method))
         )
       ),
       effects.shared.flatMap((method, variable, entry, tree) =>

@@ -17,9 +17,10 @@ import scala.collection.mutable
 private[analysis] class References(components: Components, fragments: Fragments)(using Context)
     extends tpd.TreeTraverser {
   import components.*
-  private val owners  = mutable.Stack.empty[Option[String]]
-  private val methods = mutable.Stack.empty[Symbol]
-  private val entered = mutable.Set.empty[Symbol]
+  private val owners                          = mutable.Stack.empty[Option[String]]
+  private val methods                         = mutable.Stack.empty[Symbol]
+  private val entered                         = mutable.Set.empty[Symbol]
+  private def enclosingMethod: Option[Symbol] = methods.find(method => method.is(Flags.Method) && method.owner.isClass)
   // Whether the tree being traversed runs once per iteration of a loop, and the extent of the innermost loop.
   private val looping = mutable.Stack(false)
   private val loops   = mutable.Stack(Span(0))
@@ -117,7 +118,7 @@ private[analysis] class References(components: Components, fragments: Fragments)
         case select: tpd.Select if select.name == nme.UNARY_!                  => callSites.negate(select.qualifier)
         case tpd.Apply(tpd.Select(argument, name), Nil) if name == nme.UNARY_! => callSites.negate(argument)
         case application: tpd.Apply if !synthetic.top                          =>
-          callSites.record(application, owner, entered)
+          callSites.record(application, owner, entered, enclosingMethod)
           reads.shown(application, owner)
           reads.selected(application, owner)
         case assignment: tpd.Assign                   => recorder.assign(assignment.lhs.symbol)
@@ -134,7 +135,7 @@ private[analysis] class References(components: Components, fragments: Fragments)
             if looping.top && !synthetic.top && !methods.exists(_.is(Flags.Inline)) && !settled(select.qualifier) =>
           dispatching.record(
             select.symbol,
-            methods.find(method => method.is(Flags.Method) && method.owner.isClass),
+            enclosingMethod,
             owner,
             select.qualifier.tpe
           )

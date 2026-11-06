@@ -27,7 +27,8 @@ private object CallSites {
       arguments: List[tpd.Tree],
       test: Boolean,
       own: Boolean,
-      location: String
+      location: String,
+      scope: Option[Symbol]
   )
 }
 
@@ -69,6 +70,11 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
     * the defaults no call overrides.
     */
   def align(callees: collection.Map[Symbol, Callee])(using Context): Unit = {
+    val passed = pending.filter(_.scope.isDefined).flatMap { call =>
+      call.arguments.zipWithIndex.collect {
+        case (argument, index) if !omitted(argument) => (call.callee, call.scope, index) -> argument
+      }
+    }.groupMap(_._1)(_._2)
     for {
       (callee, recorded) <- pending.groupBy(_.callee)
       subject            <- callees.get(callee)
@@ -80,6 +86,7 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
       default           <- defaults.get(defaultGetter(call.method, index))
       value             <- same(argument, default)
       parameter         <- fieldsOf(call.callee).lift(index)
+      if !varied(argument, passed.getOrElse((call.callee, call.scope, index), Nil))
     } explicit.getOrElseUpdate((call.callee, parameter.name, value), mutable.ArrayBuffer.empty) +=
       site(call)
     spares ++= spareDefaults(callees)
@@ -118,7 +125,7 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   def defaulting(callees: collection.Map[Symbol, Callee]): Vector[Smells.Default] =
     explicit.toVector.flatMap { case ((callee, parameter, value), recorded) =>
       callees.get(callee).map(subject =>
-        Smells.Default(subject.name, subject.node, parameter, value, recorded.toVector)
+        Smells.Default(subject.name, subject.node, parameter, value, recorded.toVector, subject.line)
       )
     }
 
@@ -237,7 +244,12 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   /** Keeps a construction of a case class, or a call to a method of the build, for classification at the end. A
     * construction is `own` inside its class or companion, a call is `own` inside the method itself.
     */
-  def record(application: tpd.Apply, owner: Option[String], enclosing: Symbol => Boolean)(using Context): Unit =
+  def record(
+      application: tpd.Apply,
+      owner: Option[String],
+      enclosing: Symbol => Boolean,
+      scope: Option[Symbol]
+  )(using Context): Unit =
     application.fun match {
       case tpd.Apply(_, _) => ()
       case _               =>
@@ -262,7 +274,7 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
           val position = application.sourcePos
           val location = lines.location(position)
           val own      = if (constructed.exists) owner.isDefined && owner == key(callee) else enclosing(callee)
-          pending += Pending(callee, method, application.args, test, own, location)
+          pending += Pending(callee, method, application.args, test, own, location, scope)
         }
     }
 
@@ -288,6 +300,16 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
       case tpd.NamedArg(_, _) => true
       case argument           => omitted(argument)
     }
+
+  // A reordered named argument reaches the call through a binding, an in-order one as itself.
+  private def named(argument: tpd.Tree)(using Context): Boolean = argument match {
+    case tpd.NamedArg(_, _) => true
+    case _                  => bindings.contains(Calls.peel(argument).symbol)
+  }
+
+  // A named argument that another call to the same method varies is spelled out on purpose.
+  private def varied(argument: tpd.Tree, others: Iterable[tpd.Tree])(using Context): Boolean =
+    named(argument) && others.exists(same(argument, _).isEmpty)
 
   // A case class `apply` shares the constructor's default getters in the companion.
   private def defaultGetter(method: Symbol, index: Int)(using Context): Symbol = {

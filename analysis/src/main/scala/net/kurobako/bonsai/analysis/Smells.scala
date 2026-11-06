@@ -68,7 +68,14 @@ object Smells {
   )
 
   /** Calls that pass a parameter its own default value explicitly. */
-  case class Default(owner: String, node: String, parameter: String, value: String, sites: Vector[Algebra.Site])
+  case class Default(
+      owner: String,
+      node: String,
+      parameter: String,
+      value: String,
+      sites: Vector[Algebra.Site],
+      line: Int
+  )
 
   /** A parameter of a method that no caller leaves out, so its default is never used. */
   case class Spare(
@@ -116,15 +123,18 @@ object Smells {
     lazy val referrers = edges.toVector.flatMap((from, targets) => targets.map(_ -> from)).groupMap(_._1)(_._2)
     val reviewed       = model.methods.filterNot(_.overriding)
     // The callers in this build do not settle the API of a library, which other builds call.
-    val arguments = reviewed.view.filterNot(_.exported).flatMap { method =>
+    val checked = reviewed.view.filterNot(_.exported).flatMap { method =>
       // Parameters of recursive methods carry state, so callers fixing their initial value is the usual idiom.
       model.sites.get(method.key).filter(sites => !sites.exists(_.own) && sites.size >= MinimumCalls).toVector.flatMap {
-        sites =>
-          parameters(method, sites).flatMap(
-            Finding.at(nodes, method.node, _, _, onlyTests = Algebra.onlyTests(sites), line = method.line)
-          )
+        sites => parameters(method, sites).map((rule, detail, parameter) => (method, sites, rule, detail, parameter))
       }
     }.toVector
+    val arguments = checked.flatMap { (method, sites, rule, detail, _) =>
+      Finding.at(nodes, method.node, rule, detail, onlyTests = Algebra.onlyTests(sites), line = method.line)
+    }
+    val constant = checked.collect {
+      case (method, _, Finding.Rule.ConstantArgument, _, Some(parameter)) => (method.node, method.short, parameter)
+    }.toSet
     val results = model.usages.view.filter(usage =>
       !usage.method.overriding && !usage.method.exported && usage.calls >= MinimumCalls &&
         usage.discarded == usage.calls
@@ -135,7 +145,8 @@ object Smells {
         usage.method.node,
         Finding.Rule.IgnoredResult,
         detail,
-        onlyTests = usage.testCalls == usage.calls
+        onlyTests = usage.testCalls == usage.calls,
+        line = usage.method.line
       )
     }.toVector
     val inverted = model.usages.view.filter(usage =>
@@ -167,7 +178,8 @@ object Smells {
         usage.method.node,
         Finding.Rule.UnusedReturnValue,
         detail,
-        onlyTests = usage.testCalls == usage.calls
+        onlyTests = usage.testCalls == usage.calls,
+        line = usage.method.line
       )
     }.toVector
     val modules = model.moduleUses.flatMap { use =>
@@ -194,7 +206,9 @@ object Smells {
     val fixed = model.instantiations.filter(instantiation =>
       !instantiation.varied && instantiation.arguments.size == 1 && instantiation.arguments.values.sum >= MinimumCalls
     ).groupBy(_.node).toVector.sortBy(_._1).flatMap((node, group) => fixedParameters(node, group, nodes))
-    val redundant = model.defaults.flatMap { default =>
+    val redundant = model.defaults.filterNot(default =>
+      constant((default.node, default.owner, default.parameter))
+    ).flatMap { default =>
       val detail = s"${default.owner}.${default.parameter} is passed its default ${default.value} explicitly at " +
         s"${default.sites.size} calls: ${Finding.listed(default.sites.map(_.location), Shown)}"
       Finding.at(
@@ -202,7 +216,8 @@ object Smells {
         default.node,
         Finding.Rule.RedundantDefault,
         detail,
-        onlyTests = Algebra.onlyTests(default.sites)
+        onlyTests = Algebra.onlyTests(default.sites),
+        line = default.line
       )
     }
     val spare = model.spares.flatMap { spare =>
@@ -284,7 +299,10 @@ object Smells {
   /** Parameters every caller passes the same value for, flags every caller passes a literal for, flags that together
     * take three of their four combinations, and references most callers leave null.
     */
-  private def parameters(method: Method, sites: Vector[Algebra.Site]): Vector[(Finding.Rule, String)] = {
+  private def parameters(
+      method: Method,
+      sites: Vector[Algebra.Site]
+  ): Vector[(Finding.Rule, String, Option[String])] = {
     // Java calls are kept at every arity, so a varargs call with another count is not a call of these parameters.
     val calls = sites.filter(_.arguments.size == method.fields.size)
     if (calls.isEmpty) Vector.empty
@@ -300,9 +318,12 @@ object Smells {
       ).toVector
       val encoded = encoding(literal, columns)
       val states  = encoded.map { (first, second) =>
-        Finding.Rule.FlagArgument ->
-          (s"${method.short}: ${method.fields(first).name} and ${method.fields(second).name} take only 3 of their " +
-            s"4 combinations across ${calls.size} calls; they encode three states, which an enum names")
+        (
+          Finding.Rule.FlagArgument,
+          s"${method.short}: ${method.fields(first).name} and ${method.fields(second).name} take only 3 of their " +
+            s"4 combinations across ${calls.size} calls; they encode three states, which an enum names",
+          None
+        )
       }
       val paired = encoded.flatMap((first, second) => Vector(first, second)).toSet
       states ++ method.fields.zipWithIndex.view.flatMap { (field, index) =>
@@ -313,8 +334,11 @@ object Smells {
           absent >= MinimumNulls && absent < values.size
         )
           Some(
-            Finding.Rule.ConstantArgument ->
-              s"${method.short}.${field.name} is null at $absent of ${values.size} calls and given a value at the others"
+            (
+              Finding.Rule.ConstantArgument,
+              s"${method.short}.${field.name} is null at $absent of ${values.size} calls and given a value at the others",
+              Some(field.name)
+            )
           )
         else if (field.kind == Kind.Other) None
         // A value the model does not know is not a constant one, and the rule says nothing of it.
@@ -323,15 +347,18 @@ object Smells {
         else if (values.distinct.size == 1)
           Option.when(!method.shared) {
             val plural = if (calls.size == 1) "call" else "calls"
-            Finding.Rule.ConstantArgument ->
-              s"${method.short}.${field.name} is always ${values.head.shown} across ${calls.size} $plural"
+            (
+              Finding.Rule.ConstantArgument,
+              s"${method.short}.${field.name} is always ${values.head.shown} across ${calls.size} $plural",
+              Some(field.name)
+            )
           }
         else
           Option.when(splits(index) && !paired(index)) {
             val enabled = values.count(_ == Argument.True)
             val detail  = s"${method.short}.${field.name} is a literal at all ${calls.size} calls " +
               s"($enabled true, ${calls.size - enabled} false); each value selects a different method"
-            Finding.Rule.FlagArgument -> detail
+            (Finding.Rule.FlagArgument, detail, Some(field.name))
           }
       }.toVector
     }

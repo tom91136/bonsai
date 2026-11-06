@@ -178,6 +178,37 @@ class PuritySuite extends AnalysisSuite {
     )
   }
 
+  test("an effect a nested function performs is reported at the innermost function that performs it") {
+    val nested = analysed(
+      "Nested",
+      """object Nested {
+        |  def stamp(groups: List[List[Int]]): List[List[Long]] = groups.map { group =>
+        |    group.map { value => value + System.currentTimeMillis() }
+        |  }
+        |  def logged(groups: List[List[Int]]): List[List[Long]] = groups.map { group =>
+        |    println(group.size)
+        |    group.map { value => value + System.currentTimeMillis() }
+        |  }
+        |  def chained(xs: List[Int]): List[Int] = xs.map { x => println(x); x }.filter { y => println(y); true }
+        |}""".stripMargin,
+      Seq.empty
+    )
+    val clockAdvice = "; read the clock once outside the transformation and pass the value in"
+    val pureAdvice  = "; keep transformations pure and perform effects in foreach or a loop"
+    assertEquals(
+      Purity.findings(nested.purity, nested.graph.nodes).collect {
+        case finding if finding.rule == Finding.Rule.EffectfulTransform => Located.replaceAllIn(finding.detail, "")
+      }.sorted,
+      Vector(
+        "the function passed to filter calls scala.Predef.println" + pureAdvice,
+        "the function passed to map calls java.lang.System.currentTimeMillis" + clockAdvice,
+        "the function passed to map calls java.lang.System.currentTimeMillis" + clockAdvice,
+        "the function passed to map calls scala.Predef.println" + pureAdvice,
+        "the function passed to map calls scala.Predef.println" + pureAdvice
+      )
+    )
+  }
+
   private def analysed(name: String, source: String, dependencies: Seq[(String, String)]): Extraction.Result =
     extract(program(name, source), dependencies = dependencies)
 

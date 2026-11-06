@@ -40,6 +40,7 @@ object Purity {
       location: String,
       line: Int,
       view: Boolean,
+      clock: Boolean,
       suppressed: Set[String]
   )
 
@@ -163,7 +164,10 @@ object Purity {
         transform.node,
         Finding.Rule.EffectfulTransform,
         s"the function passed to ${transform.operation} at ${transform.location} ${transform.effect}; " +
-          (if (transform.view) "a view runs it again on every traversal, so perform effects in foreach or a loop"
+          (if (transform.clock && transform.view)
+             "a view reads the clock on every traversal, so read it once outside the transformation and pass the value in"
+           else if (transform.clock) "read the clock once outside the transformation and pass the value in"
+           else if (transform.view) "a view runs it again on every traversal, so perform effects in foreach or a loop"
            else "keep transformations pure and perform effects in foreach or a loop"),
         suppressed = transform.suppressed,
         line = transform.line
@@ -547,6 +551,7 @@ object Purity {
         operation: String,
         lambda: Facts,
         function: Symbol,
+        body: Span,
         tree: tpd.Tree,
         view: Boolean
     )
@@ -571,7 +576,7 @@ object Purity {
     private val tracing    = mutable.Set.empty[Symbol]
     private val pending    = mutable.Queue.empty[(Symbol, Int)]
     private val explored   = mutable.Set.empty[Symbol]
-    private val unread     = mutable.LinkedHashMap.empty[Symbol, String]
+    private val unread     = mutable.LinkedHashSet.empty[Symbol]
     private val facts      = mutable.Map.empty[Symbol, Facts]
     private val fresh      = mutable.Set.empty[Symbol]
     private val transforms = mutable.ArrayBuffer.empty[TransformSite]
@@ -628,9 +633,11 @@ object Purity {
     /** How many library bodies the inference read. */
     def library: Int = explored.size
 
-    /** The library bodies that could not be read, as one line each. */
-    def unreadable: Vector[String] =
-      unread.toVector.map((symbol, error) => s"could not read the body of ${qualified(symbol)}: $error")
+    /** The library bodies that could not be read, one line per classpath entry. */
+    def unreadable(using Context): Vector[String] =
+      unread.toVector.groupBy(entry(_)).toVector.sortBy(_._1).map { (origin, symbols) =>
+        s"could not read library bodies of ${symbols.map(enclosing(_)).distinct.sorted.mkString(", ")} in $origin"
+      }
 
     /** Infers every summary, settling recursion at the least fixpoint, from which effects only grow. */
     def run(): Unit = {
@@ -791,17 +798,30 @@ object Purity {
     }
 
     /** Element-wise transformations of collections whose functions themselves write state, perform output, or are
-      * nondeterministic, with the first such effect; reading state or input there runs once per element and hides
-      * nothing. Effects that only come through the build's methods they call are often caches, and folds are loops that
-      * may stop early, which foreach cannot; neither counts here.
+      * nondeterministic, with the first such effect and whether it only reads a clock. An effect that a function nested
+      * in the transformation also performs is reported at the innermost one alone. Reading state or input there runs
+      * once per element and hides nothing. Effects that only come through the build's methods they call are often
+      * caches, and folds are loops that may stop early, which foreach cannot; neither counts here.
       */
-    def effectful: Vector[(Symbol, String, String, tpd.Tree, Boolean)] = transforms.toVector.flatMap { site =>
-      val once = consumed.get(site.tree.span).filter(_ => site.view)
-      if (once.contains(true)) None
-      else
-        decoded(resolve(site.lambda, frame(site.method, None), Some(site.function)).effects).filter(effect =>
-          Observable(effect.kind) && effect.via.isEmpty
-        ).minOption.map(effect => (site.method, site.operation, effect.shown, site.tree, site.view && once.isEmpty))
+    def effectful: Vector[(Symbol, String, String, tpd.Tree, Boolean, Boolean)] = {
+      val observed =
+        transforms.toVector.filterNot(site => site.view && consumed.get(site.tree.span).contains(true)).map {
+          site =>
+            val effects = decoded(resolve(site.lambda, frame(site.method, None), Some(site.function)).effects).filter(
+              effect => Observable(effect.kind) && effect.via.isEmpty
+            )
+            (site, effects)
+        }
+      val byMethod = observed.groupBy((site, _) => site.method)
+      observed.flatMap { case (site, effects) =>
+        val nested  = byMethod(site.method).filter((other, _) => site.body.contains(other.tree.span)).flatMap(_._2)
+        val covered = nested.map(effect => (effect.kind, effect.cause)).toSet
+        val own     = effects.filterNot(effect => covered((effect.kind, effect.cause)))
+        val viewed  = site.view && !consumed.contains(site.tree.span)
+        own.minOption.map(effect =>
+          (site.method, site.operation, effect.shown, site.tree, viewed, own.forall(clock(_)))
+        )
+      }
     }
 
     /** Whether calling `lambda`, written in `method`, has no effect at all, not even throwing, and runs nothing that is
@@ -826,6 +846,9 @@ object Purity {
     private val Priority =
       Vector(Kind.Output, Kind.Input, Kind.Random, Kind.Writes, Kind.Reads, Kind.Unknown, Kind.Throws)
     private val Observable = Set(Kind.Writes, Kind.Output, Kind.Random)
+
+    private def clock(effect: Effect): Boolean =
+      effect.kind == Kind.Random && Axioms.Clocks(effect.cause.stripPrefix("calls "))
 
     private given Ordering[Effect] = Ordering.by(rank(_))
 
@@ -854,7 +877,7 @@ object Purity {
       val overridden = method.allOverriddenSymbols.toVector
       Option.when(
         overridden.exists(other => other == defn.Any_equals || other == defn.Any_hashCode) ||
-          Set("compare", "compareTo")(name) && overridden.exists(other => Comparisons(qualified(other.owner))) ||
+          Set("compare", "compareTo")(name) && overridden.exists(other => Comparisons(enclosing(other))) ||
           Set("unapply", "unapplySeq")(name) && method.owner.is(Flags.ModuleClass)
       )(name)
     }
@@ -1431,6 +1454,14 @@ object Purity {
 
     private def qualified(symbol: Symbol): String = Calls.qualified(symbol)
 
+    private def enclosing(symbol: Symbol): String = qualified(symbol.owner)
+
+    private def entry(symbol: Symbol)(using context: Context): String = {
+      val file  = Option[dotty.tools.io.AbstractFile](symbol.associatedFile).fold("")(_.path)
+      val roots = context.settings.classpath.value.split(java.io.File.pathSeparator).toVector
+      Classpath.holder(roots, file).orElse(Option.when(file.nonEmpty)(file)).getOrElse("an unknown classpath entry")
+    }
+
     // A library body is unpickled on first read, and a reference in it to a class the classpath lacks can fail that.
     private def unpickled(symbol: Symbol): tpd.Tree =
       try
@@ -1439,8 +1470,8 @@ object Purity {
           case tree                  => tree
         }
       catch {
-        case NonFatal(error) =>
-          unread.getOrElseUpdate(symbol, error.toString): Unit
+        case NonFatal(_) =>
+          unread.add(symbol): Unit
           tpd.EmptyTree
       }
 
@@ -1576,7 +1607,15 @@ object Purity {
             case (Argument.Function(lambda), argument) =>
               Calls.lambda(argument).foreach(definition =>
                 transforms +=
-                  TransformSite(root, method.name.toString, lambda, definition.symbol, tree, viewed(qualifier))
+                  TransformSite(
+                    root,
+                    method.name.toString,
+                    lambda,
+                    definition.symbol,
+                    definition.span,
+                    tree,
+                    viewed(qualifier)
+                  )
               )
             case _ => ()
           }

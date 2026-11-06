@@ -10,6 +10,46 @@ class LivenessSuite extends AnalysisSuite {
 
   private val entry = "src/main/scala/Main.scala" -> "object Main { def main(args: Array[String]): Unit = Used.run() }"
 
+  test("a Java type the build names only in a string is an entry point") {
+    val result = javaFactsReflective(
+      Set.empty,
+      Vector("demo.Controller"),
+      "demo/Controller.java" -> """
+        |package demo;
+        |
+        |public class Controller {
+        |  public void initialize() {}
+        |}
+        |""".stripMargin
+    )
+
+    assertEquals(
+      Liveness.findings(result.graph).map(finding => finding.rule.id -> finding.node.name),
+      Vector.empty
+    )
+  }
+
+  test("a Java type named only in a string keeps the types inside it") {
+    val result = javaFactsReflective(
+      Set.empty,
+      Vector("demo.Outer"),
+      "demo/Outer.java" -> """
+        |package demo;
+        |
+        |public class Outer {
+        |  public static class Inner {
+        |    public void initialize() {}
+        |  }
+        |}
+        |""".stripMargin
+    )
+
+    assertEquals(
+      Liveness.findings(result.graph).map(finding => finding.rule.id -> finding.node.name),
+      Vector.empty
+    )
+  }
+
   test("definitions unreachable from an entry point are unused") {
     assertEquals(
       findings(Seq(

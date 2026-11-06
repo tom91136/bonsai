@@ -302,8 +302,16 @@ class ClonesSuite extends AnalysisSuite {
       "Second.scala" -> classMask("Second", 23, "0xff", "0x80000000L"),
       "Third.scala"  -> classMask("Third", 10, "0x1f", "0x8000L")
     ))
-    assertFinding(found, "duplicate-code", "2 copies of", "First.scala", "Second.scala")
-    assertFinding(found, "near-duplicate-code", "3 copies of", "{23, 10}", "Third.scala")
+    assertFinding(
+      found,
+      "near-duplicate-code",
+      "3 copies of",
+      "{23, 10}",
+      "First.scala",
+      "Second.scala",
+      "Third.scala"
+    )
+    assertEquals(found.size, 1, found.mkString("\n"))
   }
 
   test("many copies that differ only in literals are a table of rows, not near duplicates") {
@@ -686,6 +694,25 @@ class ClonesSuite extends AnalysisSuite {
     ))
     assertFinding(found, "duplicate-code", "2 copies of", "Pair.scala:2-6", "Pair.scala:7-11")
     assertEquals(found.size, 1, found.mkString("\n"))
+  }
+
+  test("a duplicate is anchored at the first line of its first copy") {
+    val found = findings(Seq(
+      "Pair.scala" ->
+        """object Pair {
+          |  def first(items: List[Int]): Int = {
+          |    val kept = items.filter(_ > 0)
+          |    val doubled = kept.map(value => value * 2 + 1)
+          |    doubled.foldLeft(0)(_ + _) + doubled.size
+          |  }
+          |  def second(items: List[Int]): Int = {
+          |    val kept = items.filter(_ > 0)
+          |    val doubled = kept.map(value => value * 2 + 1)
+          |    doubled.foldLeft(0)(_ + _) + doubled.size
+          |  }
+          |}""".stripMargin
+    ))
+    assertEquals(found.map(_.node.line), Vector(2), found.mkString("\n"))
   }
 
   test("a literal is rendered when a finding names it, not when it is built") {
