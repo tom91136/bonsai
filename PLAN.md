@@ -271,23 +271,22 @@ The CLI keys a run by its arguments, the manifest, the contents of every output,
 
 ### Stage 2: measure a warm analysis
 
-Extraction run four times in one JVM on gemstone took 27.5 s, 22.1 s, 21.1 s and 20.7 s, with identical findings; perf2 measured JVM startup at 10-13% of forge's analysis wall time. A long-lived analysis process, which sbt can hold between commands and Maven cannot, saves about 7 s of 31 s and keeps every result exact, and it would also stop paying the JIT's 76 s of CPU on every run. That is smaller than stage 3 for an edit loop.
-
-### Stage 3: module-level reuse
-
-A module's facts are a function of its own TASTy and class files, the signatures of what it references, and the bodies of other modules that the purity evaluator reads. The design records those inputs instead of approximating them:
-
-- Facts per module. One extraction run per changed module reads its TASTy with the other modules' outputs on the classpath, and writes its facts as plain keyed data next to the manifest, the way the javac plugin writes its model: graph nodes and edges, members and their users, call sites, dispatch sites, cost summaries, clone fragments, purity facts and dynamic sites, every method named by `Keys`.
-- Recorded reads. `Purity` reads every foreign body through `unpickled`, so that one place records which modules' bodies a module's inference read. A module's key is its own outputs, the outputs of the modules it read bodies from, and the signature digest of every module on its classpath. Any change to one of them invalidates it; nothing else does.
-- Whole-build passes on keyed data. The purity fixpoint, clone grouping, class hierarchy dispatch, call site alignment, member usage, reachability and every `Report` family run over the merged facts, never over compiler symbols. Today `CallSites.align`, `Dispatch.resolve`, `Members`, `Costs` and `Purity.Inference` hold `Symbol`s and trees, so each moves to `Keys` first; that move is most of the work, and is worth doing alone, since it also removes the single-threaded collector as the bottleneck.
-- Exactness. A test runs every analysis fixture both ways, full and incremental after each single-module change, and requires byte-identical reports. A difference is a missing recorded input, not tolerance.
-
-Expected gain for a one-file edit in a leaf module of gemstone: unpickling and traversal of one module instead of all, the global passes on keyed data, roughly 31 s to under 10 s. That estimate is untested; stage 2's numbers and a prototype of the keyed purity fixpoint come first.
+Extraction run four times in one JVM on gemstone took 27.5 s, 22.1 s, 21.1 s and 20.7 s, with identical findings; perf2 measured JVM startup at 10-13% of forge's analysis wall time. A long-lived analysis process, which sbt can hold between commands and Maven cannot, saves about 7 s of 31 s and keeps every result exact, and it would also stop paying the JIT's 76 s of CPU on every run. It is the next step if the analysis still costs too much in sbt.
 
 ### Not pursued
 
 - Approximating cross-module purity with the callee's summary instead of reading its body. It changes findings.
 - Caching compiler symbols between runs. Dotty contexts are per run.
+- Module-level reuse: per-module facts as keyed data, recorded reads, and the whole-build passes over the merged facts. The best case is roughly 31 s to under 10 s for a one-file edit in a leaf module, and that estimate is untested. `CallSites.align`, `Dispatch.resolve`, `Members`, `Costs` and `Purity.Inference` would all have to leave `Symbol`s and trees, every new compiler fact a rule needs would pass through lowering, a table and a store, and a missed recorded input would report stale findings.
+
+A prototype moved the purity fixpoint alone to plain data and compared it with the live solver over 26113 methods of gemstone. These results hold for that build only:
+
+- The solver gives the same answers with no compiler reachable, which added about 400 lines before any persistence.
+- Symbol and effect numbering changes no answer. The 4411 symbols that share a text key, apparently inline copies, broke their ties on the live id, so persisted facts need a unique key first.
+- Solve order changes which bodies are read, because of the nesting cut-off in `returned`, but not the answers once those bodies are available. Facts recorded in one order are therefore not closed under another, and a store has to load more on a miss, which can need a compiler for library bodies.
+- 55% of the library bodies read are first read during the solve, so no list made before it covers them.
+- `lambdas` is keyed by symbol alone, so the first root to reach a lambda decides its facts. Six shuffled orders changed no verdict.
+- Warm and in the same JVM, the largest group solved in about 1.4 s against 1.9 s live, and its tables took 0.3-0.5 s to load. A cold start was not measured.
 
 ## Open questions
 
