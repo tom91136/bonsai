@@ -261,6 +261,34 @@ Order: the javac plugin from 61 to 52 first, since it is Bonsai's own and the su
 
 The Scala library of the program's own line decides how far a Scala program can go: the 3.3 line's library targets 8, while newer lines' libraries target 17 and would need lowering too. The compatibility report of step 2 lists the post-8 APIs a given library reaches, and that list decides whether Scala to 8 is practical for a line or only Java to 8.
 
+## Incremental analysis
+
+On gemstone the analysis takes 31-34 s of wall time, 125-135 s of CPU time and 5 GB of resident memory; the live heap peaks at 2.6 GB, since every module's trees are retained, and 24 GB is allocated per run. By thread, the JIT compilers take 76 s of the CPU time, the extraction thread 38 s and the collector 19 s. Extraction is 27 s of the wall time, and 92% of the Java samples fall on its one thread: TASTy unpickling about 25%, the per-unit traversals (`Collector`, `References`, `Symbols`, `CallSites`, `Placements`, `Reads`) about 30%, the purity fixpoint 13% and clone fragments 6%. A clean build of gemstone compiles for about 200 s, so the analysis costs little there, but an edit that recompiles one file still pays the full 31 s.
+
+### Stage 1: reuse an unchanged report
+
+The CLI keys a run by its arguments, the manifest, the contents of every output, model and source the manifest names, the jars by path, size and modification time, the baseline and purity lock, bonsai's own classpath and the result of the text scan, which stays live because it reads the working tree. An equal key replays the previous report. Runs that write a baseline or a purity lock never reuse. This covers reruns with nothing changed, such as `sbt test` after `bonsaiAnalyse` or a second `mvn verify`, and nothing else.
+
+### Stage 2: measure a warm analysis
+
+Extraction run four times in one JVM on gemstone took 27.5 s, 22.1 s, 21.1 s and 20.7 s, with identical findings; perf2 measured JVM startup at 10-13% of forge's analysis wall time. A long-lived analysis process, which sbt can hold between commands and Maven cannot, saves about 7 s of 31 s and keeps every result exact, and it would also stop paying the JIT's 76 s of CPU on every run. That is smaller than stage 3 for an edit loop.
+
+### Stage 3: module-level reuse
+
+A module's facts are a function of its own TASTy and class files, the signatures of what it references, and the bodies of other modules that the purity evaluator reads. The design records those inputs instead of approximating them:
+
+- Facts per module. One extraction run per changed module reads its TASTy with the other modules' outputs on the classpath, and writes its facts as plain keyed data next to the manifest, the way the javac plugin writes its model: graph nodes and edges, members and their users, call sites, dispatch sites, cost summaries, clone fragments, purity facts and dynamic sites, every method named by `Keys`.
+- Recorded reads. `Purity` reads every foreign body through `unpickled`, so that one place records which modules' bodies a module's inference read. A module's key is its own outputs, the outputs of the modules it read bodies from, and the signature digest of every module on its classpath. Any change to one of them invalidates it; nothing else does.
+- Whole-build passes on keyed data. The purity fixpoint, clone grouping, class hierarchy dispatch, call site alignment, member usage, reachability and every `Report` family run over the merged facts, never over compiler symbols. Today `CallSites.align`, `Dispatch.resolve`, `Members`, `Costs` and `Purity.Inference` hold `Symbol`s and trees, so each moves to `Keys` first; that move is most of the work, and is worth doing alone, since it also removes the single-threaded collector as the bottleneck.
+- Exactness. A test runs every analysis fixture both ways, full and incremental after each single-module change, and requires byte-identical reports. A difference is a missing recorded input, not tolerance.
+
+Expected gain for a one-file edit in a leaf module of gemstone: unpickling and traversal of one module instead of all, the global passes on keyed data, roughly 31 s to under 10 s. That estimate is untested; stage 2's numbers and a prototype of the keyed purity fixpoint come first.
+
+### Not pursued
+
+- Approximating cross-module purity with the callee's summary instead of reading its body. It changes findings.
+- Caching compiler symbols between runs. Dotty contexts are per run.
+
 ## Open questions
 
 - Whether the Scala 3 backend emits the `ScalaInlineInfo` attribute. If it does, the bytecode side has inlining facts without TASTy.
