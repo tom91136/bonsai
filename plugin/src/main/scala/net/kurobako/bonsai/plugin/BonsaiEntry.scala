@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.plugin
 
+import dotty.tools.dotc.interactive.InteractiveDriver
 import dotty.tools.dotc.plugins.PluginPhase
 import dotty.tools.dotc.plugins.StandardPlugin
 
@@ -17,5 +18,12 @@ class BonsaiEntry extends StandardPlugin {
   val name        = implementation.name
   val description = implementation.description
 
-  override def init(options: List[String]): List[PluginPhase] = implementation.init(options)
+  // The plan of an interactive compiler has none of the phases those of the plugin run between, and scheduling around a
+  // phase the plan lacks throws. The compilers before 3.5 give no context to tell an interactive one by.
+  override def init(options: List[String]): List[PluginPhase] =
+    if (interactive) Nil else implementation.init(options)
+
+  private def interactive: Boolean = StackWalker.getInstance().walk { frames =>
+    frames.anyMatch(_.getClassName == classOf[InteractiveDriver].getName)
+  }
 }
