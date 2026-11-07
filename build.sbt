@@ -228,6 +228,7 @@ lazy val ruleTests = linted(project.in(file("scalafix/tests")))
   .settings(
     scalaVersion   := scalafixScalaVersion,
     publish / skip := true,
+    Test / fork    := true,
     scalacOptions += "-Wunused:all",
     scalafixTestkitOutputSourceDirectories := (ruleOutput / Compile / sourceDirectories).value,
     scalafixTestkitInputSourceDirectories  := (ruleInput / Compile / sourceDirectories).value,

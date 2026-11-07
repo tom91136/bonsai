@@ -48,7 +48,8 @@ jobs:
       - name: compile without warnings and test
         run: |
           set -o pipefail
-          sbt --batch Test/compile testFull 2>&1 | sed -Eu 's/\x1b\[[0-9;]*m//g' | tee "$RUNNER_TEMP/test.log"
+          sbt --batch Test/compile 2>&1 | sed -Eu 's/\x1b\[[0-9;]*m//g' | tee "$RUNNER_TEMP/test.log"
+          sbt --batch testFull 2>&1 | sed -Eu 's/\x1b\[[0-9;]*m//g' | tee -a "$RUNNER_TEMP/test.log"
           if grep -q '^\[warn\]' "$RUNNER_TEMP/test.log"; then
             echo 'compiler warnings found' >&2
             exit 1
