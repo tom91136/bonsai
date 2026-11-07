@@ -9,8 +9,6 @@ private object JavaCosts {
 
   /** Finds the bound of a method of the Scala code by its key. */
   type Resolver = String => Option[Charges.Callee]
-
-  val none: Resolver = _ => None
 }
 
 /** The bounds of the methods of the Java code, evaluated from the trees of loops, library work and calls that the javac

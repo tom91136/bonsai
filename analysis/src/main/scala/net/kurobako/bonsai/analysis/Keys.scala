@@ -19,12 +19,15 @@ import net.kurobako.bonsai.lifting.*
 private object Keys {
 
   /** The key of the method, unless a class its signature names is missing from the classpath. */
-  def of(method: Symbol)(using Context): Option[String] =
+  def of(method: Symbol)(using Context): Option[String] = at(method, Calls.owner(method))
+
+  /** The key of a call of the method on a receiver of class `owner`, which is how class files name the callee. */
+  def at(method: Symbol, owner: Symbol)(using Context): Option[String] =
     try {
       val (parameters, result) = signature(TypeErasure.transformInfo(method, method.info), Vector.empty)
       val returned             = if (method.isConstructor) Descriptors.primitive("void") else field(result)
       Some(Descriptors.key(
-        Calls.qualified(Calls.owner(method)),
+        Calls.qualified(owner),
         method.name.toString,
         parameters.map(field(_)),
         returned

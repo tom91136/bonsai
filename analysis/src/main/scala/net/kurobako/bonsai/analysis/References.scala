@@ -100,6 +100,10 @@ private[analysis] class References(components: Components, fragments: Fragments)
           recorder.constructor(symbol, method, None)
         case _ => ()
       }
+      val monadic = definition match {
+        case method: tpd.DefDef => Recursion.loop(symbol, method.rhs, library)
+        case _                  => false
+      }
       pushing(synthetic, synthetic.top || symbol.isAllOf(Flags.SyntheticMethod) && !symbol.isAnonymousFunction) {
         pushing(owners, node) {
           pushing(uses, node.map(Use(_, caller(symbol)))) {
@@ -107,7 +111,7 @@ private[analysis] class References(components: Components, fragments: Fragments)
               val added = entered.add(symbol)
               try {
                 symbol.annotations.foreach(annotation => traverse(annotation.tree))
-                traverseChildren(tree)
+                repeating(monadic, definition.span)(traverseChildren(tree))
               } finally if (added) entered -= symbol: Unit
             }
           }
@@ -175,6 +179,10 @@ private[analysis] class References(components: Components, fragments: Fragments)
       parent = false
       children(tree)
   }
+
+  // A pass of a monadic loop runs the whole body of the method, parameters included.
+  private def repeating(monadic: Boolean, extent: Span)(body: => Unit): Unit =
+    pushing(looping, looping.top || monadic)(pushing(loops, if (monadic) extent else loops.top)(body))
 
   /** The type clauses already applied in `function`, which is the index of the clause its application fills. */
   private def clause(function: tpd.Tree): Int = function match {

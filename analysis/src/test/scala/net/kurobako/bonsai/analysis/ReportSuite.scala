@@ -263,33 +263,9 @@ class ReportSuite extends AnalysisSuite {
           |  def noisy(values: List[Int]): List[Int] = values.map { value => println(value); value }
           |  @SuppressWarnings(Array("bonsai:effectful-transform")) def printed(values: List[Int]): List[Int] =
           |    values.map { value => println(value); value }
-          |}
-          |trait Shape { def area: Int }
-          |class Circle extends Shape { def area = 1 }
-          |class Square extends Shape { def area = 2 }
-          |class Triangle extends Shape { def area = 3 }
-          |object Looping {
-          |  def looped(shapes: Array[Shape]): Int = {
-          |    var total = 0
-          |    var index = 0
-          |    while (index < shapes.length) {
-          |      total += shapes(index).area
-          |      index += 1
-          |    }
-          |    total
-          |  }
-          |  @SuppressWarnings(Array("bonsai:megamorphic-call")) def quiet(shapes: Array[Shape]): Int = {
-          |    var total = 0
-          |    var index = 0
-          |    while (index < shapes.length) {
-          |      total += shapes(index).area
-          |      index += 1
-          |    }
-          |    total
-          |  }
           |}""".stripMargin
     ),
-    hot = Vector("Looping", "Costly")
+    hot = Vector("Costly")
   )
 
   test("a suppression on a method silences the findings its rules locate at the enclosing type") {
@@ -300,11 +276,9 @@ class ReportSuite extends AnalysisSuite {
     assert(reported("Costly.copiesQuiet is O"), found.mkString("\n"))
     assert(reported("Costly.copies allocates"), found.mkString("\n"))
     assert(reported("Costly.plain: map then filter"), found.mkString("\n"))
-    assert(reported("Looping.looped calls"), found.mkString("\n"))
     assert(!reported("Costly.quiet is O"), found.mkString("\n"))
     assert(!reported("Costly.copiesQuiet allocates"), found.mkString("\n"))
     assert(!reported("Costly.piped: map then filter"), found.mkString("\n"))
-    assert(!reported("Looping.quiet calls"), found.mkString("\n"))
     assertEquals(found.count(_.startsWith("the function passed to map")), 1, found.mkString("\n"))
   }
 }

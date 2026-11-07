@@ -142,6 +142,32 @@ object Purity {
 
   private val Shown = 25
 
+  private val Priority =
+    Vector(Kind.Output, Kind.Input, Kind.Random, Kind.Writes, Kind.Reads, Kind.Unknown, Kind.Throws)
+
+  private def rank(effect: Generic[?]): (Int, String, Boolean, Boolean, String) =
+    (Priority.indexOf(effect.kind), effect.shown, effect.onThis, effect.library, effect.cause)
+
+  private[analysis] def ranked[T](effects: Iterable[Generic[T]]): Vector[Generic[T]] =
+    effects.map(effect => rank(effect) -> effect).toVector.sortBy(_._1).map(_._2)
+
+  /** What is known of a method with `ordered` effects: impure when any effect besides throwing is proven, unknown when
+    * one may hide.
+    */
+  private[analysis] def verdictOf(ordered: Vector[Generic[?]]): Verdict =
+    ordered.find(effect => effect.kind != Kind.Throws && effect.kind != Kind.Unknown).map(effect =>
+      Verdict.Effectful(effect.shown, Certainty.Known)
+    ).orElse(ordered.find(_.kind == Kind.Unknown).map(effect =>
+      Verdict.Effectful(effect.shown, Certainty.Unknown(effect.cause))
+    )).getOrElse(Verdict.Pure)
+
+  /** Each kind of effect in `ordered`, by its first cause, apart on the receiver alone and elsewhere, and in library
+    * bodies and the build.
+    */
+  private[analysis] def observedOf(ordered: Vector[Generic[?]]): Vector[Observed] =
+    ordered.map(effect => Observed(effect.kind, effect.shown, effect.onThis, effect.library))
+      .distinctBy(effect => (effect.kind, effect.receiver, effect.library))
+
   private val Contracted = Set(Kind.Writes, Kind.Output, Kind.Input, Kind.Random)
   private val TupleApply = "Tuple[0-9]+\\.apply".r
   // Calls that traverse a view only until they find their answer, as a loop that breaks does.
@@ -391,16 +417,14 @@ object Purity {
       templates: collection.Map[Symbol, tpd.Template],
       implementations: Symbol => Option[Vector[Symbol]],
       concurrent: Set[String],
-      knowledge: Library
+      knowledge: Library,
+      bytecode: BytecodeEffects.Summaries = BytecodeEffects.none
   )(using Context) {
 
     private type Effect = Generic[Symbol]
 
     private def plain(kind: Kind, cause: String, target: Option[Symbol] = None): Effect =
       Generic(kind, cause, target = target)
-
-    private def rank(effect: Effect): (Int, String, Boolean, Boolean, String) =
-      (Priority.indexOf(effect.kind), effect.shown, effect.onThis, effect.library, effect.cause)
 
     // Effects are compared and joined by number, as summaries hold thousands of them.
     private val effectIds   = mutable.HashMap.empty[Effect, Int]
@@ -844,8 +868,6 @@ object Purity {
     def shared: Vector[(Symbol, String, String, tpd.Tree)] =
       writes.toVector.map(site => (site.method, site.variable.name.toString, site.entry, site.tree))
 
-    private val Priority =
-      Vector(Kind.Output, Kind.Input, Kind.Random, Kind.Writes, Kind.Reads, Kind.Unknown, Kind.Throws)
     private val Observable = Set(Kind.Writes, Kind.Output, Kind.Random)
 
     private def clock(effect: Effect): Boolean =
@@ -858,16 +880,14 @@ object Purity {
     private def ordered(method: Symbol): Vector[Effect] = ranked.getOrElseUpdate(
       method,
       summaries.get(Key(method, None)).fold(Vector.empty)(summary =>
-        decoded(summary.effects).map(effect => rank(effect) -> effect).sortBy(_._1).map(_._2)
+        Purity.ranked(decoded(summary.effects))
       )
     )
 
     /** Each kind of effect `method` has, by its first cause, apart on its receiver alone and elsewhere, and in library
       * bodies and the build.
       */
-    def observed(method: Symbol): Vector[Purity.Observed] = ordered(method).map(effect =>
-      Purity.Observed(effect.kind, effect.shown, effect.onThis, effect.library)
-    ).distinctBy(effect => (effect.kind, effect.receiver, effect.library))
+    def observed(method: Symbol): Vector[Purity.Observed] = Purity.observedOf(ordered(method))
 
     private val Comparisons =
       Set("scala.math.Ordering", "scala.math.Ordered", "java.util.Comparator", "java.lang.Comparable")
@@ -884,14 +904,7 @@ object Purity {
     }
 
     /** What is known of `method`: impure when any effect besides throwing is proven, unknown when one may hide. */
-    def verdict(method: Symbol): Purity.Verdict = {
-      val effects = ordered(method)
-      effects.find(effect => effect.kind != Kind.Throws && effect.kind != Kind.Unknown).map(effect =>
-        Purity.Verdict.Effectful(effect.shown, Purity.Certainty.Known)
-      ).orElse(effects.find(_.kind == Kind.Unknown).map(effect =>
-        Purity.Verdict.Effectful(effect.shown, Purity.Certainty.Unknown(effect.cause))
-      )).getOrElse(Purity.Verdict.Pure)
-    }
+    def verdict(method: Symbol): Purity.Verdict = Purity.verdictOf(ordered(method))
 
     /** The summary of `facts` evaluated in `frame`; effects on locals of `method` stay inside it. `keepFresh` keeps
       * those on values the enclosing method allocated, to ask whether evaluating `facts` does anything at all; values a
@@ -1703,10 +1716,18 @@ object Purity {
                 Call(name, Resolution.Axiom(known), on, passed)
               else {
                 val targets   = library(method, qualifier)
-                val otherwise = if (targets.isEmpty) Resolution.Axiom(known) else Resolution.Bodies(targets)
+                val otherwise =
+                  if (targets.isEmpty) Resolution.Axiom(read(method).getOrElse(known)) else Resolution.Bodies(targets)
                 Call(name, Resolution.Dispatch(method, function, otherwise), on, passed)
               }
           }
+
+      // What the bytecode of a method without TASTy shows, where no axiom covers it.
+      private def read(method: Symbol): Option[Summary] =
+        Keys.of(method).flatMap(bytecode.get).map { found =>
+          val via = Some(short(method))
+          Summary(found.certain.map(effect => effect.copy(via = via, library = true): Effect), Set.empty)
+        }
 
       /** The library bodies a call runs: the callee's own when no override can replace it, the implementation in the
         * receiver's class when that class cannot be extended, or those of every class a sealed receiver may be. Bodies

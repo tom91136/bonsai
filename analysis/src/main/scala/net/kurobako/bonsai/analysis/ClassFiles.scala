@@ -1,14 +1,15 @@
 package net.kurobako.bonsai.analysis
 
 import java.lang.invoke.LambdaMetafactory
+import org.objectweb.asm.Attribute
 import org.objectweb.asm.ClassReader
 import org.objectweb.asm.ClassVisitor
 import org.objectweb.asm.FieldVisitor
 import org.objectweb.asm.Handle
-import org.objectweb.asm.Label
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
+import org.objectweb.asm.tree.MethodNode
 import scala.collection.mutable
 import scala.reflect.NameTransformer
 
@@ -17,7 +18,7 @@ private[analysis] object ClassFiles {
     case Virtual, Interface, Static, Special
   }
 
-  case class Invocation(kind: Kind, owner: String, name: String, descriptor: String, line: Int)
+  case class Invocation(kind: Kind, owner: String, name: String, descriptor: String)
 
   case class Lambda(
       interface: String,
@@ -28,11 +29,10 @@ private[analysis] object ClassFiles {
       owner: String,
       name: String,
       descriptor: String,
-      tag: Int,
-      line: Int
+      tag: Int
   )
 
-  case class Dynamic(owner: String, name: String, descriptor: String, line: Int)
+  case class Dynamic(owner: String, name: String)
 
   case class FieldAccess(owner: String, name: String, descriptor: String, static: Boolean, write: Boolean)
 
@@ -58,8 +58,7 @@ private[analysis] object ClassFiles {
       instantiated: Set[String],
       lambdas: Vector[Lambda],
       dynamics: Vector[Dynamic],
-      fields: Vector[FieldAccess],
-      monitors: Boolean
+      fields: Vector[FieldAccess]
   ) {
     def isStatic: Boolean    = (access & Opcodes.ACC_STATIC) != 0
     def overridable: Boolean = (access & (Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE)) == 0
@@ -75,7 +74,10 @@ private[analysis] object ClassFiles {
       interfaces: Vector[String],
       methods: Vector[Method],
       fields: Vector[Field],
-      enclosingInstance: Option[String]
+      enclosingInstance: Option[String],
+      sourceFile: Option[String] = None,
+      outer: Option[String] = None,
+      tasty: Boolean = false
   ) {
     def isInterface: Boolean = (access & Opcodes.ACC_INTERFACE) != 0
     def isAbstract: Boolean  = (access & Opcodes.ACC_ABSTRACT) != 0
@@ -84,11 +86,44 @@ private[analysis] object ClassFiles {
   def read(bytes: Array[Byte]): Either[String, ClassFile] =
     try {
       val visitor = Visitor()
-      ClassReader(bytes).accept(visitor, ClassReader.SKIP_FRAMES)
+      ClassReader(bytes).accept(visitor, Array[Attribute](TastyAttribute), ClassReader.SKIP_FRAMES)
       Right(visitor.file)
     } catch {
       case error @ (_: IllegalArgumentException | _: IndexOutOfBoundsException) => Left(error.toString)
     }
+
+  @SuppressWarnings(Array("bonsai:long-arguments"))
+  private def bodyNode(access: Int, name: String, descriptor: String): MethodNode =
+    MethodNode(Opcodes.ASM9, access, name, descriptor, null, null) // scalafix:ok DisableSyntax.null
+
+  private class Selector(wanted: ((String, String)) => Boolean, selected: mutable.ArrayBuffer[MethodNode])
+      extends ClassVisitor(Opcodes.ASM9) {
+    override def visitMethod(
+        access: Int,
+        name: String,
+        descriptor: String,
+        signature: String,
+        exceptions: Array[String]
+    ): MethodVisitor =
+      if (wanted((name, descriptor))) {
+        val node = bodyNode(access, name, descriptor)
+        selected += node
+        node
+      } else null // scalafix:ok DisableSyntax.null
+  }
+
+  /** What the `methods` of the class `bytes` hold do to the objects they may not own, by name and descriptor. */
+  def trace(bytes: Array[Byte], owner: String, methods: Vector[Method]): Map[(String, String), Trace] = {
+    val wanted   = methods.map(method => (method.name, method.descriptor) -> method).toMap
+    val selected = mutable.ArrayBuffer.empty[MethodNode]
+    ClassReader(bytes).accept(Selector(wanted.contains, selected), ClassReader.SKIP_FRAMES | ClassReader.SKIP_DEBUG)
+    selected.view.map { node =>
+      val method = wanted((node.name, node.desc))
+      (node.name, node.desc) ->
+        (if (node.instructions.size == 0) Provenance.none
+         else Provenance.of(owner, node, method.invocations.size, method.fields.size))
+    }.toMap
+  }
 
   /** The key `Keys` gives the method. A constructor of an inner class drops the enclosing instance that the class file
     * passes first and the source does not name.
@@ -102,6 +137,9 @@ private[analysis] object ClassFiles {
     )
     s"$binary.$simple$dropped"
   }
+
+  /** Marks the class files of Scala 3 code, which TASTy describes better than the bytecode does. */
+  private object TastyAttribute extends Attribute("TASTY")
 
   private val lambdaMetafactory = "java/lang/invoke/LambdaMetafactory"
 
@@ -156,9 +194,21 @@ private[analysis] object ClassFiles {
         interfaces = interfaces.toVector
       )
 
+    override def visitSource(source: String, debug: String): Unit =
+      header = header.copy(sourceFile = Option(source))
+
     override def visitInnerClass(name: String, outerName: String, innerName: String, access: Int): Unit =
-      if (name == header.name && (access & Opcodes.ACC_STATIC) == 0)
-        Option(outerName).foreach(outer => header = header.copy(enclosingInstance = Some(outer)))
+      if (name == header.name) {
+        Option(outerName).foreach(outer => header = header.copy(outer = Some(outer)))
+        if ((access & Opcodes.ACC_STATIC) == 0)
+          Option(outerName).foreach(outer => header = header.copy(enclosingInstance = Some(outer)))
+      }
+
+    override def visitOuterClass(owner: String, name: String, descriptor: String): Unit =
+      header = header.copy(outer = Some(owner))
+
+    override def visitAttribute(attribute: Attribute): Unit =
+      if (attribute.`type` == "TASTY") header = header.copy(tasty = true)
 
     override def visitField(
         access: Int,
@@ -190,16 +240,9 @@ private[analysis] object ClassFiles {
     private val lambdas      = mutable.ArrayBuffer.empty[Lambda]
     private val dynamics     = mutable.ArrayBuffer.empty[Dynamic]
     private val fields       = mutable.ArrayBuffer.empty[FieldAccess]
-    private var monitors     = false // scalafix:ok DisableSyntax.var
-    private var current      = 0     // scalafix:ok DisableSyntax.var
-
-    override def visitLineNumber(line: Int, start: Label): Unit = current = line
 
     override def visitTypeInsn(opcode: Int, internalName: String): Unit =
       if (opcode == Opcodes.NEW) instantiated += internalName: Unit
-
-    override def visitInsn(opcode: Int): Unit =
-      if (opcode == Opcodes.MONITORENTER) monitors = true
 
     override def visitMethodInsn(
         opcode: Int,
@@ -208,7 +251,7 @@ private[analysis] object ClassFiles {
         descriptor: String,
         isInterface: Boolean
     ): Unit =
-      invocations += Invocation(kindOf(opcode), owner, name, descriptor, current): Unit
+      invocations += Invocation(kindOf(opcode), owner, name, descriptor): Unit
 
     override def visitFieldInsn(opcode: Int, owner: String, name: String, descriptor: String): Unit =
       fields += FieldAccess(
@@ -237,10 +280,9 @@ private[analysis] object ClassFiles {
             implementation.getOwner,
             implementation.getName,
             implementation.getDesc,
-            implementation.getTag,
-            current
+            implementation.getTag
           ): Unit
-        case _ => dynamics += Dynamic(bootstrap.getOwner, bootstrap.getName, descriptor, current): Unit
+        case _ => dynamics += Dynamic(bootstrap.getOwner, bootstrap.getName): Unit
       }
 
     override def visitEnd(): Unit =
@@ -252,8 +294,7 @@ private[analysis] object ClassFiles {
         instantiated.toSet,
         lambdas.toVector,
         dynamics.toVector,
-        fields.toVector,
-        monitors
+        fields.toVector
       ): Unit
   }
 }

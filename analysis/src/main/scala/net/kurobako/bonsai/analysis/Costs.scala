@@ -29,7 +29,8 @@ private class Costs(
     declared: Complexity.Declared,
     java: JavaCosts,
     library: Library,
-    lines: Lines
+    lines: Lines,
+    bytecode: BytecodeEffects.Summaries = BytecodeEffects.none
 )(using Context) {
   import Charges.*
 
@@ -51,12 +52,14 @@ private class Costs(
   private val resolve: JavaCosts.Resolver = key =>
     definedKeys.get(key).map(method =>
       Callee(bound(method), definitions(method).termParamss.flatten.map(parameter => name(parameter.symbol)))
-    )
+    ).orElse(bytecode.callee(key))
 
-  /** What is known of a method the build holds no body of, from the trees of the Java code. */
+  /** What is known of a method the build holds no body of, from the trees of the Java code or the bytecode. */
   private def known(method: Symbol): Option[Callee] =
-    if (!java.nonEmpty || definitions.contains(method) || !method.is(Flags.Method)) None
-    else keyed.getOrElseUpdate(method, Keys.of(method)).flatMap(key => java.callee(key, resolve))
+    if ((!java.nonEmpty && bytecode.isEmpty) || definitions.contains(method) || !method.is(Flags.Method)) None
+    else keyed.getOrElseUpdate(method, Keys.of(method)).flatMap(key =>
+      java.callee(key, resolve).orElse(bytecode.callee(key))
+    )
 
   /** The summaries of the methods of the Java code, bound against the methods of the build. */
   def javaSummaries: Vector[Complexity.Summary] = java.summaries(resolve)

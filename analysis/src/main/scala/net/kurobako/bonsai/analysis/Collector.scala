@@ -19,11 +19,23 @@ import dotty.tools.dotc.core.Types.TypeRef
 import java.nio.file.PathMatcher
 import net.kurobako.bonsai.java.{Model => JavaModel}
 import net.kurobako.bonsai.lifting.{Purity as _, *}
+import scala.annotation.targetName
 import scala.collection.mutable
 import scala.util.control.NonFatal
 import scala.util.matching.Regex
 
 private[analysis] object Collector {
+
+  /** What a twin's collector leaves for the collector it joins. */
+  object Absorbed {
+    val empty: Absorbed = Absorbed(Symbols.Recorded.empty, Map.empty)
+  }
+
+  case class Absorbed(symbols: Symbols.Recorded, usage: Map[String, Set[Use]]) {
+    @targetName("merge")
+    def ++(other: Absorbed): Absorbed = Absorbed(symbols ++ other.symbols, Symbols.join(usage, other.usage)(_ ++ _))
+  }
+
   // A hierarchy of one case is a single implementation, which another rule reports.
   private val MinimumCases = 2
 
@@ -53,7 +65,9 @@ private[analysis] class Collector(
     hot: String => Boolean,
     javaCosts: Vector[JavaModel.Cost],
     references: (Components, Fragments) => Context ?=> tpd.TreeTraverser,
-    lines: Lines
+    lines: Lines,
+    entryPoints: Set[Root],
+    link: Option[Graph => Reach.Calls]
 ) extends Phase, Recorder {
   import Collector.*
 
@@ -96,11 +110,13 @@ private[analysis] class Collector(
   private val pipelineList   = mutable.ArrayBuffer.empty[Pipelines.Lifted]
   private val templates      = mutable.Map.empty[Symbol, tpd.Template]
   // The phase runs once, and its results are read by the extraction that follows.
-  private var purityModel  = Purity.Model.empty       // scalafix:ok DisableSyntax.var
+  private var purityModel  = Purity.Model.empty        // scalafix:ok DisableSyntax.var
+  private var linked       = Option.empty[Reach.Calls] // scalafix:ok DisableSyntax.var
+  private var twinned      = Collector.Absorbed.empty  // scalafix:ok DisableSyntax.var
   private val hierarchies  = mutable.ArrayBuffer.empty[(Symbol, String, String)]
   private val bodied       = mutable.Set.empty[Symbol]
   private val enumerations = mutable.ArrayBuffer.empty[Algebra.Enumeration]
-  private var placements   = Option.empty[Placements] // scalafix:ok DisableSyntax.var
+  private var placements   = Option.empty[Placements]  // scalafix:ok DisableSyntax.var
   private val callees      = mutable.Map.empty[Symbol, Callee]
 
   def phaseName: String = "bonsai-collect"
@@ -112,7 +128,17 @@ private[analysis] class Collector(
     val placing    = Placements(symbols, lines)
     val library    = Library()
     val components =
-      Components(symbols, callSites, reads, derivations, dispatching, structure, comparing, library, this)
+      Components(
+        symbols,
+        callSites,
+        reads,
+        derivations,
+        dispatching,
+        structure,
+        comparing,
+        library,
+        this
+      )
     placements = Some(placing)
     units.foreach { unit =>
       try {
@@ -122,6 +148,7 @@ private[analysis] class Collector(
       } catch { case NonFatal(error) => problem(s"${unit.source.path} could not be analysed: $error") }
     }
     qualifiedUses()
+    symbols.absorb(twinned.symbols)
     products.mapValuesInPlace((cls, product) =>
       if (derivations.derived(cls)) product.copy(origin = Algebra.Origin.Derived) else product
     )
@@ -168,9 +195,20 @@ private[analysis] class Collector(
       )
     )
     clones ++= fragments.groups()
+    absorbUsers(twinned)
     dispatching.resolve()
+    linked = link.map(_(graph))
+    val bytecode = linked.fold(BytecodeEffects.none)(_.summaries)
     val declared = Complexity.Declared(bounded)
-    val costs    = Costs(bodies ++ constructors, initialisers, declared, JavaCosts(javaCosts, declared), library, lines)
+    val costs    = Costs(
+      bodies ++ constructors,
+      initialisers,
+      declared,
+      JavaCosts(javaCosts, declared),
+      library,
+      lines,
+      bytecode
+    )
     complexityList ++= costed.flatMap(method =>
       costs.summary(method).flatMap(bounds =>
         key(method).map(Complexity.Summary(qualifiedName(method), _, bounds, suppressions(method)))
@@ -178,7 +216,7 @@ private[analysis] class Collector(
     )
     complexityList ++= costs.javaSummaries
     unusedList ++= declared.unmatched
-    val effects = inference(library)
+    val effects = inference(library, bytecode)
     val chains  = Pipelines.Chains(effects, lines, hot)
     pipelineList ++= bodies.view.filter((method, _) => ownMethod(method)).flatMap((method, definition) =>
       key(method).toVector.flatMap(
@@ -192,22 +230,29 @@ private[analysis] class Collector(
   }
 
   /** Adds what a twin's copies of replaced classes reference, which the copies of the JVM modules the node records
-    * stand in for: the edges, the users of members and of nested types.
+    * stand in for: the edges, the users of members and of nested types. A twin is read before this collector, which
+    * joins it as it finishes.
     */
-  def absorb(other: Collector): Unit = {
-    symbols.absorb(other.symbols)
-    val incoming = other.symbols.incoming
+  def absorb(other: Collector): Unit =
+    twinned = twinned ++ Collector.Absorbed(other.symbols.recorded, other.usage.toMap)
+
+  private def absorbUsers(other: Collector.Absorbed): Unit = {
     memberList.mapInPlace(member =>
       member.copy(users = member.users ++ other.usage.getOrElse(member.name, Set.empty))
     )
-    nestedList.mapInPlace(inner => inner.copy(users = inner.users ++ incoming.getOrElse(inner.node, Vector.empty)))
+    nestedList.mapInPlace(inner =>
+      inner.copy(users = inner.users ++ other.symbols.incoming.getOrElse(inner.node, Vector.empty))
+    )
   }
 
   def problem(message: String): Unit = failures += message
 
   def problems: Vector[String] = failures.toVector
 
-  def graph(entryPoints: Set[Root]): Graph = symbols.graph(entryPoints)
+  def graph: Graph = symbols.graph(entryPoints)
+
+  /** What linking the build to its class files gave, when the collector linked them. */
+  def calls: Option[Reach.Calls] = linked
 
   def algebra: Algebra.Model =
     Algebra.Model(
@@ -243,8 +288,8 @@ private[analysis] class Collector(
 
   def purity: Purity.Model = purityModel
 
-  private def inference(library: Library)(using Context): Purity.Inference = {
-    val effects = Purity.Inference(bodies, templates, dispatching.implementations(_), concurrent, library)
+  private def inference(library: Library, bytecode: BytecodeEffects.Summaries)(using Context): Purity.Inference = {
+    val effects = Purity.Inference(bodies, templates, dispatching.implementations(_), concurrent, library, bytecode)
     effects.run()
     effects.unreadable.foreach(problem(_))
     effects

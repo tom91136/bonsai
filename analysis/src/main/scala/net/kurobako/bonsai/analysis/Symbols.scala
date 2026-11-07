@@ -13,10 +13,35 @@ import java.nio.file.Path
 import java.nio.file.PathMatcher
 import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.lifting.*
+import scala.annotation.targetName
 import scala.collection.mutable
 import scala.util.matching.Regex
 
 private[analysis] object Symbols {
+
+  /** The references a registry recorded, without the symbols they came from. */
+  object Recorded {
+    val empty: Recorded = Recorded(Map.empty, Map.empty, Map.empty)
+  }
+
+  case class Recorded(
+      edges: Map[String, Set[String]],
+      bodies: Map[Use, Set[String]],
+      incoming: Map[String, Vector[String]]
+  ) {
+    @targetName("merge")
+    def ++(other: Recorded): Recorded = Recorded(
+      join(edges, other.edges)(_ ++ _),
+      join(bodies, other.bodies)(_ ++ _),
+      join(incoming, other.incoming)(_ ++ _)
+    )
+  }
+
+  def join[K, V](left: Map[K, V], right: Map[K, V])(combine: (V, V) => V): Map[K, V] =
+    right.foldLeft(left)((joined, entry) =>
+      joined.updated(entry._1, joined.get(entry._1).fold(entry._2)(combine(_, entry._2)))
+    )
+
   def childClasses(parent: Symbol)(using Context): List[Symbol] =
     parent.children.map(child => if (child.isTerm) child.moduleClass else child)
 }
@@ -63,8 +88,14 @@ private[analysis] class Symbols(
     (edges.toVector ++ bodies.toVector.map((use, targets) => use.node -> targets))
       .flatMap((source, targets) => targets.map(_ -> source)).groupMap(_._1)(_._2)
 
+  def recorded: Symbols.Recorded = Symbols.Recorded(
+    edges.view.mapValues(_.toSet).toMap,
+    bodies.view.mapValues(_.toSet).toMap,
+    incoming
+  )
+
   /** Adds the edges another registry recorded. */
-  def absorb(other: Symbols): Unit = {
+  def absorb(other: Symbols.Recorded): Unit = {
     other.edges.foreach((source, targets) => targets.foreach(edge(source, _)))
     other.bodies.foreach((use, targets) => bodies.getOrElseUpdate(use, mutable.Set.empty) ++= targets)
   }

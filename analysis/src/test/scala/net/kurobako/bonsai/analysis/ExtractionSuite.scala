@@ -282,7 +282,7 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
-  test("megamorphic sites list implementations by simple name unless two collide, count vals, and skip universals") {
+  test("megamorphic sites list receivers by simple name unless two collide, count vals, and skip universals") {
     val result = extract(
       Seq(
         "Shapes.scala" ->
@@ -303,12 +303,17 @@ class ExtractionSuite extends AnalysisSuite {
           |  def sides(shapes: List[Figure]): Int = shapes.map(_.sides).sum
           |  def shown(shapes: List[Figure]): Int = shapes.map(_.toString.length).sum
           |  def names(values: List[Named]): Int = values.map(_.name.length).sum
+          |  def main(args: Array[String]): Unit = {
+          |    val figures = List[Figure](Circle(), Square(), Triangle())
+          |    val named   = List[Named](A.Impl(), B.Impl(), Other())
+          |    println((limits(figures), areas(figures), sides(figures), shown(figures), names(named), Plot().area))
+          |  }
           |}""".stripMargin
       ),
       hot = Vector("**")
     )
     assertEquals(
-      result.megamorphic.map(site => (site.caller, site.callee, site.implementations.sorted)).toSet,
+      result.megamorphic.map(found => (found.site.caller, found.site.callee, found.names)).toSet,
       Set(
         ("shapes.Main.areas", "Figure.area", Vector("Circle", "Square", "Triangle")),
         ("shapes.Main.sides", "Figure.sides", Vector("Circle", "Square", "Triangle")),

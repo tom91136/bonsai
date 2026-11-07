@@ -158,6 +158,10 @@ object Axioms {
     "write"
   )
   private val Variables = Set("getenv", "getProperty", "getProperties")
+  // JNI registration that the JVM runs when a class initialises, and which no program can observe.
+  private val Registrations = Set("registerNatives", "initIDs")
+  // Methods of Throwable and Class that only ask.
+  private val Asking = Set("toString", "desiredAssertionStatus")
   // Methods of immutable values that write into an array or buffer they are given.
   private val Filling = Set("copyToArray", "copyToBuffer")
 
@@ -256,7 +260,7 @@ object Axioms {
     def effect(kind: Kind)               = Set(Effect(kind, s"calls $full"))
     def stateful(kind: Kind)             = Set(Effect(kind, s"calls $full", onThis = true))
     val none                             = Set.empty[Effect[Nothing]]
-    if (call.constructor) none
+    if (call.constructor || Registrations(name)) none
     else if (Clocks(full) || derives(Randoms) || owner == "scala.util.Random") effect(Kind.Random)
     else if (derives(Outputs) || Logging.exists(owner.startsWith(_)) || owner == "scala.Predef" && Printing(name))
       effect(Kind.Output)
@@ -288,7 +292,7 @@ object Axioms {
       else if (partial) effect(Kind.Throws)
       else none
     } else if (owner == "java.lang.Throwable" || owner == "java.lang.Class")
-      if (Queries.exists(name.startsWith(_)) || name == "toString") none
+      if (Queries.exists(name.startsWith(_)) || Asking(name)) none
       else if (name == "printStackTrace") effect(Kind.Output)
       else stateful(Kind.Writes)
     else if (owner.startsWith("munit."))

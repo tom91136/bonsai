@@ -1,9 +1,9 @@
 package net.kurobako.bonsai.analysis
 
+import java.nio.file.Path
 import net.kurobako.bonsai.analysis.ClassFiles.*
 import scala.collection.mutable
 import scala.reflect.NameTransformer
-import scala.util.Using
 
 object Reach {
 
@@ -16,24 +16,56 @@ object Reach {
 
   private val topLevel = "$package"
 
+  /** The reach of a build and the class files that could not be read. */
+  case class Reached(reach: Reach, unread: Vector[String])
+
   private enum Status {
     case Dead, Tested, Main
 
     def max(other: Status): Status = if (ordinal >= other.ordinal) this else other
   }
 
-  /** The reach of the build `graph` describes, with the program entered where its roots say and the classes it runs
-    * read from the outputs of `manifest`, its classpath and its JDK.
+  /** The classes of the build, read from its outputs, its classpath and its JDK. */
+  def source(manifest: Manifest): Either[String, ClassSource] =
+    manifest.jdk.toRight(missingJdk).flatMap(jdk =>
+      ClassSource.of(outputsOf(manifest).map(_.path), librariesOf(manifest), Some(jdk))
+    )
+
+  private def outputsOf(manifest: Manifest): Vector[Output] =
+    manifest.outputs.filterNot(output => manifest.platforms(output.module))
+
+  private def librariesOf(manifest: Manifest): Vector[Path] =
+    manifest.classpath.filterNot((module, _) => manifest.platforms(module)).values.flatten.toVector.distinct
+
+  /** The program of a build as its class files run it: the calls from where the roots of its graph enter it, and the
+    * effects of the methods they reach that have no TASTy. The one call graph of a run.
     */
-  def of(manifest: Manifest, graph: Graph): Either[String, (Reach, Vector[String])] =
-    manifest.jdk.toRight(missingJdk).flatMap { jdk =>
-      val outputs   = manifest.outputs.filterNot(output => manifest.platforms(output.module))
-      val libraries =
-        manifest.classpath.filterNot((module, _) => manifest.platforms(module)).values.flatten.toVector.distinct
-      ClassSource.of(outputs.map(_.path), libraries, Some(jdk)).map(source =>
-        Using.resource(source)(source => reach(graph, outputs, manifest.platforms, ClassWorld(source.bytes(_))))
-      )
-    }
+  case class Calls(
+      world: ClassWorld,
+      graph: CallGraph,
+      summaries: BytecodeEffects.Summaries,
+      classes: Map[String, Output.Scope],
+      bodied: Map[String, Vector[Method]],
+      entered: Set[Root]
+  )
+
+  def link(manifest: Manifest, graph: Graph, world: ClassWorld): Calls = {
+    val classes = classesOf(outputsOf(manifest))
+    val bodied  = classes.keys.toVector.map(name => name -> world.get(name).toVector.flatMap(_.methods)).toMap
+    val entered = graph.roots.filter(root => graph.nodes.get(root.name).exists(!_.test))
+    val tests   = for {
+      (name, scope) <- classes.toVector if scope == Output.Scope.Test
+      method        <- bodied(name) if !method.isAbstract
+    } yield Reference(name, method.name, method.descriptor)
+    val calls = CallGraph.build(
+      world,
+      CallGraph.roots(graph.copy(roots = entered ++ twinned(graph, manifest.platforms, Output.Scope.Main)), world),
+      build = classes.contains,
+      tests = tests.toSet ++
+        CallGraph.roots(graph.copy(roots = twinned(graph, manifest.platforms, Output.Scope.Test)), world)
+    )
+    Calls(world, calls, BytecodeEffects.summarise(world, calls), classes, bodied, entered)
+  }
 
   private def classesOf(outputs: Vector[Output]): Map[String, Output.Scope] =
     outputs.flatMap { output =>
@@ -44,29 +76,13 @@ object Reach {
       }
     }.toMap
 
-  private def reach(
-      graph: Graph,
-      outputs: Vector[Output],
-      platforms: Set[String],
-      world: ClassWorld
-  ): (Reach, Vector[String]) = {
-    val classes = classesOf(outputs)
-    val bodied  = classes.keys.toVector.map(name => name -> world.get(name).toVector.flatMap(_.methods)).toMap
-    val entered = graph.roots.filter(root => graph.nodes.get(root.name).exists(!_.test))
-    val tests   = for {
-      (name, scope) <- classes.toVector if scope == Output.Scope.Test
-      method        <- bodied(name) if !method.isAbstract
-    } yield Reference(name, method.name, method.descriptor)
-    val calls = CallGraph.build(
-      world,
-      CallGraph.roots(graph.copy(roots = entered ++ twinned(graph, platforms, Output.Scope.Main)), world),
-      build = classes.contains,
-      tests = tests.toSet ++ CallGraph.roots(graph.copy(roots = twinned(graph, platforms, Output.Scope.Test)), world)
-    )
-    val naming  = Naming(graph.nodes)
-    val methods = mutable.Map.empty[String, Status]
-    val reached = mutable.Set.empty[String]
-    val ran     = mutable.Set.empty[String]
+  /** The reach of the build `graph` describes, from the calls its classes make. */
+  def of(linked: Calls, graph: Graph): Reached = {
+    val Calls(world, calls, _, classes, bodied, entered) = linked
+    val naming                                           = Naming(graph.nodes)
+    val methods                                          = mutable.Map.empty[String, Status]
+    val reached                                          = mutable.Set.empty[String]
+    val ran                                              = mutable.Set.empty[String]
     classes.keys.foreach { name =>
       val states = bodied(name).map { method =>
         val reference = Reference(name, method.name, method.descriptor)
@@ -101,7 +117,7 @@ object Reach {
       case (name, error) if classes.contains(name) =>
         s"class file ${name.replace('/', '.')} could not be read: $error"
     }
-    (Reach(graph.nodes.keySet -- every, every -- main, dead, tested), unread.toVector.sorted)
+    Reached(Reach(graph.nodes.keySet -- every, every -- main, dead, tested), unread.toVector.sorted)
   }
 
   private def twinned(graph: Graph, platforms: Set[String], scope: Output.Scope): Set[Root] =

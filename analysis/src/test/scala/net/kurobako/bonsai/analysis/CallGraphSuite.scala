@@ -33,6 +33,15 @@ public class Mark {
   public static int bound() { return 20; }
   public static int virt() { return 21; }
   public static int hook() { return 22; }
+  public static int late() { return 23; }
+  public static int kid() { return 24; }
+  public static int quietStatic() { return 25; }
+  public static int quietInit() { return 26; }
+  public static int quietArg() { return 27; }
+  public static int quietOther() { return 28; }
+  public static int quietInstance() { return 29; }
+  public static int abstracted() { return 30; }
+  public static int wrapped() { return 31; }
 }
 """
 
@@ -94,7 +103,7 @@ public class Hosted implements Comparable<Hosted> {
 
 public class Hosting {
   public static Object hosted() { return new Hosted(); }
-  public static int fromMain() { return Mark.circle() + Mark.square(); }
+  public static int fromMain() { return Mark.circle() + Mark.square() + new Circle().area(); }
   public static int fromTest() { return Mark.square() + Mark.hello(); }
   public static Object testing() { return new Hosted(); }
 }
@@ -318,6 +327,50 @@ class Edge {
   static int entry() {
     Gone.m();
     return new Edge().nat() + Mark.circle();
+  }
+}
+
+class Late {
+  static { Mark.late(); }
+
+  static int go(String s) { return 1; }
+}
+
+class Staged {
+  static int viaHandle() {
+    Function<String, Integer> go = Late::go;
+    return go.apply("");
+  }
+}
+
+interface Kid extends WithDefault {
+  int K = Mark.kid();
+}
+
+class Kids {
+  static int read() { return Kid.K; }
+}
+
+class Quiet {
+  static int counter = Mark.quietStatic();
+
+  Quiet() { Mark.quietInit(); }
+
+  public static int provider(int x) { return Mark.quietArg(); }
+
+  public static int other() { return Mark.quietOther(); }
+
+  public int provider() { return Mark.quietInstance(); }
+}
+
+abstract class Abstracted {
+  int work() { return Mark.abstracted(); }
+}
+
+class Wrapped {
+  static int viaDefault() {
+    Greeter greeter = () -> Mark.wrapped();
+    return greeter.greet();
   }
 }
 
@@ -684,6 +737,13 @@ public class Cross {
     }
   }
 
+  test("string concatenation reaches toString even when no walked code of the JDK calls it") {
+    withWorld(Set("java/lang/String", "java/lang/Class")) { world =>
+      val found = CallGraph.build(world, Set(ref("Concat", "join", "()Ljava/lang/String;")))
+      assertReaches(found, ref("Named", "toString", "()Ljava/lang/String;"), ref("Mark", "named"))
+    }
+  }
+
   test("native methods and missing classes are leaves, and an unresolved reference does not stop the walk") {
     withWorld(Set("fixture/Gone")) { world =>
       val found = CallGraph.build(world, Set(ref("Edge", "entry")))
@@ -714,6 +774,14 @@ public class Cross {
         Reference("fixture/Provider", "run", "()V"),
         Reference("fixture/Provider", "provider", "()Lfixture/Provider;")
       )
+    )
+  }
+
+  test("a provided root leaves out what is not provided, whatever it looks like") {
+    assertEquals(rootsOf("fixture.Quiet" -> Root.Kind.Provided), Set.empty[Reference])
+    assertEquals(
+      rootsOf("fixture.Collide" -> Root.Kind.Provided),
+      Set(Reference("fixture/Collide$", "<clinit>", "()V"))
     )
   }
 
@@ -797,6 +865,58 @@ public class Cross {
   test("a root that is an instance method makes its class instantiated") {
     graphOf(Reference("fixture/Provider", "run", "()V")) { found =>
       assert(found.instantiated.contains("fixture/Provider"))
+    }
+  }
+
+  test("a static root initialises its class without instantiating it, and an abstract class or interface is never") {
+    graphOf(ref("Calls", "entry")) { found =>
+      assert(!found.instantiated.contains("fixture/Calls"))
+    }
+    graphOf(ref("Abstracted", "work")) { found =>
+      assertReaches(found, ref("Mark", "abstracted"))
+      assert(!found.instantiated.contains("fixture/Abstracted"))
+    }
+    graphOf(ref("Greeter", "greet")) { found =>
+      assert(!found.instantiated.contains("fixture/Greeter"))
+    }
+  }
+
+  test("a static method handle initialises its class, and instantiates nothing") {
+    graphOf(ref("Staged", "viaHandle")) { found =>
+      assertReaches(found, ref("Late", "go", "(Ljava/lang/String;)I"), ref("Mark", "late"))
+      assert(!found.instantiated.contains("fixture/Late"))
+    }
+  }
+
+  test("a lambda runs for the call of its own method only, not for a default method of the same shape") {
+    graphOf(ref("Wrapped", "viaDefault")) { found =>
+      assertReaches(found, ref("Mark", "hello"))
+      assertMisses(found, ref("Mark", "wrapped"))
+    }
+  }
+
+  test("initialising an interface leaves its superinterfaces alone") {
+    graphOf(ref("Kids", "read")) { found =>
+      assertReaches(found, ref("Mark", "kid"))
+      assertMisses(found, ref("Mark", "defaulted"))
+    }
+  }
+
+  test("a build class instantiated by a root has no constructor invented for it") {
+    withWorld() { world =>
+      val found = CallGraph.build(world, Set(ref("Provider", "run", "()V")), build = _.startsWith("fixture/"))
+      assertMisses(found, ref("Provider", "<init>", "()V"), ref("Mark", "dead"))
+    }
+  }
+
+  test("a lambda with marker interfaces is a receiver of calls on its functional interface and on its markers") {
+    withWorld() { world =>
+      val found   = CallGraph.build(world, Set(ref("Alternate", "markers")))
+      val marked  = found.lambdas.keySet.filter(_.holder == ref("Alternate", "markers"))
+      val running = found.receivers(Reference("java/lang/Runnable", "run", "()V"), world)
+      assertEquals(running.collect { case CallGraph.Receiver.Closure(site) => site }.toSet, marked)
+      val tagged = found.receivers(ref("Marker", "mark"), world)
+      assertEquals(tagged.collect { case CallGraph.Receiver.Closure(site) => site }.toSet, marked)
     }
   }
 }

@@ -17,6 +17,7 @@ import net.kurobako.bonsai.java.{Model => JavaModel}
 import net.kurobako.bonsai.lifting.{Purity as _, *}
 import scala.concurrent.Promise
 import scala.util.Try
+import scala.util.Using
 import scala.util.control.NonFatal
 
 /** Builds the reference graph and algebraic model of a whole build from the TASTy in its outputs. */
@@ -38,7 +39,7 @@ object Extraction {
       complexities: Vector[Complexity.Summary],
       unusedBounds: Vector[Complexity.Bounded],
       pipelines: Vector[Pipelines.Lifted],
-      megamorphic: Vector[Megamorphic.Site],
+      megamorphic: Vector[Megamorphic.Found],
       hot: Option[Set[String]],
       purity: Purity.Model,
       lints: Vector[JavaLints.Found],
@@ -67,31 +68,42 @@ object Extraction {
       hot: Vector[String] = Vector.empty,
       bounded: Vector[Complexity.Bounded] = Vector.empty,
       parallel: Parallel = Parallel.sequential
-  ): Either[Vector[String], Result] = {
-    val result = Promise[Either[Vector[String], Result]]()
-    val thread = Thread(
-      Thread.currentThread.getThreadGroup,
-      () => result.complete(Try(extract(manifest, generated, concurrent, reflective, hot, bounded, parallel))): Unit,
-      "bonsai-extraction",
-      StackSize
+  ): Either[Vector[String], Result] =
+    Reach.source(manifest).fold(
+      error => Left(Vector(error)),
+      source =>
+        Using.resource(source) { source =>
+          val world  = ClassWorld(source.bytes(_))
+          val result = Promise[Either[Vector[String], Result]]()
+          val thread = Thread(
+            Thread.currentThread.getThreadGroup,
+            () =>
+              result.complete(Try(extract(
+                manifest,
+                generated,
+                concurrent,
+                reflective,
+                hot,
+                bounded,
+                parallel,
+                world
+              ))): Unit,
+            "bonsai-extraction",
+            StackSize
+          )
+          thread.start()
+          thread.join()
+          result.future.value.fold[Either[Vector[String], Result]](Left(Vector("extraction terminated abnormally")))(
+            _.fold(
+              error => {
+                error.printStackTrace()
+                Left(Vector(s"extraction failed: $error"))
+              },
+              identity
+            )
+          )
+        }
     )
-    thread.start()
-    thread.join()
-    result.future.value.fold[Either[Vector[String], Result]](Left(Vector("extraction terminated abnormally")))(
-      _.fold(
-        error => {
-          error.printStackTrace()
-          Left(Vector(s"extraction failed: $error"))
-        },
-        identity
-      )
-    ).flatMap(extracted =>
-      Reach.of(manifest, extracted.graph).fold(
-        error => Left(Vector(error)),
-        (reach, problems) => Right(extracted.copy(problems = extracted.problems ++ problems, reach = reach))
-      )
-    )
-  }
 
   private def extract(
       manifest: Manifest,
@@ -100,7 +112,8 @@ object Extraction {
       reflective: Vector[String],
       hot: Vector[String],
       bounded: Vector[Complexity.Bounded],
-      parallel: Parallel
+      parallel: Parallel,
+      world: ClassWorld
   ): Either[Vector[String], Result] = {
     // The compiler aborts the whole run on a file whose names or sections it cannot index, so those are set aside.
     // A platform twin compiles the shared sources again, so only the classes the JVM modules lack are its own. The
@@ -143,10 +156,13 @@ object Extraction {
     val javaCosts       = JavaCosts(java.costs, Complexity.Declared(bounded))
     if (uncompiled.nonEmpty) Left(uncompiled)
     else if (tasty.isEmpty && (skipped ++ java.problems).nonEmpty) Left(skipped ++ java.problems)
-    else if (tasty.isEmpty)
+    else if (tasty.isEmpty) {
       // A build of Java code alone has no TASTy to read, so the model the javac plugin collected is all of it.
+      val graph                        = Graph(java.nodes, java.edges, roots ++ java.roots, java.bodies)
+      val linked                       = Reach.link(manifest, graph, world)
+      val Reach.Reached(reach, unread) = Reach.of(linked, graph)
       Right(Result(
-        Graph(java.nodes, java.edges, roots ++ java.roots, java.bodies),
+        graph,
         Algebra.Model(java.products, java.sums, java.guarded, java.preconditions, Vector.empty),
         Smells.Model(java.methods, java.sites, java.usages, Vector.empty, Vector.empty, Vector.empty, moduleUses),
         Designs.Model.empty,
@@ -155,20 +171,21 @@ object Extraction {
         Members.Model.empty,
         java.clones,
         Vector.empty,
-        javaCosts.summaries(JavaCosts.none),
+        javaCosts.summaries(linked.summaries.callee(_)),
         Vector.empty,
         Vector.empty,
         Vector.empty,
         None,
-        Purity.Model.empty,
+        BytecodePurity.model(linked.summaries, java.nodes),
         java.lints,
-        Vector.empty
+        unread,
+        reach = reach
       ))
-    else {
+    } else {
       // The class files are read beside the compiler, and joined where the result needs them.
-      val bytecode                                 = Bytecode.reading(primary.map(_.path), parallel)
-      val lines                                    = Lines()
-      def collector(costs: Vector[JavaModel.Cost]) =
+      val bytecode = Bytecode.reading(primary.map(_.path), parallel)
+      val lines    = Lines()
+      def collector(costs: Vector[JavaModel.Cost], entry: Set[Root], link: Option[Graph => Reach.Calls]) =
         Collector(
           manifest.outputs,
           manifest.libraries,
@@ -179,7 +196,9 @@ object Extraction {
           Globs.heat(hot),
           costs,
           References(_, _),
-          lines
+          lines,
+          entry,
+          link
         )
       def reading(phase: Collector, files: Vector[Path], classpath: Vector[Path]) = Reader(phase).process(
         Array(
@@ -200,20 +219,24 @@ object Extraction {
       // modules' first, and a class several platforms' copies of a library hold resolves to the first copy.
       val modules = (primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted
       val merged  = Classpath.evicted(manifest.classpathOf(modules))
-      val phase   = collector(java.costs)
-      val errors  = reading(phase, tasty, merged)
+      val phase   = collector(
+        java.costs,
+        roots,
+        Some(graph => Reach.link(manifest, JavaConversion.merge(graph, java), world))
+      )
       // The replaced copies resolve against their own twin first, and the rest of the build behind it.
       val behind   = primary.map(_.path) ++ merged
       val outputs  = manifest.outputs.groupMap(_.module)(_.path)
       val absorbed = replacements.flatMap { (module, files) =>
-        val twin  = collector(Vector.empty)
+        val twin  = collector(Vector.empty, Set.empty, None)
         val own   = outputs.getOrElse(module, Vector.empty)
         val found = reading(twin, files, own ++ manifest.classpathOf(Seq(module)) ++ behind)
         phase.absorb(twin)
         found
       }
+      val errors   = reading(phase, tasty, merged)
       val problems = skipped ++ java.problems ++ phase.problems ++ errors ++ absorbed
-      val graph    = JavaConversion.merge(phase.graph(roots), java)
+      val graph    = JavaConversion.merge(phase.graph, java)
       // A platform twin replaces some sources with its own of the same name, so the types in them cannot move.
       val twinned = manifest.sources.filter(source => manifest.platforms(source.module)).groupMap(_.module)(_.path)
         .values.map(paths => (paths.toSet, paths.map(_.getFileName).toSet)).toVector
@@ -245,29 +268,39 @@ object Extraction {
       )
       val isHot = Globs.heat(hot)
       if (graph.nodes.isEmpty && problems.nonEmpty) Left(problems)
-      else Right(Result(
-        graph,
-        algebra,
-        smells,
-        phase.designs,
-        structures,
-        phase.equality,
-        phase.memberships.copy(calls = java.callers),
-        phase.duplicates ++ java.clones,
-        bytecode(),
-        phase.complexities,
-        phase.unusedBounds,
-        phase.pipelines,
-        // Megamorphic calls cost only where the JVM compiles hot code, which a platform twin never runs on.
-        phase.megamorphic.filter(site =>
-          graph.nodes.get(site.node).exists(node => !manifest.platforms(node.module) && isHot(node.name))
-        ),
-        Option.when(hot.nonEmpty)(graph.nodes.keySet.filter(isHot)),
-        phase.purity,
-        java.lints,
-        problems,
-        phase.nesting(graph.rooted)
-      ))
+      else {
+        val linked                       = phase.calls.getOrElse(Reach.link(manifest, graph, world))
+        val Reach.Reached(reach, unread) = Reach.of(linked, graph)
+        Right(Result(
+          graph,
+          algebra,
+          smells,
+          phase.designs,
+          structures,
+          phase.equality,
+          phase.memberships.copy(calls = java.callers),
+          phase.duplicates ++ java.clones,
+          bytecode(),
+          phase.complexities,
+          phase.unusedBounds,
+          phase.pipelines,
+          // Megamorphic calls cost only where the JVM compiles hot code, which a platform twin never runs on.
+          Megamorphic.resolve(
+            phase.megamorphic.filter(site =>
+              graph.nodes.get(site.node).exists(node => !manifest.platforms(node.module) && isHot(node.name))
+            ),
+            graph.nodes,
+            linked.graph,
+            world
+          ),
+          Option.when(hot.nonEmpty)(graph.nodes.keySet.filter(isHot)),
+          phase.purity,
+          java.lints,
+          problems ++ unread,
+          phase.nesting(graph.rooted),
+          reach
+        ))
+      }
     }
   }
 

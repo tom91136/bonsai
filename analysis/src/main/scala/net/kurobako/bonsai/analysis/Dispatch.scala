@@ -77,24 +77,28 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
         )
     }
 
-  /** Resolves the calls recorded to the classes that can run them, once every class is declared. */
+  /** Resolves the calls recorded to the keys class files name them by, once every class is declared. */
   def resolve()(using Context): Unit = {
     indexSubclasses()
     sites ++= dispatches.toVector.flatMap { case ((caller, callee), (node, receiver)) =>
       // Test doubles never reach a call in main code at run time.
-      val test            = nodes.get(node).exists(_.test)
-      val implementations = concreteSubclasses(callee.owner).view.filter(cls =>
-        (test || !nodeOf(cls).exists(_.test)) && reaches(cls, callee.owner, receiver)
-      ).flatMap(concreteMember(callee, _)).toVector.distinct
-      Option.when(
-        implementations.size > MaximumInlinedReceivers && !implementations.forall(stableRead(_))
-      )(Megamorphic.Site(
-        qualifiedName(caller),
-        node,
-        s"${callee.owner.name.toString.stripSuffix("$")}.${callee.name}",
-        shown(implementations.map(_.owner)),
-        suppressions(caller)
-      ))
+      val test    = nodes.get(node).exists(_.test)
+      val classes = concreteSubclasses(callee.owner)
+      val kept    = classes.filter(reaches(_, callee.owner, receiver))
+      val members =
+        kept.view.filter(cls => test || !nodeOf(cls).exists(_.test)).flatMap(concreteMember(callee, _)).toVector
+      val cls = Some(receiver.widen.classSymbol).filter(found => found.exists && found.derivesFrom(callee.owner))
+      Keys.at(callee, cls.getOrElse(callee.owner)).map(key =>
+        Megamorphic.Site(
+          qualifiedName(caller),
+          node,
+          s"${callee.owner.name.toString.stripSuffix("$")}.${callee.name}",
+          key,
+          classes.diff(kept).map(Calls.qualified(_)).toSet,
+          members.nonEmpty && members.forall(stableRead(_)),
+          suppressions(caller)
+        )
+      )
     }
   }
 
@@ -132,16 +136,6 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
         Option.when(all.nonEmpty && all.forall(target => bodied(target) || immutableRead(target)))(all)
       }
     )
-
-  // Simple names, qualified by their enclosing name where two would read the same.
-  private def shown(classes: Vector[Symbol])(using Context): Vector[String] = {
-    val simple = classes.map(_.name.toString.stripSuffix("$"))
-    if (simple.distinct.size == simple.size) simple
-    else classes.map(cls => Finding.short(qualifiedName(cls)))
-  }
-
-  // HotSpot's inline caches hold two receiver types; a third makes a call site megamorphic.
-  private val MaximumInlinedReceivers = 2
 
   // An immutable val implements a method by a read, which has no effect.
   private def immutableRead(member: Symbol)(using Context): Boolean =

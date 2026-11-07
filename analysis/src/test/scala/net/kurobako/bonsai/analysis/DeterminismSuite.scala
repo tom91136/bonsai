@@ -46,9 +46,13 @@ class DeterminismSuite extends AnalysisSuite {
       models = models.map(Output("j", Output.Scope.Main, _)),
       jdk = targetJdk
     )
-    val result = Extraction.read(manifest, parallel = parallel).fold(errors => fail(errors.mkString("\n")), identity)
-    val found  = Report.findings(result, parallel = parallel)
-    val shown  = Report(found, result.graph.nodes, Report.Options(Set.empty, Set.empty, Set.empty, info = true))
+    val result = Extraction.read(
+      manifest,
+      hot = Vector("**"),
+      parallel = parallel
+    ).fold(errors => fail(errors.mkString("\n")), identity)
+    val found = Report.findings(result, parallel = parallel)
+    val shown = Report(found, result.graph.nodes, Report.Options(Set.empty, Set.empty, Set.empty, info = true))
     found.map(finding => s"${finding.rule.id}\t${finding.node.name}\t${finding.detail}") ++ shown.map(_.show) ++
       result.bytecode.map(method => s"${method.owner}.${method.name}:${method.size}") ++
       result.graph.nodes.keys.toVector.sorted
@@ -60,8 +64,31 @@ class DeterminismSuite extends AnalysisSuite {
         directory.resolve("scala"),
         Seq(
           "Main.scala" ->
-            "object Main { def main(args: Array[String]): Unit = println(Tools.compute() + Tools.compute()) }",
-          "Tools.scala"  -> "object Tools { def compute(): Int = 1\n  def unused(): Int = 2 }",
+            """object Main {
+              |  def main(args: Array[String]): Unit = {
+              |    println(Tools.compute() + Tools.compute() + Looping.total(Array[Shape](Circle(), Square(), Triangle())))
+              |    println(Tools.size(java.util.ArrayList[String](), java.util.LinkedList[String]()))
+              |  }
+              |}""".stripMargin,
+          "Tools.scala" ->
+            """object Tools {
+              |  def compute(): Int = 1
+              |  def unused(): Int = 2
+              |  def size(a: java.util.List[String], b: java.util.List[String]): Int = a.size + b.size + a.hashCode
+              |}""".stripMargin,
+          "Shapes.scala" ->
+            """trait Shape { def area: Int }
+              |class Circle extends Shape { def area = 1 }
+              |class Square extends Shape { def area = 2 }
+              |class Triangle extends Shape { def area = 3 }
+              |object Looping {
+              |  def total(shapes: Array[Shape]): Int = {
+              |    var sum = 0
+              |    var index = 0
+              |    while (index < shapes.length) { sum += shapes(index).area; index += 1 }
+              |    sum
+              |  }
+              |}""".stripMargin,
           "First.scala"  -> huge("First"),
           "Second.scala" -> huge("Second"),
           "Third.scala"  -> huge("Third")
@@ -76,6 +103,7 @@ class DeterminismSuite extends AnalysisSuite {
       val sequential = analyse(Parallel.sequential, classes, models)
       assert(sequential.exists(_.startsWith("huge-method\t")), sequential.mkString("\n"))
       assert(sequential.exists(_.startsWith("ignored-result\t")), sequential.mkString("\n"))
+      assert(sequential.exists(_.startsWith("megamorphic-call\t")), sequential.mkString("\n"))
       for (_ <- 1 to 3) {
         val parallel = Parallel(4)
         try assertEquals(analyse(parallel, classes, models), sequential)

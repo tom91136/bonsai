@@ -123,33 +123,31 @@ object ScalaHolder {
   private def methodOf(file: ClassFile, name: String): Method =
     file.methods.find(_.name == name).getOrElse(fail(s"no method $name in ${file.name}"))
 
-  private def lineOf(source: String, fragment: String): Int = source.linesIterator.indexWhere(_.contains(fragment)) + 1
-
   private def withMajor(bytes: Array[Byte], major: Int): Array[Byte] =
     bytes.updated(6, (major >> 8).toByte).updated(7, major.toByte)
 
   private def kindsFile: ClassFile = parse(classBytes("fixture/Kinds"))
 
-  test("reads invocations with their kinds and lines") {
+  test("reads invocations with their kinds") {
     val file = kindsFile
     assert(
       methodOf(file, "length").invocations.contains(
-        Invocation(Kind.Virtual, "java/lang/String", "length", "()I", lineOf(kinds, "return s.length()"))
+        Invocation(Kind.Virtual, "java/lang/String", "length", "()I")
       )
     )
     assert(
       methodOf(file, "size").invocations.contains(
-        Invocation(Kind.Interface, "java/util/List", "size", "()I", lineOf(kinds, "items.size()"))
+        Invocation(Kind.Interface, "java/util/List", "size", "()I")
       )
     )
     assert(
       methodOf(file, "abs").invocations.contains(
-        Invocation(Kind.Static, "java/lang/Math", "abs", "(I)I", lineOf(kinds, "Math.abs"))
+        Invocation(Kind.Static, "java/lang/Math", "abs", "(I)I")
       )
     )
     assert(
       methodOf(file, "hash").invocations.contains(
-        Invocation(Kind.Special, "java/lang/Object", "hashCode", "()I", lineOf(kinds, "super.hashCode()"))
+        Invocation(Kind.Special, "java/lang/Object", "hashCode", "()I")
       )
     )
   }
@@ -166,14 +164,12 @@ object ScalaHolder {
     )
   }
 
-  test("reads monitors and instantiations") {
+  test("reads instantiations") {
     val file = kindsFile
-    assert(methodOf(file, "lock").monitors)
-    assert(!methodOf(file, "hash").monitors)
     assertEquals(methodOf(file, "make").instantiated, Set("java/lang/StringBuilder"))
     assert(
       methodOf(file, "make").invocations.contains(
-        Invocation(Kind.Special, "java/lang/StringBuilder", "<init>", "()V", lineOf(kinds, "new StringBuilder"))
+        Invocation(Kind.Special, "java/lang/StringBuilder", "<init>", "()V")
       )
     )
   }

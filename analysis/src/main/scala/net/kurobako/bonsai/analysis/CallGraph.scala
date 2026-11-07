@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.analysis
 
+import net.kurobako.bonsai.analysis.CallGraph.*
 import net.kurobako.bonsai.analysis.ClassFiles.*
 import org.objectweb.asm.Opcodes
 import scala.collection.mutable
@@ -71,13 +72,28 @@ private[analysis] object CallGraph {
     }
   }
 
-  private enum Receiver {
+  /** A class the program instantiates, or a lambda, which is a class of its own. */
+  enum Receiver {
     case Instance(name: String)
     case Closure(site: LambdaSite)
+
+    /** The class the receiver is of, or that holds the lambda. */
+    def owner: String = this match {
+      case Instance(name) => name
+      case Closure(site)  => site.holder.owner
+    }
   }
+
+  private def runs(callee: Reference, lambda: Lambda): Boolean =
+    callee.name == lambda.sam &&
+      (callee.descriptor == lambda.samDescriptor || lambda.bridges.contains(callee.descriptor))
+
+  private def conforms(name: String, owner: String, world: ClassWorld): Boolean =
+    name == owner || world.ancestors(name).contains(owner)
 
   private class Walk(world: ClassWorld, build: String => Boolean) {
     private val reachable    = mutable.Set.empty[Reference]
+    private val targets      = mutable.Map.empty[Reference, mutable.Set[Reference]]
     private val pending      = mutable.Queue.empty[Reference]
     private val instances    = mutable.Set.empty[String]
     private val closures     = mutable.Map.empty[LambdaSite, Lambda]
@@ -98,7 +114,9 @@ private[analysis] object CallGraph {
       drain()
       CallGraph(
         reachable.toSet,
+        targets.view.mapValues(_.toSet).toMap,
         instances.toSet,
+        closures.toMap,
         testMethods.toSet,
         testClasses.toSet
       )
@@ -123,10 +141,11 @@ private[analysis] object CallGraph {
         pending.enqueue(method)
       }
 
+    private def reached(callee: Reference, target: Reference): Unit =
+      if (targets.getOrElseUpdate(callee, mutable.Set.empty).add(target)) reach(target)
+
     private def visit(method: Reference): Unit =
-      world.get(method.owner)
-        .flatMap(_.methods.find(found => found.name == method.name && found.descriptor == method.descriptor))
-        .foreach(body(method, _))
+      world.method(method).foreach(body(method, _))
 
     private def body(holder: Reference, method: Method): Unit = {
       method.invocations.foreach { invocation =>
@@ -160,26 +179,23 @@ private[analysis] object CallGraph {
     private def link(callee: Reference, receiver: Receiver): Unit =
       receiver match {
         case Receiver.Instance(name) =>
-          world.select(name, callee).foreach(target => reach(reference(target)))
+          world.select(name, callee).foreach(target => reached(callee, reference(target)))
         case Receiver.Closure(at) => invoke(callee, closures(at))
       }
 
     private def invoke(callee: Reference, lambda: Lambda): Unit =
-      if (
-        callee.name == lambda.sam &&
-        (callee.descriptor == lambda.samDescriptor || lambda.bridges.contains(callee.descriptor))
-      ) implementation(lambda)
+      if (runs(callee, lambda)) implementation(callee, lambda)
       else
         (lambda.interface +: lambda.markers).view.flatMap(world.select(_, callee)).find(!_.method.isAbstract)
-          .foreach(target => reach(reference(target)))
+          .foreach(target => reached(callee, reference(target)))
 
-    private def implementation(lambda: Lambda): Unit = {
+    private def implementation(callee: Reference, lambda: Lambda): Unit = {
       val handle = Reference(lambda.owner, lambda.name, lambda.descriptor)
       lambda.tag match {
         case Opcodes.H_INVOKEVIRTUAL | Opcodes.H_INVOKEINTERFACE => site(handle)
         case tag                                                 =>
           world.resolve(handle).foreach { target =>
-            reach(reference(target))
+            reached(callee, reference(target))
             if (tag == Opcodes.H_INVOKESTATIC) initialise(target.owner)
           }
       }
@@ -247,7 +263,27 @@ private[analysis] object CallGraph {
   */
 private[analysis] case class CallGraph(
     reachable: Set[Reference],
+    dispatch: Map[Reference, Set[Reference]],
     instantiated: Set[String],
+    lambdas: Map[LambdaSite, Lambda],
     testOnly: Set[Reference],
     testInstantiated: Set[String]
-)
+) {
+
+  /** The classes and lambdas whose override of `callee` a call of it can run, which is the same for every site of
+    * `callee`; it is derived from the instantiated types and lambdas rather than stored.
+    */
+  def receivers(callee: Reference, world: ClassWorld): Vector[Receiver] = {
+    val owner  = callee.owner
+    val direct = instantiated.toVector.filter(name =>
+      conforms(name, owner, world) && world.select(name, callee).isDefined
+    ).sorted.map(Receiver.Instance(_))
+    val closures = lambdas.toVector.filter { (_, lambda) =>
+      owner == objectClass || (lambda.interface +: lambda.markers).exists(conforms(_, owner, world))
+    }.filter((_, lambda) =>
+      runs(callee, lambda) ||
+        (lambda.interface +: lambda.markers).view.flatMap(world.select(_, callee)).exists(!_.method.isAbstract)
+    ).map(_._1).sortBy(site => (site.holder.toString, site.position)).map(Receiver.Closure(_))
+    direct ++ closures
+  }
+}

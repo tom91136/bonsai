@@ -11,6 +11,7 @@ private[analysis] object ClassWorld {
   def apply(load: String => Option[Array[Byte]]): ClassWorld = new ClassWorld(load)
 }
 
+/** The classes `load` finds, read on demand. */
 private[analysis] class ClassWorld(load: String => Option[Array[Byte]]) {
   private val objectClass     = "java/lang/Object"
   private val classes         = mutable.Map.empty[String, Option[ClassFile]]
@@ -32,6 +33,12 @@ private[analysis] class ClassWorld(load: String => Option[Array[Byte]]) {
     }
   )
 
+  /** What the bodies of `methods`, declared by the class `owner`, do to the objects they may not own; only the methods
+    * summarised are followed.
+    */
+  def trace(owner: String, methods: Vector[Method]): Map[(String, String), Trace] =
+    load(owner).fold(Map.empty)(ClassFiles.trace(_, owner, methods))
+
   def key(reference: Reference): String =
     ClassFiles.key(reference, get(reference.owner).flatMap(_.enclosingInstance))
 
@@ -50,6 +57,10 @@ private[analysis] class ClassWorld(load: String => Option[Array[Byte]]) {
     */
   def declares(owner: String, method: Method): Boolean =
     declared(owner, method.name, method.descriptor).exists(_.method.overridable)
+
+  /** The method the class `reference` names declares with exactly that name and descriptor. */
+  def method(reference: Reference): Option[Method] =
+    named(reference.owner).get(reference.name).flatMap(_.find(_.descriptor == reference.descriptor))
 
   def resolve(reference: Reference): Option[Target] =
     resolved.getOrElseUpdate(reference, lookup(reference.owner, reference.name, reference.descriptor))
@@ -105,10 +116,11 @@ private[analysis] class ClassWorld(load: String => Option[Array[Byte]]) {
   private def array(name: String): ClassFile =
     ClassFile(name, Opcodes.ACC_PUBLIC, Some(objectClass), Vector.empty, Vector.empty, Vector.empty, None)
 
-  private def declared(owner: String, name: String, descriptor: String): Option[Target] = {
-    val named = indices.getOrElseUpdate(owner, get(owner).fold(Map.empty)(_.methods.groupBy(_.name))).get(name)
-    named.flatMap(_.find(matches(owner, _, descriptor))).map(Target(owner, _))
-  }
+  private def declared(owner: String, name: String, descriptor: String): Option[Target] =
+    named(owner).get(name).flatMap(_.find(matches(owner, _, descriptor))).map(Target(owner, _))
+
+  private def named(owner: String): Map[String, Vector[Method]] =
+    indices.getOrElseUpdate(owner, get(owner).fold(Map.empty)(_.methods.groupBy(_.name)))
 
   private def matches(owner: String, method: Method, descriptor: String): Boolean =
     method.descriptor == descriptor || polymorphic(owner, method)

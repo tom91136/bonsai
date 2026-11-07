@@ -78,6 +78,13 @@ class Statics {
 
 class StaticSub extends Statics {
 }
+
+class FieldBase {
+  int value;
+}
+
+class FieldSub extends FieldBase {
+}
 """
 
   private lazy val classes: Path = {
@@ -140,6 +147,25 @@ class StaticSub extends Statics {
       fresh.resolve(Reference("java/lang/invoke/MethodHandle", "invokeExact", "(II)V")).map(_.owner),
       Some("java/lang/invoke/MethodHandle")
     )
+  }
+
+  test("a signature polymorphic call resolves for a method handle and a variable handle, and for nothing else") {
+    val handle = "java/lang/invoke/VarHandle"
+    assertEquals(
+      fresh.resolve(Reference(handle, "compareAndSet", "(Ljava/lang/Object;II)Z")).map(_.owner),
+      Some(handle)
+    )
+    val methods = "java/lang/invoke/MethodHandle"
+    assertEquals(fresh.resolve(Reference(methods, "invokeWithArguments", "(I)Ljava/lang/Object;")), None)
+    assertEquals(fresh.resolve(Reference(methods, "type", "(I)I")), None)
+    assertEquals(fresh.resolve(Reference("java/lang/String", "format", "(I)Ljava/lang/String;")), None)
+  }
+
+  test("a field is held by the class that declares it with that descriptor, found through the superclass") {
+    val inherited = FieldAccess("fixture/FieldSub", "value", "I", static = false, write = false)
+    assertEquals(fresh.fieldHolder(inherited), Some("fixture/FieldBase"))
+    assertEquals(fresh.fieldHolder(inherited.copy(descriptor = "J")), None)
+    assertEquals(fresh.fieldHolder(inherited.copy(name = "other")), None)
   }
 
   test("selects the Object method for an array receiver") {
