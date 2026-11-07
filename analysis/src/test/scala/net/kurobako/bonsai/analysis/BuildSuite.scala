@@ -52,6 +52,21 @@ class BuildSuite extends FunSuite {
       assert(Manifest.read(unknown).left.exists(_.contains("unrecognised manifest line: mystery")))
   }
 
+  withRoot("the jdk line names the target home, and a repeat with the same home is accepted") { root =>
+    val home   = root.resolve("jdk-25")
+    val once   = write(root, "once.tsv", s"jdk\t$home\nroot\t$root\n")
+    val twice  = write(root, "twice.tsv", s"jdk\t$home\njdk\t$home\nroot\t$root\n")
+    val absent = write(root, "absent.tsv", s"root\t$root\n")
+    assertEquals(Manifest.read(once).map(_.jdk), Right(Some(home)))
+    assertEquals(Manifest.read(twice).map(_.jdk), Right(Some(home)))
+    assertEquals(Manifest.read(absent).map(_.jdk), Right(None))
+  }
+
+  withRoot("a jdk line naming another home than the first is an error") { root =>
+    val manifest = write(root, "manifest.tsv", s"jdk\t${root.resolve("jdk-25")}\njdk\t${root.resolve("jdk-21")}\n")
+    assert(Manifest.read(manifest).left.exists(_.contains("conflicting jdk")))
+  }
+
   test("modules without fatal warnings are reported") {
     val manifest = Manifest(
       Vector.empty,

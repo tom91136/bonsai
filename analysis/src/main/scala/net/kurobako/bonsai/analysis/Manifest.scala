@@ -11,7 +11,8 @@ object Manifest {
 
   /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <module> <entry>`, `library <module>`,
     * `platform <module>`, `option <module> <compiler option>`, `source <module> <scope> <file>`, `model <module>
-    * <scope> <file>`, `root <directory>`, `text-exclude <glob>` and `text <rule index> <field> <value>` lines.
+    * <scope> <file>`, `jdk <home>`, `root <directory>`, `text-exclude <glob>` and `text <rule index> <field> <value>`
+    * lines.
     */
   def read(path: Path): Either[String, Manifest] =
     Files.readAllLines(path).asScala.toVector.zipWithIndex.filter(_._1.nonEmpty)
@@ -44,6 +45,10 @@ object Manifest {
                 scopeOf(path, index, scope).map {
                   parsed => current.copy(models = current.models :+ Output(module, parsed, Path.of(location)))
                 }
+              case List("jdk", location) =>
+                val home = Path.of(location)
+                if (current.jdk.exists(_ != home)) Left(s"$path:${index + 1}: conflicting jdk: $location")
+                else Right(current.copy(jdk = Some(home)))
               case List("root", location)     => Right(current.copy(root = Some(Path.of(location))))
               case List("text-exclude", glob) => Right(current.copy(textExclusions = current.textExclusions :+ glob))
               case List("text", rule, field, value) if rule.toIntOption.isDefined =>
@@ -65,7 +70,8 @@ object Manifest {
   * module, `sources` the source files written by hand, and `root` the directory of the build, which reported paths are
   * relative to. `platforms` are the Scala.js and Scala Native twins of JVM modules, which compile the shared sources
   * again. `texts` holds the fields of each repository text rule by its index, and `textExclusions` the files no text
-  * rule reads. `models` holds the files the javac plugin collected the model of the Java code of each module in.
+  * rule reads. `models` holds the files the javac plugin collected the model of the Java code of each module in, and
+  * `jdk` the home of the JDK the build targets, whose classes are read before the outputs.
   */
 case class Manifest(
     outputs: Vector[Output],
@@ -77,7 +83,8 @@ case class Manifest(
     platforms: Set[String] = Set.empty,
     texts: Map[Int, Map[String, Vector[String]]] = Map.empty,
     textExclusions: Vector[String] = Vector.empty,
-    models: Vector[Output] = Vector.empty
+    models: Vector[Output] = Vector.empty,
+    jdk: Option[Path] = None
 ) {
 
   /** The entries of the classpaths of `modules`, in their order, each once. */

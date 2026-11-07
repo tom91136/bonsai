@@ -67,7 +67,7 @@ public class AnalyseMojo extends BonsaiMojo {
       configuration.library());
 
     Path root = root();
-    List<String> fragment = Analysis.manifest(root, List.of(module), configuration.text());
+    List<String> fragment = Analysis.manifest(root, jdk.toPath(), List.of(module), configuration.text());
 
     Path fragments = fragments();
     Path file = fragments.resolve(project.getArtifactId() + ".tsv");

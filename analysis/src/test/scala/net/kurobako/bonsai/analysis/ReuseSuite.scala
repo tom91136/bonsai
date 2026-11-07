@@ -190,8 +190,8 @@ class ReuseSuite extends AnalysisSuite {
   test("every manifest field is either hashed through its paths or read by the key by name") {
     val fields = classOf[Manifest].getDeclaredFields.map(_.getName).toSet
     val paths  = Set("outputs", "classpath", "sources", "models")
-    // option, platforms, libraries, texts and textExclusions are in the manifest bytes; root is read through the scan
-    val named = Set("libraries", "options", "root", "platforms", "texts", "textExclusions")
+    // option, platforms, libraries, jdk, texts and textExclusions are in the manifest bytes; root is read by the scan
+    val named = Set("libraries", "jdk", "options", "root", "platforms", "texts", "textExclusions")
     assertEquals(fields, paths ++ named)
     val manifest = Manifest(
       Vector(Output("a", Output.Scope.Main, Path.of("o"))),

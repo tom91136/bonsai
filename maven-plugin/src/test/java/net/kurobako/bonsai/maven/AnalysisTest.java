@@ -31,13 +31,16 @@ class AnalysisTest {
     Files.writeString(source, "object Main");
     Files.writeString(testSource, "object MainSpec");
 
+    Path jdk = root.resolve("jdk-25");
     List<String> manifest = Analysis.manifest(
       root,
+      jdk,
       List.of(new Module("demo", classes, testClasses, model, testModel, List.of(source), List.of(testSource),
         List.of("/repo/library.jar"), List.of("-Werror"), true)),
       List.of());
 
     assertTrue(manifest.contains("root\t" + root), manifest.toString());
+    assertTrue(manifest.contains("jdk\t" + jdk), manifest.toString());
     assertTrue(manifest.contains("output\tdemo\tmain\t" + classes), manifest.toString());
     assertTrue(manifest.contains("output\tdemo\ttest\t" + testClasses), manifest.toString());
     assertTrue(manifest.contains("model\tdemo\tmain\t" + model), manifest.toString());
@@ -53,6 +56,7 @@ class AnalysisTest {
   void aModuleOtherBuildsUseIsNotReportedAsUnused() throws IOException {
     List<String> manifest = Analysis.manifest(
       root,
+      root.resolve("jdk-25"),
       List.of(new Module("demo", root.resolve("classes"), root.resolve("test-classes"),
         null, null, List.of(), List.of(), List.of(), List.of(), false)),
       List.of());
@@ -64,6 +68,7 @@ class AnalysisTest {
   void aModuleWithoutAModelHasNoModelLine() throws IOException {
     List<String> manifest = Analysis.manifest(
       root,
+      root.resolve("jdk-25"),
       List.of(new Module("demo", root.resolve("classes"), null, null, null,
         List.of(), List.of(), List.of(), List.of(), false)),
       List.of());

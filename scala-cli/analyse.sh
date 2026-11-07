@@ -31,8 +31,10 @@ tool -M net.kurobako.bonsai.analysis.Configure -- --config "$project/.bonsai.con
 manifest="$project/.scala-build/bonsai/manifest.tsv"
 mkdir -p "$(dirname "$manifest")"
 if grep -qx $'library\ttrue' "$configuration"; then library=true; fi
+java_home=$(java -XshowSettings:properties -version 2>&1 | awk '$1 == "java.home" { print $3 }')
 {
   printf 'root\t%s\n' "$project"
+  printf 'jdk\t%s\n' "$java_home"
   while IFS= read -r entry; do
     case "$entry" in
       */classes/main) printf 'output\t%s\tmain\t%s\n' "$name" "$entry" ;;

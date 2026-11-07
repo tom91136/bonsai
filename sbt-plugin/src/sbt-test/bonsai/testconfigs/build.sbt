@@ -20,6 +20,7 @@ lazy val root = project.in(file("."))
     Shared / scalaSource := (IT / scalaSource).value,
     checkOutputs         := Def.uncached {
       val lines   = IO.readLines(target.value / "bonsai" / "manifest.tsv")
+      assert(lines.count(_.startsWith("jdk\t")) == 1, lines.mkString(", "))
       val outputs = lines.collect { case s"output\t$_\t$scope\t$directory" => scope -> file(directory).getName }
       val classes = outputs.filter(_._1 == "test").map(_._2).sorted
       assert(outputs.count(_._1 == "main") == 1, outputs.mkString(", "))

@@ -47,6 +47,7 @@ ThisBuild / semanticdbVersion := scalafixSemanticdb.revision
 
 lazy val analysisConfiguration = taskKey[BonsaiConfiguration.Configuration]("The .bonsai.conf of this build.")
 lazy val analysisManifest      = taskKey[File]("Write the whole-build analysis manifest of this build.")
+lazy val bonsaiJdk             = settingKey[File]("The JDK home the whole-build analysis reads the classes of first.")
 lazy val analyse               = taskKey[Unit]("Run the whole-build analysis over this build.")
 lazy val analysisClasspath = taskKey[Unit]("Print the classpath that runs the analysis, for scripts to run it with.")
 lazy val analysisArguments =
@@ -436,6 +437,7 @@ lazy val root = project.in(file("."))
     name                  := "bonsai",
     publish / skip        := true,
     analysisConfiguration := Def.uncached(BonsaiConfiguration.read((ThisBuild / baseDirectory).value / ".bonsai.conf")),
+    bonsaiJdk             := (Compile / javaHome).value.getOrElse(file(sys.props("java.home"))),
     analysisManifest      := Def.uncached {
       val base       = (ThisBuild / baseDirectory).value
       val configured = analysisConfiguration.value
@@ -456,10 +458,11 @@ lazy val root = project.in(file("."))
       )
       val options = Def.task((thisProject.value.id, scalacOptions.value)).all(analysedOutputs).value
         .flatMap((id, flags) => ManifestLines.options(id, flags)).distinct
+      val jdk      = ManifestLines.jdk(bonsaiJdk.value)
       val manifest = target.value / "bonsai" / "manifest.tsv"
       IO.write(
         manifest,
-        ManifestLines.render(outputs ++ classpath ++ options ++ configured.text, base)
+        ManifestLines.render(outputs ++ jdk ++ classpath ++ options ++ configured.text, base)
       )
       manifest
     },

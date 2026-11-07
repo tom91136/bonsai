@@ -105,6 +105,8 @@ object BonsaiPlugin extends AutoPlugin {
     )
     val bonsaiPurity: SettingKey[File] =
       settingKey[File]("Methods recorded here as pure fail the analysis once they are not")
+    val bonsaiJdk: SettingKey[File] =
+      settingKey[File]("The JDK home the build targets, whose classes the analysis reads before any other")
     val bonsaiEffects: SettingKey[Map[String, Set[String]]] = settingKey[Map[String, Set[String]]](
       "Kinds of effects (reads, writes, input, output, random, unknown) the methods of a package or class may have, by " +
         "its qualified name, with * for any one name; the most specific entry decides"
@@ -276,6 +278,7 @@ object BonsaiPlugin extends AutoPlugin {
         )
     },
     bonsaiModeId  := bonsaiMode.value.toString.toLowerCase(java.util.Locale.ROOT),
+    bonsaiJdk     := (Compile / javaHome).value.getOrElse(file(sys.props("java.home"))),
     bonsaiLibrary := Def.uncached(bonsaiConfiguration.value.library(thisProject.value.id)
       .getOrElse(!(publish / skip).value && (Compile / discoveredMainClasses).value.isEmpty)),
     libraryDependencies ++= {
@@ -495,12 +498,13 @@ object BonsaiPlugin extends AutoPlugin {
       val sources  = kept.flatMap(entry => ManifestLines.sources(entry.project, entry.scope, entry.sources))
       val baseline = bonsaiBaseline.value
       val purity   = bonsaiPurity.value
+      val jdk      = ManifestLines.jdk(bonsaiJdk.value)
       val manifest = target.value / "bonsai" / "manifest.tsv"
       val text     = bonsaiConfiguration.value.text
       IO.write(
         manifest,
         ManifestLines.render(
-          outputs ++ platform ++ classpath ++ compilerOptions ++ sources ++ text,
+          outputs ++ platform ++ jdk ++ classpath ++ compilerOptions ++ sources ++ text,
           (ThisBuild / baseDirectory).value
         )
       )

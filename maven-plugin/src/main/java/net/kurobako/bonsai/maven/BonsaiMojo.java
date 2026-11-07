@@ -79,6 +79,10 @@ public abstract class BonsaiMojo extends AbstractMojo {
   @Parameter(property = "bonsai.analysisHeap", defaultValue = "4g")
   protected String analysisHeap;
 
+  /** The home of the JDK the build targets, whose classes the analysis reads before those of the build. */
+  @Parameter(property = "bonsai.jdk", defaultValue = "${java.home}")
+  protected File jdk;
+
   /** The configuration of the build for the module of this project, which the analysis jar reads. */
   protected Configuration configuration(Tools tools) throws MojoExecutionException {
     try {

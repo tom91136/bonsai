@@ -19,5 +19,7 @@ object ManifestLines {
 
   def options(project: String, flags: Seq[String]): Seq[String] = flags.map(flag => s"option\t$project\t$flag")
 
+  def jdk(home: File): Seq[String] = Seq(s"jdk\t$home")
+
   def render(lines: Seq[String], root: File): String = (lines :+ s"root\t$root").mkString("", "\n", "\n")
 }

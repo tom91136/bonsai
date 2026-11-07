@@ -37,6 +37,10 @@ class ManifestLinesSuite extends munit.FunSuite {
     assertEquals(ManifestLines.options("api", Seq("-deprecation")), Seq("option\tapi\t-deprecation"))
   }
 
+  test("the jdk line names the target home") {
+    assertEquals(ManifestLines.jdk(file("/opt/jdk-25")), Seq("jdk\t/opt/jdk-25"))
+  }
+
   test("the rendered manifest ends with the root line and a newline") {
     assertEquals(
       ManifestLines.render(Seq("output\tapi\tmain\t/api/classes", "classpath\tapi\t/lib/cats.jar"), file("/build")),

@@ -21,15 +21,17 @@ public final class Analysis {
 
   /**
    * The manifest of the build, which names the output of every module, its model, its classpath, its sources and its
-   * compiler options, and the text rules the analysis reads.
+   * compiler options, the JDK the build targets, and the text rules the analysis reads.
    */
   public static List<String> manifest(
     Path root,
+    Path jdk,
     List<Module> modules,
     List<String> text
   ) {
     List<String> manifest = new ArrayList<>();
     manifest.add("root\t" + root);
+    manifest.add("jdk\t" + jdk);
     for (Module module : modules) {
       if (module.classes() != null) {
         manifest.add("output\t" + module.id() + "\tmain\t" + module.classes());

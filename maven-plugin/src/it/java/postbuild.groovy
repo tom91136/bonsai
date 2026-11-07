@@ -12,6 +12,7 @@ assert !testNodes.any { it.startsWith("node\tdemo.Counter\t") } : "the model of 
 // The analysis reads the model, so the manifest names it and the analysis reports the class nothing refers to.
 def manifest = new File(basedir, "target/bonsai/manifest.tsv").readLines()
 assert manifest.any { it.startsWith("model\tjava\tmain\t") } : "the manifest does not name the model"
+assert manifest.any { it.startsWith("jdk\t") } : "the manifest does not name the jdk"
 def log = new File(basedir, "build.log").text
 assert log.contains("demo.Unused") : "the analysis did not read the model of the Java code"
 
