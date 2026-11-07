@@ -883,7 +883,7 @@ class JavaFactsSuite extends AnalysisSuite {
       val files = models.indices.map(index => directory.resolve(s"model-$index.tsv"))
       models.zip(files).foreach((lines, file) => Files.writeString(file, lines.mkString("", "\n", "\n")))
       val outputs = files.zipWithIndex.map((file, index) => Output(s"m$index", Output.Scope.Main, file)).toVector
-      Extraction.read(Manifest(Vector.empty, classpaths, Set.empty, models = outputs))
+      Extraction.read(Manifest(Vector.empty, classpaths, Set.empty, models = outputs, jdk = targetJdk))
         .fold(errors => fail(errors.mkString("\n")), identity)
     }
 

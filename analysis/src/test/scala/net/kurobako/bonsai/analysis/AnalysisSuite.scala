@@ -30,6 +30,8 @@ trait AnalysisSuite extends FunSuite {
 
   protected val classpaths: Map[String, Vector[Path]] = Map("m" -> classpath)
 
+  protected val targetJdk: Option[Path] = Some(Path.of(sys.props("java.home")))
+
   /** Sources and resources are named by relative path; test sources see the main output. A module of `libraries`
     * publishes its main output for other builds to use, `dependencies` are compiled onto the classpath outside the
     * build, `absent` are compiled against but left off the analysed classpath, as a dependency a manifest misses is,
@@ -83,7 +85,8 @@ trait AnalysisSuite extends FunSuite {
         libraries,
         sources = located("m", Output.Scope.Main, "main", main) ++ located("m", Output.Scope.Test, "test", test) ++
           platforms.flatMap(_._2),
-        platforms = platforms.map(_._1.module).toSet
+        platforms = platforms.map(_._1.module).toSet,
+        jdk = targetJdk
       )
       val result =
         Extraction.read(manifest, generated, concurrent, reflective, hot, bounded).fold(
@@ -111,8 +114,13 @@ trait AnalysisSuite extends FunSuite {
       val classes = Files.createDirectories(directory.resolve("classes"))
       val model   = directory.resolve("java-model.tsv")
       JavaModel.write(javac(files, classes, classpath), model)
-      val manifest =
-        Manifest(Vector.empty, classpaths, libraries, models = Vector(Output("j", Output.Scope.Main, model)))
+      val manifest = Manifest(
+        Vector(Output("j", Output.Scope.Main, classes)),
+        classpaths,
+        libraries,
+        models = Vector(Output("j", Output.Scope.Main, model)),
+        jdk = targetJdk
+      )
       Extraction.read(manifest, reflective = reflective).fold(errors => fail(errors.mkString("\n")), identity)
     }
 
@@ -125,7 +133,8 @@ trait AnalysisSuite extends FunSuite {
     Scratch.using("bonsai-") { directory =>
       val file = directory.resolve("java-model.tsv")
       Files.writeString(file, model.mkString("", "\n", "\n")): Unit
-      val manifest = Manifest(Vector.empty, classpaths, Set.empty, models = Vector(Output("j", scope, file)))
+      val manifest =
+        Manifest(Vector.empty, classpaths, Set.empty, models = Vector(Output("j", scope, file)), jdk = targetJdk)
       Extraction.read(manifest, generated).fold(errors => fail(errors.mkString("\n")), identity)
     }
 

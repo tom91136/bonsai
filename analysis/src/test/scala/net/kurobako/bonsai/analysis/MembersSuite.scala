@@ -1,9 +1,13 @@
 package net.kurobako.bonsai.analysis
 
+import java.nio.file.Files
+import net.kurobako.bonsai.java.Model as JavaModel
+import net.kurobako.bonsai.testing.*
+
 class MembersSuite extends AnalysisSuite {
   private def findings(main: Seq[(String, String)], test: Seq[(String, String)] = Nil): Vector[Finding] = {
     val result = extract(main, test)
-    Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
+    Members.findings(result.members, result.graph.nodes, result.reach)
   }
 
   private def entry(body: String) = "Main.scala" -> s"object Main { def main(args: Array[String]): Unit = { $body } }"
@@ -14,6 +18,212 @@ class MembersSuite extends AnalysisSuite {
     assertFinding(found, "unused-member", "Tools.spare is never referenced")
     assertNoFinding(found)(finding =>
       finding.rule != Finding.Rule.MisplacedMember && finding.detail.contains("Tools.used")
+    )
+  }
+
+  test("a method called only from a dead method of a live type is unused, however far the chain runs") {
+    val found = findings(
+      Seq(
+        entry("println(Tools.used)"),
+        "Tools.scala" ->
+          "object Tools { def used = 1; def dead = first; def first = second; def second = 2 }"
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail }.sorted,
+      Vector("Tools.dead is never referenced", "Tools.first is never referenced", "Tools.second is never referenced")
+    )
+  }
+
+  test(
+    "a method only an override of a method outside the build calls is used, since the host dispatches to the override"
+  ) {
+    val found = findings(
+      Seq(
+        entry("val _ = Spy(1)"),
+        "Spy.scala" ->
+          """class Spy(val v: Int) extends Comparable[Spy] { def compareTo(other: Spy): Int = Spy.weigh(v) - Spy.weigh(other.v) }
+            |object Spy { def weigh(value: Int): Int = scale(value); def scale(value: Int): Int = value * 2 }""".stripMargin
+      )
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.UnusedMember)
+  }
+
+  test("a method only Java code calls is used, and so is what only it calls, by the keys the two languages share") {
+    Scratch.using("bonsai-") { directory =>
+      val scala = compile(
+        directory.resolve("scala"),
+        Seq("Tools.scala" -> "package lib\nobject Tools { def fromJava = inner; def inner = 1; def spare = 2 }"),
+        Vector.empty
+      )
+      val java = Seq(
+        "demo/Caller.java" ->
+          "package demo;\n\nimport lib.Tools;\n\npublic class Caller {\n  public static void main(String[] args) { Tools.fromJava(); }\n}\n"
+      )
+      write(directory.resolve("java"), java)
+      val classes = Files.createDirectories(directory.resolve("java-classes"))
+      val model   = directory.resolve("java-model.tsv")
+      JavaModel.write(
+        javac(java.map((name, _) => directory.resolve("java").resolve(name)), classes, classpath :+ scala),
+        model
+      )
+      val manifest = Manifest(
+        Vector(Output("m", Output.Scope.Main, scala), Output("j", Output.Scope.Main, classes)),
+        Map("m" -> classpath, "j" -> (classpath :+ scala)),
+        Set.empty,
+        models = Vector(Output("j", Output.Scope.Main, model)),
+        jdk = targetJdk
+      )
+      val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      assertEquals(
+        Members.findings(result.members, result.graph.nodes, result.reach).collect {
+          case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail
+        },
+        Vector("Tools.spare is never referenced")
+      )
+    }
+  }
+
+  test("the constructs a program uses are not reported unused, however the bytecode reaches them") {
+    val result = extract(
+      Seq(
+        "Fp.scala" ->
+          """
+            |package fp
+            |
+            |import fp.Syntax.doubled
+            |import scala.annotation.tailrec
+            |
+            |enum Colour {
+            |  case Red, Green
+            |  case Mixed(red: Int, green: Int)
+            |
+            |  def label: String = this match {
+            |    case Red      => "r"
+            |    case Green    => "g"
+            |    case Mixed(r, g) => s"$r$g"
+            |  }
+            |}
+            |
+            |sealed trait Shape
+            |case object Dot extends Shape
+            |case class Box(side: Int) extends Shape {
+            |  def area: Int = side * side
+            |}
+            |
+            |trait Greeter {
+            |  def greet(name: String): String = decorate(s"hi $name")
+            |  protected def decorate(text: String): String
+            |}
+            |
+            |class Loud extends Greeter {
+            |  protected def decorate(text: String): String = text.toUpperCase.trim + suffix
+            |  private def suffix: String = "!"
+            |}
+            |
+            |object Syntax {
+            |  extension (value: Int) def doubled: Int = value * 2
+            |  given ordering: Ordering[Box] = Ordering.by(_.side)
+            |  implicit def widen(value: Int): Long = value.toLong
+            |  inline def twice(inline value: Int): Int = helper(value) + helper(value)
+            |  def helper(value: Int): Int = value + 1
+            |  lazy val expensive: Int = compute()
+            |  private def compute(): Int = 42
+            |  val Limit = 5
+            |  final val Constant = 7
+            |}
+            |
+            |object Parse {
+            |  def unapply(text: String): Option[Int] = text.toIntOption
+            |}
+            |
+            |class Counter(start: Int = 0, step: Int = defaultStep) {
+            |  def next(current: Int): Int = current + step + start
+            |}
+            |
+            |object Counter {
+            |  def defaultStep: Int = 1
+            |}
+            |
+            |class Failure(message: String) extends Exception(message)
+            |
+            |class Resource extends AutoCloseable {
+            |  def close(): Unit = release()
+            |  private def release(): Unit = ()
+            |}
+            |
+            |object Program {
+            |  @tailrec def loop(count: Int, total: Int): Int = if (count == 0) total else loop(count - 1, total + count)
+            |
+            |  def run(): Int = {
+            |    val colours = List(Colour.Red, Colour.Green, Colour.Mixed(1, 2)).map(_.label).mkString
+            |    val boxed = Box(3)
+            |    val shape: Shape = boxed
+            |    val area = shape match {
+            |      case Dot     => 0
+            |      case Box(s)  => s + boxed.area
+            |    }
+            |    val sorted = List(Box(2), Box(1)).sorted(using Syntax.ordering)
+            |    val widened: Long = 3
+            |    val parsed = "12" match {
+            |      case Parse(number) => number
+            |      case _             => 0
+            |    }
+            |    val caught =
+            |      try throw new Failure("x")
+            |      catch { case failure: Failure => 1 }
+            |    val resource = new Resource
+            |    try resource.close()
+            |    finally ()
+            |    val counter = new Counter()
+            |    val values = Colour.Red.ordinal + Colour.Mixed(1, 2).ordinal
+            |    Syntax.twice(1) + Syntax.expensive + Syntax.Limit + Syntax.Constant + 1.doubled + loop(3, 0) + area + parsed + caught +
+            |      counter.next(0) + values + widened.toInt + sorted.size + new Loud().greet("x").length + colours.length
+            |  }
+            |}
+            |
+            |object Entry {
+            |  def main(args: Array[String]): Unit = println(Program.run())
+            |}
+            |""".stripMargin
+      )
+    )
+    val found = Liveness.findings(result.graph, result.reach) ++
+      Members.findings(result.members, result.graph.nodes, result.reach)
+    val liveness = Set("unused", "test-only", "unused-member", "test-only-member", "unread-field")
+    assertEquals(
+      found.collect { case finding if liveness(finding.rule.id) => finding.rule.id -> finding.detail },
+      Vector.empty[(String, String)]
+    )
+  }
+
+  test("a method only a method reached from tests alone calls is test-only with the method that calls it") {
+    val found = findings(
+      Seq(
+        entry("println(Tools.used)"),
+        "Tools.scala" -> "object Tools { def used = 1; def staged = shared; def shared = 2 }"
+      ),
+      Seq("Check.scala" -> "object Check { def check = Tools.staged }")
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.TestOnlyMember => finding.detail },
+      Vector("2 members of Tools are referenced only from tests: Tools.shared, Tools.staged")
+    )
+  }
+
+  test("a class and its object that declare one signature share a key, so reaching either keeps what the other calls") {
+    def unused(objectMethod: String, call: String) = findings(
+      Seq(
+        entry(s"println(Box.$call)"),
+        "Box.scala" ->
+          s"""class Box { def stray(value: Int) = secret; def secret = 1 }
+             |object Box { $objectMethod }""".stripMargin
+      )
+    ).collect { case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail }.sorted
+    assertEquals(unused("def stray(value: Int) = 2", "stray(1)"), Vector("Box.stray is never referenced"))
+    assertEquals(
+      unused("def stray(value: Int, other: Int) = 2", "stray(1, 2)"),
+      Vector("Box.secret is never referenced", "Box.stray is never referenced")
     )
   }
 
@@ -402,7 +612,7 @@ class MembersSuite extends AnalysisSuite {
       Seq("ClientCheck.scala" -> "class ClientCheck { val value = lib.Client().fetch }"),
       libraries = Set("m")
     )
-    val found = Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
+    val found = Members.findings(result.members, result.graph.nodes, result.reach)
     assertEquals(
       found.map(_.detail).sorted,
       Vector("Client.internal is never referenced", "Hidden.spare is never referenced")
@@ -425,8 +635,8 @@ class MembersSuite extends AnalysisSuite {
     )
     def found(reflective: Vector[String]) = {
       val result = extract(sources, reflective = reflective)
-      Liveness.findings(result.graph) ++
-        Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
+      Liveness.findings(result.graph, result.reach) ++
+        Members.findings(result.members, result.graph.nodes, result.reach)
     }
     def unused(reflective: Vector[String]) =
       found(reflective).map(finding => finding.rule.id -> finding.node.name).sorted
@@ -437,7 +647,10 @@ class MembersSuite extends AnalysisSuite {
 
   test("members used only from a platform twin's own sources are used, and shared types stay the JVM module's") {
     val result = extract(
-      Seq(entry("println(Model.shown)"), "Model.scala" -> "object Model { def shown = 1; def assemble = 2 }"),
+      Seq(
+        entry("println(Model.shown)"),
+        "Model.scala" -> "object Model { def shown = 1; def assemble = helper; def helper = 2 }"
+      ),
       twins =
         Seq(Seq("Explorer.scala" ->
           "object Explorer { def main(args: Array[String]): Unit = println(Model.assemble) }"))
@@ -445,9 +658,9 @@ class MembersSuite extends AnalysisSuite {
     assertEquals(result.graph.nodes.get("Model").map(_.module), Some("m"))
     assertEquals(result.graph.nodes.get("Explorer").map(_.module), Some("t0"))
     assertEquals(
-      Liveness.findings(result.graph) ++
-        Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
-          .filterNot(_.rule == Finding.Rule.MisplacedMember),
+      Liveness.findings(result.graph, result.reach) ++
+        Members.findings(result.members, result.graph.nodes, result.reach)
+          .filterNot(finding => finding.rule == Finding.Rule.MisplacedMember || finding.level == Finding.Level.Info),
       Vector.empty
     )
   }
@@ -463,8 +676,8 @@ class MembersSuite extends AnalysisSuite {
     )
     assertEquals(result.graph.nodes.get("Workarounds").map(_.module), Some("m"))
     val found =
-      (Liveness.findings(result.graph) ++
-        Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph)))
+      (Liveness.findings(result.graph, result.reach) ++
+        Members.findings(result.members, result.graph.nodes, result.reach))
         .filterNot(_.rule == Finding.Rule.MisplacedMember)
     assertEquals(
       found.map(finding => finding.rule.id -> finding.detail.takeWhile(_ != ' ')).toSet,
@@ -500,7 +713,7 @@ class MembersSuite extends AnalysisSuite {
       member(name, tests).copy(line = line)
     )
     val lines = items.permutations.map { order =>
-      Members.findings(Members.Model(order, Vector.empty, Vector.empty), nodes, _ => true)
+      Members.findings(Members.Model(order, Vector.empty, Vector.empty), nodes, Reach.empty)
         .collect { case finding if finding.rule == Finding.Rule.TestOnlyMember => finding.node.line }
     }.toSet
     assertEquals(lines, Set(Vector(10)))
@@ -858,7 +1071,7 @@ class MembersSuite extends AnalysisSuite {
   private def member(name: String, users: Set[String]): Members.Member = Members.Member(
     name,
     name.split('.').init.mkString("."),
-    users,
+    users.map(Use(_)),
     inherited = false,
     rooted = false,
     overriding = false,
@@ -898,7 +1111,7 @@ class MembersSuite extends AnalysisSuite {
     node("lib.Outer.Published", exported = true)
   )
 
-  private def judged(model: Members.Model): Vector[Finding] = Members.findings(model, nodes, _ => true)
+  private def judged(model: Members.Model): Vector[Finding] = Members.findings(model, nodes, Reach.empty)
 
   test("a member some main code uses is not test-only, nor one used from outside the analysed types") {
     val found = judged(Members.Model(
@@ -973,9 +1186,9 @@ class MembersSuite extends AnalysisSuite {
                                    |  val frames = "probe.Frames"
                                    |}""".stripMargin
     val result = extract(Seq(entry("println(probe.Names.frames)"), names))
-    assertEquals(Liveness.findings(result.graph), Vector.empty)
+    assertEquals(Liveness.findings(result.graph, result.reach), Vector.empty)
     assertEquals(
-      Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
+      Members.findings(result.members, result.graph.nodes, result.reach)
         .filterNot(_.rule == Finding.Rule.MisplacedMember),
       Vector.empty
     )
@@ -988,6 +1201,6 @@ class MembersSuite extends AnalysisSuite {
                                    |  val note = "Frames"
                                    |}""".stripMargin
     val result = extract(Seq(entry("println(probe.Names.note)"), names))
-    assertEquals(Liveness.findings(result.graph).map(_.node.name), Vector("probe.Frames"))
+    assertEquals(Liveness.findings(result.graph, result.reach).map(_.node.name), Vector("probe.Frames"))
   }
 }

@@ -3,19 +3,19 @@ package net.kurobako.bonsai.analysis
 /** Liveness and visibility of the methods and values of build classes, from every reference in the build. */
 object Members {
 
-  /** A member with the nodes that reference it from outside its own body.
+  /** A member with the uses that reference it from outside its own body.
     *
     * `inherited` holds when a member it overrides is referenced or declared outside the build, so calls can reach it
     * through dynamic dispatch; `rooted` when it overrides a member of the build, which is reported instead; `constant`
     * when it is a `var` nothing assigns after initialisation; `detachable` when it is a member of an object that names
     * nothing else of the object; `field` when it is a parameter of a case class; `unlisted` when it is of the kind a
-    * collection of its siblings registers and no such collection lists it; `alias` when it is a type alias, and `line`
-    * is where it is declared, or 0 when unknown.
+    * collection of its siblings registers and no such collection lists it; `alias` when it is a type alias, `key` is
+    * the key `Keys` gives the method that stands for it, and `line` is where it is declared, or 0 when unknown.
     */
   case class Member(
       name: String,
       node: String,
-      users: Set[String],
+      users: Set[Use],
       inherited: Boolean,
       rooted: Boolean,
       overriding: Boolean,
@@ -28,6 +28,7 @@ object Members {
       field: Boolean = false,
       unlisted: Boolean = false,
       alias: Boolean = false,
+      key: Option[String] = None,
       line: Int = 0
   ) {
     def short: String = Finding.short(name)
@@ -50,15 +51,27 @@ object Members {
     val empty: Model = Model(Vector.empty, Vector.empty, Vector.empty)
   }
 
-  case class Model(members: Vector[Member], givens: Vector[Given], nested: Vector[Nested])
-
-  /** Members of `live` nodes; members of unreachable types are covered by the type-level liveness findings. Generated
-    * members are where their generator puts them, whatever uses them.
+  /** The uses of methods by the code of other languages, which the sources of the members do not hold, by the key of
+    * the method called.
     */
-  def findings(model: Model, nodes: Map[String, Node], live: String => Boolean): Vector[Finding] = {
-    val written = model.members.filterNot(member => nodes.get(member.node).exists(_.generated))
+  case class Model(
+      members: Vector[Member],
+      givens: Vector[Given],
+      nested: Vector[Nested],
+      calls: Map[String, Set[Use]] = Map.empty
+  )
+
+  /** Members of live nodes; members of unreachable types are covered by the type-level liveness findings. A member is
+    * used when a use that `reach` runs references it. Generated members are where their generator puts them, whatever
+    * uses them.
+    */
+  def findings(model: Model, nodes: Map[String, Node], reach: Reach): Vector[Finding] = {
+    val written = model.members.filterNot(member => nodes.get(member.node).exists(_.generated)).map(member =>
+      member.copy(users = member.users ++ member.key.flatMap(model.calls.get).getOrElse(Set.empty))
+    )
+    val live = reach.live(_)
     anonymous(model.givens, nodes, live) ++ hidden(model.nested, nodes, live) ++
-      grouped(visibility(written, nodes, live)) ++ misplaced(written, nodes, live) ++ drifted(written, nodes, live)
+      grouped(visibility(written, nodes, reach)) ++ misplaced(written, nodes, live) ++ drifted(written, nodes, live)
   }
 
   private val Shown = 6
@@ -100,16 +113,14 @@ object Members {
     }
   }
 
-  private def visibility(
-      members: Vector[Member],
-      nodes: Map[String, Node],
-      live: String => Boolean
-  ): Vector[Finding] = {
-    val values = members.collect { case member if !member.alias => (member.node, member.name) -> member }.toMap
-    members.view.filter(member => !member.test && live(member.node)).flatMap {
+  private def visibility(members: Vector[Member], nodes: Map[String, Node], reach: Reach): Vector[Finding] = {
+    val values          = members.collect { case member if !member.alias => (member.node, member.name) -> member }.toMap
+    def tests(use: Use) = nodes.get(use.node).exists(_.test) || !reach.mainUse(use)
+    members.view.filter(member => !member.test && reach.live(member.node)).flatMap {
       member =>
-        val used   = member.users.nonEmpty || member.inherited
-        val access =
+        val running = member.users.filter(reach.liveUse)
+        val used    = running.nonEmpty || member.inherited
+        val access  =
           if (!used)
             Option.unless(member.rooted || drifting(member))(
               if (member.field) s"${member.short} is a field nothing reads; remove it, or read it"
@@ -117,12 +128,12 @@ object Members {
             ).flatMap(
               at(nodes, member, if (member.field) Finding.Rule.UnreadField else Finding.Rule.UnusedMember, _)
             )
-          else if (!member.inherited && member.users.forall(user => nodes.get(user).exists(_.test)))
+          else if (!member.inherited && running.forall(tests(_)))
             at(nodes, member, Finding.Rule.TestOnlyMember, s"${member.short} is referenced only from tests")
           else
             Option.when(
               member.public && !member.overriding && !member.deferred && !member.inherited &&
-                member.users.forall(Node.within(nodes, _, member.node))
+                member.users.forall(user => Node.within(nodes, user.node, member.node))
             )(s"${member.short} is referenced only by its own type and companion; it can be private")
               .flatMap(at(nodes, member, Finding.Rule.WeakerAccess, _, Finding.Level.Info))
         val mutability = Option.when(used && member.constant)(s"${member.short} is never reassigned; it can be a val")
@@ -139,7 +150,7 @@ object Members {
       member.detachable && member.public && !member.test && !member.overriding &&
         !member.inherited && live(member.node)
     ).flatMap { member =>
-      member.users.toVector match {
+      member.users.map(_.node).toVector match {
         case Vector(user)
             if !Node.within(nodes, user, member.node) && !Node.within(nodes, member.node, user) &&
               nodes.get(user).exists(node => !node.test) =>

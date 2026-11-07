@@ -39,7 +39,8 @@ class JavaCostsSuite extends AnalysisSuite {
         Map("m" -> (javaOut +: classpath)),
         Set.empty,
         sources = scalaFiles.map(Output("m", Output.Scope.Main, _)).toVector,
-        models = Vector(Output("j", Output.Scope.Main, model))
+        models = Vector(Output("j", Output.Scope.Main, model)),
+        jdk = targetJdk
       )
       val result = Extraction.read(manifest, bounded = bounded).fold(errors => fail(errors.mkString("\n")), identity)
       assert(result.problems.isEmpty, result.problems.mkString("\n"))

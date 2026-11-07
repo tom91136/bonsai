@@ -43,7 +43,8 @@ object Extraction {
       purity: Purity.Model,
       lints: Vector[JavaLints.Found],
       problems: Vector[String],
-      nesting: Nesting.Model = Nesting.Model.empty
+      nesting: Nesting.Model = Nesting.Model.empty,
+      reach: Reach = Reach.empty
   )
 
   // The TASTy unpickler recurses over long import selector lists and deep trees.
@@ -76,13 +77,18 @@ object Extraction {
     )
     thread.start()
     thread.join()
-    result.future.value.fold(Left(Vector("extraction terminated abnormally")))(
+    result.future.value.fold[Either[Vector[String], Result]](Left(Vector("extraction terminated abnormally")))(
       _.fold(
         error => {
           error.printStackTrace()
           Left(Vector(s"extraction failed: $error"))
         },
         identity
+      )
+    ).flatMap(extracted =>
+      Reach.of(manifest, extracted.graph).fold(
+        error => Left(Vector(error)),
+        (reach, problems) => Right(extracted.copy(problems = extracted.problems ++ problems, reach = reach))
       )
     )
   }
@@ -140,7 +146,7 @@ object Extraction {
     else if (tasty.isEmpty)
       // A build of Java code alone has no TASTy to read, so the model the javac plugin collected is all of it.
       Right(Result(
-        Graph(java.nodes, java.edges, roots ++ java.roots),
+        Graph(java.nodes, java.edges, roots ++ java.roots, java.bodies),
         Algebra.Model(java.products, java.sums, java.guarded, java.preconditions, Vector.empty),
         Smells.Model(java.methods, java.sites, java.usages, Vector.empty, Vector.empty, Vector.empty, moduleUses),
         Designs.Model.empty,
@@ -246,7 +252,7 @@ object Extraction {
         phase.designs,
         structures,
         phase.equality,
-        phase.memberships,
+        phase.memberships.copy(calls = java.callers),
         phase.duplicates ++ java.clones,
         bytecode(),
         phase.complexities,
@@ -260,7 +266,7 @@ object Extraction {
         phase.purity,
         java.lints,
         problems,
-        phase.nesting(graph.roots)
+        phase.nesting(graph.rooted)
       ))
     }
   }

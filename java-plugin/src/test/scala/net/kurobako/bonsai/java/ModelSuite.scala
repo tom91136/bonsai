@@ -214,7 +214,7 @@ class ModelSuite extends munit.FunSuite {
 
   test("every malformed record is reported, not only the first") {
     val failure =
-      read("node\tshort", "edge\tshort", "edge\tfrom\tto").swap.getOrElse(fail("malformed records were read"))
+      read("node\tshort", "edge\tshort", "edge\tfrom\tto\tmethod").swap.getOrElse(fail("malformed records were read"))
     assertEquals(failure.linesIterator.size, 2, failure)
   }
 

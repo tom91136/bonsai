@@ -40,7 +40,7 @@ class ReuseSuite extends AnalysisSuite {
       if (Files.isDirectory(path)) Files.createDirectories(target) else Files.copy(path, target): Unit
     })
 
-  private class Fixture(val texts: Seq[String]) {
+  private class Fixture(val texts: Seq[String], home: Path) {
     val dir: Path      = Scratch.directory("bonsai-reuse-run-")
     val classes: Path  = Files.createDirectories(dir.resolve("classes"))
     val source: Path   = dir.resolve("src/Tools.scala")
@@ -59,6 +59,7 @@ class ReuseSuite extends AnalysisSuite {
       (Seq(
         s"output\tm\tmain\t$classes",
         s"source\tm\tmain\t$source",
+        s"jdk\t$home",
         s"root\t$dir"
       ) ++ jars.map(jar =>
         s"classpath\tm\t${if (jar.getFileName.toString.startsWith("scala3-library")) library else jar}"
@@ -70,7 +71,7 @@ class ReuseSuite extends AnalysisSuite {
     def run(extra: String*): Ran = invoke(args(extra*))
   }
 
-  private def fixture(texts: Seq[String] = Nil): Fixture = Fixture(texts)
+  private def fixture(texts: Seq[String] = Nil, home: Path = targetJdk.get): Fixture = Fixture(texts, home)
 
   /** Runs `before` twice, checks the second reuses the first, applies `change`, and checks the next run extracts again
     * and the one after reuses that.
@@ -155,9 +156,10 @@ class ReuseSuite extends AnalysisSuite {
   test("a changed release file of the manifest jdk invalidates") {
     val home    = Scratch.directory("bonsai-reuse-jdk-")
     val release = home.resolve("release")
-    Files.writeString(release, "JAVA_VERSION=\"17.0.1\"\n")
-    val f = fixture(Seq(s"jdk\t$home"))
-    assertInvalidated(f)(Files.writeString(release, "JAVA_VERSION=\"17.0.2\"\n"): Unit)
+    Files.createSymbolicLink(home.resolve("lib"), targetJdk.get.resolve("lib")): Unit
+    Files.copy(targetJdk.get.resolve("release"), release): Unit
+    val f = fixture(home = home)
+    assertInvalidated(f)(Files.writeString(release, Files.readString(release) + "IMPLEMENTOR=\"other\"\n"): Unit)
   }
 
   test("a changed file a text rule reads invalidates") {

@@ -6,5 +6,7 @@ package net.kurobako.bonsai.java
   *   the type that makes the reference
   * @param to
   *   the type the reference names
+  * @param method
+  *   the key of the method the reference is inside, or empty outside any method
   */
-case class Edge(from: String, to: String)
+case class Edge(from: String, to: String, method: String = "")

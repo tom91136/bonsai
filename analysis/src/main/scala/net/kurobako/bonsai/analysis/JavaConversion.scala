@@ -15,7 +15,9 @@ private[analysis] object JavaConversion {
   case class Collected(
       nodes: Map[String, Node],
       edges: Map[String, Set[String]],
-      roots: Set[String],
+      bodies: Map[Use, Set[String]],
+      callers: Map[String, Set[Use]],
+      roots: Set[Root],
       methods: Vector[Smells.Method],
       sites: Map[String, Vector[Algebra.Site]],
       guarded: Map[String, Vector[Algebra.Site]],
@@ -43,7 +45,9 @@ private[analysis] object JavaConversion {
   ): Collected = {
     val nodes       = mutable.LinkedHashMap.empty[String, Node]
     val edges       = mutable.LinkedHashMap.empty[String, mutable.LinkedHashSet[String]]
-    val roots       = mutable.LinkedHashSet.empty[String]
+    val bodies      = mutable.LinkedHashMap.empty[Use, mutable.LinkedHashSet[String]]
+    val callers     = mutable.LinkedHashMap.empty[String, mutable.LinkedHashSet[Use]]
+    val roots       = mutable.LinkedHashSet.empty[Root]
     val methods     = mutable.ArrayBuffer.empty[Smells.Method]
     val results     = mutable.LinkedHashMap.empty[String, String]
     val sites       = mutable.LinkedHashMap.empty[String, mutable.ArrayBuffer[Algebra.Site]]
@@ -88,9 +92,8 @@ private[analysis] object JavaConversion {
                 node.suppressed
               )
             ): Unit
-            // The build enters the code from outside it at a type that holds a native or a main method, and the
-            // public API of a library is used by the builds that depend on it.
-            if (exported || node.entry) roots += node.name
+            if (exported) roots += Root(node.name, Root.Kind.Exported)
+            if (node.entry) roots += Root(node.name, Root.Kind.Main)
           }
           // The builds that depend on a library construct its public types, so the constructions in this build do not
           // settle the shape of one, as with a case class of Scala code.
@@ -176,8 +179,11 @@ private[analysis] object JavaConversion {
               sum.variants.map(variant => Algebra.Variant(variant.name, Vector.empty))
             )
           }
+          val owners = collected.methods.map(method => method.key -> method.owner).toMap
           collected.sites.foreach { site =>
             val callee = site.callee
+            callers.getOrElseUpdate(callee, mutable.LinkedHashSet.empty) +=
+              owners.get(site.caller).fold(Use(site.caller))(owner => Use(owner, Some(site.caller))): Unit
             sites.getOrElseUpdate(callee, mutable.ArrayBuffer.empty) += Algebra.Site(
               site.arguments.map(argument(_)),
               test = test,
@@ -204,7 +210,8 @@ private[analysis] object JavaConversion {
             kept(key) = kept.getOrElse(key, Map.empty) + (store.field -> store.kept)
           }
           collected.edges.foreach { edge =>
-            edges.getOrElseUpdate(edge.from, mutable.LinkedHashSet.empty) += edge.to: Unit
+            if (edge.method.isEmpty) edges.getOrElseUpdate(edge.from, mutable.LinkedHashSet.empty) += edge.to: Unit
+            else bodies.getOrElseUpdate(Use(edge.from, Some(edge.method)), mutable.LinkedHashSet.empty) += edge.to: Unit
           }
           fragments ++= collected.fragments.map(fragment => fragment -> test): Unit
           // The lints of the Java code are reported as findings of their own, with the module and the scope of the
@@ -250,7 +257,7 @@ private[analysis] object JavaConversion {
     }
     withInner(nodes.keySet.filter(name => reflective.exists(Globs.matches(_, name))).toSet).foreach { name =>
       nodes.get(name).foreach(node => nodes.update(name, node.copy(exported = true)))
-      roots += name
+      roots += Root(name, Root.Kind.Reflective)
     }
     lints ++= JavaLints.unwritten(reassigned.toVector, written.toSet, outside.toSet, nodes.toMap)
     // The usages of the methods of the Java code, which the rules that need every call site read alike with the usages
@@ -272,6 +279,8 @@ private[analysis] object JavaConversion {
     Collected(
       nodes.toMap,
       edges.view.mapValues(_.toSet).toMap,
+      bodies.view.mapValues(_.toSet).toMap,
+      callers.view.mapValues(_.toSet).toMap,
       roots.toSet,
       methods.toVector,
       sites.view.filterKeys(!built.contains(_)).mapValues(_.toVector).toMap,
@@ -427,11 +436,12 @@ private[analysis] object JavaConversion {
   }
 
   /** The graph of the build, which holds the nodes of the Scala code and of the Java code alike. */
-  def merge(graph: Graph, collected: Collected): Graph = {
-    val edges = collected.edges.foldLeft(graph.edges) { case (edges, (from, tos)) =>
-      edges.updated(from, edges.getOrElse(from, Set.empty) ++ tos)
-    }
-    Graph(graph.nodes ++ collected.nodes, edges, graph.roots ++ collected.roots)
-  }
+  def merge(graph: Graph, collected: Collected): Graph =
+    Graph(
+      graph.nodes ++ collected.nodes,
+      Graph.union(graph.declared, collected.edges),
+      graph.roots ++ collected.roots,
+      Graph.union(graph.bodies, collected.bodies)
+    )
 
 }

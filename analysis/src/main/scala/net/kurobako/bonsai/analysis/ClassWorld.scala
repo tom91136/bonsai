@@ -18,12 +18,7 @@ private[analysis] class ClassWorld(load: String => Option[Array[Byte]]) {
   private val chains          = mutable.Map.empty[String, Vector[String]]
   private val resolved        = mutable.Map.empty[Reference, Option[Target]]
   private val indices         = mutable.Map.empty[String, Map[String, Vector[Method]]]
-  private val missingNames    = mutable.Set.empty[String]
   private val unreadableNames = mutable.Map.empty[String, String]
-
-  def missing: Set[String] = missingNames.toSet
-
-  def loaded: Set[String] = classes.collect { case (name, Some(_)) => name }.toSet
 
   def unreadable: Map[String, String] = unreadableNames.toMap
 
@@ -51,6 +46,11 @@ private[analysis] class ClassWorld(load: String => Option[Array[Byte]]) {
           .orElse(file.superName.flatMap(holder(_, access)))
     }
 
+  /** Whether `owner` declares a method that a subclass can override and that has the name and descriptor of `method`.
+    */
+  def declares(owner: String, method: Method): Boolean =
+    declared(owner, method.name, method.descriptor).exists(_.method.overridable)
+
   def resolve(reference: Reference): Option[Target] =
     resolved.getOrElseUpdate(reference, lookup(reference.owner, reference.name, reference.descriptor))
 
@@ -72,9 +72,7 @@ private[analysis] class ClassWorld(load: String => Option[Array[Byte]]) {
 
   private def read(name: String): Option[ClassFile] =
     load(name) match {
-      case None =>
-        missingNames += name: Unit
-        None
+      case None        => None
       case Some(bytes) =>
         ClassFiles.read(bytes) match {
           case Right(file) => Some(file)
@@ -105,17 +103,7 @@ private[analysis] class ClassWorld(load: String => Option[Array[Byte]]) {
     }
 
   private def array(name: String): ClassFile =
-    ClassFile(
-      name,
-      Opcodes.V1_1,
-      Opcodes.ACC_PUBLIC,
-      Some(objectClass),
-      Vector.empty,
-      Vector.empty,
-      None,
-      Vector.empty,
-      None
-    )
+    ClassFile(name, Opcodes.ACC_PUBLIC, Some(objectClass), Vector.empty, Vector.empty, Vector.empty, None)
 
   private def declared(owner: String, name: String, descriptor: String): Option[Target] = {
     val named = indices.getOrElseUpdate(owner, get(owner).fold(Map.empty)(_.methods.groupBy(_.name))).get(name)

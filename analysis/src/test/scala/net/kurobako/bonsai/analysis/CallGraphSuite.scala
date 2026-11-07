@@ -82,6 +82,24 @@ public class Api {
 }
 """
 
+  private val hosted = """package fixture;
+
+public class Hosted implements Comparable<Hosted> {
+  public int compareTo(Hosted other) { return Mark.hook(); }
+  public int mine() { return Mark.dead(); }
+}
+"""
+
+  private val hosting = """package fixture;
+
+public class Hosting {
+  public static Object hosted() { return new Hosted(); }
+  public static int fromMain() { return Mark.circle() + Mark.square(); }
+  public static int fromTest() { return Mark.square() + Mark.hello(); }
+  public static Object testing() { return new Hosted(); }
+}
+"""
+
   private val shapes = """package fixture;
 
 import java.util.ArrayList;
@@ -405,11 +423,13 @@ public class Cross {
         "fixture/JBase.java"    -> base,
         "fixture/Provider.java" -> provider,
         "fixture/Api.java"      -> api,
-        "fixture/Shapes.java"   -> shapes
+        "fixture/Shapes.java"   -> shapes,
+        "fixture/Hosted.java"   -> hosted,
+        "fixture/Hosting.java"  -> hosting
       )
     )
     javac(
-      Seq("Mark", "JBase", "Provider", "Api", "Shapes").map(name =>
+      Seq("Mark", "JBase", "Provider", "Api", "Shapes", "Hosted", "Hosting").map(name =>
         directory.resolve("src-first").resolve(s"fixture/$name.java")
       ),
       first,
@@ -446,8 +466,10 @@ public class Cross {
   private def graphOf[A](roots: Reference*)(check: CallGraph => A): A =
     withWorld()(world => check(CallGraph.build(world, roots.toSet)))
 
-  private def ours(graph: CallGraph): Map[CallGraph.LambdaSite, Lambda] =
-    graph.lambdas.filter((site, _) => site.holder.owner.startsWith("fixture/"))
+  private def lambdasIn(owner: String, method: String): Vector[Lambda] =
+    withWorld()(_.get(owner).get.methods.view.filter(_.name == method).flatMap(_.lambdas).toVector)
+
+  private def implementationOf(lambda: Lambda): Reference = Reference(lambda.owner, lambda.name, lambda.descriptor)
 
   private def assertReaches(graph: CallGraph, expected: Reference*): Unit =
     assertEquals(expected.filterNot(graph.reachable).toVector, Vector.empty[Reference])
@@ -479,10 +501,9 @@ public class Cross {
     }
   }
 
-  test("a call edge runs from the holder to the method it reaches") {
+  test("a method reaches what the methods it calls reach in turn") {
     graphOf(ref("Calls", "entry")) { found =>
-      assertEquals(found.edges(ref("Calls", "entry")), Set(ref("Calls", "deep")))
-      assertEquals(found.edges(ref("Calls", "deep")), Set(ref("Mark", "circle")))
+      assertReaches(found, ref("Calls", "deep"), ref("Mark", "circle"))
     }
   }
 
@@ -537,28 +558,27 @@ public class Cross {
   }
 
   test("a lambda runs through the interface method of a call, and only a reachable holder creates it") {
+    val implementation = lambdasIn("fixture/Lambdas", "invoke").map(implementationOf(_))
+    assertEquals(implementation.size, 1)
     graphOf(ref("Lambdas", "invoke")) { found =>
-      val implementation = ours(found).values.map(l => Reference(l.owner, l.name, l.descriptor)).toSet
-      assertEquals(implementation.size, 1)
       assertReaches(found, implementation.head, ref("Mark", "ran"))
-      assertEquals(ours(found).keySet.map(_.holder), Set(ref("Lambdas", "invoke")))
     }
     graphOf(ref("Lambdas", "callOnly", "(Ljava/lang/Runnable;)I")) { found =>
-      assertMisses(found, ref("Mark", "ranDead"), ref("Mark", "ran"))
-      assertEquals(ours(found), Map.empty)
+      assertMisses(found, implementation.head, ref("Mark", "ranDead"), ref("Mark", "ran"))
     }
   }
 
   test("each lambda site is an instance of its own that the same interface call reaches") {
+    val implementations = lambdasIn("fixture/Lambdas", "twice").map(implementationOf(_))
+    assertEquals(implementations.distinct.size, 2)
     graphOf(ref("Lambdas", "twice")) { found =>
-      assertEquals(ours(found).keySet.map(_.position), Set(0, 1))
-      assertReaches(found, ref("Mark", "ran"), ref("Mark", "stat"))
+      assertReaches(found, implementations ++ Vector(ref("Mark", "ran"), ref("Mark", "stat"))*)
     }
   }
 
   test("method handles of every kind are implementations, and a constructor reference instantiates its class") {
     graphOf(ref("Handles", "kinds")) { found =>
-      val tags = found.lambdas.collect { case (site, lambda) if site.holder.owner == "fixture/Handles" => lambda.tag }
+      val tags = lambdasIn("fixture/Handles", "kinds").map(_.tag)
       assert(
         Set(Opcodes.H_INVOKESTATIC, Opcodes.H_INVOKEVIRTUAL, Opcodes.H_INVOKEINTERFACE, Opcodes.H_NEWINVOKESPECIAL)
           .subsetOf(tags.toSet),
@@ -580,29 +600,28 @@ public class Cross {
 
   test("a special method handle is an implementation") {
     graphOf(Reference("fixture/Capturing", "run", "()I")) { found =>
-      assertEquals(ours(found).values.map(_.tag).toSet, Set(Opcodes.H_INVOKESPECIAL))
+      assertEquals(lambdasIn("fixture/Capturing", "run").map(_.tag).toSet, Set(Opcodes.H_INVOKESPECIAL))
       assertReaches(found, ref("Mark", "ran"))
     }
   }
 
   test("marker interfaces of a lambda give it their default methods") {
     graphOf(ref("Alternate", "markers")) { found =>
-      assertEquals(ours(found).values.map(_.markers).toSet, Set(Vector("fixture/Marker")))
+      assertEquals(lambdasIn("fixture/Alternate", "markers").map(_.markers).toSet, Set(Vector("fixture/Marker")))
       assertReaches(found, ref("Marker", "mark"), ref("Mark", "marked"), ref("Mark", "ran"))
     }
   }
 
   test("a bridge of a lambda reaches the implementation from the interface it overrides") {
     graphOf(ref("Alternate", "bridges")) { found =>
-      assertEquals(ours(found).values.map(_.bridges).toSet, Set(Vector("()Ljava/lang/Object;")))
+      assertEquals(lambdasIn("fixture/Alternate", "bridges").map(_.bridges).toSet, Set(Vector("()Ljava/lang/Object;")))
       assertReaches(found, ref("Mark", "bridged"))
     }
   }
 
   test("a call to Function1.apply selects the default of a specialised lambda interface, which reaches the lambda") {
     graphOf(Reference("fixture/Funs$", "run", "()I")) { found =>
-      val lambda =
-        found.lambdas.collectFirst { case (site, closure) if site.holder.owner == "fixture/Funs$" => closure }.get
+      val lambda   = lambdasIn("fixture/Funs$", "run").head
       val default  = Reference(lambda.interface, "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")
       val sam      = Reference(lambda.interface, lambda.sam, lambda.samDescriptor)
       val function = Reference("scala/Function1", "apply", "(Ljava/lang/Object;)Ljava/lang/Object;")
@@ -610,7 +629,7 @@ public class Cross {
       assert(found.reachable(default))
       assert(!found.reachable(sam))
       assert(!found.reachable(function))
-      assert(found.edges(default).contains(Reference(lambda.owner, lambda.name, lambda.descriptor)))
+      assert(found.reachable(implementationOf(lambda)))
       assertReaches(found, ref("Mark", "stat"))
     }
   }
@@ -646,7 +665,6 @@ public class Cross {
     graphOf(ref("Arrays", "ints", "([I)[I"), ref("Arrays", "objects", "([Ljava/lang/Object;)[Ljava/lang/Object;")) {
       found =>
         assertReaches(found, Reference("java/lang/Object", "clone", "()Ljava/lang/Object;"))
-        assertEquals(found.unresolved.filter(_.owner.startsWith("[")), Set.empty[Reference])
     }
   }
 
@@ -656,7 +674,6 @@ public class Cross {
       assertMisses(found, ref("Idle", "run", "()V"), ref("Mark", "threaded"))
     }
     graphOf(ref("Threads", "wrapped", "()Ljava/lang/Object;")) { found =>
-      assertEquals(ours(found).size, 1)
       assertReaches(found, ref("Mark", "ran"))
     }
   }
@@ -670,37 +687,28 @@ public class Cross {
   test("native methods and missing classes are leaves, and an unresolved reference does not stop the walk") {
     withWorld(Set("fixture/Gone")) { world =>
       val found = CallGraph.build(world, Set(ref("Edge", "entry")))
-      assertEquals(found.unresolved.filter(_.owner == "fixture/Gone"), Set(ref("Gone", "m")))
       assertReaches(found, ref("Edge", "nat"), ref("Mark", "circle"))
-      assertEquals(found.edges.get(ref("Edge", "nat")), None)
     }
   }
 
-  test("a class the scan refuses is a leaf") {
+  private def rootsOf(roots: (String, Root.Kind)*): Set[Reference] =
     withWorld() { world =>
-      val found = CallGraph.build(world, Set(ref("Calls", "entry")), _ != "fixture/Calls")
-      assertReaches(found, ref("Calls", "entry"))
-      assertMisses(found, ref("Calls", "deep"), ref("Mark", "circle"))
-    }
-  }
-
-  private def rootsOf(names: Seq[String], exported: Set[String] = Set.empty): Set[Reference] =
-    withWorld() { world =>
-      val nodes = names.map { name =>
-        name -> Node(name, "m", Output.Scope.Main, "f", 1, generated = false, exported = exported(name), outer = None)
+      val nodes = roots.map { (name, _) =>
+        name -> Node(name, "m", Output.Scope.Main, "f", 1, generated = false, exported = false, outer = None)
       }
-      CallGraph.roots(Graph(nodes.toMap, Map.empty, names.toSet), world)
+      CallGraph.roots(Graph(nodes.toMap, Map.empty, roots.map(Root(_, _)).toSet), world)
     }
 
-  test("a type with a main method roots it, through the forwarder of an object or the trait of an App") {
+  test("a main root enters the main method, through the forwarder of an object or the trait of an App") {
     val main = "([Ljava/lang/String;)V"
-    assertEquals(rootsOf(Seq("fixture.Entry")), Set(Reference("fixture/Entry", "main", main)))
-    assertEquals(rootsOf(Seq("fixture.Launcher")).map(_.name), Set("main"))
+    assertEquals(rootsOf("fixture.Entry" -> Root.Kind.Main), Set(Reference("fixture/Entry", "main", main)))
+    assertEquals(rootsOf("fixture.Launcher" -> Root.Kind.Main).map(_.name), Set("main"))
+    assertEquals(rootsOf("fixture.Api" -> Root.Kind.Main), Set.empty[Reference])
   }
 
-  test("a type the build names to a loader roots its public constructors, overrides and provider method") {
+  test("a provided root enters the public constructor without arguments, the overrides and the provider method") {
     assertEquals(
-      rootsOf(Seq("fixture.Provider")),
+      rootsOf("fixture.Provider" -> Root.Kind.Provided),
       Set(
         Reference("fixture/Provider", "<init>", "()V"),
         Reference("fixture/Provider", "run", "()V"),
@@ -709,9 +717,9 @@ public class Cross {
     )
   }
 
-  test("an exported type roots its public and protected members") {
+  test("an exported root enters the public and protected members") {
     assertEquals(
-      rootsOf(Seq("fixture.Api"), Set("fixture.Api")),
+      rootsOf("fixture.Api" -> Root.Kind.Exported),
       Set(
         Reference("fixture/Api", "<init>", "()V"),
         Reference("fixture/Api", "open", "()I"),
@@ -720,16 +728,70 @@ public class Cross {
     )
   }
 
+  test("a reflective root enters every member, the private and package ones too") {
+    assertEquals(
+      rootsOf("fixture.Api" -> Root.Kind.Reflective),
+      Set(
+        Reference("fixture/Api", "<init>", "()V"),
+        Reference("fixture/Api", "open", "()I"),
+        Reference("fixture/Api", "guarded", "()I"),
+        Reference("fixture/Api", "local", "()I"),
+        Reference("fixture/Api", "hidden", "()I")
+      )
+    )
+  }
+
+  test("the kinds of one type add up") {
+    assertEquals(
+      rootsOf("fixture.Api" -> Root.Kind.Exported, "fixture.Api" -> Root.Kind.Reflective),
+      rootsOf("fixture.Api" -> Root.Kind.Reflective)
+    )
+  }
+
   test("a nested type is found by the dotted name of its node, and an object by its module class") {
     assertEquals(
-      rootsOf(Seq("fixture.Outer.Inner"), Set("fixture.Outer.Inner")).map(_.owner),
+      rootsOf("fixture.Outer.Inner" -> Root.Kind.Exported).map(_.owner),
       Set("fixture/Outer$Inner")
     )
     assertEquals(
-      rootsOf(Seq("fixture.Holder.Nested"), Set("fixture.Holder.Nested")).map(_.owner),
+      rootsOf("fixture.Holder.Nested" -> Root.Kind.Exported).map(_.owner),
       Set("fixture/Holder$Nested")
     )
-    assert(rootsOf(Seq("fixture.Config")).contains(Reference("fixture/Config$", "<clinit>", "()V")))
+    assert(rootsOf("fixture.Config" -> Root.Kind.Provided).contains(Reference("fixture/Config$", "<clinit>", "()V")))
+  }
+
+  test("an instantiated build class has its overrides of methods declared outside the build reached") {
+    withWorld() { world =>
+      val inBuild = (name: String) => name.startsWith("fixture/")
+      val found   = CallGraph.build(world, Set(ref("Hosting", "hosted", "()Ljava/lang/Object;")), build = inBuild)
+      assertReaches(found, ref("Hosted", "compareTo", "(Lfixture/Hosted;)I"), ref("Mark", "hook"))
+      assertMisses(found, ref("Hosted", "mine"), ref("Mark", "dead"))
+      val bare = CallGraph.build(world, Set(ref("Hosting", "hosted", "()Ljava/lang/Object;")))
+      assertMisses(bare, ref("Hosted", "compareTo", "(Lfixture/Hosted;)I"), ref("Mark", "hook"))
+      val unbuilt = CallGraph.build(world, Set(ref("Hosting", "fromMain")), build = inBuild)
+      assertMisses(unbuilt, ref("Hosted", "compareTo", "(Lfixture/Hosted;)I"))
+    }
+  }
+
+  test("what only the tests reach or instantiate is test-only, and what the roots reach first is not") {
+    withWorld() { world =>
+      val found = CallGraph.build(
+        world,
+        Set(ref("Hosting", "fromMain")),
+        tests = Set(ref("Hosting", "fromTest"), ref("Hosting", "testing", "()Ljava/lang/Object;"))
+      )
+      assertReaches(found, ref("Mark", "circle"), ref("Mark", "square"), ref("Mark", "hello"))
+      assertEquals(
+        found.testOnly.filter(_.owner.startsWith("fixture/")),
+        Set(
+          ref("Hosting", "fromTest"),
+          ref("Hosting", "testing", "()Ljava/lang/Object;"),
+          ref("Mark", "hello"),
+          ref("Hosted", "<init>", "()V")
+        )
+      )
+      assertEquals(found.testInstantiated.filter(_.startsWith("fixture/")), Set("fixture/Hosted"))
+    }
   }
 
   test("a root that is an instance method makes its class instantiated") {

@@ -163,7 +163,8 @@ class JavaLintsSuite extends AnalysisSuite {
         Vector(Output("m", Output.Scope.Main, classes)),
         classpaths,
         Set.empty,
-        models = Vector(Output("j", Output.Scope.Main, file))
+        models = Vector(Output("j", Output.Scope.Main, file)),
+        jdk = targetJdk
       )
 
       val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)

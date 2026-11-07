@@ -71,6 +71,17 @@ class ClassSourceSuite extends FunSuite {
     assertEquals(lookup(None, outputs, Vector(library), "java/lang/Object"), Some("output"))
   }
 
+  withRoot("a classpath file that is not an archive holds no classes, and the entries after it are still read") {
+    root =>
+      write(root, "dependency.pom", "<project/>")
+      val library = root.resolve("lib.jar")
+      jar(library, "app/Main.class" -> "library")
+      assertEquals(
+        lookup(None, Vector.empty, Vector(root.resolve("dependency.pom"), library), "app/Main"),
+        Some("library")
+      )
+  }
+
   withRoot("the build outputs are searched before the classpath") { root =>
     write(root, "classes/app/Main.class", "output")
     val library = root.resolve("lib.jar")

@@ -24,7 +24,7 @@ private[analysis] trait Recorder {
 
   def member(symbol: Symbol)(using Context): Unit
 
-  def matched(unapply: tpd.UnApply, from: Option[String])(using Context): Unit
+  def matched(unapply: tpd.UnApply, from: Option[Use])(using Context): Unit
 
   def assign(symbol: Symbol): Unit
 
@@ -38,5 +38,5 @@ private[analysis] trait Recorder {
 
   def mention(symbols: List[Symbol])(using Context): Unit
 
-  def use(symbol: Symbol, from: Option[String])(using Context): Unit
+  def use(symbol: Symbol, from: Option[Use])(using Context): Unit
 }

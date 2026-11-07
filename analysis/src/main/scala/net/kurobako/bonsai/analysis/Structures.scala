@@ -73,7 +73,7 @@ object Structures {
     Graph(
       nodes,
       graph.edges.collect { case (from, targets) if nodes.contains(from) => from -> targets.filter(nodes.contains) },
-      graph.roots.filter(nodes.contains)
+      graph.roots.filter(root => nodes.contains(root.name))
     )
   }
 
@@ -133,7 +133,7 @@ object Structures {
     files.toVector.sortBy(_._1).flatMap { (pkg, members) =>
       val file     = members.map(node => node.name -> node.source).toMap
       val sources  = file.values.toSet
-      val named    = members.collect { case node if graph.roots(node.name) => node.source }.toSet
+      val named    = members.collect { case node if graph.rooted(node.name) => node.source }.toSet
       val weighted = edgesByPackage.getOrElse(pkg, Vector.empty).flatMap { (from, targets) =>
         file.get(from).toVector.flatMap(source =>
           targets.flatMap(to => file.get(to).collect { case target if source != target => (source, target) })

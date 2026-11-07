@@ -33,6 +33,7 @@ private[analysis] class Symbols(
   private val known      = mutable.Map.empty[String, Node]
   private val reflected  = mutable.Set.empty[String]
   private val edges      = mutable.Map.empty[String, mutable.Set[String]]
+  private val bodies     = mutable.Map.empty[Use, mutable.Set[String]]
   private val mainRoots  = mutable.Set.empty[String]
   private val registered = mutable.Map.empty[Symbol, Option[String]]
   private val keys       = java.util.HashMap[Symbol, Option[String]]()
@@ -46,19 +47,27 @@ private[analysis] class Symbols(
 
   def root(name: String): Unit = mainRoots += name
 
-  def graph(entryPoints: Set[String]): Graph =
+  def graph(entryPoints: Set[Root]): Graph =
     Graph(
       known.toMap,
       edges.view.mapValues(_.toSet).toMap,
-      mainRoots.toSet ++ entryPoints ++ known.values.view.collect { case node if node.exported => node.name }
+      mainRoots.map(Root(_, Root.Kind.Main)).toSet ++ entryPoints ++ known.values.view.collect {
+        case node if node.exported =>
+          Root(node.name, if (reflected(node.name)) Root.Kind.Reflective else Root.Kind.Exported)
+      },
+      bodies.view.mapValues(_.toSet).toMap
     )
 
   /** The nodes with an edge to each node. */
   def incoming: Map[String, Vector[String]] =
-    edges.toVector.flatMap((source, targets) => targets.map(_ -> source)).groupMap(_._1)(_._2)
+    (edges.toVector ++ bodies.toVector.map((use, targets) => use.node -> targets))
+      .flatMap((source, targets) => targets.map(_ -> source)).groupMap(_._1)(_._2)
 
   /** Adds the edges another registry recorded. */
-  def absorb(other: Symbols): Unit = other.edges.foreach((source, targets) => targets.foreach(edge(source, _)))
+  def absorb(other: Symbols): Unit = {
+    other.edges.foreach((source, targets) => targets.foreach(edge(source, _)))
+    other.bodies.foreach((use, targets) => bodies.getOrElseUpdate(use, mutable.Set.empty) ++= targets)
+  }
 
   /** Marks the node `prefix` names, and the nodes inside it, as reached by name from strings and as exported. */
   def reflect(prefix: String): Unit =
@@ -76,10 +85,11 @@ private[analysis] class Symbols(
   def fieldsOf(symbol: Symbol)(using Context): Vector[Algebra.Field] =
     parameters.getOrElseUpdate(symbol, if (symbol.isClass) Shapes.fields(symbol) else Shapes.parameters(symbol))
 
-  def refer(from: Option[String], symbol: Symbol)(using Context): Unit =
-    if (from.isDefined) {
-      val target = key(symbol)
-      if (target.isDefined && from.get != target.get) edge(from.get, target.get)
+  def refer(from: Option[Use], symbol: Symbol)(using Context): Unit =
+    from.foreach { user =>
+      key(symbol).filter(_ != user.node).foreach { target =>
+        user.method.fold(edge(user.node, target))(_ => bodies.getOrElseUpdate(user, mutable.Set.empty) += target: Unit)
+      }
     }
 
   def link(from: Option[String], targets: Iterable[String]): Unit =

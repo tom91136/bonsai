@@ -43,7 +43,8 @@ class DeterminismSuite extends AnalysisSuite {
       Vector(Output("m", Output.Scope.Main, classes)),
       classpaths,
       Set.empty,
-      models = models.map(Output("j", Output.Scope.Main, _))
+      models = models.map(Output("j", Output.Scope.Main, _)),
+      jdk = targetJdk
     )
     val result = Extraction.read(manifest, parallel = parallel).fold(errors => fail(errors.mkString("\n")), identity)
     val found  = Report.findings(result, parallel = parallel)

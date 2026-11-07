@@ -13,7 +13,7 @@ class JavaModelSuite extends AnalysisSuite {
   private val model =
     """node	demo.Service	demo/Service.java	6	true
       |node	demo.Service.first	demo/Service.java	14	true	demo.Service
-      |edge	demo.Service.first	java.util.List
+      |edge	demo.Service.first	java.util.List	
       |""".stripMargin
 
   private def read(
@@ -28,7 +28,8 @@ class JavaModelSuite extends AnalysisSuite {
         Vector.empty,
         classpaths,
         libraries,
-        models = Vector(Output("j", Output.Scope.Main, file))
+        models = Vector(Output("j", Output.Scope.Main, file)),
+        jdk = targetJdk
       )
       Extraction.read(manifest, generated = generated).fold(errors => fail(errors.mkString("\n")), identity)
     }
@@ -50,7 +51,8 @@ class JavaModelSuite extends AnalysisSuite {
         Vector(Output("m", Output.Scope.Main, classes)),
         classpaths,
         Set.empty,
-        models = Vector(Output("j", Output.Scope.Main, file))
+        models = Vector(Output("j", Output.Scope.Main, file)),
+        jdk = targetJdk
       )
 
       val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
@@ -63,8 +65,8 @@ class JavaModelSuite extends AnalysisSuite {
 
   test("the public API of a Java library is used, as the public API of Scala code is") {
     def graph(libraries: Set[String]) = read(model, libraries).graph
-    assert(graph(Set("j")).roots.contains("demo.Service"))
-    assert(!graph(Set.empty).roots.contains("demo.Service"))
+    assert(graph(Set("j")).rooted("demo.Service"))
+    assert(!graph(Set.empty).rooted("demo.Service"))
   }
 
   test("a Java type the native code names is used, as a reflective type is") {
@@ -74,9 +76,9 @@ class JavaModelSuite extends AnalysisSuite {
                                 |""".stripMargin
     )
 
-    assert(result.graph.roots.contains("demo.Service"), "the type the native code names is used")
-    assert(!result.graph.roots.contains("demo.Other"), "the other type is not used from outside")
-    val findings = Liveness.findings(result.graph)
+    assert(result.graph.rooted("demo.Service"), "the type the native code names is used")
+    assert(!result.graph.rooted("demo.Other"), "the other type is not used from outside")
+    val findings = Liveness.findings(result.graph, result.reach)
     assert(
       findings.exists(finding => finding.rule.id == "unused" && finding.node.name == "demo.Other"),
       findings.mkString("\n")
@@ -175,7 +177,7 @@ class JavaModelSuite extends AnalysisSuite {
       outputs.zip(models).foreach((output, model) =>
         Files.writeString(output.path, (nodes ++ model._2).mkString("\n") + "\n")
       )
-      val manifest = Manifest(Vector.empty, classpaths, Set.empty, models = outputs.toVector)
+      val manifest = Manifest(Vector.empty, classpaths, Set.empty, models = outputs.toVector, jdk = targetJdk)
       val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       Clones.findings(result.clones, result.graph.nodes)
     }
@@ -310,7 +312,8 @@ class JavaModelSuite extends AnalysisSuite {
         Vector.empty,
         classpaths,
         Set.empty,
-        models = Vector(Output("j", Output.Scope.Main, file))
+        models = Vector(Output("j", Output.Scope.Main, file)),
+        jdk = targetJdk
       )
       val failure = Extraction.read(manifest).swap.getOrElse(fail("the malformed model was not reported"))
       assert(failure.exists(_.contains("a node holds")), failure.mkString("\n"))
@@ -548,7 +551,7 @@ class JavaModelSuite extends AnalysisSuite {
       outputs.zip(rows).foreach { case (output, (name, row)) =>
         Files.writeString(output.path, s"node\tdemo.$name\tdemo/$name.java\t4\ttrue\n$row\n"): Unit
       }
-      val manifest = Manifest(Vector.empty, classpaths, Set.empty, models = outputs.toVector)
+      val manifest = Manifest(Vector.empty, classpaths, Set.empty, models = outputs.toVector, jdk = targetJdk)
       val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       val found    = Clones.findings(result.clones, result.graph.nodes)
       assert(found.isEmpty, found.mkString("\n"))

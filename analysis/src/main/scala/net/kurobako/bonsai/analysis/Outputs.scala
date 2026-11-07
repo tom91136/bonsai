@@ -19,7 +19,7 @@ private[analysis] object Outputs {
     else Using.resource(Files.walk(directory))(_.toList.asScala.toVector.filter(Files.isRegularFile(_)).sorted)
 
   // Classes instantiated reflectively by ServiceLoader, the compiler plugin loader or sbt plugin discovery.
-  def entryPoints(directory: Path): Vector[String] = {
+  def entryPoints(directory: Path): Vector[Root] = {
     val services = files(directory.resolve("META-INF/services")).view.flatMap(Files.readAllLines(_).asScala)
       .map(_.takeWhile(_ != '#').trim).toVector
     def lines(file: Path) = Some(file).filter(Files.isRegularFile(_)).toVector.flatMap(Files.readAllLines(_).asScala)
@@ -28,7 +28,7 @@ private[analysis] object Outputs {
     }
     val autoplugins = lines(directory.resolve("sbt/sbt.autoplugins")).map(_.trim)
     (services ++ plugins ++ autoplugins).view.collect {
-      case name if name.nonEmpty => name.stripSuffix("$").replace('$', '.')
+      case name if name.nonEmpty => Root(name.stripSuffix("$").replace('$', '.'), Root.Kind.Provided)
     }.toVector
   }
 }

@@ -54,7 +54,6 @@ private[analysis] object ClassFiles {
       name: String,
       descriptor: String,
       access: Int,
-      line: Int,
       invocations: Vector[Invocation],
       instantiated: Set[String],
       lambdas: Vector[Lambda],
@@ -71,12 +70,10 @@ private[analysis] object ClassFiles {
 
   case class ClassFile(
       name: String,
-      version: Int,
       access: Int,
       superName: Option[String],
       interfaces: Vector[String],
       methods: Vector[Method],
-      sourceFile: Option[String],
       fields: Vector[Field],
       enclosingInstance: Option[String]
   ) {
@@ -90,7 +87,7 @@ private[analysis] object ClassFiles {
       ClassReader(bytes).accept(visitor, ClassReader.SKIP_FRAMES)
       Right(visitor.file)
     } catch {
-      case error: IllegalArgumentException => Left(error.getMessage)
+      case error @ (_: IllegalArgumentException | _: IndexOutOfBoundsException) => Left(error.toString)
     }
 
   /** The key `Keys` gives the method. A constructor of an inner class drops the enclosing instance that the class file
@@ -134,12 +131,10 @@ private[analysis] object ClassFiles {
   private class Visitor extends ClassVisitor(Opcodes.ASM9) {
     private var header = ClassFile( // scalafix:ok DisableSyntax.var
       name = "",
-      version = 0,
       access = 0,
       superName = None,
       interfaces = Vector.empty,
       methods = Vector.empty,
-      sourceFile = None,
       fields = Vector.empty,
       enclosingInstance = None
     )
@@ -156,14 +151,10 @@ private[analysis] object ClassFiles {
     ): Unit =
       header = header.copy(
         name = name,
-        version = version,
         access = access,
         superName = Option(superName),
         interfaces = interfaces.toVector
       )
-
-    override def visitSource(source: String, debug: String): Unit =
-      header = header.copy(sourceFile = Option(source))
 
     override def visitInnerClass(name: String, outerName: String, innerName: String, access: Int): Unit =
       if (name == header.name && (access & Opcodes.ACC_STATIC) == 0)
@@ -200,13 +191,9 @@ private[analysis] object ClassFiles {
     private val dynamics     = mutable.ArrayBuffer.empty[Dynamic]
     private val fields       = mutable.ArrayBuffer.empty[FieldAccess]
     private var monitors     = false // scalafix:ok DisableSyntax.var
-    private var first        = 0     // scalafix:ok DisableSyntax.var
     private var current      = 0     // scalafix:ok DisableSyntax.var
 
-    override def visitLineNumber(line: Int, start: Label): Unit = {
-      if (first == 0) first = line
-      current = line
-    }
+    override def visitLineNumber(line: Int, start: Label): Unit = current = line
 
     override def visitTypeInsn(opcode: Int, internalName: String): Unit =
       if (opcode == Opcodes.NEW) instantiated += internalName: Unit
@@ -261,7 +248,6 @@ private[analysis] object ClassFiles {
         name,
         descriptor,
         access,
-        first,
         invocations.toVector,
         instantiated.toSet,
         lambdas.toVector,

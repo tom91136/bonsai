@@ -63,7 +63,7 @@ object Report {
   ): Vector[Finding] = {
     val nodes = result.graph.nodes
     val rules = Vector[() => Vector[Finding]](
-      () => Liveness.findings(result.graph),
+      () => Liveness.findings(result.graph, result.reach),
       () => Algebra.findings(result.algebra, nodes, intended),
       () => Invariants.findings(result.algebra, nodes),
       () => Smells.findings(result.smells, result.algebra.products, nodes, result.hot, result.graph.edges),
@@ -71,7 +71,7 @@ object Report {
       () => Structures.findings(result.structures, result.graph),
       () => Equality.findings(result.equality, nodes),
       () => Clones.findings(result.clones, nodes, intended, result.graph.edges),
-      () => Members.findings(result.members, nodes, Liveness.live(result.graph)),
+      () => Members.findings(result.members, nodes, result.reach),
       () => Bytecode.findings(result.bytecode, nodes, result.hot),
       () => Complexity.findings(result.complexities, nodes, result.hot),
       () => Pipelines.findings(result.pipelines, nodes),

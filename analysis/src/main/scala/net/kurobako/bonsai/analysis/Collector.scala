@@ -38,6 +38,7 @@ private[analysis] object Collector {
       suppressed: Set[String],
       field: Boolean = false,
       alias: Boolean = false,
+      key: Option[String] = None,
       line: Int = 0
   )
 }
@@ -75,8 +76,8 @@ private[analysis] class Collector(
   private val aliases        = mutable.ArrayBuffer.empty[Designs.Alias]
   private val clones         = mutable.ArrayBuffer.empty[Clones.Group]
   private val members        = mutable.Map.empty[Symbol, Definition]
-  private val users          = mutable.Map.empty[Symbol, mutable.Set[String]]
-  private val usage          = mutable.Map.empty[String, Set[String]]
+  private val users          = mutable.Map.empty[Symbol, mutable.Set[Use]]
+  private val usage          = mutable.Map.empty[String, Set[Use]]
   private val assigned       = mutable.Set.empty[Symbol]
   private val memberList     = mutable.ArrayBuffer.empty[Members.Member]
   private val givens         = mutable.Map.empty[Symbol, (String, Node)]
@@ -138,7 +139,7 @@ private[analysis] class Collector(
         Members.Member(
           definition.name,
           definition.node,
-          users.get(symbol).fold(Set.empty[String])(_.toSet),
+          users.get(symbol).fold(Set.empty[Use])(_.toSet),
           bases.exists(base => key(base).isEmpty || users.get(base).exists(_.nonEmpty)),
           bases.exists(key(_).isDefined),
           bases.nonEmpty,
@@ -151,6 +152,7 @@ private[analysis] class Collector(
           definition.field,
           unlisted(symbol),
           definition.alias,
+          definition.key,
           definition.line
         )
     }
@@ -205,7 +207,7 @@ private[analysis] class Collector(
 
   def problems: Vector[String] = failures.toVector
 
-  def graph(entryPoints: Set[String]): Graph = symbols.graph(entryPoints)
+  def graph(entryPoints: Set[Root]): Graph = symbols.graph(entryPoints)
 
   def algebra: Algebra.Model =
     Algebra.Model(
@@ -656,6 +658,7 @@ private[analysis] class Collector(
             suppressions(symbol),
             field,
             symbol.isAliasType,
+            Option.when(symbol.isTerm)(Keys.of(symbol)).flatten,
             lineOf(symbol)
           )
       }
@@ -670,7 +673,7 @@ private[analysis] class Collector(
   private def memberName(symbol: Symbol)(using Context): String = Placements.signed(symbol, qualifiedName(symbol))
 
   /** Records the fields of a case class that a pattern on it binds or tests, which read them. */
-  def matched(unapply: tpd.UnApply, from: Option[String])(using Context): Unit = {
+  def matched(unapply: tpd.UnApply, from: Option[Use])(using Context): Unit = {
     val extractor = unapply.fun.symbol
     val cls       = Calls.owner(extractor).companionClass
     if (cls.is(Flags.CaseClass) && extractor.is(Flags.Synthetic)) {
@@ -749,8 +752,8 @@ private[analysis] class Collector(
               case alternative if alternative.symbol.exists => alternative.symbol
             }
           ).foreach { symbol =>
-            use(symbol, Some(info.name))
-            symbols.refer(Some(info.name), symbol)
+            use(symbol, Some(Use(info.name)))
+            symbols.refer(Some(Use(info.name)), symbol)
             members.remove(symbol): Unit
           }
         }
@@ -758,7 +761,7 @@ private[analysis] class Collector(
     structure.typeNames.foreach { (text, info) =>
       byName.getOrElse(text, Vector.empty).foreach(cls =>
         key(cls).foreach { name =>
-          symbols.refer(Some(info.name), cls)
+          symbols.refer(Some(Use(info.name)), cls)
           symbols.reflect(name)
         }
       )
@@ -766,7 +769,7 @@ private[analysis] class Collector(
     members.filterInPlace((symbol, _) => !exported(symbol)): Unit
   }
 
-  def use(symbol: Symbol, from: Option[String])(using Context): Unit =
+  def use(symbol: Symbol, from: Option[Use])(using Context): Unit =
     if (symbol.exists && !symbol.isClass && symbol.owner.isClass && key(symbol).isDefined)
-      from.foreach(node => users.getOrElseUpdate(symbol, mutable.Set.empty) += node: Unit)
+      from.foreach(user => users.getOrElseUpdate(symbol, mutable.Set.empty) += user: Unit)
 }

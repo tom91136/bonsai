@@ -166,12 +166,11 @@ class StaticSub extends Statics {
     assertEquals(reads.toVector.distinct, reads.toVector)
   }
 
-  test("reports missing and unreadable classes") {
+  test("reports unreadable classes") {
     val patched = load("fixture/Plain").map(withMajor(_, 72))
     val world   = ClassWorld(name => if (name == "fixture/Plain") patched else load(name))
     assertEquals(world.get("fixture/Nope"), None)
     assertEquals(world.get("fixture/Plain"), None)
-    assertEquals(world.missing, Set("fixture/Nope"))
     assertEquals(world.unreadable.keySet, Set("fixture/Plain"))
     assert(world.unreadable("fixture/Plain").contains("72"), world.unreadable.toString)
   }

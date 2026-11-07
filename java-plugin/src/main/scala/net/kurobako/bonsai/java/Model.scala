@@ -19,7 +19,7 @@ import scala.util.Try
   * method<TAB>owner<TAB>name<TAB>key<TAB>exported<TAB>stored<TAB>parameters<TAB>location<TAB>returns<TAB>overriding
   * field<TAB>owner<TAB>name<TAB>kind<TAB>shape<TAB>cases<TAB>primitive
   * site<TAB>caller<TAB>callee<TAB>arguments<TAB>location<TAB>discarded
-  * edge<TAB>from<TAB>to
+  * edge<TAB>from<TAB>to<TAB>method
   * lint<TAB>id<TAB>owner<TAB>method<TAB>path<TAB>line<TAB>detail
   * cost<TAB>owner<TAB>name<TAB>key<TAB>line<TAB>suppressed<TAB>parameters<TAB>tree
   * instance<TAB>caller<TAB>owner<TAB>constructor<TAB>arguments<TAB>location
@@ -589,10 +589,10 @@ object Model {
 
   private val edgeCodec = Codec[Edge](
     "edge",
-    2,
-    "a reference holds a source and a target",
-    edge => Vector(edge.from, edge.to),
-    columns => Right(Edge(columns(0), columns(1)))
+    3,
+    "a reference holds a source, a target and the method it is inside",
+    edge => Vector(edge.from, edge.to, edge.method),
+    columns => Right(Edge(columns(0), columns(1), columns(2)))
   )
 
   private val cloneCodec = Codec[Fragment](

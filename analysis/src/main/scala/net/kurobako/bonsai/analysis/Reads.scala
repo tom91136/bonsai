@@ -16,7 +16,7 @@ import scala.collection.mutable
 /** The reads of the fields of a case class that showing, comparing and hashing a value make, passed to `use` as uses of
   * the fields.
   */
-private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) => Context ?=> Unit) {
+private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[Use]) => Context ?=> Unit) {
   import symbols.*
 
   // Printing, interpolating, appending or putting a value in a message calls its toString, which a case class writes
@@ -64,7 +64,7 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
   /** Records the fields a call reads by showing, comparing or hashing a value: its toString, or a printing or
     * interpolating method, or `==`.
     */
-  def shown(application: tpd.Apply, from: Option[String])(using Context): Unit = {
+  def shown(application: tpd.Apply, from: Option[Use])(using Context): Unit = {
     val callee = application.fun.symbol
     val named  = if (callee.exists) qualifiedName(callee) else ""
     val values = application.fun match {
@@ -80,7 +80,7 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
   /** Records the field a `selectDynamic` call with a literal name reads on a receiver whose type is built from the case
     * class declaring it.
     */
-  def selected(application: tpd.Apply, from: Option[String])(using Context): Unit = application match {
+  def selected(application: tpd.Apply, from: Option[Use])(using Context): Unit = application match {
     case tpd.Apply(tpd.Select(receiver, name), List(tpd.Literal(Constant(field: String))))
         if name == nme.selectDynamic =>
       val target = termName(field)
@@ -92,7 +92,7 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
 
   /** Records the fields a method called on a value reads by showing it or its elements, or by hashing the elements.
     */
-  def rendered(select: tpd.Select, from: Option[String])(using Context): Unit = {
+  def rendered(select: tpd.Select, from: Option[Use])(using Context): Unit = {
     val callee = select.symbol
     val name   = select.name.toString
     if (
@@ -108,7 +108,7 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
   /** Records the fields of the keys and elements of the hashed maps and sets a type names, which hashing reads, and
     * gives those keys.
     */
-  def keyed(tpe: Type, from: Option[String])(using Context): List[Type] = {
+  def keyed(tpe: Type, from: Option[Use])(using Context): List[Type] = {
     val keys = KeyTypes()
     keys.traverse(tpe)
     keys.found.foreach(key => read(List(key), from))
@@ -148,7 +148,7 @@ private[analysis] class Reads(symbols: Symbols, use: (Symbol, Option[String]) =>
     names.exists(name => cls.derivesFrom(Classes.required(name)))
 
   // A shown container shows its elements, whose types its type arguments name.
-  private def read(types: List[Type], from: Option[String])(using Context): Unit = {
+  private def read(types: List[Type], from: Option[Use])(using Context): Unit = {
     val seen                      = mutable.Set.empty[Symbol]
     def showType(tpe: Type): Unit = {
       val widened = tpe.widen

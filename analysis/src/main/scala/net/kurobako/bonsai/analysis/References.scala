@@ -18,6 +18,8 @@ private[analysis] class References(components: Components, fragments: Fragments)
     extends tpd.TreeTraverser {
   import components.*
   private val owners                          = mutable.Stack.empty[Option[String]]
+  private val uses                            = mutable.Stack.empty[Option[Use]]
+  private val methodKeys                      = mutable.Map.empty[Symbol, Option[String]]
   private val methods                         = mutable.Stack.empty[Symbol]
   private val entered                         = mutable.Set.empty[Symbol]
   private def enclosingMethod: Option[Symbol] = methods.find(method => method.is(Flags.Method) && method.owner.isClass)
@@ -33,16 +35,23 @@ private[analysis] class References(components: Components, fragments: Fragments)
   // Read by the callback of `types` while it traverses the type of one tree.
   private var parent = false // scalafix:ok DisableSyntax.var
   private val types  = TypeReferences { symbol =>
-    symbols.refer(owner, symbol)
+    symbols.refer(user, symbol)
     read(symbol)
     if (!parent) dispatching.asType(symbol)
   }
 
   // The methods the compiler writes for a case class read every field.
   private def read(symbol: Symbol): Unit =
-    if (!(synthetic.top && symbol.is(Flags.ParamAccessor)) && !entered(symbol)) recorder.use(symbol, owner)
+    if (!(synthetic.top && symbol.is(Flags.ParamAccessor)) && !entered(symbol)) recorder.use(symbol, user)
 
   private def owner: Option[String] = if (owners.isEmpty) None else owners.top
+
+  private def user: Option[Use] = if (uses.isEmpty) None else uses.top
+
+  private def caller(symbol: Symbol)(using Context): Option[String] =
+    if (symbol.isClass || symbol.is(Flags.Inline) || methods.exists(_.is(Flags.Inline))) None
+    else if (symbol.is(Flags.Method) && symbol.owner.isClass) methodKeys.getOrElseUpdate(symbol, Keys.of(symbol))
+    else user.flatMap(_.method)
 
   def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
     case imported: tpd.Import =>
@@ -93,12 +102,14 @@ private[analysis] class References(components: Components, fragments: Fragments)
       }
       pushing(synthetic, synthetic.top || symbol.isAllOf(Flags.SyntheticMethod) && !symbol.isAnonymousFunction) {
         pushing(owners, node) {
-          pushing(methods, symbol) {
-            val added = entered.add(symbol)
-            try {
-              symbol.annotations.foreach(annotation => traverse(annotation.tree))
-              traverseChildren(tree)
-            } finally if (added) entered -= symbol: Unit
+          pushing(uses, node.map(Use(_, caller(symbol)))) {
+            pushing(methods, symbol) {
+              val added = entered.add(symbol)
+              try {
+                symbol.annotations.foreach(annotation => traverse(annotation.tree))
+                traverseChildren(tree)
+              } finally if (added) entered -= symbol: Unit
+            }
           }
         }
       }
@@ -119,10 +130,10 @@ private[analysis] class References(components: Components, fragments: Fragments)
         case tpd.Apply(tpd.Select(argument, name), Nil) if name == nme.UNARY_! => callSites.negate(argument)
         case application: tpd.Apply if !synthetic.top                          =>
           callSites.record(application, owner, entered, enclosingMethod)
-          reads.shown(application, owner)
-          reads.selected(application, owner)
+          reads.shown(application, user)
+          reads.selected(application, user)
         case assignment: tpd.Assign                   => recorder.assign(assignment.lhs.symbol)
-        case unapply: tpd.UnApply                     => recorder.matched(unapply, owner)
+        case unapply: tpd.UnApply                     => recorder.matched(unapply, user)
         case generic: tpd.TypeApply if !synthetic.top =>
           callSites.instantiate(generic.fun.symbol, generic.args.map(_.tpe), clause(generic.fun), owner)
         case closure: tpd.Closure if !closure.tpt.isEmpty =>
@@ -145,18 +156,18 @@ private[analysis] class References(components: Components, fragments: Fragments)
         case tpd.Ident(_) | tpd.Select(_, _) if !synthetic.top => callSites.invoke(tree, owner)
         case _                                                 => ()
       }
-      symbols.refer(owner, tree.symbol)
+      symbols.refer(user, tree.symbol)
       read(tree.symbol)
       recorder.mention(tree)
       derivations.observe(tree)
       structure.observe(tree, owner)
-      val keys = reads.keyed(tree.tpe, owner)
+      val keys = reads.keyed(tree.tpe, user)
       if (!synthetic.top) {
         comparisons.observe(tree, owner)
         comparisons.keyed(keys, tree, owner)
       }
       tree match {
-        case select: tpd.Select => reads.rendered(select, owner)
+        case select: tpd.Select => reads.rendered(select, user)
         case _                  => ()
       }
       parent = parents.contains(tree)

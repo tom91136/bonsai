@@ -5,8 +5,10 @@ class LivenessSuite extends AnalysisSuite {
       main: Seq[(String, String)],
       test: Seq[(String, String)] = Nil,
       resources: Seq[(String, String)] = Nil
-  ): Set[(String, String)] =
-    Liveness.findings(extract(main, test, resources).graph).map(finding => finding.rule.id -> finding.node.name).toSet
+  ): Set[(String, String)] = {
+    val result = extract(main, test, resources)
+    Liveness.findings(result.graph, result.reach).map(finding => finding.rule.id -> finding.node.name).toSet
+  }
 
   private val entry = "src/main/scala/Main.scala" -> "object Main { def main(args: Array[String]): Unit = Used.run() }"
 
@@ -24,7 +26,7 @@ class LivenessSuite extends AnalysisSuite {
     )
 
     assertEquals(
-      Liveness.findings(result.graph).map(finding => finding.rule.id -> finding.node.name),
+      Liveness.findings(result.graph, result.reach).map(finding => finding.rule.id -> finding.node.name),
       Vector.empty
     )
   }
@@ -45,7 +47,7 @@ class LivenessSuite extends AnalysisSuite {
     )
 
     assertEquals(
-      Liveness.findings(result.graph).map(finding => finding.rule.id -> finding.node.name),
+      Liveness.findings(result.graph, result.reach).map(finding => finding.rule.id -> finding.node.name),
       Vector.empty
     )
   }
@@ -88,6 +90,101 @@ class LivenessSuite extends AnalysisSuite {
       ),
       Set("unused" -> "A", "unused" -> "B", "unused" -> "C")
     )
+  }
+
+  test("a type only a dead method of a live type refers to is unused, however it refers to it") {
+    assertEquals(
+      findings(
+        Seq(
+          entry,
+          "src/main/scala/Used.scala" ->
+            "object Used { def run(): Unit = (); def built(): Orphan = new Orphan; def typed(shed: Shed): Int = 1 }",
+          "src/main/scala/Orphan.scala" -> "class Orphan",
+          "src/main/scala/Shed.scala"   -> "class Shed"
+        )
+      ),
+      Set("unused" -> "Orphan", "unused" -> "Shed")
+    )
+  }
+
+  test("a type that live code names only in a type position stays live") {
+    assertEquals(
+      findings(
+        Seq(
+          entry,
+          "src/main/scala/Used.scala"    -> "object Used { def run(): Unit = { val _ = List.empty[Phantom] } }",
+          "src/main/scala/Phantom.scala" -> "class Phantom"
+        )
+      ),
+      Set.empty
+    )
+  }
+
+  test("a type only a method reached from tests alone refers to is test-only") {
+    assertEquals(
+      findings(
+        Seq(
+          entry,
+          "src/main/scala/Used.scala"   -> "object Used { def run(): Unit = (); def staged(): Staged = new Staged }",
+          "src/main/scala/Staged.scala" -> "class Staged"
+        ),
+        Seq("src/test/scala/Check.scala" -> "class Check { def check = Used.staged() }")
+      ),
+      Set("test-only" -> "Staged")
+    )
+  }
+
+  test("a Java type only a dead Java method refers to is unused, and one a reachable method refers to is live") {
+    val result = javaFacts(
+      Set.empty,
+      "demo/App.java" ->
+        """package demo;
+          |
+          |public class App {
+          |  public static void main(String[] args) { Used.run(); }
+          |  void dead() { new Orphan(); }
+          |}
+          |""".stripMargin,
+      "demo/Used.java"   -> "package demo;\n\nclass Used {\n  static void run() {}\n}\n",
+      "demo/Orphan.java" -> "package demo;\n\nclass Orphan {}\n"
+    )
+    assertEquals(
+      Liveness.findings(result.graph, result.reach).map(finding => finding.rule.id -> finding.node.name).toSet,
+      Set("unused" -> "demo.Orphan")
+    )
+  }
+
+  test("the producers say how each root is entered") {
+    val result = extract(
+      Seq(
+        entry,
+        "src/main/scala/Used.scala"    -> "object Used { def run(): Unit = () }",
+        "src/main/scala/Service.scala" -> "package p; class Service extends Runnable { def run(): Unit = () }",
+        "src/main/scala/Named.scala"   -> "package p; object Named",
+        "src/main/scala/Api.scala"     -> "package lib; object Api"
+      ),
+      resources = Seq("META-INF/services/java.lang.Runnable" -> "p.Service\n"),
+      reflective = Vector("p.Named"),
+      libraries = Set("m")
+    )
+    val kinds = result.graph.roots.groupMap(_.name)(_.kind)
+    assertEquals(kinds("Main"), Set(Root.Kind.Main, Root.Kind.Exported))
+    assertEquals(kinds("p.Service"), Set(Root.Kind.Provided, Root.Kind.Exported))
+    assertEquals(kinds("p.Named"), Set(Root.Kind.Reflective))
+    assertEquals(kinds("lib.Api"), Set(Root.Kind.Exported))
+  }
+
+  test("Java types are rooted as main, exported and reflective entries") {
+    val result = javaFactsReflective(
+      Set("j"),
+      Vector("demo.Reflected"),
+      "demo/App.java" ->
+        "package demo;\n\npublic class App {\n  public static void main(String[] args) {}\n}\n",
+      "demo/Reflected.java" -> "package demo;\n\nclass Reflected {}\n"
+    )
+    val kinds = result.graph.roots.groupMap(_.name)(_.kind)
+    assertEquals(kinds("demo.App"), Set(Root.Kind.Main, Root.Kind.Exported))
+    assertEquals(kinds("demo.Reflected"), Set(Root.Kind.Reflective))
   }
 
   test("main definitions reachable only from tests are test-only") {
@@ -219,10 +316,11 @@ class LivenessSuite extends AnalysisSuite {
     assertEquals(
       findings(
         Seq(
-          "src/main/scala/Service.scala" -> "package p; class Service { def helper = Helper }",
-          "src/main/scala/Helper.scala"  -> "package p; object Helper",
-          "src/main/scala/Plugin.scala"  -> "package p; class Plugin",
-          "src/main/scala/Build.scala"   -> "package p; object Build"
+          "src/main/scala/Service.scala" ->
+            "package p; class Service extends Runnable { def run(): Unit = { val _ = Helper } }",
+          "src/main/scala/Helper.scala" -> "package p; object Helper",
+          "src/main/scala/Plugin.scala" -> "package p; class Plugin",
+          "src/main/scala/Build.scala"  -> "package p; object Build"
         ),
         resources = Seq(
           "META-INF/services/java.lang.Runnable" -> "p.Service\n",
@@ -246,7 +344,7 @@ class LivenessSuite extends AnalysisSuite {
       Seq("ClientCheck.scala" -> "class ClientCheck { val value = lib.Client.fetch }"),
       libraries = Set("m")
     )
-    val found = Liveness.findings(result.graph).map(finding => s"${finding.rule.id} ${finding.node.name}")
+    val found = Liveness.findings(result.graph, result.reach).map(finding => s"${finding.rule.id} ${finding.node.name}")
     assertEquals(found.sorted, Vector("unused lib.Hidden", "unused lib.Internal", "unused lib.Outer.Inner"))
   }
 
@@ -276,8 +374,8 @@ class LivenessSuite extends AnalysisSuite {
       ),
       generated = GeneratedSources
     )
-    val found = Liveness.findings(result.graph) ++
-      Members.findings(result.members, result.graph.nodes, Liveness.live(result.graph))
+    val found = Liveness.findings(result.graph, result.reach) ++
+      Members.findings(result.members, result.graph.nodes, result.reach)
     assertEquals(found.filter(_.node.generated), Vector.empty)
     assertFinding(found, "unused", "Helper is unreachable from every entry point")
   }

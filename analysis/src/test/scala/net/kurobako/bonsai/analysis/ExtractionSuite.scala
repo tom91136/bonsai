@@ -29,7 +29,12 @@ class ExtractionSuite extends AnalysisSuite {
       val bytes = Files.readAllBytes(tasty)
       Files.write(tasty, bytes.patch(bytes.length - 24, Array.fill(12)(Byte.MaxValue), 12)): Unit
       def brief(lines: Vector[String]) = lines.map(_.takeWhile(_ != ':'))
-      Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, classes)), classpaths, Set.empty)).fold(
+      Extraction.read(Manifest(
+        Vector(Output("m", Output.Scope.Main, classes)),
+        classpaths,
+        Set.empty,
+        jdk = targetJdk
+      )).fold(
         problems => Left(brief(problems)),
         result => Right(result.graph.nodes.keySet.toVector.sorted ++ brief(result.problems))
       )
@@ -68,12 +73,29 @@ class ExtractionSuite extends AnalysisSuite {
     )
   }
 
+  test("a manifest without a jdk is refused, with the way to regenerate it") {
+    Scratch.using("bonsai-") { directory =>
+      val classes = Files.createDirectories(directory.resolve("classes"))
+      val read    = Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, classes)), classpaths, Set.empty))
+      assert(
+        read.left.exists(_.exists(error => error.contains("no jdk") && error.contains("regenerate"))),
+        read.toString
+      )
+    }
+  }
+
   test("sources without classes fail rather than read as a clean build") {
     Scratch.using("bonsai-") { directory =>
       val classes                       = Files.createDirectories(directory.resolve("classes"))
       val source                        = Files.writeString(directory.resolve("A.scala"), "class A")
       def read(sources: Vector[Output]) = Extraction.read(
-        Manifest(Vector(Output("m", Output.Scope.Main, classes)), classpaths, Set.empty, sources = sources)
+        Manifest(
+          Vector(Output("m", Output.Scope.Main, classes)),
+          classpaths,
+          Set.empty,
+          sources = sources,
+          jdk = targetJdk
+        )
       )
       assert(read(Vector(Output("m", Output.Scope.Main, source))).left.exists(_.exists(_.contains("no classes"))))
       assert(read(Vector.empty).isRight)
@@ -82,7 +104,13 @@ class ExtractionSuite extends AnalysisSuite {
       Files.writeString(full.resolve("A.class"), ""): Unit
       val outputs = Vector(Output("m", Output.Scope.Main, classes), Output("m", Output.Scope.Main, full))
       assert(Extraction.read(
-        Manifest(outputs, classpaths, Set.empty, sources = Vector(Output("m", Output.Scope.Main, source)))
+        Manifest(
+          outputs,
+          classpaths,
+          Set.empty,
+          sources = Vector(Output("m", Output.Scope.Main, source)),
+          jdk = targetJdk
+        )
       ).left.forall(!_.exists(_.contains("no classes"))))
     }
   }
@@ -103,7 +131,7 @@ class ExtractionSuite extends AnalysisSuite {
         val sources = Seq("Use.scala" -> s"object Use$name { val value = lib.$name() }")
         Output(module, Output.Scope.Main, compile(directory.resolve(s"$module-use"), sources, Vector(jar)))
       }
-      val manifest = Manifest(outputs, libraries.view.mapValues(_ +: classpath).toMap, Set.empty)
+      val manifest = Manifest(outputs, libraries.view.mapValues(_ +: classpath).toMap, Set.empty, jdk = targetJdk)
       val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       assertEquals(result.problems, Vector.empty)
       assertEquals(result.graph.nodes.keySet.count(node => node.contains("UseJvm") || node.contains("UseNative")), 2)
@@ -134,7 +162,12 @@ class ExtractionSuite extends AnalysisSuite {
       )
       val outputs  = Vector(Output("first", Output.Scope.Main, first), Output("second", Output.Scope.Main, second))
       val manifest =
-        Manifest(outputs, Map("first" -> (older +: classpath), "second" -> (newer +: classpath)), Set.empty)
+        Manifest(
+          outputs,
+          Map("first" -> (older +: classpath), "second" -> (newer +: classpath)),
+          Set.empty,
+          jdk = targetJdk
+        )
       val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       assertEquals(result.problems, Vector.empty)
       assertEquals(result.graph.nodes.keySet.count(_.contains("UseSecond")), 1)
@@ -158,7 +191,12 @@ class ExtractionSuite extends AnalysisSuite {
         Output(member, Output.Scope.Main, compile(directory.resolve(s"$member-use"), sources, Vector(jar)))
       }
       val manifest =
-        Manifest(outputs, Map("Config" -> (config +: classpath), "Format" -> (format +: classpath)), Set.empty)
+        Manifest(
+          outputs,
+          Map("Config" -> (config +: classpath), "Format" -> (format +: classpath)),
+          Set.empty,
+          jdk = targetJdk
+        )
       val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       assertEquals(result.problems, Vector.empty)
       assertEquals(result.graph.nodes.keySet.count(node => node.contains("UseConfig") || node.contains("UseFormat")), 2)
@@ -211,7 +249,7 @@ class ExtractionSuite extends AnalysisSuite {
           |}""".stripMargin
       )
       val output   = Output("m", Output.Scope.Main, compile(directory.resolve("use"), sources, Vector(helper, missing)))
-      val manifest = Manifest(Vector(output), Map("m" -> (helper +: classpath)), Set.empty)
+      val manifest = Manifest(Vector(output), Map("m" -> (helper +: classpath)), Set.empty, jdk = targetJdk)
       val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       assert(result.graph.nodes.keySet.exists(_.contains("Use")), result.graph.nodes.keySet.toString)
       assertEquals(
@@ -584,7 +622,12 @@ class ExtractionSuite extends AnalysisSuite {
 
   test("an output directory with no TASTy is an empty build rather than a failure") {
     Scratch.using("bonsai-") { directory =>
-      val result = Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, directory)), classpaths, Set.empty))
+      val result = Extraction.read(Manifest(
+        Vector(Output("m", Output.Scope.Main, directory)),
+        classpaths,
+        Set.empty,
+        jdk = targetJdk
+      ))
       assertEquals(result.map(_.graph.nodes.isEmpty), Right(true))
       assertEquals(result.map(_.problems), Right(Vector.empty[String]))
     }
@@ -593,7 +636,12 @@ class ExtractionSuite extends AnalysisSuite {
   test("an output holding a file that is not TASTy fails the read rather than throwing") {
     Scratch.using("bonsai-") { directory =>
       Files.writeString(directory.resolve("Junk.tasty"), "not tasty"): Unit
-      assert(Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, directory)), classpaths, Set.empty)).isLeft)
+      assert(Extraction.read(Manifest(
+        Vector(Output("m", Output.Scope.Main, directory)),
+        classpaths,
+        Set.empty,
+        jdk = targetJdk
+      )).isLeft)
     }
   }
 
@@ -605,7 +653,12 @@ class ExtractionSuite extends AnalysisSuite {
         Array[Byte](0xca.toByte, 0xfe.toByte, 0xba.toByte, 0xbe.toByte, 0, 0, 0, 61, 0, 2, 99)
       ): Unit
       val problems =
-        Extraction.read(Manifest(Vector(Output("m", Output.Scope.Main, classes)), classpaths, Set.empty))
+        Extraction.read(Manifest(
+          Vector(Output("m", Output.Scope.Main, classes)),
+          classpaths,
+          Set.empty,
+          jdk = targetJdk
+        ))
           .left.getOrElse(Vector.empty)
       assertEquals(problems.map(_.linesIterator.size), Vector(1))
       assert(problems.head.startsWith("extraction failed: java.lang.IllegalArgumentException"), problems.toString)

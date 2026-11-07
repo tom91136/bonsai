@@ -500,7 +500,7 @@ class Collector(trees: Trees) {
   private given Trees = trees
 
   private val nodes         = mutable.LinkedHashMap.empty[String, Model.Node]
-  private val edges         = mutable.LinkedHashMap.empty[String, mutable.LinkedHashSet[String]]
+  private val edges         = mutable.LinkedHashMap.empty[(String, String), mutable.LinkedHashSet[String]]
   private val methods       = mutable.LinkedHashMap.empty[String, Model.Method]
   private val fields        = mutable.LinkedHashMap.empty[String, Vector[Model.Field]]
   private val sites         = mutable.ArrayBuffer.empty[Model.Site]
@@ -519,7 +519,7 @@ class Collector(trees: Trees) {
 
   /** The model of the compilation, which holds the nodes of every unit the compiler compiled. */
   def model: Model.Model = {
-    val found = edges.toVector.flatMap { case (from, tos) => tos.toVector.map(to => Edge(from, to)) }
+    val found = edges.toVector.flatMap { case ((from, method), tos) => tos.toVector.map(to => Edge(from, to, method)) }
     Model.Model(
       nodes.values.toVector,
       methods.values.toVector,
@@ -612,7 +612,7 @@ class Collector(trees: Trees) {
                 constructible = Collector.constructible(element)
               )
             )
-            val _ = edges.getOrElseUpdate(name, mutable.LinkedHashSet.empty)
+            val _ = edges.getOrElseUpdate((name, ""), mutable.LinkedHashSet.empty)
             // A record is a product of its components, which the analysis reads alike with a case class.
             if (element.getKind == ElementKind.RECORD)
               products.update(name, Model.Product(name, name, Collector.components(element), Set.empty)): Unit
@@ -794,7 +794,11 @@ class Collector(trees: Trees) {
         val owner  = types.headOption.getOrElse("")
         val target = Collector.reference(trees, path)
         if (target.isDefined && target.get != owner)
-          edges.getOrElseUpdate(owner, mutable.LinkedHashSet.empty) += target.get: Unit
+          edges.getOrElseUpdate(
+            (owner, owners.headOption.filter(_ != owner).getOrElse("")),
+            mutable.LinkedHashSet.empty
+          ) +=
+            target.get: Unit
       }
 
       // The walk reaches every node, so the missing element is tested for null rather than wrapped.

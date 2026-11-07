@@ -6,6 +6,7 @@ import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.jar.JarFile
+import java.util.zip.ZipException
 import java.util.zip.ZipFile
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
@@ -49,7 +50,7 @@ private[analysis] class ClassSource private (
 ) extends AutoCloseable {
 
   private val images = mutable.Map.empty[Path, FileSystem]
-  private val jars   = mutable.Map.empty[Path, JarFile]
+  private val jars   = mutable.Map.empty[Path, Option[JarFile]]
 
   def bytes(internal: String): Option[Array[Byte]] = {
     val entry = s"$internal.class"
@@ -59,7 +60,7 @@ private[analysis] class ClassSource private (
   }
 
   override def close(): Unit = {
-    jars.values.foreach(_.close())
+    jars.values.flatten.foreach(_.close())
     images.values.foreach(_.close())
   }
 
@@ -89,17 +90,20 @@ private[analysis] class ClassSource private (
       val file = root.resolve(entry)
       Option.when(Files.isRegularFile(file))(Files.readAllBytes(file))
     } else if (Files.isRegularFile(root)) {
-      val jar = jarOf(root)
-      Option(jar.getEntry(entry)).map(e => Using.resource(jar.getInputStream(e))(_.readAllBytes()))
+      jarOf(root).flatMap(jar =>
+        Option(jar.getEntry(entry)).map(found => Using.resource(jar.getInputStream(found))(_.readAllBytes()))
+      )
     } else None
 
-  private def jarOf(file: Path): JarFile = jars.getOrElseUpdate(
+  private def jarOf(file: Path): Option[JarFile] = jars.getOrElseUpdate(
     file,
-    jdk match {
-      case Some(target) =>
-        val version = Runtime.Version.parse(target.feature.toString) // scalafix:ok ForbiddenAPIs.forbidden-api
-        JarFile(file.toFile, true, ZipFile.OPEN_READ, version)
-      case None => JarFile(file.toFile, true)
-    }
+    try
+      Some(jdk match {
+        case Some(target) =>
+          val version = Runtime.Version.parse(target.feature.toString) // scalafix:ok ForbiddenAPIs.forbidden-api
+          JarFile(file.toFile, true, ZipFile.OPEN_READ, version)
+        case None => JarFile(file.toFile, true)
+      })
+    catch { case _: ZipException => None }
   )
 }
