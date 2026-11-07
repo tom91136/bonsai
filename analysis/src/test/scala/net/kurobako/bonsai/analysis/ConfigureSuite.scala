@@ -19,6 +19,14 @@ class ConfigureSuite extends FunSuite {
     assertEquals(missing.map(_.filterNot(_.startsWith("option\t"))), Right(Vector.empty[String]))
   }
 
+  test("the enabled rules are written after the disabled ones") {
+    val printed = lines("enabled = [ExplicitResultTypes]\ndisabled = [acyclic]\n")
+    assertEquals(
+      printed.map(_.filter(line => line.startsWith("disabled\t") || line.startsWith("enabled\t"))),
+      Right(Vector("disabled\tacyclic", "enabled\tExplicitResultTypes"))
+    )
+  }
+
   test("a module's settings override the build's and the analysis options name known findings only") {
     val printed = lines(
       """disabled = [acyclic, duplicate-code]

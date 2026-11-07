@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the bonsai scalafix rules over a Scala CLI project, rewriting its sources, or only reporting them with --check.
 # The project's .scalafix.conf is used when it has one, otherwise every rule the rules artefact registers is enabled,
-# with the rules, bans and settings it publishes for scalafix's own syntax, unused code and result types.
+# with the rules, bans and settings it publishes for scalafix's own syntax and unused code. Opt-in rules are left out.
 # usage: scalafix.sh <project directory> [--check]
 set -euo pipefail
 project=$(cd "${1:?usage: scalafix.sh <project directory> [--check]}" && pwd)
@@ -38,13 +38,10 @@ supported() {
       local from_patch=${from##*.}
       ((minor > from_minor || (minor == from_minor && patch >= from_patch)))
       ;;
-    ExplicitResultTypes)
-      ! tr ',' '\n' <<<"$(property explicitResultTypes.excluded)" | grep -qxF "3.$minor"
-      ;;
     *) return 0 ;;
   esac
 }
-builtin=$(published builtin.id)
+builtin=$(published builtin.id | grep -v '^?')
 scalac=()
 {
   echo 'rules = ['

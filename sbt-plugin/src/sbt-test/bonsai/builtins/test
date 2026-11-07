@@ -1,6 +1,7 @@
-# RemoveUnused and ExplicitResultTypes run without a .scalafix.conf, and the compiler is asked for the warnings
+# RemoveUnused runs without a .scalafix.conf, the compiler is asked for the warnings, and inferred types are left out
 > scalafixAll --check
-> listed RemoveUnused ExplicitResultTypes
+> listed RemoveUnused
+> unlisted ExplicitResultTypes
 > flagged -Wunused:all
 # an unused import fails the check, though fatal warnings would fail the compile on it
 > set ThisBuild / scalacOptions += "-Werror"
@@ -12,13 +13,14 @@ $ copy-file changes/Unused.scala src/main/scala/demo/Unused.scala
 > unflagged -Wunused:all
 > scalafixAll --check
 > unlisted RemoveUnused
-> listed ExplicitResultTypes
 $ delete src/main/scala/demo/Unused.scala
-# an inferred type of a public member fails the check, which PublicTypes reports alike
+# an inferred type of a public member fails the check once the opt-in rule is enabled, which PublicTypes reports alike
 > set ThisBuild / bonsaiDisabled := Set("PublicTypes")
+> set ThisBuild / bonsaiEnabledRules += "ExplicitResultTypes"
+> scalafixAll --check
+> listed ExplicitResultTypes
 $ copy-file changes/Inferred.scala src/main/scala/demo/Inferred.scala
 -> scalafixAll --check
-# leaving the rule out passes it
 > set ThisBuild / bonsaiDisabled += "ExplicitResultTypes"
 > scalafixAll --check
 > unlisted ExplicitResultTypes
@@ -39,3 +41,5 @@ $ copy-file changes/Inferred.scala src/main/scala/demo/Inferred.scala
 > scalafixAll --check
 > unlisted ExplicitResultTypes
 > listed RemoveUnused
+# only the opt-in rules can be enabled
+-> set ThisBuild / bonsaiEnabledRules := Set("RemoveUnused")

@@ -38,7 +38,7 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
 
   directory.test("a file that does not exist is an empty configuration") { path =>
     val configured = BonsaiConfiguration.read(path.resolve("absent.conf").toFile)
-    assertEquals(configured.build, BonsaiConfiguration.Settings(None, None, None, None, None, None))
+    assertEquals(configured.build, BonsaiConfiguration.Settings(None, None, None, None, None, None, None))
     assertEquals(configured.text, Vector.empty)
     assertEquals(configured.projects, Map.empty)
   }
@@ -47,6 +47,7 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
     val configured = read(
       path,
       """disabled = [acyclic, local-throw]
+        |enabled = [ExplicitResultTypes]
         |errors = [broad-catch]
         |warnings = [identity-token]
         |wildcards = 3
@@ -62,6 +63,7 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
         |""".stripMargin
     )
     assertEquals(configured.build.disabled, Some(Set("acyclic", "local-throw")))
+    assertEquals(configured.build.enabled, Some(Set("ExplicitResultTypes")))
     assertEquals(configured.build.errors, Some(Set("broad-catch")))
     assertEquals(configured.build.warnings, Some(Set("identity-token")))
     assertEquals(configured.build.wildcards, Some(3))
@@ -114,6 +116,17 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
     assert(failure(path, "nesting { height = 4 }\n").contains("nesting.height"))
   }
 
+  directory.test("a project resolves its own enabled rules over the build's") { path =>
+    val configured = read(
+      path,
+      """enabled = [ExplicitResultTypes]
+        |projects.demo { enabled = [] }
+        |""".stripMargin
+    )
+    assertEquals(configured.resolve("demo").enabled, Some(Set.empty[String]))
+    assertEquals(configured.resolve("other").enabled, Some(Set("ExplicitResultTypes")))
+  }
+
   directory.test("a project resolves its own settings over the build's") { path =>
     val configured = read(
       path,
@@ -125,7 +138,15 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
     )
     assertEquals(
       configured.resolve("demo"),
-      BonsaiConfiguration.Settings(Some(Set("local-throw")), Some(Set("broad-catch")), None, Some(3), Some(true), None)
+      BonsaiConfiguration.Settings(
+        Some(Set("local-throw")),
+        None,
+        Some(Set("broad-catch")),
+        None,
+        Some(3),
+        Some(true),
+        None
+      )
     )
     assertEquals(configured.resolve("other"), configured.build)
   }

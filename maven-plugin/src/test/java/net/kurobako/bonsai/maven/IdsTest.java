@@ -53,7 +53,19 @@ class IdsTest {
       write("findings.id", "duplicate-code\n"),
       write("rules.id", "BannedSyntax\n"), BUILTIN);
 
-    ids.validate(Set.of("RemoveUnused", "ExplicitResultTypes", "DisableSyntax.noXml"), Set.of(), Set.of());
+    ids.validate(Set.of("RemoveUnused", "DisableSyntax.noXml"), Set.of("ExplicitResultTypes"), Set.of(), Set.of());
+  }
+
+  @Test
+  void theOptInRulesAreTheOnesTheBuiltInFileMarks() throws IOException {
+    Ids ids = Ids.of(
+      write("checks.id", "acyclic\n"),
+      write("findings.id", "duplicate-code\n"),
+      write("rules.id", "BannedSyntax\n"), BUILTIN);
+
+    assertEquals(Set.of("ExplicitResultTypes"), ids.optIn());
+    assertTrue(ids.rules().contains("ExplicitResultTypes"), ids.rules().toString());
+    assertFalse(ids.rules().contains("?ExplicitResultTypes"), ids.rules().toString());
   }
 
   @Test
@@ -64,8 +76,21 @@ class IdsTest {
       write("rules.id", "BannedSyntax\n"), BUILTIN);
 
     IOException error = assertThrows(IOException.class,
-      () -> ids.validate(Set.of("acyclic", "typo"), Set.of(), Set.of()));
+      () -> ids.validate(Set.of("acyclic", "typo"), Set.of(), Set.of(), Set.of()));
     assertTrue(error.getMessage().contains("typo"), error.getMessage());
+  }
+
+  @Test
+  void aRuleThatIsNotOptInCannotBeEnabled() throws IOException {
+    Ids ids = Ids.of(
+      write("checks.id", "acyclic\n"),
+      write("findings.id", "duplicate-code\n"),
+      write("rules.id", "BannedSyntax\n"), BUILTIN);
+
+    IOException error = assertThrows(IOException.class,
+      () -> ids.validate(Set.of(), Set.of("RemoveUnused", "acyclic"), Set.of(), Set.of()));
+    assertTrue(error.getMessage().contains("RemoveUnused"), error.getMessage());
+    assertTrue(error.getMessage().contains("ExplicitResultTypes"), error.getMessage());
   }
 
   @Test
@@ -75,6 +100,6 @@ class IdsTest {
       write("findings.id", "duplicate-code\n"),
       write("rules.id", "BannedSyntax\n"), BUILTIN);
 
-    ids.validate(Set.of("acyclic", "duplicate-code", "BannedSyntax"), Set.of(), Set.of());
+    ids.validate(Set.of("acyclic", "duplicate-code", "BannedSyntax"), Set.of(), Set.of(), Set.of());
   }
 }

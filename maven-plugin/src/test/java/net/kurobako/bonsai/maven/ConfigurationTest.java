@@ -19,6 +19,7 @@ class ConfigurationTest {
     Configuration configuration = Configuration.parse(List.of(
       "disabled\tlocal-throw",
       "disabled\tacyclic",
+      "enabled\tExplicitResultTypes",
       "errors\tbroad-catch",
       "warnings\tidentity-token",
       "wildcards\t3",
@@ -35,6 +36,7 @@ class ConfigurationTest {
       "option\ta reason\twith a tab"));
 
     assertEquals(Set.of("acyclic", "local-throw"), configuration.disabled());
+    assertEquals(Set.of("ExplicitResultTypes"), configuration.enabled());
     assertEquals(Set.of("broad-catch"), configuration.errors());
     assertEquals(Set.of("identity-token"), configuration.warnings());
     assertEquals(3, configuration.wildcards());
@@ -60,6 +62,7 @@ class ConfigurationTest {
     Configuration configuration = Configuration.parse(List.of());
 
     assertTrue(configuration.disabled().isEmpty());
+    assertTrue(configuration.enabled().isEmpty());
     assertEquals(2, configuration.wildcards());
     assertFalse(configuration.library());
     assertEquals(Optional.empty(), configuration.optionFold());

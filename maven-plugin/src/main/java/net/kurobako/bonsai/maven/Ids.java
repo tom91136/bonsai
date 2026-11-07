@@ -23,6 +23,7 @@ public final class Ids {
   private final Set<String> checks;
   private final Set<String> findings;
   private final Set<String> rules;
+  private final Set<String> optIn = new TreeSet<>();
   private final List<String> bans = new ArrayList<>();
   private final List<String> settings = new ArrayList<>();
   private final List<String> unusedOptions = new ArrayList<>();
@@ -30,7 +31,7 @@ public final class Ids {
   /**
    * The built-in entries are the rule names scalafix provides, their bans, which each contain a dot, their settings,
    * which each contain {@code =}, and the compiler options the unused-code rule reads, which each start with
-   * {@code -}.
+   * {@code -}. A rule which starts with {@code ?} is opt-in.
    */
   private Ids(Set<String> checks, Set<String> findings, Set<String> rules, Set<String> builtin) {
     this.checks = checks;
@@ -39,6 +40,9 @@ public final class Ids {
     for (String entry : builtin) {
       if (entry.startsWith("-")) {
         unusedOptions.add(entry);
+      } else if (entry.startsWith("?")) {
+        optIn.add(entry.substring(1));
+        this.rules.add(entry.substring(1));
       } else if (entry.contains("=")) {
         settings.add(entry);
       } else if (entry.contains(".")) {
@@ -62,6 +66,11 @@ public final class Ids {
   /** The names the scalafix rules have, and the syntax scalafix itself provides. */
   public Set<String> rules() {
     return rules;
+  }
+
+  /** The rules the configuration has to enable before they run. */
+  public Set<String> optIn() {
+    return optIn;
   }
 
   /** The bans the DisableSyntax rule holds, each turned off by its own name. */
@@ -113,8 +122,9 @@ public final class Ids {
     return ids;
   }
 
-  /** Fails when an id no tool knows, which catches a typo in the configuration. */
-  public void validate(Set<String> disabled, Set<String> errors, Set<String> warnings) throws IOException {
+  /** Fails on an id no tool knows, which catches a typo, and on an enabled id that is not an opt-in rule. */
+  public void validate(Set<String> disabled, Set<String> enabled, Set<String> errors, Set<String> warnings)
+      throws IOException {
     Set<String> unknown = new TreeSet<>();
     unknown.addAll(disabled);
     unknown.addAll(errors);
@@ -128,6 +138,13 @@ public final class Ids {
         "bonsai: unknown ids " + String.join(", ", unknown) + "; the ids are the compiler plugin checks " +
           String.join(", ", new TreeSet<>(checks)) + "; the analysis rules " + String.join(", ", new TreeSet<>(findings)) +
           "; and the scalafix rules " + String.join(", ", new TreeSet<>(rules)));
+    }
+    Set<String> notOptIn = new TreeSet<>(enabled);
+    notOptIn.removeAll(optIn);
+    if (!notOptIn.isEmpty()) {
+      throw new IOException(
+        "bonsai: only opt-in rules can be enabled, not " + String.join(", ", notOptIn) + "; the opt-in rules are " +
+          String.join(", ", optIn));
     }
   }
 }

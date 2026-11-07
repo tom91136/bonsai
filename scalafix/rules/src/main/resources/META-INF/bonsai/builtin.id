@@ -1,7 +1,7 @@
 DisableSyntax
 RedundantSyntax
 RemoveUnused
-ExplicitResultTypes
+?ExplicitResultTypes
 DisableSyntax.noVars
 DisableSyntax.noReturns
 DisableSyntax.noNulls

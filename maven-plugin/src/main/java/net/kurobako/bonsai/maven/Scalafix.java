@@ -5,9 +5,10 @@ import java.util.TreeSet;
 /**
  * The configuration the scalafix rules read, which names the rules that run.
  *
- * <p>A rule the bonsai configuration leaves out does not run, and the bans of the DisableSyntax rule are turned on
- * unless that rule is left out. A rule the Scala version of the build cannot run with, because its compiler lacks the
- * unused warnings or scalafix cannot load a presentation compiler for it, is left out too.
+ * <p>A rule the bonsai configuration leaves out does not run, and an opt-in rule runs only when the configuration
+ * enables it. The bans of the DisableSyntax rule are turned on unless that rule is left out. A rule the Scala version
+ * of the build cannot run with, because its compiler lacks the unused warnings or scalafix cannot load a presentation
+ * compiler for it, is left out too.
  */
 public final class Scalafix {
 
@@ -18,7 +19,8 @@ public final class Scalafix {
   public static String configuration(Configuration configuration, Ids ids, Versions.Support support, String scala) {
     StringBuilder scalafix = new StringBuilder("rules = [\n");
     for (String rule : new TreeSet<>(ids.rules())) {
-      if (!configuration.disabled().contains(rule) && supported(rule, support, scala)) {
+      boolean enabled = !ids.optIn().contains(rule) || configuration.enabled().contains(rule);
+      if (enabled && !configuration.disabled().contains(rule) && supported(rule, support, scala)) {
         scalafix.append("  \"").append(rule).append("\"\n");
       }
     }

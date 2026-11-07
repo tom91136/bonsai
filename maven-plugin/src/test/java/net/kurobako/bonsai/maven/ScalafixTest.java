@@ -52,19 +52,33 @@ class ScalafixTest {
   }
 
   @Test
-  void unusedCodeAndInferredTypesAreCheckedByDefault() throws IOException {
+  void unusedCodeIsCheckedByDefaultAndInferredTypesAreNot() throws IOException {
     String scalafix = Scalafix.configuration(configuration(), ids(), SUPPORT, SCALA);
 
     assertTrue(scalafix.contains("\"RemoveUnused\""), scalafix);
-    assertTrue(scalafix.contains("\"ExplicitResultTypes\""), scalafix);
+    assertTrue(!scalafix.contains("\"ExplicitResultTypes\""), scalafix);
   }
 
   @Test
-  void unusedCodeAndInferredTypesCanBeLeftOut() throws IOException {
-    String scalafix = Scalafix.configuration(
-      configuration("disabled\tRemoveUnused", "disabled\tExplicitResultTypes"), ids(), SUPPORT, SCALA);
+  void unusedCodeCanBeLeftOut() throws IOException {
+    String scalafix = Scalafix.configuration(configuration("disabled\tRemoveUnused"), ids(), SUPPORT, SCALA);
 
     assertTrue(!scalafix.contains("\"RemoveUnused\""), scalafix);
+  }
+
+  @Test
+  void inferredTypesAreCheckedWhenEnabled() throws IOException {
+    String scalafix = Scalafix.configuration(configuration("enabled\tExplicitResultTypes"), ids(), SUPPORT, SCALA);
+
+    assertTrue(scalafix.contains("\"ExplicitResultTypes\""), scalafix);
+    assertTrue(scalafix.contains("ExplicitResultTypes.fetchScala3CompilerArtifactsOnVersionMismatch = true"), scalafix);
+  }
+
+  @Test
+  void disabledWinsOverEnabled() throws IOException {
+    String scalafix = Scalafix.configuration(
+      configuration("enabled\tExplicitResultTypes", "disabled\tExplicitResultTypes"), ids(), SUPPORT, SCALA);
+
     assertTrue(!scalafix.contains("\"ExplicitResultTypes\""), scalafix);
   }
 
@@ -77,7 +91,7 @@ class ScalafixTest {
 
   @Test
   void aLineScalafixCannotLoadACompilerForKeepsTheOtherRules() throws IOException {
-    String scalafix = Scalafix.configuration(configuration(), ids(), SUPPORT, "3.4.3");
+    String scalafix = Scalafix.configuration(configuration("enabled\tExplicitResultTypes"), ids(), SUPPORT, "3.4.3");
 
     assertTrue(!scalafix.contains("\"ExplicitResultTypes\""), scalafix);
     assertTrue(scalafix.contains("\"RemoveUnused\""), scalafix);
@@ -86,7 +100,7 @@ class ScalafixTest {
 
   @Test
   void aReleaseBeforeTheUnusedWarningsLeavesUnusedCodeOut() throws IOException {
-    String scalafix = Scalafix.configuration(configuration(), ids(), SUPPORT, "3.3.3");
+    String scalafix = Scalafix.configuration(configuration("enabled\tExplicitResultTypes"), ids(), SUPPORT, "3.3.3");
 
     assertTrue(!scalafix.contains("\"RemoveUnused\""), scalafix);
     assertTrue(scalafix.contains("\"ExplicitResultTypes\""), scalafix);

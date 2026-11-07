@@ -17,6 +17,7 @@ object BonsaiConfiguration {
 
   case class Settings(
       disabled: Option[Set[String]],
+      enabled: Option[Set[String]],
       errors: Option[Set[String]],
       warnings: Option[Set[String]],
       wildcards: Option[Int],
@@ -51,6 +52,7 @@ object BonsaiConfiguration {
     def resolve(id: String): Settings = projects.get(id).fold(build)(own =>
       Settings(
         own.disabled.orElse(build.disabled),
+        own.enabled.orElse(build.enabled),
         own.errors.orElse(build.errors),
         own.warnings.orElse(build.warnings),
         own.wildcards.orElse(build.wildcards),
@@ -236,11 +238,12 @@ object BonsaiConfiguration {
   }
 
   private def settings(config: Config, where: String, others: Set[String]): Settings = {
-    val keys    = Set("disabled", "errors", "warnings", "wildcards", "library", "option-fold")
+    val keys    = Set("disabled", "enabled", "errors", "warnings", "wildcards", "library", "option-fold")
     val unknown = config.root.keySet.asScala.toSet -- keys -- others
     rejectUnknown(unknown, where, (keys ++ others).toSeq.sorted)
     Settings(
       stringSet(config, "disabled"),
+      stringSet(config, "enabled"),
       stringSet(config, "errors"),
       stringSet(config, "warnings"),
       Option.when(config.hasPath("wildcards"))(config.getInt("wildcards")),

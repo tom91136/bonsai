@@ -87,6 +87,8 @@ object BonsaiPlugin extends AutoPlugin {
     )
     val bonsaiDisabled: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks, analysis rules and scalafix rules left out, by id")
+    val bonsaiEnabledRules: SettingKey[Set[String]] =
+      settingKey[Set[String]]("Opt-in scalafix rules run, by id; disabling a rule wins over enabling it")
     val bonsaiErrors: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks and analysis rules that fail in every mode, by id")
     val bonsaiWarnings: SettingKey[Set[String]] =
@@ -159,11 +161,13 @@ object BonsaiPlugin extends AutoPlugin {
   private val Checks: Set[String] = BonsaiArtifacts.checks
 
   // The built-in entries are the rule names scalafix provides, their bans, which each contain a dot, their settings,
-  // which each contain =, and the compiler options RemoveUnused reads, which each start with -.
-  private val UnusedOptions = BonsaiArtifacts.builtin.filter(_.startsWith("-"))
-  private val Settings      = BonsaiArtifacts.builtin.filter(line => !line.startsWith("-") && line.contains('='))
-  private val Named         = BonsaiArtifacts.builtin.diff(UnusedOptions ++ Settings)
-  private val Bans          = Named.filter(_.contains('.'))
+  // which each contain =, and the compiler options RemoveUnused reads, which each start with -. A ? before a rule
+  // name makes it opt-in.
+  private val UnusedOptions      = BonsaiArtifacts.builtin.filter(_.startsWith("-"))
+  private val Settings           = BonsaiArtifacts.builtin.filter(line => !line.startsWith("-") && line.contains('='))
+  private val Named              = BonsaiArtifacts.builtin.diff(UnusedOptions ++ Settings).map(_.stripPrefix("?"))
+  private val Bans               = Named.filter(_.contains('.'))
+  private val OptIn: Set[String] = BonsaiArtifacts.builtin.filter(_.startsWith("?")).map(_.drop(1)).toSet
 
   /** Every scalafix rule, in the order they run, with the built-in ones last. */
   val Rules: Seq[String] = BonsaiArtifacts.rules ++ Named.diff(Bans)
@@ -205,6 +209,7 @@ object BonsaiPlugin extends AutoPlugin {
   override def buildSettings: Seq[Setting[?]] = Seq(
     bonsaiConfiguration := BonsaiConfiguration.read(baseDirectory.value / ".bonsai.conf"),
     bonsaiDisabled      := bonsaiConfiguration.value.build.disabled.getOrElse(Set.empty),
+    bonsaiEnabledRules  := bonsaiConfiguration.value.build.enabled.getOrElse(Set.empty),
     bonsaiErrors        := bonsaiConfiguration.value.build.errors.getOrElse(Set.empty),
     bonsaiWarnings      := bonsaiConfiguration.value.build.warnings.getOrElse(Set.empty),
     bonsaiWildcards     := bonsaiConfiguration.value.build.wildcards.getOrElse(2),
@@ -234,20 +239,27 @@ object BonsaiPlugin extends AutoPlugin {
   )
 
   override def projectSettings: Seq[Setting[?]] = Seq(
-    bonsaiEnabled    := true,
-    bonsaiDisabled   := ownOr(bonsaiDisabled)(_.disabled).value,
-    bonsaiErrors     := ownOr(bonsaiErrors)(_.errors).value,
-    bonsaiWarnings   := ownOr(bonsaiWarnings)(_.warnings).value,
-    bonsaiWildcards  := ownOr(bonsaiWildcards)(_.wildcards).value,
-    bonsaiOptionFold := ownOr(bonsaiOptionFold)(_.optionFold).value,
-    bonsaiValidated  := {
-      val unknown = (bonsaiDisabled.value ++ bonsaiErrors.value ++ bonsaiWarnings.value) --
+    bonsaiEnabled      := true,
+    bonsaiDisabled     := ownOr(bonsaiDisabled)(_.disabled).value,
+    bonsaiEnabledRules := ownOr(bonsaiEnabledRules)(_.enabled).value,
+    bonsaiErrors       := ownOr(bonsaiErrors)(_.errors).value,
+    bonsaiWarnings     := ownOr(bonsaiWarnings)(_.warnings).value,
+    bonsaiWildcards    := ownOr(bonsaiWildcards)(_.wildcards).value,
+    bonsaiOptionFold   := ownOr(bonsaiOptionFold)(_.optionFold).value,
+    bonsaiValidated    := {
+      val unknown = (bonsaiDisabled.value ++ bonsaiEnabledRules.value ++ bonsaiErrors.value ++ bonsaiWarnings.value) --
         (Checks ++ Findings ++ Rules ++ Bans)
       if (unknown.nonEmpty)
         throw MessageOnlyException(
           s"bonsai: unknown ids ${unknown.toSeq.sorted.mkString(", ")}; the ids are the compiler plugin checks " +
             s"${Checks.toSeq.sorted.mkString(", ")}; the analysis rules ${Findings.toSeq.sorted.mkString(", ")}; " +
             s"and the scalafix rules ${(Rules ++ Bans).mkString(", ")}"
+        )
+      val notOptIn = bonsaiEnabledRules.value -- OptIn
+      if (notOptIn.nonEmpty)
+        throw MessageOnlyException(
+          s"bonsai: only opt-in rules can be enabled, not ${notOptIn.toSeq.sorted.mkString(", ")}; the opt-in rules " +
+            s"are ${OptIn.toSeq.sorted.mkString(", ")}"
         )
       val kinds = bonsaiEffects.value.values.flatten.toSet -- Effects
       if (kinds.nonEmpty)
@@ -299,7 +311,8 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiScalafixConfig := Def.uncached(scalafixConfiguration(
       target.value / "bonsai" / "scalafix.conf",
       (ThisBuild / baseDirectory).value / ".scalafix.conf",
-      Rules.filterNot(bonsaiDisabled.value).filter(supported(_, scalaVersion.value)),
+      Rules.filter(rule => !OptIn(rule) || bonsaiEnabledRules.value(rule)).filterNot(bonsaiDisabled.value)
+        .filter(supported(_, scalaVersion.value)),
       if (bonsaiMode.value == BonsaiMode.Dev) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiWarnings.value),
       (if (bonsaiDisabled.value("DisableSyntax")) Nil else Bans).partition(!bonsaiDisabled.value(_))
     )),
