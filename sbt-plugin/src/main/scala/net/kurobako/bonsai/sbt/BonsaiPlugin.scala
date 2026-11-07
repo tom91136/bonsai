@@ -278,7 +278,7 @@ object BonsaiPlugin extends AutoPlugin {
         )
     },
     bonsaiModeId  := bonsaiMode.value.toString.toLowerCase(java.util.Locale.ROOT),
-    bonsaiJdk     := (Compile / javaHome).value.getOrElse(file(sys.props("java.home"))),
+    bonsaiJdk     := (Compile / javaHome).value.getOrElse(ManifestLines.defaultJdk),
     bonsaiLibrary := Def.uncached(bonsaiConfiguration.value.library(thisProject.value.id)
       .getOrElse(!(publish / skip).value && (Compile / discoveredMainClasses).value.isEmpty)),
     libraryDependencies ++= {

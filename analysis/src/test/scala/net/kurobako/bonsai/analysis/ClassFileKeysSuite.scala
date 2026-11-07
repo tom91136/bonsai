@@ -18,6 +18,8 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 class ClassFileKeysSuite extends AnalysisSuite {
+  private val TastyOnly = Set("fixture.Tr.<init>()V")
+
   private val source = """package fixture
 
 class Top {
@@ -106,20 +108,48 @@ object Holder {
   private def classFile(path: Path): ClassFile =
     ClassFiles.read(Files.readAllBytes(path)).fold(error => fail(error), identity)
 
+  private def keyed(directory: Path): Vector[(Reference, String)] =
+    Using.resource(Files.walk(directory.resolve("classes")))(_.toList.asScala.toVector)
+      .filter(_.toString.endsWith(".class"))
+      .flatMap { path =>
+        val file = classFile(path)
+        file.methods.map { method =>
+          val reference = Reference(file.name, method.name, method.descriptor)
+          reference -> ClassFiles.key(reference, file.enclosingInstance)
+        }
+      }
+
   test("keys of the methods are the keys of the class file methods") {
     Scratch.using("bonsai-class-keys-") { directory =>
       val (methods, context) = capture(directory, source)
       given Context          = context
       val expected           = methods.flatMap(method => Keys.of(method.symbol))
-      val actual             = Using.resource(Files.walk(directory.resolve("classes")))(_.toList.asScala.toVector)
-        .filter(_.toString.endsWith(".class"))
-        .flatMap { path =>
-          val file = classFile(path)
-          file.methods.map(method => ClassFiles.key(Reference(file.name, method.name, method.descriptor)))
-        }
-        .toSet
+      val actual             = keyed(directory).map(_._2).toSet
       assert(expected.nonEmpty)
-      assertEquals(expected.filterNot(actual.contains).sorted, Vector.empty[String])
+      assertEquals(expected.filterNot(actual.contains).toSet, TastyOnly)
+    }
+  }
+
+  test("an inner class constructor drops the enclosing instance, a class nested in an object has none") {
+    Scratch.using("bonsai-class-keys-") { directory =>
+      capture(directory, source): Unit
+      val keys = keyed(directory).toMap
+      assertEquals(
+        keys(Reference("fixture/Outer$Inner", "<init>", "(Lfixture/Outer;I)V")),
+        "fixture.Outer.Inner.<init>(I)V"
+      )
+      assertEquals(keys(Reference("fixture/Holder$Nested", "<init>", "()V")), "fixture.Holder.Nested.<init>()V")
+    }
+  }
+
+  test("a class and its object share the key of a method with one signature") {
+    Scratch.using("bonsai-class-keys-") { directory =>
+      capture(directory, source): Unit
+      val sharing = keyed(directory).collect { case (reference, "fixture.Companion.m(I)I") => reference }.toSet
+      assertEquals(
+        sharing,
+        Set(Reference("fixture/Companion", "m", "(I)I"), Reference("fixture/Companion$", "m", "(I)I"))
+      )
     }
   }
 }

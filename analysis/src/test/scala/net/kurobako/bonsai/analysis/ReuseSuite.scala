@@ -152,6 +152,14 @@ class ReuseSuite extends AnalysisSuite {
     assertInvalidated(f)(Files.setLastModifiedTime(f.library, FileTime.fromMillis(1000L)): Unit)
   }
 
+  test("a changed release file of the manifest jdk invalidates") {
+    val home    = Scratch.directory("bonsai-reuse-jdk-")
+    val release = home.resolve("release")
+    Files.writeString(release, "JAVA_VERSION=\"17.0.1\"\n")
+    val f = fixture(Seq(s"jdk\t$home"))
+    assertInvalidated(f)(Files.writeString(release, "JAVA_VERSION=\"17.0.2\"\n"): Unit)
+  }
+
   test("a changed file a text rule reads invalidates") {
     val f     = fixture(Seq("text\t0\tkind\tterms", "text\t0\twords\tplan", "text\t0\tfiles\t**/*.txt"))
     val notes = f.dir.resolve("notes.txt")
@@ -190,7 +198,8 @@ class ReuseSuite extends AnalysisSuite {
   test("every manifest field is either hashed through its paths or read by the key by name") {
     val fields = classOf[Manifest].getDeclaredFields.map(_.getName).toSet
     val paths  = Set("outputs", "classpath", "sources", "models")
-    // option, platforms, libraries, jdk, texts and textExclusions are in the manifest bytes; root is read by the scan
+    // options, platforms, libraries, texts and textExclusions are in the manifest bytes; root is read by the scan, and
+    // jdk names the release file that is hashed with the paths
     val named = Set("libraries", "jdk", "options", "root", "platforms", "texts", "textExclusions")
     assertEquals(fields, paths ++ named)
     val manifest = Manifest(
@@ -201,5 +210,9 @@ class ReuseSuite extends AnalysisSuite {
       models = Vector(Output("a", Output.Scope.Main, Path.of("m")))
     )
     assertEquals(Reuse.paths(manifest).map(_.toString).toSet, Set("o", "c", "s", "m"))
+    assertEquals(
+      Reuse.paths(manifest.copy(jdk = Some(Path.of("home")))).map(_.toString).toSet,
+      Set("o", "c", "s", "m", "home/release")
+    )
   }
 }

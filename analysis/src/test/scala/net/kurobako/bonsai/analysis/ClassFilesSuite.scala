@@ -57,6 +57,10 @@ public class Kinds {
   void write(int x) {
     total = x;
   }
+
+  class Inner {}
+
+  static class Nested {}
 }
 """
 
@@ -93,7 +97,13 @@ public interface Shapes {
   private val scalas = """package fixture
 
 class Scalas {
+  class Inner(v: Int)
+
   def increment(xs: List[Int]): List[Int] = xs.map(x => x + 1)
+}
+
+object ScalaHolder {
+  class Nested
 }
 """
 
@@ -216,6 +226,32 @@ class Scalas {
       methodOf(kindsFile, "copy").invocations.map(call => (call.kind, call.owner, call.name)),
       Vector((Kind.Virtual, "[I", "clone"))
     )
+  }
+
+  test("reads declared fields with their access") {
+    val fields = kindsFile.fields.map(field => (field.name, field.descriptor, field.isStatic))
+    assert(fields.contains(("value", "I", false)))
+    assert(fields.contains(("total", "I", true)))
+  }
+
+  test("reads the enclosing instance of inner classes only") {
+    assertEquals(parse(classBytes("fixture/Kinds$Inner")).enclosingInstance, Some("fixture/Kinds"))
+    assertEquals(parse(classBytes("fixture/Kinds$Nested")).enclosingInstance, None)
+    assertEquals(kindsFile.enclosingInstance, None)
+    Scratch.using("bonsai-class-files-") { directory =>
+      val output                                  = compile(directory, Seq("Scalas.scala" -> scalas), Vector.empty)
+      def enclosing(name: String): Option[String] =
+        parse(Files.readAllBytes(output.resolve(s"fixture/$name.class"))).enclosingInstance
+      assertEquals(enclosing("Scalas$Inner"), Some("fixture/Scalas"))
+      assertEquals(enclosing("ScalaHolder$Nested"), None)
+      assertEquals(enclosing("ScalaHolder$"), None)
+    }
+  }
+
+  test("reads the erased descriptor of the interface method of a lambda") {
+    val lambda = methodOf(parse(classBytes("fixture/Lambdas")), "make").lambdas.head
+    assertEquals(lambda.samDescriptor, "()Ljava/lang/Object;")
+    assertEquals((lambda.markers, lambda.bridges), (Vector.empty[String], Vector.empty[String]))
   }
 
   test("reads the class header") {
