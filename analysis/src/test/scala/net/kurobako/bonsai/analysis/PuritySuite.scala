@@ -572,7 +572,25 @@ class PuritySuite extends AnalysisSuite {
           |    free = 6
           |    lock.unlock()
           |  }
-          |}""".stripMargin
+          |  def interruptibly(pool: Pool): Unit = pool.run { () =>
+          |    lock.lockInterruptibly()
+          |    try { free = 7 } finally lock.unlock()
+          |  }
+          |  def lookalike(pool: Pool): Unit = pool.run { () =>
+          |    val mine = new Lookalike
+          |    mine.lock()
+          |    try { free = 8 } finally mine.unlock()
+          |  }
+          |  def first(pool: Pool): Unit = pool.run { () =>
+          |    try { free = 9 } finally lock.unlock()
+          |    ()
+          |  }
+          |  def attempted(pool: Pool): Unit = pool.run { () =>
+          |    val taken = lock.tryLock()
+          |    try { free = 10 } finally lock.unlock()
+          |  }
+          |}
+          |class Lookalike { def lock(): Unit = (); def unlock(): Unit = () }""".stripMargin
     ),
     concurrent = Set("Pool.run")
   )
@@ -581,7 +599,7 @@ class PuritySuite extends AnalysisSuite {
     val found = Purity.findings(locked.purity, locked.graph.nodes).collect {
       case finding if finding.rule == Finding.Rule.SharedWrite => finding.detail
     }
-    assertEquals(found.map(_.split(" runs at ")(1).split(' ')(0).split(':').last.toInt).sorted, Vector(15, 19, 23))
+    assertEquals(found.map(_.split(" runs at ")(1).split(' ')(0).split(':').last.toInt).sorted, Vector(15, 19, 23, 33, 36, 41))
   }
 
   test("a branch a constant condition rules out has no effects") {
