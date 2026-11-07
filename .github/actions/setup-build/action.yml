@@ -1,0 +1,11 @@
+name: setup-build
+description: JDK 25 and sbt, with the coursier and sbt caches restored
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: '25'
+        cache: sbt
+    - uses: sbt/setup-sbt@v1

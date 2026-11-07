@@ -1,0 +1,42 @@
+name: mutation
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Glob of the analysis sources to mutate, relative to the module
+        default: '**/*.scala'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - env:
+          TARGET: ${{ inputs.target || '**/*.scala' }}
+        run: |
+          cat > stryker4s.conf <<CONF
+          stryker4s {
+            mutate = ["$TARGET"]
+            reporters = ["console", "html", "json"]
+          }
+          CONF
+          sbt --batch analysis/stryker
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: analysis/target/stryker4s-report

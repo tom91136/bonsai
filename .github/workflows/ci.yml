@@ -1,0 +1,131 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  scala-versions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      scala: ${{ steps.versions.outputs.scala }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: versions
+        run: |
+          versions=$(sed -nE 's/^lazy val scala3Versions *= *Seq\((.*)\)$/\1/p' build.sbt | tr -d ' "' | jq -Rc 'split(",")')
+          jq -e 'length > 0 and all(test("^[0-9]+(\\.[0-9]+)+$"))' <<< "$versions" > /dev/null
+          echo "scala=$versions" >> "$GITHUB_OUTPUT"
+
+  format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - run: sbt --batch scalafmtCheckAll scalafmtSbtCheck
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - name: compile without warnings and test
+        run: |
+          set -o pipefail
+          sbt --batch Test/compile testFull 2>&1 | sed -Eu 's/\x1b\[[0-9;]*m//g' | tee "$RUNNER_TEMP/test.log"
+          if grep -q '^\[warn\]' "$RUNNER_TEMP/test.log"; then
+            echo 'compiler warnings found' >&2
+            exit 1
+          fi
+
+  scalafix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - run: sbt --batch 'scalafixAll --check'
+
+  analyse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - run: sbt --batch analyse
+
+  cross:
+    needs: scala-versions
+    strategy:
+      fail-fast: false
+      matrix:
+        scala: ${{ fromJSON(needs.scala-versions.outputs.scala) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    name: scala ${{ matrix.scala }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - env:
+          SCALA: ${{ matrix.scala }}
+        run: sbt --batch "++$SCALA" lifting/testFull plugin/testFull
+
+  scripted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - run: sbt --batch scriptedAll
+
+  maven:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - name: install maven
+        run: |
+          version=$(sed -nE 's|.*<maven.version>([^<]+)</maven.version>.*|\1|p' maven-plugin/pom.xml)
+          url="https://archive.apache.org/dist/maven/maven-3/$version/binaries/apache-maven-$version-bin.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/maven.tar.gz" "$url"
+          echo "$(curl -fsSL "$url.sha512")  $RUNNER_TEMP/maven.tar.gz" | sha512sum -c -
+          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-$version/bin" >> "$GITHUB_PATH"
+      - name: publish sbt artifacts to ivy local
+        run: |
+          mkdir -p "$HOME/.ivy2"
+          scripts/publish-local.sh
+      - name: fetch the maven install plugin for the offline install
+        run: mvn -B -q org.apache.maven.plugins:maven-install-plugin:3.1.4:help > /dev/null
+      - name: install into maven local
+        run: scripts/publish-maven-local.sh
+      - name: verify maven plugin
+        working-directory: maven-plugin
+        run: mvn -B verify
