@@ -3,6 +3,7 @@ package net.kurobako.bonsai.maven;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * The options the compiler plugin reads, which the scalac of the build takes from a response file.
@@ -15,6 +16,9 @@ public final class Scalac {
 
   /** The message every finding of the plugin ends with, which the filters match. */
   private static final String FINDING = ".*\\[bonsai.*\\]";
+
+  /** The options with which a build asks the compiler for unused warnings itself. */
+  private static final Pattern UNUSED = Pattern.compile("-(Wunused|Ywarn-unused|Wall).*");
 
   private Scalac() {
   }
@@ -30,6 +34,24 @@ public final class Scalac {
   /** The options that write the SemanticDB of the module under its output directory. */
   public static List<String> semanticdb(File output) {
     return List.of("-Xsemanticdb", "-semanticdb-target", output.getAbsolutePath());
+  }
+
+  /**
+   * The options that ask the compiler for the unused warnings the RemoveUnused rule reads, and keep fatal warnings from
+   * failing the build on what the rule fixes. A build that asks for unused warnings itself, or leaves the rule out,
+   * gets none.
+   */
+  public static List<String> unused(
+    Configuration configuration, Ids ids, Versions.Support support, String scala, List<String> given) {
+    if (configuration.disabled().contains("RemoveUnused") || !support.removeUnused(scala) || !ownUnused(given).isEmpty()) {
+      return List.of();
+    }
+    return ids.unusedOptions();
+  }
+
+  /** The options with which the build asks the compiler for unused warnings itself. */
+  public static List<String> ownUnused(List<String> given) {
+    return given.stream().filter(option -> option != null && UNUSED.matcher(option).matches()).toList();
   }
 
   /** The options the compiler plugin reads, for the mode. */

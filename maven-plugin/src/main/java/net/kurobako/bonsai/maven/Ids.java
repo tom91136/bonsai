@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -14,27 +15,38 @@ import java.util.TreeSet;
  * The ids the tools accept, which each tool publishes in a resource, so that a plugin cannot drift from them.
  *
  * <p>The compiler plugin publishes the ids of its checks, the analysis the ids of its rules, and the scalafix rules
- * the names they have.
+ * the names they have, with the rules scalafix itself provides that bonsai turns on, their bans and settings, and the
+ * compiler options the unused-code rule reads.
  */
 public final class Ids {
-
-  /** The syntax scalafix itself provides, which bonsai turns on and off as a whole. */
-  private static final List<String> BUILT_INS = List.of("DisableSyntax", "RedundantSyntax");
-
-  /** The bans the DisableSyntax rule holds, each turned off by its own name. */
-  private static final List<String> BANS =
-    List.of("DisableSyntax.noVars", "DisableSyntax.noReturns", "DisableSyntax.noNulls", "DisableSyntax.noAsInstanceOf",
-      "DisableSyntax.noIsInstanceOf", "DisableSyntax.noXml", "DisableSyntax.noFinalize");
 
   private final Set<String> checks;
   private final Set<String> findings;
   private final Set<String> rules;
+  private final List<String> bans = new ArrayList<>();
+  private final List<String> settings = new ArrayList<>();
+  private final List<String> unusedOptions = new ArrayList<>();
 
-  private Ids(Set<String> checks, Set<String> findings, Set<String> rules) {
+  /**
+   * The built-in entries are the rule names scalafix provides, their bans, which each contain a dot, their settings,
+   * which each contain {@code =}, and the compiler options the unused-code rule reads, which each start with
+   * {@code -}.
+   */
+  private Ids(Set<String> checks, Set<String> findings, Set<String> rules, Set<String> builtin) {
     this.checks = checks;
     this.findings = findings;
     this.rules = new LinkedHashSet<>(rules);
-    this.rules.addAll(BUILT_INS);
+    for (String entry : builtin) {
+      if (entry.startsWith("-")) {
+        unusedOptions.add(entry);
+      } else if (entry.contains("=")) {
+        settings.add(entry);
+      } else if (entry.contains(".")) {
+        bans.add(entry);
+      } else {
+        this.rules.add(entry);
+      }
+    }
   }
 
   /** The ids the compiler plugin knows. */
@@ -53,18 +65,30 @@ public final class Ids {
   }
 
   /** The bans the DisableSyntax rule holds, each turned off by its own name. */
-  public static List<String> bans() {
-    return BANS;
+  public List<String> bans() {
+    return bans;
+  }
+
+  /** The settings the built-in rules always run with, as scalafix configuration lines. */
+  public List<String> settings() {
+    return settings;
+  }
+
+  /** The compiler options the unused-code rule reads. */
+  public List<String> unusedOptions() {
+    return unusedOptions;
   }
 
   /** The ids of the tools, read from the resources they publish them in. */
-  public static Ids of(Path checks, Path findings, Path rules) throws IOException {
-    return new Ids(read(checks), read(findings), read(rules));
+  public static Ids of(Path checks, Path findings, Path rules, Path builtin) throws IOException {
+    return new Ids(read(checks), read(findings), read(rules), read(builtin));
   }
 
   /** The ids of the tools, read from the jars they publish them in. */
   public static Ids of(File compilerPlugin, File analysis, File rules) throws IOException {
-    return new Ids(read(compilerPlugin, "checks.id"), read(analysis, "findings.id"), read(rules, "rules.id"));
+    return new Ids(
+      read(compilerPlugin, "checks.id"), read(analysis, "findings.id"), read(rules, "rules.id"),
+      read(rules, "builtin.id"));
   }
 
   /** The ids the resource holds, one a line. */
@@ -98,7 +122,7 @@ public final class Ids {
     unknown.removeAll(checks);
     unknown.removeAll(findings);
     unknown.removeAll(rules);
-    unknown.removeAll(BANS);
+    unknown.removeAll(bans);
     if (!unknown.isEmpty()) {
       throw new IOException(
         "bonsai: unknown ids " + String.join(", ", unknown) + "; the ids are the compiler plugin checks " +

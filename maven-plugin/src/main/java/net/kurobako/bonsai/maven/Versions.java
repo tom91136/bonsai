@@ -5,6 +5,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.regex.Matcher;
@@ -66,6 +68,47 @@ public final class Versions {
     return new ScalafixVersions(
       property(rules, properties, "scalafix.version"),
       property(rules, properties, "scalafix.scalaVersion"));
+  }
+
+  /**
+   * The releases the scalafix rules that need the compiler of the build run in, which the rules jar publishes: the
+   * oldest release whose compiler takes the unused warnings of RemoveUnused, and the lines whose presentation compiler
+   * scalafix cannot load for ExplicitResultTypes.
+   */
+  public record Support(String removeUnusedFrom, List<String> resultTypesExcluded) {
+
+    private static final Pattern ANY = Pattern.compile("3\\.(\\d+)\\.(\\d+)(?:-.*)?");
+
+    /** Whether the compiler of the release, or of a pre-release of it, takes the unused warnings. */
+    public boolean removeUnused(String version) {
+      Matcher release = ANY.matcher(version);
+      Matcher from = RELEASE.matcher(removeUnusedFrom);
+      if (!release.matches() || !from.matches()) {
+        return false;
+      }
+      int minor = Integer.parseInt(release.group(1));
+      int oldest = Integer.parseInt(from.group(1));
+      return minor > oldest || minor == oldest && Integer.parseInt(release.group(2)) >= Integer.parseInt(from.group(2));
+    }
+
+    /** Whether scalafix can load the presentation compiler of the release. */
+    public boolean explicitResultTypes(String version) {
+      Matcher release = ANY.matcher(version);
+      return release.matches() && !resultTypesExcluded.contains("3." + release.group(1));
+    }
+  }
+
+  /** The releases the scalafix rules that need the compiler of the build run in, which the rules jar publishes. */
+  public static Support support(File rules) throws IOException {
+    Properties properties = new Properties();
+    properties.load(new StringReader(resource(rules, "versions.properties")));
+    List<String> excluded = new ArrayList<>();
+    for (String line : property(rules, properties, "explicitResultTypes.excluded").split(",")) {
+      if (!line.isBlank()) {
+        excluded.add(line.trim());
+      }
+    }
+    return new Support(property(rules, properties, "removeUnused.from"), List.copyOf(excluded));
   }
 
   private static String property(File jar, Properties properties, String key) throws IOException {

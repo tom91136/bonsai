@@ -187,6 +187,15 @@ public abstract class BonsaiMojo extends AbstractMojo {
       named(scalafixVersion, published.version()), named(scalafixScalaVersion, published.scalaVersion()));
   }
 
+  /** The releases the scalafix rules that need the compiler of the build run in, which the rules jar publishes. */
+  protected Versions.Support support(File rules) throws MojoExecutionException {
+    try {
+      return Versions.support(rules);
+    } catch (IOException error) {
+      throw new MojoExecutionException(error.getMessage(), error);
+    }
+  }
+
   private static String named(String named, String published) {
     return named != null && !named.isBlank() ? named : published;
   }

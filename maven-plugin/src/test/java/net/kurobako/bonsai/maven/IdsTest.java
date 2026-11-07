@@ -9,10 +9,14 @@ import java.nio.file.Path;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class IdsTest {
+
+  private static final Path BUILTIN =
+    Path.of("..", "scalafix", "rules", "src", "main", "resources", "META-INF", "bonsai", "builtin.id");
 
   @TempDir
   Path root;
@@ -28,13 +32,28 @@ class IdsTest {
     Ids ids = Ids.of(
       write("checks.id", "acyclic\nlocal-throw\n"),
       write("findings.id", "duplicate-code\nunused-member\n"),
-      write("rules.id", "BannedSyntax\nOptionIdioms\n"));
+      write("rules.id", "BannedSyntax\nOptionIdioms\n"), BUILTIN);
 
     assertEquals(Set.of("acyclic", "local-throw"), ids.checks());
     assertEquals(Set.of("duplicate-code", "unused-member"), ids.findings());
     // The syntax scalafix itself provides is known too, and the bans of its DisableSyntax rule.
     assertTrue(ids.rules().containsAll(Set.of("BannedSyntax", "OptionIdioms", "DisableSyntax", "RedundantSyntax")),
       ids.rules().toString());
+    assertTrue(ids.rules().containsAll(Set.of("RemoveUnused", "ExplicitResultTypes")), ids.rules().toString());
+    assertFalse(ids.rules().contains("DisableSyntax.noVars"), ids.rules().toString());
+    assertTrue(ids.bans().contains("DisableSyntax.noVars"), ids.bans().toString());
+    assertFalse(ids.settings().isEmpty());
+    assertTrue(ids.unusedOptions().contains("-Wunused:all"), ids.unusedOptions().toString());
+  }
+
+  @Test
+  void theBuiltInRulesAndTheirBansAreKnownToTheCheck() throws IOException {
+    Ids ids = Ids.of(
+      write("checks.id", "acyclic\n"),
+      write("findings.id", "duplicate-code\n"),
+      write("rules.id", "BannedSyntax\n"), BUILTIN);
+
+    ids.validate(Set.of("RemoveUnused", "ExplicitResultTypes", "DisableSyntax.noXml"), Set.of(), Set.of());
   }
 
   @Test
@@ -42,7 +61,7 @@ class IdsTest {
     Ids ids = Ids.of(
       write("checks.id", "acyclic\n"),
       write("findings.id", "duplicate-code\n"),
-      write("rules.id", "BannedSyntax\n"));
+      write("rules.id", "BannedSyntax\n"), BUILTIN);
 
     IOException error = assertThrows(IOException.class,
       () -> ids.validate(Set.of("acyclic", "typo"), Set.of(), Set.of()));
@@ -54,7 +73,7 @@ class IdsTest {
     Ids ids = Ids.of(
       write("checks.id", "acyclic\n"),
       write("findings.id", "duplicate-code\n"),
-      write("rules.id", "BannedSyntax\n"));
+      write("rules.id", "BannedSyntax\n"), BUILTIN);
 
     ids.validate(Set.of("acyclic", "duplicate-code", "BannedSyntax"), Set.of(), Set.of());
   }

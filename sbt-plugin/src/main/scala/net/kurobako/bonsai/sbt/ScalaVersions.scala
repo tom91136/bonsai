@@ -4,7 +4,8 @@ package net.kurobako.bonsai.sbt
   * TASTy its compiler reads.
   */
 private[sbt] object ScalaVersions {
-  private val Release = """3\.(\d+)\.(\d+)""".r
+  private val Release  = """3\.(\d+)\.(\d+)""".r
+  private val Prefixed = """3\.(\d+)\.(\d+)(?:-.*)?""".r
 
   private def parse(version: String): Option[(Int, Int)] = version match {
     case Release(minor, patch) => Some((minor.toInt, patch.toInt))
@@ -19,6 +20,21 @@ private[sbt] object ScalaVersions {
     val oldest = BonsaiArtifacts.oldest.get(line).flatMap(parse(_)).fold(0)((_, first) => first)
     Option.when(BonsaiArtifacts.lines.contains(line) && patch >= oldest)(line)
   }
+
+  private def numbers(version: String): Option[(Int, Int)] = version match {
+    case Prefixed(minor, patch) => Some((minor.toInt, patch.toInt))
+    case _                      => None
+  }
+
+  /** Whether the compiler of the release, or of a pre-release of it, takes the `-Wunused:all` that RemoveUnused reads.
+    */
+  def removeUnused(version: String): Boolean = numbers(version).exists(release =>
+    parse(BonsaiArtifacts.removeUnusedFrom).exists(from => Ordering[(Int, Int)].gteq(release, from))
+  )
+
+  /** Whether scalafix can load the presentation compiler of the release, which ExplicitResultTypes types with. */
+  def explicitResultTypes(version: String): Boolean =
+    numbers(version).exists((minor, _) => !BonsaiArtifacts.resultTypesExcluded.contains(s"3.$minor"))
 
   /** Whether the compiler of the analysis reads the TASTy of the release, which a compiler does for its own minor line
     * and the older ones.

@@ -1,0 +1,14 @@
+DisableSyntax
+RedundantSyntax
+RemoveUnused
+ExplicitResultTypes
+DisableSyntax.noVars
+DisableSyntax.noReturns
+DisableSyntax.noNulls
+DisableSyntax.noAsInstanceOf
+DisableSyntax.noIsInstanceOf
+DisableSyntax.noXml
+DisableSyntax.noFinalize
+ExplicitResultTypes.fetchScala3CompilerArtifactsOnVersionMismatch = true
+-Wunused:all
+-Wconf:msg=^unused\s.*:i

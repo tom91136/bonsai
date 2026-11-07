@@ -65,6 +65,7 @@ lazy val checkSource   = "plugin/src/main/scala/net/kurobako/bonsai/plugin/Check
 lazy val findingSource = "analysis/src/main/scala/net/kurobako/bonsai/analysis/Finding.scala"
 lazy val lintSource    = "java-plugin/src/main/scala/net/kurobako/bonsai/java/LintId.scala"
 lazy val ruleSource    = "scalafix/rules/src/main/resources/META-INF/services/scalafix.v1.Rule"
+lazy val builtinSource = "scalafix/rules/src/main/resources/META-INF/bonsai/builtin.id"
 
 lazy val lawIds =
   taskKey[Seq[String]]("The ids of the laws of collection chains, which name the checks that report them.")
@@ -197,7 +198,9 @@ lazy val rules = project.in(file("scalafix/rules"))
       IO.write(
         file,
         s"scalafix.version=${_root_.scalafix.sbt.BuildInfo.scalafixVersion}\n" +
-          s"scalafix.scalaVersion=$scalafixScalaVersion\n"
+          s"scalafix.scalaVersion=$scalafixScalaVersion\n" +
+          s"removeUnused.from=${Versions.removeUnusedFrom}\n" +
+          s"explicitResultTypes.excluded=${Versions.explicitResultTypesExcluded.mkString(",")}\n"
       )
       Seq(file)
     }.taskValue
@@ -365,6 +368,9 @@ lazy val sbtBonsai = linted(project.in(file("sbt-plugin")))
       val findings = ids(base / findingSource, BonsaiIds.Findings) ++ ids(base / lintSource, BonsaiIds.Lints) ++
         (collections / javaLawIds).value.map(id => s"\"$id\"")
       val scalafix = ids(base / ruleSource, BonsaiIds.Rules)
+      val builtin  =
+        IO.readLines(base / builtinSource).filter(_.nonEmpty).map(line => "\"" + line.replace("\\", "\\\\") + "\"")
+      val excluded = Versions.explicitResultTypesExcluded.map(line => s"\"$line\"")
       IO.write(
         file,
         s"""package net.kurobako.bonsai.sbt
@@ -382,6 +388,9 @@ lazy val sbtBonsai = linted(project.in(file("sbt-plugin")))
            |  val checks: Set[String]        = Set(${checks.mkString(", ")})
            |  val findings: Set[String]      = Set(${findings.mkString(", ")})
            |  val rules: Seq[String]         = Seq(${scalafix.mkString(", ")})
+           |  val builtin: Seq[String]       = Seq(${builtin.mkString(", ")})
+           |  val removeUnusedFrom: String   = "${Versions.removeUnusedFrom}"
+           |  val resultTypesExcluded: Seq[String] = Seq(${excluded.mkString(", ")})
            |}
            |""".stripMargin
       )

@@ -37,6 +37,24 @@ class ScalaVersionsSuite extends munit.FunSuite {
     assert(!ScalaVersions.readable("2.13.16"))
   }
 
+  test("RemoveUnused runs from the oldest release whose compiler takes -Wunused:all") {
+    assert(!ScalaVersions.removeUnused("3.3.3"))
+    assert(ScalaVersions.removeUnused("3.3.4"))
+    assert(ScalaVersions.removeUnused("3.4.0"))
+    assert(ScalaVersions.removeUnused(BonsaiArtifacts.analysisScala))
+    assert(ScalaVersions.removeUnused("3.8.0-RC1"))
+    assert(!ScalaVersions.removeUnused("2.13.16"))
+  }
+
+  test("ExplicitResultTypes is left out on the lines whose presentation compiler scalafix cannot load") {
+    assert(!ScalaVersions.explicitResultTypes("3.4.0"))
+    assert(!ScalaVersions.explicitResultTypes("3.4.3"))
+    assert(ScalaVersions.explicitResultTypes("3.3.9"))
+    assert(ScalaVersions.explicitResultTypes("3.5.2"))
+    assert(ScalaVersions.explicitResultTypes(BonsaiArtifacts.analysisScala))
+    assert(!ScalaVersions.explicitResultTypes("2.13.16"))
+  }
+
   test("every line the plugin is built for is one the analysis reads") {
     assert(BonsaiArtifacts.lines.forall(line => ScalaVersions.readable(s"$line.0")), BonsaiArtifacts.lines.toString)
   }

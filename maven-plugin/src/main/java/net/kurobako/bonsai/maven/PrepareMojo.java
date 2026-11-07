@@ -51,7 +51,8 @@ public class PrepareMojo extends BonsaiMojo {
     Configuration configuration = configuration(tools);
     String mode = mode();
     File plugin = compilerPlugin(tools);
-    Ids ids = ids(tools, plugin, tools.rulesJar(version));
+    File rules = tools.rulesJar(version);
+    Ids ids = ids(tools, plugin, rules);
     try {
       ids.validate(configuration.disabled(), configuration.errors(), configuration.warnings());
     } catch (java.io.IOException error) {
@@ -65,6 +66,7 @@ public class PrepareMojo extends BonsaiMojo {
     if (semanticdb) {
       // The rules read the SemanticDB the compiler writes, which the build keeps out of its published artifacts.
       options.addAll(Scalac.semanticdb(new File(project.getBuild().getOutputDirectory())));
+      options.addAll(Scalac.unused(configuration, ids, support(rules), scalaVersion(tools), scalacOptions()));
     }
 
     Path work = work();

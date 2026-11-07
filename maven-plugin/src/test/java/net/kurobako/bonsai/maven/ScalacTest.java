@@ -16,6 +16,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ScalacTest {
 
+  private static final Path BUILTIN =
+    Path.of("..", "scalafix", "rules", "src", "main", "resources", "META-INF", "bonsai", "builtin.id");
+  private static final Versions.Support SUPPORT = new Versions.Support("3.3.4", List.of("3.4"));
+
   @TempDir
   Path root;
 
@@ -30,7 +34,7 @@ class ScalacTest {
     Files.writeString(checks, "acyclic\nlocal-throw\nbroad-catch\nidentity-token\n");
     Files.writeString(findings, "duplicate-code\n");
     Files.writeString(rules, "BannedSyntax\n");
-    return Ids.of(checks, findings, rules);
+    return Ids.of(checks, findings, rules, BUILTIN);
   }
 
   @Test
@@ -50,6 +54,45 @@ class ScalacTest {
     assertTrue(options.contains("-P:bonsai:hot=demo.kernel.**"), options.toString());
     assertTrue(options.contains("-P:bonsai:bounded=demo.Encoding.operands:4"), options.toString());
     assertTrue(options.contains("-P:bonsai:checked=demo.where"), options.toString());
+  }
+
+  @Test
+  void theCompilerIsAskedForTheUnusedWarningsTheRuleReads() throws IOException {
+    List<String> options = Scalac.unused(configuration(), ids(), SUPPORT, "3.9.0", List.of("-Werror"));
+
+    assertTrue(options.contains("-Wunused:all"), options.toString());
+    assertTrue(options.stream().anyMatch(option -> option.startsWith("-Wconf:msg=^unused")), options.toString());
+  }
+
+  @Test
+  void noUnusedWarningsAreAskedForWhenTheRuleIsLeftOut() throws IOException {
+    List<String> options = Scalac.unused(configuration("disabled\tRemoveUnused"), ids(), SUPPORT, "3.9.0", List.of());
+
+    assertTrue(options.isEmpty(), options.toString());
+  }
+
+  @Test
+  void noUnusedWarningsAreAskedForOfACompilerThatLacksThem() throws IOException {
+    assertTrue(Scalac.unused(configuration(), ids(), SUPPORT, "3.3.3", List.of()).isEmpty());
+  }
+
+  @Test
+  void aBuildThatAsksForUnusedWarningsItselfKeepsItsOwn() throws IOException {
+    for (String own : List.of("-Wunused:imports", "-Wunused:all", "-Wunused", "-Wall", "-Ywarn-unused")) {
+      List<String> options = Scalac.unused(configuration(), ids(), SUPPORT, "3.9.0", List.of("-Werror", own));
+
+      assertTrue(options.isEmpty(), own + " " + options);
+    }
+  }
+
+  @Test
+  void theRulesAreHandedTheUnusedOptionsTheCompilerIsRunWith() throws IOException {
+    List<String> own = Scalac.ownUnused(java.util.Arrays.asList("-Werror", null, "@args.txt", "-Wunused:imports"));
+    List<String> added = Scalac.unused(configuration(), ids(), SUPPORT, "3.9.0", List.of("-Werror"));
+
+    assertEquals(List.of("-Wunused:imports"), own);
+    assertTrue(added.contains("-Wunused:all"), added.toString());
+    assertTrue(Scalac.ownUnused(List.of("-Werror")).isEmpty());
   }
 
   @Test

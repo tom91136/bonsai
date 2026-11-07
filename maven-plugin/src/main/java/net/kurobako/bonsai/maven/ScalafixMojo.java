@@ -38,7 +38,10 @@ public class ScalafixMojo extends BonsaiMojo {
 
     Path work = work();
     Path file = work.resolve("scalafix.conf");
-    write(file, List.of(Scalafix.configuration(configuration, ids(tools, plugin, rules))));
+    Ids ids = ids(tools, plugin, rules);
+    Versions.Support support = support(rules);
+    String scala = scalaVersion(tools);
+    write(file, List.of(Scalafix.configuration(configuration, ids, support, scala)));
 
     Path root = root();
     List<Path> sources = sources(project.getCompileSourceRoots());
@@ -64,6 +67,15 @@ public class ScalafixMojo extends BonsaiMojo {
     command.add("--config");
     command.add(file.toString());
     command.add("--check");
+    command.add("--scala-version");
+    command.add(scala);
+    List<String> given = scalacOptions();
+    List<String> unused = new ArrayList<>(Scalac.ownUnused(given));
+    unused.addAll(Scalac.unused(configuration, ids, support, scala, given));
+    for (String option : unused) {
+      command.add("--scalac-options");
+      command.add(option);
+    }
     command.add("--sourceroot");
     command.add(root.toString());
     command.add("--classpath");

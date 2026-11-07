@@ -16,6 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ScalafixTest {
 
+  private static final Path BUILTIN =
+    Path.of("..", "scalafix", "rules", "src", "main", "resources", "META-INF", "bonsai", "builtin.id");
+
   @TempDir
   Path root;
 
@@ -30,14 +33,17 @@ class ScalafixTest {
     Files.writeString(checks, "acyclic\n");
     Files.writeString(findings, "duplicate-code\n");
     Files.writeString(rules, "BannedSyntax\nOptionIdioms\n");
-    return Ids.of(checks, findings, rules);
+    return Ids.of(checks, findings, rules, BUILTIN);
   }
+
+  private static final Versions.Support SUPPORT = new Versions.Support("3.3.4", List.of("3.4"));
+  private static final String SCALA = "3.9.0";
 
   @Test
   void writesTheRulesThatRun() throws IOException {
     Configuration configuration = configuration("disabled\tOptionIdioms");
 
-    String scalafix = Scalafix.configuration(configuration, ids());
+    String scalafix = Scalafix.configuration(configuration, ids(), SUPPORT, SCALA);
 
     assertTrue(scalafix.contains("\"BannedSyntax\""), scalafix);
     assertTrue(!scalafix.contains("\"OptionIdioms\""), scalafix);
@@ -46,20 +52,63 @@ class ScalafixTest {
   }
 
   @Test
+  void unusedCodeAndInferredTypesAreCheckedByDefault() throws IOException {
+    String scalafix = Scalafix.configuration(configuration(), ids(), SUPPORT, SCALA);
+
+    assertTrue(scalafix.contains("\"RemoveUnused\""), scalafix);
+    assertTrue(scalafix.contains("\"ExplicitResultTypes\""), scalafix);
+  }
+
+  @Test
+  void unusedCodeAndInferredTypesCanBeLeftOut() throws IOException {
+    String scalafix = Scalafix.configuration(
+      configuration("disabled\tRemoveUnused", "disabled\tExplicitResultTypes"), ids(), SUPPORT, SCALA);
+
+    assertTrue(!scalafix.contains("\"RemoveUnused\""), scalafix);
+    assertTrue(!scalafix.contains("\"ExplicitResultTypes\""), scalafix);
+  }
+
+  @Test
+  void theResultTypesRuleFetchesTheCompilerOfAMismatchedLine() throws IOException {
+    String scalafix = Scalafix.configuration(configuration(), ids(), SUPPORT, SCALA);
+
+    assertTrue(scalafix.contains("ExplicitResultTypes.fetchScala3CompilerArtifactsOnVersionMismatch = true"), scalafix);
+  }
+
+  @Test
+  void aLineScalafixCannotLoadACompilerForKeepsTheOtherRules() throws IOException {
+    String scalafix = Scalafix.configuration(configuration(), ids(), SUPPORT, "3.4.3");
+
+    assertTrue(!scalafix.contains("\"ExplicitResultTypes\""), scalafix);
+    assertTrue(scalafix.contains("\"RemoveUnused\""), scalafix);
+    assertTrue(scalafix.contains("\"BannedSyntax\""), scalafix);
+  }
+
+  @Test
+  void aReleaseBeforeTheUnusedWarningsLeavesUnusedCodeOut() throws IOException {
+    String scalafix = Scalafix.configuration(configuration(), ids(), SUPPORT, "3.3.3");
+
+    assertTrue(!scalafix.contains("\"RemoveUnused\""), scalafix);
+    assertTrue(scalafix.contains("\"ExplicitResultTypes\""), scalafix);
+  }
+
+  @Test
   void theBansOfTheDisableSyntaxRuleAreOn() throws IOException {
     Configuration configuration = configuration();
 
-    String scalafix = Scalafix.configuration(configuration, ids());
+    String scalafix = Scalafix.configuration(configuration, ids(), SUPPORT, SCALA);
 
     assertTrue(scalafix.contains("DisableSyntax.noVars = true"), scalafix);
     assertTrue(scalafix.contains("DisableSyntax.noFinalize = true"), scalafix);
+    assertTrue(scalafix.contains("DisableSyntax.noAsInstanceOf = true"), scalafix);
+    assertTrue(scalafix.contains("DisableSyntax.noIsInstanceOf = true"), scalafix);
   }
 
   @Test
   void theBansAreOffWhenTheRuleIsLeftOut() throws IOException {
     Configuration configuration = configuration("disabled\tDisableSyntax");
 
-    String scalafix = Scalafix.configuration(configuration, ids());
+    String scalafix = Scalafix.configuration(configuration, ids(), SUPPORT, SCALA);
 
     assertTrue(!scalafix.contains("DisableSyntax.noVars = true"), scalafix);
     assertTrue(!scalafix.contains("\"DisableSyntax\""), scalafix);
@@ -69,7 +118,7 @@ class ScalafixTest {
   void aBanLeftOutOnItsOwnIsOff() throws IOException {
     Configuration configuration = configuration("disabled\tDisableSyntax.noVars");
 
-    String scalafix = Scalafix.configuration(configuration, ids());
+    String scalafix = Scalafix.configuration(configuration, ids(), SUPPORT, SCALA);
 
     assertTrue(scalafix.contains("DisableSyntax.noVars = false"), scalafix);
     assertTrue(scalafix.contains("DisableSyntax.noReturns = true"), scalafix);

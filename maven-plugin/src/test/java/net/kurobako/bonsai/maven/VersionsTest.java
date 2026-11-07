@@ -88,4 +88,37 @@ class VersionsTest {
     assertEquals("0.14.9", scalafix.version());
     assertEquals("3.9.0", scalafix.scalaVersion());
   }
+
+  @Test
+  void theRulesPublishWhichReleasesTheirRulesRunIn() throws IOException {
+    Path jar = root.resolve("support.jar");
+    try (OutputStream out = Files.newOutputStream(jar); ZipOutputStream zip = new ZipOutputStream(out)) {
+      zip.putNextEntry(new ZipEntry("META-INF/bonsai/versions.properties"));
+      zip.write("removeUnused.from=3.3.4\nexplicitResultTypes.excluded=3.4,3.6\n".getBytes());
+      zip.closeEntry();
+    }
+    Versions.Support support = Versions.support(jar.toFile());
+
+    assertFalse(support.removeUnused("3.3.3"));
+    assertTrue(support.removeUnused("3.3.4"));
+    assertTrue(support.removeUnused("3.4.0"));
+    assertTrue(support.removeUnused("3.8.0-RC1"));
+    assertFalse(support.removeUnused("2.13.16"));
+    assertFalse(support.explicitResultTypes("3.4.3"));
+    assertFalse(support.explicitResultTypes("3.6.0"));
+    assertTrue(support.explicitResultTypes("3.3.9"));
+    assertTrue(support.explicitResultTypes("3.10.0"));
+    assertFalse(support.explicitResultTypes("2.13.16"));
+  }
+
+  @Test
+  void anEmptyExclusionExcludesNoLine() throws IOException {
+    Path jar = root.resolve("none.jar");
+    try (OutputStream out = Files.newOutputStream(jar); ZipOutputStream zip = new ZipOutputStream(out)) {
+      zip.putNextEntry(new ZipEntry("META-INF/bonsai/versions.properties"));
+      zip.write("removeUnused.from=3.3.4\nexplicitResultTypes.excluded=\n".getBytes());
+      zip.closeEntry();
+    }
+    assertTrue(Versions.support(jar.toFile()).explicitResultTypes("3.4.3"));
+  }
 }

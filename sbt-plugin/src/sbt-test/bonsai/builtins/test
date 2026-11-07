@@ -1,0 +1,41 @@
+# RemoveUnused and ExplicitResultTypes run without a .scalafix.conf, and the compiler is asked for the warnings
+> scalafixAll --check
+> listed RemoveUnused ExplicitResultTypes
+> flagged -Wunused:all
+# an unused import fails the check, though fatal warnings would fail the compile on it
+> set ThisBuild / scalacOptions += "-Werror"
+$ copy-file changes/Unused.scala src/main/scala/demo/Unused.scala
+> compile
+-> scalafixAll --check
+# leaving the rule out drops the rule and the flag
+> set ThisBuild / bonsaiDisabled += "RemoveUnused"
+> unflagged -Wunused:all
+> scalafixAll --check
+> unlisted RemoveUnused
+> listed ExplicitResultTypes
+$ delete src/main/scala/demo/Unused.scala
+# an inferred type of a public member fails the check, which PublicTypes reports alike
+> set ThisBuild / bonsaiDisabled := Set("PublicTypes")
+$ copy-file changes/Inferred.scala src/main/scala/demo/Inferred.scala
+-> scalafixAll --check
+# leaving the rule out passes it
+> set ThisBuild / bonsaiDisabled += "ExplicitResultTypes"
+> scalafixAll --check
+> unlisted ExplicitResultTypes
+# in Dev the findings only warn
+> set ThisBuild / bonsaiDisabled := Set("PublicTypes")
+> set ThisBuild / bonsaiMode := BonsaiMode.Dev
+> bonsaiScalafixCheck
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
+$ delete src/main/scala/demo/Inferred.scala
+# a build that asks the compiler for unused warnings itself keeps its own options
+> set ThisBuild / scalacOptions += "-Wunused:imports"
+> unflagged -Wunused:all -Wconf:msg=^unused\s.*:i
+> scalafixAll --check
+# a line whose compiler scalafix cannot load leaves ExplicitResultTypes out rather than breaking the build
+> set ThisBuild / scalaVersion := "3.4.3"
+> set ThisBuild / bonsaiDisabled := Set("PublicTypes")
+$ copy-file changes/Inferred.scala src/main/scala/demo/Inferred.scala
+> scalafixAll --check
+> unlisted ExplicitResultTypes
+> listed RemoveUnused

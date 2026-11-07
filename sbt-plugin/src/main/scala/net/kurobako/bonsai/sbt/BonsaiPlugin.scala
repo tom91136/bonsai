@@ -158,13 +158,15 @@ object BonsaiPlugin extends AutoPlugin {
   /** Every check the compiler plugin knows. */
   private val Checks: Set[String] = BonsaiArtifacts.checks
 
-  /** Every scalafix rule, in the order they run, with the built-in ones last. */
-  val Rules: Seq[String] = BonsaiArtifacts.rules ++ Seq("DisableSyntax", "RedundantSyntax")
+  // The built-in entries are the rule names scalafix provides, their bans, which each contain a dot, their settings,
+  // which each contain =, and the compiler options RemoveUnused reads, which each start with -.
+  private val UnusedOptions = BonsaiArtifacts.builtin.filter(_.startsWith("-"))
+  private val Settings      = BonsaiArtifacts.builtin.filter(line => !line.startsWith("-") && line.contains('='))
+  private val Named         = BonsaiArtifacts.builtin.diff(UnusedOptions ++ Settings)
+  private val Bans          = Named.filter(_.contains('.'))
 
-  /** The DisableSyntax bans on by default, each disabled by its own id. */
-  private val Bans: Seq[String] =
-    Seq("noVars", "noReturns", "noNulls", "noAsInstanceOf", "noIsInstanceOf", "noXml", "noFinalize")
-      .map("DisableSyntax." + _)
+  /** Every scalafix rule, in the order they run, with the built-in ones last. */
+  val Rules: Seq[String] = BonsaiArtifacts.rules ++ Named.diff(Bans)
 
   /** Every analysis rule. */
   private val Findings: Set[String] = BonsaiArtifacts.findings
@@ -288,6 +290,7 @@ object BonsaiPlugin extends AutoPlugin {
           bonsaiBounded.value.map((member, max, _) => s"-P:bonsai:bounded=$member:$max") ++
           bonsaiChecked.value.toSeq.sorted.map(tpe => s"-P:bonsai:checked=$tpe")
     },
+    scalacOptions ++= unusedOptions(scalacOptions.value, bonsaiDisabled.value, scalaVersion.value),
     semanticdbEnabled := true,
     // The rules are a Scala 3 artifact, while sbt-scalafix resolves %% rules against Scala 2.13.
     scalafixDependencies += Organization % "bonsai-scalafix_3" % Version,
@@ -296,7 +299,7 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiScalafixConfig := Def.uncached(scalafixConfiguration(
       target.value / "bonsai" / "scalafix.conf",
       (ThisBuild / baseDirectory).value / ".scalafix.conf",
-      Rules.filterNot(bonsaiDisabled.value),
+      Rules.filterNot(bonsaiDisabled.value).filter(supported(_, scalaVersion.value)),
       if (bonsaiMode.value == BonsaiMode.Dev) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiWarnings.value),
       (if (bonsaiDisabled.value("DisableSyntax")) Nil else Bans).partition(!bonsaiDisabled.value(_))
     )),
@@ -327,6 +330,21 @@ object BonsaiPlugin extends AutoPlugin {
     },
     bonsaiPurityWrite / aggregate := false
   )
+
+  // RemoveUnused reads the compiler's unused warnings, so its flag is added only when the build gives none of its own;
+  // they are then demoted so that fatal warnings do not fail the compile on what the rule fixes
+  private def unusedOptions(own: Seq[String], disabled: Set[String], scala: String): Seq[String] =
+    if (
+      disabled("RemoveUnused") || !ScalaVersions.removeUnused(scala) ||
+      own.exists(_.matches("-(Wunused|Ywarn-unused|Wall).*"))
+    ) Nil
+    else UnusedOptions
+
+  private def supported(rule: String, scala: String): Boolean = rule match {
+    case "RemoveUnused"        => ScalaVersions.removeUnused(scala)
+    case "ExplicitResultTypes" => ScalaVersions.explicitResultTypes(scala)
+    case _                     => true
+  }
 
   // The lines the compiler plugin is built for, with the oldest patch of those it does not run in from the first.
   private def builtLines: String =
@@ -386,7 +404,8 @@ object BonsaiPlugin extends AutoPlugin {
     val (enabled, disabled) = bans
     IO.write(
       file,
-      enabled.map(ban => s"$ban = true\n").mkString + include + disabled.map(ban => s"$ban = false\n").mkString +
+      (enabled.map(ban => s"$ban = true") ++ Settings).map(_ + "\n").mkString + include +
+        disabled.map(ban => s"$ban = false\n").mkString +
         list("rules", rules) + list("lint.warning", warnings)
     )
     file
