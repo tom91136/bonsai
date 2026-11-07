@@ -599,7 +599,10 @@ class PuritySuite extends AnalysisSuite {
     val found = Purity.findings(locked.purity, locked.graph.nodes).collect {
       case finding if finding.rule == Finding.Rule.SharedWrite => finding.detail
     }
-    assertEquals(found.map(_.split(" runs at ")(1).split(' ')(0).split(':').last.toInt).sorted, Vector(15, 19, 23, 33, 36, 41))
+    assertEquals(
+      found.map(_.split(" runs at ")(1).split(' ')(0).split(':').last.toInt).sorted,
+      Vector(15, 19, 23, 33, 36, 41)
+    )
   }
 
   test("a branch a constant condition rules out has no effects") {
