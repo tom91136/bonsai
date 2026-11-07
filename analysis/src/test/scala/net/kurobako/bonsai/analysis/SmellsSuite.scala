@@ -97,6 +97,52 @@ class SmellsSuite extends AnalysisSuite {
     assertEquals(found.map(_.detail), Vector("Api.run.width is always 80 across 2 calls"))
   }
 
+  private val Recoding = Seq(
+    "Marker.scala" -> "object Marker { val Name: String = \".conversion.yml\"; val Other: String = \".other.yml\" }",
+    "Recode.scala" ->
+      "object Recode { def transcode(in: String, marker: String, threads: Int): Int = in.length + marker.length + threads }"
+  )
+
+  private def recoding(runner: String, tests: Seq[(String, String)] = Nil): Vector[Finding] = {
+    val result = extract(Recoding :+ ("Runner.scala" -> runner), test = tests)
+    Smells.findings(result.smells, result.algebra.products, result.graph.nodes)
+  }
+
+  test("a stable value every call passes is a constant argument") {
+    assertFinding(
+      recoding(
+        "object Runner { def flag(): Boolean = true; def count(): Int = 2; def a: Int = Recode.transcode(\"a\", Marker.Name, 1); def b: Int = Recode.transcode(\"b\", Marker.Name, 2) }"
+      ),
+      "constant-argument",
+      "Recode.transcode(in, marker, threads).marker is always Marker.Name across 2 calls"
+    )
+  }
+
+  test("different stable values, or values that are not stable, are no constant argument") {
+    val found = recoding(
+      """object Runner {
+        |  def a: Int = Recode.transcode("a", Marker.Name, 1)
+        |  def b: Int = Recode.transcode("b", Marker.Other, 2)
+        |  def c(marker: String): Int = Recode.transcode("c", marker, 3)
+        |}""".stripMargin
+    )
+    assertNoFinding(found)(_.detail.contains("marker is always"))
+  }
+
+  test("a stable value every production call passes is a constant argument that tests may vary") {
+    val found = recoding(
+      "object Runner { def flag(): Boolean = true; def count(): Int = 2; def a: Int = Recode.transcode(\"a\", Marker.Name, 1); def b: Int = Recode.transcode(\"b\", Marker.Name, 2) }",
+      Seq("Check.scala" -> "object Check { val marker = \"x\"; def c: Int = Recode.transcode(\"c\", marker, 3) }")
+    )
+    assertFinding(
+      found,
+      "constant-argument",
+      "Recode.transcode(in, marker, threads).marker is always Marker.Name across 2 production calls"
+    )(
+      using Finding.Level.Info
+    )
+  }
+
   test("a string default passed explicitly is redundant") {
     assertFinding(
       findings(
@@ -148,6 +194,31 @@ class SmellsSuite extends AnalysisSuite {
     assertNoFinding(found)(_.rule == Finding.Rule.FlagArgument)
   }
 
+  test("a flag a method only forwards to a call is still a choice between methods") {
+    val found = findings(
+      "Runner.scala" ->
+        """object Runner {
+          |  def transcode(name: String, recode: Boolean): Int = if (recode) name.length else 0
+          |  def run(): Int = {
+          |    def rewrite(name: String, recode: Boolean) = transcode(name, recode = recode)
+          |    rewrite("a", true) + rewrite("b", false)
+          |  }
+          |}""".stripMargin
+    )
+    assertFinding(found, "flag-argument", "rewrite(name, recode).recode is a literal at all 2 calls (1 true, 1 false)")
+  }
+
+  test("a flag a method forwards to a library call is not a choice between methods") {
+    val found = findings(
+      "Shown.scala" ->
+        """object Shown {
+          |  def show(name: String, loud: Boolean): String = name + String.valueOf(loud)
+          |  def run(): String = show("a", true) + show("b", false)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.FlagArgument)
+  }
+
   test("a flag a method only passes to a constructor is data the value stores, not a choice between methods") {
     val found = findings(
       "Mesh.scala" ->
@@ -195,6 +266,28 @@ class SmellsSuite extends AnalysisSuite {
       "Main.scala"  -> "object Main { def run(): Boolean = { Files.write(\"a\"); Files.write(\"b\") } }"
     )
     assertNoFinding(found)(_.rule == Finding.Rule.IgnoredResult)
+  }
+
+  private val Transcoding =
+    "Recode.scala" ->
+      "import scala.util.Try\nobject Recode { def transcode(in: String, threads: Int = 1, recode: Boolean = true): Try[Int] = Try(in.length + threads); def probe(in: String): Try[Int] = Try(in.length) }"
+
+  test("a Try result every production call unwraps with get is unwrapped") {
+    val result = extract(
+      Seq(
+        Transcoding,
+        "Runner.scala" ->
+          "object Runner { def flag(): Boolean = true; def count(): Int = 2; def a: Int = Recode.transcode(\"a\").get; def b: Int = Recode.transcode(\"b\", recode = Runner.flag(), threads = Runner.count()).get + Recode.probe(\"c\").get; def c = Recode.probe(\"d\").toOption }"
+      ),
+      test = Seq("Check.scala" -> "object Check { def one = Recode.transcode(\"c\") }")
+    )
+    val found = Smells.findings(result.smells, result.algebra.products, result.graph.nodes)
+    assertFinding(
+      found,
+      "unwrapped-try",
+      "Recode.transcode(in, threads, recode): its Try result is unwrapped with get at all 2 production calls"
+    )
+    assertEquals(found.count(_.rule == Finding.Rule.UnwrappedTry), 1, found.mkString("\n"))
   }
 
   test("overloads that share parameter names keep their own ignored results") {
@@ -535,6 +628,44 @@ class SmellsSuite extends AnalysisSuite {
           |object Use { val config = Config(2); val options = Options(5) }""".stripMargin
     )
     assertNoFinding(found)(_.rule.id == "unused-default")
+  }
+
+  test("a default that every call of a method or construction relies on is fixed") {
+    val found = findings(
+      "Tools.scala" ->
+        """object Tools {
+          |  private def run(name: String, floor: Long = 5): Long = name.length + floor
+          |  def first: Long = run("x")
+          |}
+          |object Twice {
+          |  private def run(name: String, floor: Long = 5): Long = name.length + floor
+          |  def first: Long  = run("x")
+          |  def second: Long = run("yy")
+          |}""".stripMargin,
+      "Config.scala" ->
+        """case class Config(roots: Int, ffmpeg: String = "ffmpeg", jobs: Int = 4)
+          |object Use { val one = Config(1, jobs = 8) }""".stripMargin
+    )
+    assertFinding(found, "fixed-default", "Tools.run(name, floor).floor")(using Finding.Level.Info)
+    assertFinding(found, "fixed-default", "Config.ffmpeg")(using Finding.Level.Info)
+    assertNoFinding(found)(finding => finding.rule.id == "fixed-default" && finding.detail.contains("jobs"))
+    assertNoFinding(found)(finding => finding.rule.id == "fixed-default" && finding.detail.contains("Twice"))
+  }
+
+  test("a default that a call, a copy, or a derived instance may set is not fixed") {
+    val found = findings(
+      "Config.scala" ->
+        """case class Copied(roots: Int, ffmpeg: String = "ffmpeg")
+          |case class Derived(roots: Int, ffmpeg: String = "ffmpeg") derives CanEqual
+          |object Use {
+          |  val original = Copied(1)
+          |  val a        = original.copy(ffmpeg = "other")
+          |  val b        = Derived(1)
+          |  def run(name: String, floor: Long = 5): Long = if (name.isEmpty) floor else run(name.tail, floor + 1)
+          |  val c = run("x")
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule.id == "fixed-default")
   }
 
   test("a default of a later parameter list that a call relies on is not judged") {
@@ -1191,6 +1322,33 @@ class SmellsSuite extends AnalysisSuite {
     assertFinding(found, "single-implementation", "lib.Store has a single implementation, lib.Memory")
   }
 
+  test("a Scala.js facade fixes the arguments it takes, so its constant text is no constant argument") {
+    val found = findings(
+      "Js.scala"      -> JsStandIns,
+      "Facades.scala" ->
+        """package lib
+          |import scala.scalajs.js
+          |@js.native trait Hash extends js.Object { def digest(enc: String): String = ??? }
+          |@js.native object crypto extends js.Object { def createHash(algo: String): Hash = ??? }
+          |object Plain { def createHash(algo: String): String = algo }""".stripMargin,
+      "Use.scala" ->
+        """package lib
+          |object Use {
+          |  def run(hash: Hash): String = {
+          |    val a = crypto.createHash("sha256").digest("hex")
+          |    val b = crypto.createHash("sha256").digest("hex")
+          |    val c = Plain.createHash("sha256")
+          |    a + b + c + Plain.createHash("sha256")
+          |  }
+          |}""".stripMargin
+    )
+    assertFinding(found, "constant-argument", "Plain.createHash(algo).algo is always \"sha256\" across 2 calls")
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.ConstantArgument &&
+        (finding.detail.startsWith("crypto.") || finding.detail.startsWith("Hash."))
+    )
+  }
+
   test("constant and flag arguments need every value known, and flags count both values") {
     val known   = method("lib.Api.known", "lib.Api", Vector(field("verbose", Algebra.Kind.Flag)))
     val unknown = method("lib.Api.unknown", "lib.Api", Vector(field("verbose", Algebra.Kind.Flag)))
@@ -1228,6 +1386,67 @@ class SmellsSuite extends AnalysisSuite {
     assertEquals(found.map(_.node.name), Vector("four.P.many"))
   }
 
+  test("two methods sharing six parameters are a data clump, even of one type") {
+    def pair(names: String*) = {
+      val shared = names.toVector
+      Vector("first", "second").map(name =>
+        method(s"one.Commands.$name", "one.Commands", (shared :+ name).map(field(_)))
+      )
+    }
+    val found = clumps(pair("a", "b", "c", "d", "e", "f"))
+    assertEquals(found.size, 1, found.mkString("\n"))
+    assert(
+      found.head.detail.startsWith("(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int) recur in 2 methods across 1 type"),
+      found.head.detail
+    )
+    assertEquals(clumps(pair("a", "b", "c", "d", "e")), Vector.empty)
+  }
+
+  test("constructors, and parameters that are the fields of a product, are no shared data clump") {
+    val names        = Vector("a", "b", "c", "d", "e", "f")
+    val fields       = names.map(field(_))
+    val constructors = Vector("Record", "Mutable").map(name => method(s"lib.$name.$name", s"lib.$name", fields))
+    assertEquals(clumps(constructors), Vector.empty)
+    val converters = Vector("first", "second").map(name => method(s"lib.Codec.$name", "lib.Codec", fields))
+    val product    = Algebra.Product(
+      "lib.Row",
+      "lib.Row",
+      fields,
+      Set.empty,
+      Algebra.Predicate.Known(true),
+      Algebra.Access.Open,
+      Algebra.Origin.Written
+    )
+    val nodes = converters.map(_.node).map(key => key -> node(key)).toMap
+    val found =
+      Smells.findings(model(methods = converters), Vector(product), nodes).filter(_.rule == Finding.Rule.DataClump)
+    assertEquals(found, Vector.empty, found.mkString("\n"))
+  }
+
+  test("overloads, and a wrapper beside the numbered method it calls, are no shared data clump") {
+    val fields    = Vector("a", "b", "c", "d", "e", "f").map(field(_))
+    val overloads = Vector("one", "two").map(suffix => method(s"lib.Codec.run($suffix)", "lib.Codec", fields))
+    assertEquals(clumps(overloads), Vector.empty)
+    val wrapped = Vector(("lib.Image.add", "lib.Image"), ("lib.Peer.add0", "lib.Peer")).map((name, owner) =>
+      method(name, owner, fields)
+    )
+    assertEquals(clumps(wrapped), Vector.empty)
+    assertEquals(clumps(overloads :+ method("lib.Other.show", "lib.Other", fields)).size, 1)
+  }
+
+  test("a wide data clump is found in signatures too long to enumerate") {
+    val shared  = Vector("a", "b", "c", "d", "e", "f", "g", "h")
+    val methods = Vector("webp", "vncg", "config").map { name =>
+      method(s"cli.Commands.$name", "cli.Commands", (shared ++ (1 to 5).map(index => s"$name$index")).map(field(_)))
+    }
+    val found = clumps(methods)
+    assertEquals(found.size, 1, found.mkString("\n"))
+    assert(
+      found.head.detail.startsWith("(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int)"),
+      found.head.detail
+    )
+  }
+
   test("a data clump names the same product whichever order the products arrive in") {
     val fields   = Vector("a", "b", "c", "d").map(field(_))
     val methods  = group("take", "a", "b", "c", "d")("one.Alpha", "two.Beta", "three.Gamma")
@@ -1255,12 +1474,13 @@ class SmellsSuite extends AnalysisSuite {
   test("overlapping data clumps over mostly the same methods are reported once, and disjoint ones each") {
     val shared = Vector("a", "b", "c", "d", "w", "x", "y", "z")
     val found  = clumps(
-      group("first", "a", "b", "c", "d")("one.A") ++ group("both", shared*)("one.B", "one.C") ++
+      group("first", "a", "b", "c", "d")("one.A") ++ group("both", shared*)("one.B") ++
+        group("also", shared*)("one.C") ++
         group("last", "w", "x", "y", "z")("one.D") ++ group("other", "p", "q", "r", "s")("two.E", "two.F", "two.G")
     )
     assertEquals(
       found.map(_.detail.takeWhile(_ != ')')).sorted,
-      Vector("(a: Int, b: Int, c: Int, d: Int", "(p: Int, q: Int, r: Int, s: Int")
+      Vector("(a: Int, b: Int, c: Int, d: Int, w: Int, x: Int, y: Int, z: Int", "(p: Int, q: Int, r: Int, s: Int")
     )
   }
 

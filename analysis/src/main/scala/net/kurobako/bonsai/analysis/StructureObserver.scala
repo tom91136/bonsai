@@ -70,6 +70,9 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
   private val extents    = mutable.Map.empty[String, (Int, Int)]
   private val named      = mutable.ArrayBuffer.empty[(String, String, String, String, Node)]
   private val typed      = mutable.ArrayBuffer.empty[(String, Node)]
+  private val bodies     = mutable.ArrayBuffer.empty[Counterparts.Body]
+  private val mirrors    = mutable.ArrayBuffer.empty[Counterparts.Mirror]
+  private val wrapping   = Wrappers(symbols, lines)
   // Built once every class is declared, when the phase finishes.
   private var model = Structures.Model.empty // scalafix:ok DisableSyntax.var
 
@@ -80,6 +83,9 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
   def typeNames: Iterable[(String, Node)] = typed
 
   def structures: Structures.Model = model
+
+  /** Makes the libraries a compilation unit imports the ones its methods are checked for bypassed wrappers. */
+  def enter(unit: tpd.Tree)(using Context): Unit = wrapping.enter(unit)
 
   /** Whether a member of an object names nothing else of its object and uses no type of the build but its own. */
   def detachable(member: Symbol): Boolean = detached(member)
@@ -191,6 +197,91 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
       case _ => ()
     }
 
+  // The class, object or member a symbol stands for, where the compiler adds constructors and companions.
+  private def definition(symbol: Symbol)(using Context): Symbol = {
+    val owner = if (symbol.isConstructor || symbol.is(Flags.Synthetic)) symbol.owner else symbol
+    if (owner.is(Flags.ModuleClass)) owner.companionClass.orElse(owner.sourceModule) else owner
+  }
+
+  // The enum or sealed parent whose case `symbol` is, and the name of the case.
+  private def alternative(tree: tpd.Tree)(using Context): Option[(Symbol, String)] = {
+    @annotation.tailrec
+    def head(tree: tpd.Tree): tpd.Tree = Calls.peel(tree) match {
+      case tpd.Apply(function, _)      => head(function)
+      case tpd.TypeApply(function, _)  => head(function)
+      case tpd.Bind(_, inner)          => head(inner)
+      case tpd.Typed(inner, _)         => head(inner)
+      case tpd.UnApply(function, _, _) => head(function)
+      case other                       => other
+    }
+    val found = head(tree)
+    List(
+      found.symbol,
+      found.tpe.typeSymbol,
+      found.tpe.termSymbol
+    ).filter(_.exists).map(definition(_)).collectFirst(Function.unlift {
+      cls =>
+        val shape  = if (cls.is(Flags.Module)) cls.moduleClass else cls
+        val parent =
+          if (cls.isAllOf(Flags.EnumCase) || cls.owner.linkedClass.is(Flags.Enum) && shape.is(Flags.Case))
+            Some(cls.owner.linkedClass)
+          else if (shape.isClass && shape.is(Flags.Case)) shape.asClass.parentSyms.find(_.is(Flags.Sealed))
+          else None
+        parent.filter(_.exists).map(_ -> cls.name.toString)
+    })
+  }
+
+  // The data a class holds, and the code the compiler adds, say nothing of the logic that reads them, and the cases of
+  // an enum are one choice between them.
+  private def counted(symbol: Symbol)(using Context): Option[Symbol] = {
+    val target = definition(symbol)
+    val fields = target.isOneOf(Flags.Accessor | Flags.ParamAccessor) && !target.owner.is(Flags.ModuleClass)
+    val parent = target.moduleClass.orElse(target)
+    if (fields || target.name.toString.contains('$') || target.name.is(DefaultGetterName)) None
+    else if (target.isAllOf(Flags.EnumCase) || parent.is(Flags.Case) && parent.owner.linkedClass.is(Flags.Enum))
+      Some(parent.owner.linkedClass)
+    else Some(target)
+  }
+
+  private def mirror(method: Symbol, info: Node, cases: List[tpd.CaseDef])(using Context): Unit = {
+    val pairs = cases.flatMap { clause =>
+      for {
+        (from, name) <- alternative(clause.pat)
+        (to, other)  <- alternative(concluding(clause.body))
+        if name == other && from != to
+      } yield (from, to, name)
+    }
+    pairs.groupBy((from, to, _) => (from, to)).foreach { case ((from, to), found) =>
+      mirrors += Counterparts.Mirror(
+        qualifiedName(method),
+        info.name,
+        lines.line(method.sourcePos),
+        qualifiedName(from),
+        qualifiedName(to),
+        found.map(_._3).sorted.toVector
+      )
+    }
+  }
+
+  /** Records the symbols of the build a method of production code names, which the rules comparing methods read. */
+  def method(method: Symbol, body: tpd.Tree, info: Node)(using Context): Unit = {
+    wrapping.method(method, body, info)
+    if (!info.test && !info.generated) {
+      val uses = mutable.Set.empty[String]
+      body.foreachSubTree {
+        case reference: tpd.RefTree if reference.symbol.exists && !reference.symbol.ownersIterator.contains(method) =>
+          counted(reference.symbol).filter(key(_).isDefined).foreach(uses += qualifiedName(_))
+        case _ => ()
+      }
+      body.foreachSubTree {
+        case tpd.Match(_, cases) => mirror(method, info, cases)
+        case _                   => ()
+      }
+      if (uses.nonEmpty)
+        bodies += Counterparts.Body(qualifiedName(method), info.name, lines.line(method.sourcePos), uses.toSet)
+    }
+  }
+
   /** Records the field reads, constructions and member names in strings the structure rules count. */
   def observe(tree: tpd.Tree, from: Option[String])(using Context): Unit = tree match {
     case tpd.Select(qualifier, name)
@@ -251,6 +342,20 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
         )
       )
     ).toVector
+    val families = types.filter(cls =>
+      cls.owner.is(Flags.ModuleClass) && !cls.owner.isTopLevelDefinitionsObject &&
+        !cls.owner.linkedClass.is(Flags.Enum) &&
+        !cls.isOneOf(Flags.ModuleClass | Flags.Synthetic | Flags.Private) && !cls.isAllOf(Flags.EnumCase)
+    ).groupBy(_.owner).toVector.flatMap((owner, nested) =>
+      for {
+        info <- nodeOf(owner) if !info.test && !info.generated
+      } yield Counterparts.Family(
+        qualifiedName(owner),
+        info.name,
+        lines.line(owner.sourcePos),
+        nested.map(_.name.toString).toSet
+      )
+    )
     model = Structures.Model(
       stuttering.toVector.map { case (field, (owner, node)) =>
         Structures.Stutter(owner, node, field.name.toString, echoes.getOrElse(field, 0))
@@ -260,7 +365,9 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
       concretes,
       grouped.toVector,
       dispatched.toVector,
-      extents.view.mapValues((start, end) => end - start + 1).toMap
+      extents.view.mapValues((start, end) => end - start + 1).toMap,
+      Counterparts.Model(bodies.toVector, mirrors.toVector, families),
+      wrapping.bypasses
     )
   }
 }

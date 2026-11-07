@@ -9,6 +9,7 @@ import dotty.tools.dotc.core.NameKinds.DefaultGetterName
 import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
+import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.analysis.Placements.*
 import net.kurobako.bonsai.lifting.*
@@ -23,6 +24,8 @@ private[analysis] class References(components: Components, fragments: Fragments)
   private val methods                         = mutable.Stack.empty[Symbol]
   private val entered                         = mutable.Set.empty[Symbol]
   private def enclosingMethod: Option[Symbol] = methods.find(method => method.is(Flags.Method) && method.owner.isClass)
+  private def innermostMethod: Option[Symbol] =
+    methods.find(method => method.is(Flags.Method) && !method.isAnonymousFunction)
   // Whether the tree being traversed runs once per iteration of a loop, and the extent of the innermost loop.
   private val looping = mutable.Stack(false)
   private val loops   = mutable.Stack(Span(0))
@@ -52,6 +55,8 @@ private[analysis] class References(components: Components, fragments: Fragments)
     if (symbol.isClass || symbol.is(Flags.Inline) || methods.exists(_.is(Flags.Inline))) None
     else if (symbol.is(Flags.Method) && symbol.owner.isClass) methodKeys.getOrElseUpdate(symbol, Keys.of(symbol))
     else user.flatMap(_.method)
+
+  private lazy val tryClass = requiredClass("scala.util.Try")
 
   def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
     case imported: tpd.Import =>
@@ -130,10 +135,12 @@ private[analysis] class References(components: Components, fragments: Fragments)
       tree match {
         // A call the code inverts with `!` is read as the opposite of what it gives, which every caller inverting says
         // the method itself is named as. A nullary `unary_!` is a select, not an application.
-        case select: tpd.Select if select.name == nme.UNARY_!                  => callSites.negate(select.qualifier)
+        case select: tpd.Select if select.name == nme.UNARY_! => callSites.negate(select.qualifier)
+        case select: tpd.Select if select.name.toString == "get" && select.qualifier.tpe.widen.derivesFrom(tryClass) =>
+          callSites.unwrap(select.qualifier)
         case tpd.Apply(tpd.Select(argument, name), Nil) if name == nme.UNARY_! => callSites.negate(argument)
         case application: tpd.Apply if !synthetic.top                          =>
-          callSites.record(application, owner, entered, enclosingMethod)
+          callSites.record(application, owner, entered, enclosingMethod, innermostMethod)
           reads.shown(application, user)
           reads.selected(application, user)
         case assignment: tpd.Assign                   => recorder.assign(assignment.lhs.symbol)

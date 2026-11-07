@@ -85,41 +85,33 @@ class Fragments(lines: Lines)(using Context) {
     * value's initialiser, such as an array of some size, is no method a family would share.
     */
   def add(body: tpd.Tree, node: String, test: Boolean, member: Symbol, family: String, specialised: Boolean): Unit =
-    if (!row(body)) shape(body, origin(node, test, member, family, specialised, body), entire = true): Unit
+    if (!row(body)) {
+      val method      = member.is(Flags.Method)
+      val constrained = member.is(Flags.Override) || member.allOverriddenSymbols.nonEmpty
+      val parameters  = member.paramSymss.flatten.filter(_.isTerm)
+      val callable    = !test && !constrained &&
+        !member.isOneOf(Flags.Inline | Flags.Macro | Flags.Given | Flags.Synthetic) &&
+        !member.name.is(NameKinds.UniqueName) &&
+        !parameters.exists(_.isOneOf(Flags.GivenOrImplicit | Flags.Erased)) && faithful(member, body)
+      val everywhere = member.ownersIterator.drop(1).takeWhile(!_.is(Flags.Package)).forall(owner =>
+        owner.is(Flags.Module) && !owner.isOneOf(Flags.Private | Flags.Protected) && !owner.privateWithin.exists
+      ) && !member.isOneOf(Flags.Private | Flags.Protected) && !member.privateWithin.exists
+      val origin = Origin(
+        node,
+        test,
+        family,
+        specialised,
+        method,
+        member.name.toString,
+        constrained,
+        callable,
+        Option.unless(everywhere)(node),
+        parameters
+      )
+      shape(body, origin, entire = true): Unit
+    }
 
   def groups(): Vector[Clones.Group] = Clones.groups(candidates())
-
-  private def origin(
-      node: String,
-      test: Boolean,
-      member: Symbol,
-      family: String,
-      specialised: Boolean,
-      body: tpd.Tree
-  ): Origin = {
-    val method      = member.is(Flags.Method)
-    val constrained = member.is(Flags.Override) || member.allOverriddenSymbols.nonEmpty
-    val parameters  = member.paramSymss.flatten.filter(_.isTerm)
-    val callable    = !test && !constrained &&
-      !member.isOneOf(Flags.Inline | Flags.Macro | Flags.Given | Flags.Synthetic) &&
-      !member.name.is(NameKinds.UniqueName) &&
-      !parameters.exists(_.isOneOf(Flags.GivenOrImplicit | Flags.Erased)) && faithful(member, body)
-    val everywhere = member.ownersIterator.drop(1).takeWhile(!_.is(Flags.Package)).forall(owner =>
-      owner.is(Flags.Module) && !owner.isOneOf(Flags.Private | Flags.Protected) && !owner.privateWithin.exists
-    ) && !member.isOneOf(Flags.Private | Flags.Protected) && !member.privateWithin.exists
-    Origin(
-      node,
-      test,
-      family,
-      specialised,
-      method,
-      member.name.toString,
-      constrained,
-      callable,
-      Option.unless(everywhere)(node),
-      parameters
-    )
-  }
 
   /** Whether a call of `member` has the type of its body, which a declared result type that is wider, or an opaque
     * alias the body does not have outside its scope, would change.

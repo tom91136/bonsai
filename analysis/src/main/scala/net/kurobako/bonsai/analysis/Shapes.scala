@@ -42,6 +42,7 @@ object Shapes {
     if (dealiased.isRef(defn.BooleanClass)) Algebra.Kind.Flag
     else if (symbol == defn.OptionClass) Algebra.Kind.Optional
     else if (numbers.exists(dealiased.isRef(_))) Algebra.Kind.Number
+    else if (dealiased.isRef(defn.StringClass)) Algebra.Kind.Text
     else if (
       children.nonEmpty && children.lengthCompare(MaxTags) <= 0 &&
       children.forall(child => child.isTerm || child.is(Flags.ModuleClass))

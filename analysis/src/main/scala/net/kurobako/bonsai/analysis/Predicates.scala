@@ -38,7 +38,17 @@ object Predicates {
       case _ if bare.symbol == defn.NoneModule || kind == defn.NoneModule.moduleClass => Some(Argument.Absent)
       case _ if kind == defn.SomeClass                                                => Some(Argument.Present)
       case _ => number(bare).map(Argument.Number(_)).orElse(singleton(bare).map(Argument.Word(Wording.Tag, _)))
+          .orElse(reference(bare).map(Argument.Reference(_)))
     }
+  }
+
+  private def reference(tree: tpd.Tree)(using Context): Option[String] = tree match {
+    case tpd.Ident(_) | tpd.Select(_, _) =>
+      val symbol = tree.symbol
+      Option.when(
+        symbol.exists && symbol.isStableMember && !symbol.is(Flags.Mutable) && symbol.owner.is(Flags.ModuleClass)
+      )(symbol.showFullName)
+    case _ => None
   }
 
   /** The value of a numeric literal or constant reference. */

@@ -42,6 +42,13 @@ private[analysis] object Symbols {
       joined.updated(entry._1, joined.get(entry._1).fold(entry._2)(combine(_, entry._2)))
     )
 
+  // A Scala.js facade describes a JavaScript API, which Scala does not implement; the library may be off the classpath.
+  def facade(cls: Symbol)(using Context): Boolean = {
+    val native = Classes.named("scala.scalajs.js.native")
+    val any    = Classes.named("scala.scalajs.js.Any")
+    native.exists && cls.hasAnnotation(native) || any.exists && cls.derivesFrom(any)
+  }
+
   def childClasses(parent: Symbol)(using Context): List[Symbol] =
     parent.children.map(child => if (child.isTerm) child.moduleClass else child)
 }

@@ -45,7 +45,7 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
   def classify(cls: Symbol, name: String, key: String, info: Node)(using Context): Unit =
     if (cls.is(Flags.Trait) || cls.is(Flags.Abstract)) {
       // Other builds can implement what a library exports, unless it is sealed.
-      if (!cls.is(Flags.Enum) && !info.test && !facade(cls) && (cls.is(Flags.Sealed) || !exported(cls))) {
+      if (!cls.is(Flags.Enum) && !info.test && !Symbols.facade(cls) && (cls.is(Flags.Sealed) || !exported(cls))) {
         abstracts(cls) = (name, key, info.module)
         if (cls.is(Flags.Trait) && !cls.info.decls.exists(_.is(Flags.Deferred))) mixins += cls
       }
@@ -56,13 +56,6 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
         if (cls.typeRef.baseType(parent).argInfos.exists(_.widenDealias.typeSymbol.isPrimitiveValueClass))
           specialised += parent
       }
-
-  // A Scala.js facade describes a JavaScript API, which Scala does not implement; the library may be off the classpath.
-  private def facade(cls: Symbol)(using Context): Boolean = {
-    val native = Classes.named("scala.scalajs.js.native")
-    val any    = Classes.named("scala.scalajs.js.Any")
-    native.exists && cls.hasAnnotation(native) || any.exists && cls.derivesFrom(any)
-  }
 
   def abstractions: Vector[Smells.Abstraction] =
     abstracts.toVector.collect {

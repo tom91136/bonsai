@@ -104,6 +104,28 @@ class JavaFactsSuite extends AnalysisSuite {
     assertNoFinding(smells(result))(_.rule.id == "constant-argument")
   }
 
+  test("a native method fixes its arguments, so the constants it is passed are no constant argument") {
+    val result = read("demo/Peer.java" -> """
+      |package demo;
+      |
+      |public class Peer {
+      |  private native void blit(String mode);
+      |
+      |  private void plain(String mode) {}
+      |
+      |  public void run() {
+      |    blit("fast");
+      |    blit("fast");
+      |    plain("fast");
+      |    plain("fast");
+      |  }
+      |}
+      |""".stripMargin)
+
+    assertFinding(smells(result), "constant-argument", "plain.mode is always \"fast\" across 2 calls")
+    assertNoFinding(smells(result))(_.detail.contains("blit"))
+  }
+
   private def invariants(result: Extraction.Result): Vector[Finding] =
     Invariants.findings(result.algebra, result.graph.nodes)
 

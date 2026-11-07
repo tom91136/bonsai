@@ -585,7 +585,7 @@ class ExtractionSuite extends AnalysisSuite {
   test("construction sites are kept for classifiable fields and resolve only synthetic bindings") {
     val result = extract(Seq(
       "Sites.scala" ->
-        """case class Name(value: String)
+        """case class Name(value: Vector[Int])
           |case class Money(amount: Int)
           |object Money { def apply(text: String): Money = new Money(text.toInt) }
           |object Render { def render(text: String, width: Int): String = text.take(width) }
@@ -594,7 +594,7 @@ class ExtractionSuite extends AnalysisSuite {
           |  def positive(size: Int): Int = { require(size > 0); size }
           |}
           |object Main {
-          |  val names = List(Name("a"), Name("b"))
+          |  val names = List(Name(Vector(1)), Name(Vector(2)))
           |  val money = List(Money(1), Money("2"))
           |  def draw(): List[String] = { val width = 80; List(Render.render("a", width), Render.render("b", width)) }
           |}""".stripMargin

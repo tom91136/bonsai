@@ -39,7 +39,17 @@ object Structures {
 
   object Model {
     val empty: Model =
-      Model(Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty, Map.empty)
+      Model(
+        Vector.empty,
+        Vector.empty,
+        Vector.empty,
+        Vector.empty,
+        Vector.empty,
+        Vector.empty,
+        Map.empty,
+        Counterparts.Model.empty,
+        Vector.empty
+      )
   }
 
   /** `extents` holds the lines of each top-level type. */
@@ -50,7 +60,9 @@ object Structures {
       concretes: Vector[Concrete],
       members: Vector[Member],
       dispatches: Vector[Dispatch],
-      extents: Map[String, Int]
+      extents: Map[String, Int],
+      counterparts: Counterparts.Model,
+      bypasses: Vector[Wrappers.Bypass]
   )
 
   private val MinimumFamily = 3
@@ -64,7 +76,8 @@ object Structures {
     val nodes = graph.nodes
     stutters(model.stutters, nodes) ++ stale(model.mentions, nodes) ++ families(model.applied, nodes) ++
       packages(graph) ++ bases(model.concretes, nodes) ++ disjoint(model.members, nodes) ++
-      satellites(model.extents, graph) ++ dispatches(model.dispatches, nodes)
+      satellites(model.extents, graph) ++ dispatches(model.dispatches, nodes) ++
+      Counterparts.findings(model.counterparts, nodes) ++ Wrappers.findings(model.bypasses, nodes)
   }
 
   /** The graph without generated code, which no one maintains, so no rule reports or counts it. */

@@ -90,9 +90,8 @@ private class Branches(checks: Checks)(using Context) {
     otherwise.foreach(last => repeated(head, arms.map(_.thenp) :+ last))
   }
 
-  private def same(left: tpd.Tree, right: tpd.Tree, prepare: Sameness => Unit = _ => ()): Boolean = {
+  private def same(left: tpd.Tree, right: tpd.Tree): Boolean = {
     val sameness = Sameness()
-    prepare(sameness)
     !trivial(left) && sameness(Calls.peelInlined(left), Calls.peelInlined(right))
   }
 

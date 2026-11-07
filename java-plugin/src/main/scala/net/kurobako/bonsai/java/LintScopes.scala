@@ -30,7 +30,7 @@ object LintScopes {
         case tryTree: TryTree => tryTree.getResources.asScala.exists(_ eq variable)
         case _                => false
       }
-      val closeable     = element.exists(found => subtype(context, found.asType(), "java.lang.AutoCloseable"))
+      val closeable     = element.exists(found => autoCloseable(context, found.asType()))
       val owned         = variable.initializer.exists(ownedResource(context, _))
       val resourceLater = usedAsResource(context, variable.getName)
       val use           = element.fold(ResourceUse(false, false))(resourceUse(context, _))
@@ -200,11 +200,11 @@ object LintScopes {
     */
   private def opening(context: Context, method: ExecutableElement, depth: Int): Boolean = {
     val result = method.getReturnType
-    val holds  = subtype(context, result, "java.lang.AutoCloseable") ||
+    val holds  = autoCloseable(context, result) ||
       (result match {
         case declared: javax.lang.model.`type`.DeclaredType =>
           declared.asElement.toString == "java.util.Optional" &&
-          declared.getTypeArguments.asScala.exists(subtype(context, _, "java.lang.AutoCloseable"))
+          declared.getTypeArguments.asScala.exists(autoCloseable(context, _))
         case _ => false
       })
     holds && depth < 3 &&
@@ -267,6 +267,8 @@ object LintScopes {
 
   private def elementAt(context: Context, tree: Tree): Option[Element] = context.namedElement(tree)
 
-  private def subtype(context: Context, tpe: TypeMirror, name: String): Boolean =
-    context.elements.typeNamed(name).exists(target => context.types.isSubtype(tpe, target.asType()))
+  private def autoCloseable(context: Context, tpe: TypeMirror): Boolean =
+    context.elements.typeNamed("java.lang.AutoCloseable").exists(target =>
+      context.types.isSubtype(tpe, target.asType())
+    )
 }

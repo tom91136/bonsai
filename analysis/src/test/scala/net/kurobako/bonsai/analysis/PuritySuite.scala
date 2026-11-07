@@ -605,6 +605,67 @@ class PuritySuite extends AnalysisSuite {
     )
   }
 
+  test("assignments a worker makes while holding a lock of the scheduler that runs it are not shared writes") {
+    val result = extract(
+      Seq(
+        "Main.scala" ->
+          "object Main { def main(args: Array[String]): Unit = { Scheduler.run(Vector(1))(_ => ()); Scheduler.loose() } }",
+        "Scheduler.scala" ->
+          """import java.util.concurrent.Executors
+            |import java.util.concurrent.locks.ReentrantLock
+            |import scala.collection.mutable
+            |object Scheduler {
+            |  var unguarded = 0
+            |  def loose(): Unit = Executors.newCachedThreadPool().execute(() => unguarded += 1)
+            |  def run[J](jobs: Vector[J])(work: J => Unit): Vector[J] = {
+            |    val lock    = ReentrantLock()
+            |    val changed = lock.newCondition()
+            |    val results = mutable.ArrayBuffer.empty[J]
+            |    val pool    = Executors.newCachedThreadPool()
+            |    val queue   = mutable.Queue.from(jobs)
+            |    var free    = 4
+            |    var running = 0
+            |    def finish(job: J): Unit = {
+            |      lock.lock()
+            |      try results += job
+            |      finally lock.unlock()
+            |    }
+            |    def launch(job: J, cost: Int): Unit =
+            |      pool.execute { () =>
+            |        work(job)
+            |        finish(job)
+            |        lock.lock()
+            |        try {
+            |          free = free + cost
+            |          running -= 1
+            |          changed.signalAll()
+            |        } finally lock.unlock()
+            |      }
+            |    try {
+            |      lock.lock()
+            |      try
+            |        while (queue.nonEmpty || running > 0) {
+            |          if (queue.nonEmpty && free > 0) {
+            |            val job = queue.dequeue()
+            |            free = free - 1
+            |            running += 1
+            |            launch(job, 1)
+            |          } else changed.await()
+            |        }
+            |      finally lock.unlock()
+            |    } finally pool.shutdown()
+            |    results.toVector
+            |  }
+            |}""".stripMargin
+      )
+    )
+    val found = Purity.findings(result.purity, result.graph.nodes).collect {
+      case finding if finding.rule == Finding.Rule.SharedWrite => finding.detail
+    }
+    assertEquals(found.size, 1, found.mkString("\n"))
+    assert(found.head.contains("unguarded"), found.head)
+  }
+
   test("a branch a constant condition rules out has no effects") {
     assertEquals(contracted.purity.verdicts("Debug.traced"), Purity.Verdict.Pure)
   }

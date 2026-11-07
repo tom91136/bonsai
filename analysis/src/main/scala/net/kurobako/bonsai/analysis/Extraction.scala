@@ -49,6 +49,15 @@ object Extraction {
       notes: Vector[String] = Vector.empty
   )
 
+  private case class Settings(
+      generated: Vector[String],
+      concurrent: Set[String],
+      reflective: Vector[String],
+      hot: Vector[String],
+      bounded: Vector[Complexity.Bounded],
+      parallel: Parallel
+  )
+
   // The TASTy unpickler recurses over long import selector lists and deep trees.
   private val StackSize = 1L << 30
 
@@ -79,16 +88,9 @@ object Extraction {
           val thread = Thread(
             Thread.currentThread.getThreadGroup,
             () =>
-              result.complete(Try(extract(
-                manifest,
-                generated,
-                concurrent,
-                reflective,
-                hot,
-                bounded,
-                parallel,
-                world
-              ))): Unit,
+              result.complete(
+                Try(extract(manifest, Settings(generated, concurrent, reflective, hot, bounded, parallel), world))
+              ): Unit,
             "bonsai-extraction",
             StackSize
           )
@@ -106,16 +108,8 @@ object Extraction {
         }
     )
 
-  private def extract(
-      manifest: Manifest,
-      generated: Vector[String],
-      concurrent: Set[String],
-      reflective: Vector[String],
-      hot: Vector[String],
-      bounded: Vector[Complexity.Bounded],
-      parallel: Parallel,
-      world: ClassWorld
-  ): Either[Vector[String], Result] = {
+  private def extract(manifest: Manifest, settings: Settings, world: ClassWorld): Either[Vector[String], Result] = {
+    import settings.*
     // The compiler aborts the whole run on a file whose names or sections it cannot index, so those are set aside.
     // A platform twin compiles the shared sources again, so only the classes the JVM modules lack are its own. The
     // compiler finds every class through the directories of the files it reads, in their order, so the JVM modules'
@@ -164,7 +158,7 @@ object Extraction {
       val Reach.Reached(reach, unread) = Reach.of(linked, graph)
       Right(Result(
         graph,
-        Algebra.Model(java.products, java.sums, java.guarded, java.preconditions, Vector.empty),
+        Algebra.Model(java.products, java.sums, java.guarded, java.preconditions, Vector.empty, Map.empty),
         Smells.Model(java.methods, java.sites, java.usages, Vector.empty, Vector.empty, Vector.empty, moduleUses),
         Designs.Model.empty,
         Structures.Model.empty,

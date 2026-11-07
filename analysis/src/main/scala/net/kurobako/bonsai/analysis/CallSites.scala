@@ -28,7 +28,8 @@ private object CallSites {
       test: Boolean,
       own: Boolean,
       location: String,
-      scope: Option[Symbol]
+      scope: Option[Symbol],
+      helper: Option[Symbol]
   )
 }
 
@@ -39,12 +40,15 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
 
   private val pending      = mutable.ArrayBuffer.empty[Pending]
   private val sites        = mutable.Map.empty[String, Vector[Algebra.Site]]
+  private val forwarded    = mutable.Map.empty[String, Vector[Algebra.Site]]
   private val explicit     = mutable.Map.empty[(Symbol, String, String), mutable.ArrayBuffer[Algebra.Site]]
   private val spares       = mutable.ArrayBuffer.empty[Smells.Spare]
   private val results      = mutable.Map.empty[Symbol, Option[String]]
   private val calls        = mutable.Map.empty[Symbol, (Int, Int)]
   private val discards     = mutable.Map.empty[Symbol, Int]
   private val negations    = mutable.Set.empty[tpd.Tree]
+  private val unwraps      = mutable.Set.empty[tpd.Tree]
+  private val unwrapped    = mutable.Map.empty[Symbol, Int]
   private val called       = mutable.Set.empty[tpd.Tree]
   private val negatedCalls = mutable.Map.empty[Symbol, Int]
   private val tracked      = mutable.Map.empty[Symbol, Boolean]
@@ -56,6 +60,11 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   private val varied       = mutable.Set.empty[(Symbol, Int)]
 
   def recorded: Map[String, Vector[Algebra.Site]] = sites.toMap
+
+  /** The constructions of each case class, with the arguments a method forwards to the construction from its own
+    * parameters read off the calls of that method.
+    */
+  def expanded: Map[String, Vector[Algebra.Site]] = forwarded.toMap
 
   // Redundant arguments are dropped first, so an unused default only shows once they are gone.
   def spared(defaults: Vector[Smells.Default]): Vector[Smells.Spare] = {
@@ -79,7 +88,10 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
       (callee, recorded) <- pending.groupBy(_.callee)
       subject            <- callees.get(callee)
       aligned = recorded.filter(_.arguments.size == subject.arity) if aligned.nonEmpty
-    } sites(subject.key) = aligned.map(call => site(call, call.arguments.map(classify(_)).toVector)).toVector
+    } {
+      sites(subject.key) = aligned.map(call => site(call, call.arguments.map(classify(_)).toVector)).toVector
+      if (callee.isClass) forwarded(subject.key) = aligned.flatMap(expand(_, pending)).toVector
+    }
     for {
       call              <- pending if call.method.name != nme.copy && defaulted(call.method)
       (argument, index) <- call.arguments.zipWithIndex if !omitted(argument) && droppable(call.arguments, index)
@@ -89,8 +101,24 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
       if !varied(argument, passed.getOrElse((call.callee, call.scope, index), Nil))
     } explicit.getOrElseUpdate((call.callee, parameter.name, value), mutable.ArrayBuffer.empty) +=
       site(call)
-    spares ++= spareDefaults(callees)
+    spares ++= spareDefaults(callees) ++ fixedDefaults(callees)
     pending.clear()
+  }
+
+  // A construction inside a method passes that method's parameters on, so each call of the method is a construction
+  // with the arguments of that call.
+  private def expand(call: Pending, calls: Iterable[Pending])(using Context): Vector[Algebra.Site] = {
+    val direct     = call.arguments.map(classify(_)).toVector
+    val parameters = call.helper.toVector.flatMap(_.paramSymss.find(_.forall(_.isTerm)).getOrElse(Nil))
+    val passed     = call.arguments.map(argument => parameters.indexOf(Calls.peel(argument).symbol)).toVector
+    val callers    = call.helper.toVector.flatMap(helper => calls.filter(_.callee == helper))
+    if (callers.isEmpty || passed.forall(_ < 0)) Vector(site(call, direct))
+    else
+      callers.map { caller =>
+        val supplied  = caller.arguments.toVector
+        val arguments = direct.zip(passed).map((value, index) => supplied.lift(index).fold(value)(classify(_)))
+        Algebra.Site(arguments, call.test || caller.test, call.own, call.location)
+      }
   }
 
   def usages(methods: collection.Map[Symbol, Smells.Method]): Vector[Smells.Usage] =
@@ -104,7 +132,8 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
         total,
         discards.getOrElse(symbol, 0),
         tests,
-        negatedCalls.getOrElse(symbol, 0)
+        negated = negatedCalls.getOrElse(symbol, 0),
+        unwrapped = unwrapped.getOrElse(symbol, 0)
       )
     }
 
@@ -132,15 +161,48 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   private def spareDefaults(callees: collection.Map[Symbol, Callee])(using Context): Vector[Smells.Spare] =
     pending.groupBy(_.method).toVector.flatMap((method, calls) => spare(method, calls.toVector, callees))
 
+  private def plain(method: Symbol)(using Context): Boolean =
+    method.is(Flags.Method) && !method.isConstructor && !method.is(Flags.Synthetic) && method.isEffectivelyFinal &&
+      !method.allOverriddenSymbols.hasNext && !exported(method)
+
+  // A case class that derives an instance may be read from data that sets its defaults.
+  private def fixable(callee: Symbol)(using Context): Boolean =
+    if (callee.isClass)
+      !exported(callee) &&
+      !callee.companionModule.moduleClass.info.decls.toList.exists(_.isOneOf(Flags.Given | Flags.Implicit))
+    else plain(callee)
+
+  private def fixedDefaults(callees: collection.Map[Symbol, Callee])(using Context): Vector[Smells.Spare] =
+    pending.groupBy(_.callee).toVector.flatMap { (callee, calls) =>
+      val clause = (if (callee.isClass) callee.primaryConstructor else callee).paramSymss.find(_.forall(_.isTerm))
+        .getOrElse(Nil).toVector
+      val arguments = calls.map(_.arguments.toVector)
+      val sites     = calls.toVector.map(site(_))
+      callees.get(callee).filter(_ => calls.exists(!_.own) && fixable(callee)).toVector.flatMap { subject =>
+        clause.zipWithIndex.collect {
+          case (parameter, index)
+              if parameter.is(Flags.HasDefault) &&
+                arguments.forall(args => args.sizeIs == clause.size && omitted(args(index))) =>
+            Smells.Spare(
+              subject.name,
+              subject.node,
+              parameter.name.toString,
+              sites,
+              subject.suppressed,
+              lines.line(callee.sourcePos),
+              fixed = true
+            )
+        }
+      }
+    }
+
   private def spare(method: Symbol, calls: Vector[Pending], callees: collection.Map[Symbol, Callee])(using
       Context
   ): Vector[Smells.Spare] = {
-    val plain = method.is(Flags.Method) && !method.isConstructor && !method.is(Flags.Synthetic) &&
-      method.isEffectivelyFinal && !method.allOverriddenSymbols.hasNext && !exported(method)
     val clause    = method.paramSymss.find(_.forall(_.isTerm)).getOrElse(Nil).toVector
     val sites     = calls.map(site(_))
     val arguments = calls.map(_.arguments.toVector)
-    callees.get(method).filter(_ => plain && calls.exists(!_.own)).toVector.flatMap { subject =>
+    callees.get(method).filter(_ => plain(method) && calls.exists(!_.own)).toVector.flatMap { subject =>
       clause.zipWithIndex.collect {
         case (parameter, index)
             if parameter.is(Flags.HasDefault) &&
@@ -160,9 +222,15 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   /** Keeps an application the code inverts with `!`, which is how a boolean method every caller negates is found. */
   def negate(call: tpd.Tree): Unit = negations += innermost(call)
 
+  /** Keeps an application the code unwraps with `get`, which is how a `Try` every production caller unwraps is found.
+    */
+  def unwrap(call: tpd.Tree): Unit = unwraps += innermost(call)
+
   @annotation.tailrec
   private def innermost(call: tpd.Tree): tpd.Tree = call match {
     case tpd.Apply(function: tpd.Apply, _) => innermost(function)
+    case tpd.Block(_, expression)          => innermost(expression)
+    case tpd.Typed(expression, _)          => innermost(expression)
     case other                             => other
   }
 
@@ -170,13 +238,14 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   def invoke(reference: tpd.Tree, from: Option[String])(using Context): Unit = {
     val method = reference.symbol
     if (method.is(Flags.Method) && method.info.isInstanceOf[ExprType] && !called(reference) && result(method).isDefined)
-      count(method, from.flatMap(nodes.get).exists(_.test), negations.contains(reference))
+      count(method, from.flatMap(nodes.get).exists(_.test), negations.contains(reference), unwraps.contains(reference))
   }
 
-  private def count(method: Symbol, test: Boolean, negated: Boolean): Unit = {
+  private def count(method: Symbol, test: Boolean, negated: Boolean, unwrap: Boolean): Unit = {
     val (total, tests) = calls.getOrElse(method, (0, 0))
     calls(method) = (total + 1, tests + (if (test) 1 else 0))
     if (negated) negatedCalls(method) = negatedCalls.getOrElse(method, 0) + 1
+    if (unwrap && !test) unwrapped(method) = unwrapped.getOrElse(method, 0) + 1
   }
 
   /** Counts a statement whose value is dropped, for methods whose results are tracked. */
@@ -248,7 +317,8 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
       application: tpd.Apply,
       owner: Option[String],
       enclosing: Symbol => Boolean,
-      scope: Option[Symbol]
+      scope: Option[Symbol],
+      helper: Option[Symbol]
   )(using Context): Unit =
     application.fun match {
       case tpd.Apply(_, _) => ()
@@ -257,7 +327,8 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
         val constructed = constructs(method)
         val test        = owner.flatMap(nodes.get).exists(_.test)
         called += application.fun
-        if (!constructed.exists && result(method).isDefined) count(method, test, negations.contains(application))
+        if (!constructed.exists && result(method).isDefined)
+          count(method, test, negations.contains(application), unwraps.contains(application))
         val callee =
           if (constructed.exists && constructed.is(Flags.CaseClass)) constructed
           else if (method.is(Flags.Method) && !method.isConstructor) method
@@ -274,7 +345,7 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
           val position = application.sourcePos
           val location = lines.location(position)
           val own      = if (constructed.exists) owner.isDefined && owner == key(callee) else enclosing(callee)
-          pending += Pending(callee, method, application.args, test, own, location, scope)
+          pending += Pending(callee, method, application.args, test, own, location, scope, helper)
         }
     }
 

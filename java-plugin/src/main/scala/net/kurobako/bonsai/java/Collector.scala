@@ -662,7 +662,7 @@ class Collector(trees: Trees) {
                 parameters,
                 location(compilation, node),
                 Collector.returns(executable),
-                Collector.overriding(executable),
+                Collector.overriding(executable) || element.getModifiers.contains(Modifier.NATIVE),
                 Collector.suppressed(element)
               )
             )

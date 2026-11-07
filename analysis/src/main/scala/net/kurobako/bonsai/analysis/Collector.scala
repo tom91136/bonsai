@@ -145,6 +145,7 @@ private[analysis] class Collector(
     units.foreach { unit =>
       try {
         given Context = ctx.withSource(unit.source)
+        structure.enter(unit.tpdTree)
         references(components, fragments).traverse(unit.tpdTree)
         placing.traverse(unit.tpdTree)
       } catch { case NonFatal(error) => failed(s"${unit.source.path} could not be analysed", error) }
@@ -274,7 +275,8 @@ private[analysis] class Collector(
       sums.values.toVector.sortBy(_.name),
       callSites.recorded,
       required.values.toMap,
-      enumerations.toVector
+      enumerations.toVector,
+      callSites.expanded
     )
 
   def smells: Smells.Model = {
@@ -463,7 +465,7 @@ private[analysis] class Collector(
         info.name,
         qualifiedName(method.owner),
         fields,
-        method.allOverriddenSymbols.hasNext,
+        method.allOverriddenSymbols.hasNext || Symbols.facade(method.enclosingClass),
         exported(method),
         info.test,
         stored(method, body),
@@ -478,14 +480,16 @@ private[analysis] class Collector(
       )
     }
 
-  /** The parameters of the first term parameter list that the first statement of `body` tests, by index. */
+  /** The parameters of the first term parameter list that the first statement of `body` tests, or that `body` only
+    * passes to calls of methods of the build other than constructors, by index.
+    */
   private def tested(method: Symbol, body: tpd.Tree)(using Context): Set[Int] = {
     val first = body match {
       case tpd.Block(statement :: _, _) => statement
       case tpd.Block(Nil, expression)   => expression
       case other                        => other
     }
-    first match {
+    val branched = first match {
       case tpd.If(test, _, _) =>
         val used = test.filterSubTrees {
           case tpd.Ident(_) => true
@@ -496,17 +500,21 @@ private[analysis] class Collector(
         }.toSet
       case _ => Set.empty
     }
+    branched ++ passed(method, body)(application => !constructs(application) && output(application.symbol).isDefined)
   }
 
+  private def constructs(application: tpd.Apply)(using Context): Boolean = application.symbol.isConstructor ||
+    application.symbol.name == nme.apply && application.symbol.is(Flags.Synthetic)
+
   /** The parameters of the first term parameter list that `body` passes only to constructors, by index. */
-  private def stored(method: Symbol, body: tpd.Tree)(using Context): Set[Int] = {
-    def constructs(application: tpd.Apply) = application.symbol.isConstructor ||
-      application.symbol.name == nme.apply && application.symbol.is(Flags.Synthetic)
-    val passed = body.filterSubTrees {
-      case application: tpd.Apply => constructs(application)
+  private def stored(method: Symbol, body: tpd.Tree)(using Context): Set[Int] = passed(method, body)(constructs(_))
+
+  private def passed(method: Symbol, body: tpd.Tree)(accept: tpd.Apply => Boolean)(using Context): Set[Int] = {
+    val arguments = body.filterSubTrees {
+      case application: tpd.Apply => accept(application)
       case _                      => false
     }.collect { case application: tpd.Apply => application.args }.flatten.map(Calls.peel(_).symbol)
-    val passes                  = passed.groupMapReduce(identity)(_ => 1)(_ + _)
+    val passes                  = arguments.groupMapReduce(identity)(_ => 1)(_ + _)
     def uses(parameter: Symbol) = body.filterSubTrees {
       case reference: tpd.Ident => reference.symbol == parameter
       case _                    => false
@@ -548,6 +556,7 @@ private[analysis] class Collector(
           info.test,
           lines.line(method.sourcePos)
         )
+        structure.method(method, body, info)
         if (!method.is(Flags.ExtensionMethod)) structure.dispatch(method, parameters, body, info)
       }
   }

@@ -96,8 +96,10 @@ object Algebra {
     case Present, Absent, True, False, Unknown
     case Number(value: BigDecimal)
     case Word(wording: Wording, value: String)
+    case Reference(name: String)
 
     def shown: String = this match {
+      case Reference(name)           => Finding.short(name)
       case Word(Wording.Tag, value)  => value
       case Number(value)             => value.toString
       case Word(Wording.Text, value) => s"\"$value\""
@@ -119,7 +121,8 @@ object Algebra {
       sums: Vector[Sum],
       sites: Map[String, Vector[Site]],
       preconditions: Map[String, Product],
-      enumerations: Vector[Enumeration]
+      enumerations: Vector[Enumeration],
+      expanded: Map[String, Vector[Site]]
   )
 
   /** Frequent itemsets, as shared field groups among sum cases or parameter groups among methods. */
@@ -140,6 +143,7 @@ object Algebra {
   private val MaxFactorFields               = 12
   private val MaxReportedFactors            = 3
   private val ShownNames                    = 8
+  private val MinimumDetermined             = 3
 
   def findings(model: Model, nodes: Map[String, Node], intended: Intended = Intended()): Vector[Finding] = {
     val sums = model.sums.flatMap { sum =>
@@ -230,10 +234,24 @@ object Algebra {
           Finding.at(nodes, group.head.node, Finding.Rule.DuplicateShape, detail, level)
         }
     // Other builds construct a library's public products, so the constructions here do not settle their shape.
-    val constructions = model.products.view.filter(_.origin == Origin.Written).flatMap { product =>
+    val written       = model.products.filter(_.origin == Origin.Written)
+    val constructions = written.view.flatMap { product =>
       model.sites.get(product.name).toVector.flatMap { sites =>
         construction(product, sites).flatMap((rule, detail) =>
           Finding.at(nodes, product.node, rule, detail, onlyTests = onlyTests(sites))
+        )
+      }
+    }.toVector
+    val determined = written.view.flatMap { product =>
+      model.expanded.get(product.name).toVector.filterNot(onlyTests(_)).flatMap { sites =>
+        determinedFields(product, sites).flatMap(
+          Finding.at(
+            nodes,
+            product.node,
+            Finding.Rule.CaseDeterminedField,
+            _,
+            Finding.Level.Info
+          )
         )
       }
     }.toVector
@@ -251,7 +269,7 @@ object Algebra {
         level
       )
     }
-    sums ++ duplicates ++ constructions ++ enumerations
+    sums ++ duplicates ++ constructions ++ determined ++ enumerations
   }
 
   /** Names relative to their longest common prefix, so same-named types in different owners stay distinguishable. */
@@ -299,6 +317,25 @@ object Algebra {
       )
       if (distinct && chosen.size < MaxReportedFactors) chosen :+ candidate else chosen
     }
+  }
+
+  /** The fields every construction of one case of a tag field gives the same value, that other constructions do not:
+    * they belong with the case.
+    */
+  private def determinedFields(product: Product, sites: Vector[Site]): Vector[String] = {
+    val name = Finding.simple(product.name)
+    for {
+      (tag, index) <- product.fields.zipWithIndex if tag.kind.isInstanceOf[Kind.Tag]
+      (field, at)  <- product.fields.zipWithIndex if at != index && field.kind != Kind.Other
+      fixed = sites.groupBy(_.arguments(index)).toVector.sortBy(_._1.shown).collect {
+        case (Argument.Word(Wording.Tag, label), group)
+            if group.sizeIs >= MinimumDetermined && group.map(_.arguments(at)).distinct.sizeIs == 1 =>
+          (group.head.arguments(at), label, group.size)
+      }.filter((value, _, _) => value != Argument.Unknown && value != Argument.Present)
+      (value, cases) <- fixed.groupMap(_._1)(entry => (entry._2, entry._3)).toVector.sortBy(_._1.shown)
+      if sites.exists(_.arguments(at) != value)
+    } yield s"$name.${field.name} is always ${value.shown} when ${tag.name} is ${cases.map(_._1).sorted.mkString(", ")} " +
+      s"across ${cases.map(_._2).sum} constructions; other constructions give it other values, so it may belong with the case"
   }
 
   /** Correlations between the optional and flag arguments of every construction of a product. */

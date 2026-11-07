@@ -542,7 +542,7 @@ class AlgebraSuite extends AnalysisSuite {
       sums: Vector[Algebra.Sum] = Vector.empty,
       sites: Map[String, Vector[Algebra.Site]] = Map.empty,
       enumerations: Vector[Algebra.Enumeration] = Vector.empty
-  ): Algebra.Model = Algebra.Model(products, sums, sites, Map.empty, enumerations)
+  ): Algebra.Model = Algebra.Model(products, sums, sites, Map.empty, enumerations, Map.empty)
 
   private def analyse(model: Algebra.Model, overrides: Node*): Vector[Finding] = {
     val keys = model.products.map(_.node) ++ model.sums.map(_.node) ++ model.enumerations.map(_.node)

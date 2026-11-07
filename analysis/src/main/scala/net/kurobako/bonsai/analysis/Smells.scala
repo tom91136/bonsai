@@ -5,11 +5,12 @@ import Algebra.*
 /** Design smells that need every call site, implementation or signature of the build as evidence. */
 object Smells {
 
-  /** A method of the build; `overriding` marks signatures fixed by a supertype, `exported` those other builds call as
-    * part of a library's public API, `stored` the indices of the parameters its body only passes to constructors, and
-    * `inlined` those of its inline parameters, which each expansion specialises on, and `rest` the fields of the term
-    * parameter lists after the first; `tested` those its first statement branches on, when the body is known; an
-    * `inline` method folds the literals it is passed at each expansion; `shared` marks an abstract method with several
+  /** A method of the build; `overriding` marks signatures fixed by a supertype or a foreign API such as a Scala.js
+    * facade or a native method, `exported` those other builds call as part of a library's public API, `stored` the
+    * indices of the parameters its body only passes to constructors, and `inlined` those of its inline parameters,
+    * which each expansion specialises on, and `rest` the fields of the term parameter lists after the first; `tested`
+    * those its first statement branches on or its body only forwards to calls, when the body is known; an `inline`
+    * method folds the literals it is passed at each expansion; `shared` marks an abstract method with several
     * implementations, whose literal arguments pick a layout the instances share.
     */
   case class Method(
@@ -41,7 +42,8 @@ object Smells {
       calls: Int,
       discarded: Int,
       testCalls: Int,
-      negated: Int = 0
+      negated: Int = 0,
+      unwrapped: Int = 0
   )
 
   /** A trait or abstract class with the concrete classes, objects and lambdas that implement it; `functional` when only
@@ -77,14 +79,17 @@ object Smells {
       line: Int
   )
 
-  /** A parameter of a method that no caller leaves out, so its default is never used. */
+  /** A parameter of a method that no caller leaves out, so its default is never used, or with `fixed` that every caller
+    * leaves out, so its default is the only value.
+    */
   case class Spare(
       owner: String,
       node: String,
       parameter: String,
       sites: Vector[Algebra.Site],
       suppressed: Set[String],
-      line: Int = 0
+      line: Int = 0,
+      fixed: Boolean = false
   )
 
   case class Model(
@@ -104,6 +109,7 @@ object Smells {
   private val MaximumClumpFields    = 6
   private val MaximumClumpSignature = 10
   private val MinimumClumpMethods   = 3
+  private val SharedClumpFields     = 6
   private val WideClumpFields       = 4
   private val WideClumpMethods      = 5
   private val Shown                 = 6
@@ -126,14 +132,17 @@ object Smells {
     val checked = reviewed.view.filterNot(_.exported).flatMap { method =>
       // Parameters of recursive methods carry state, so callers fixing their initial value is the usual idiom.
       model.sites.get(method.key).filter(sites => !sites.exists(_.own) && sites.size >= MinimumCalls).toVector.flatMap {
-        sites => parameters(method, sites).map((rule, detail, parameter) => (method, sites, rule, detail, parameter))
+        sites =>
+          parameters(method, sites).map((rule, detail, parameter, level) =>
+            (method, sites, rule, detail, parameter, level)
+          )
       }
     }.toVector
-    val arguments = checked.flatMap { (method, sites, rule, detail, _) =>
-      Finding.at(nodes, method.node, rule, detail, onlyTests = Algebra.onlyTests(sites), line = method.line)
+    val arguments = checked.flatMap { (method, sites, rule, detail, _, level) =>
+      Finding.at(nodes, method.node, rule, detail, level, onlyTests = Algebra.onlyTests(sites), line = method.line)
     }
     val constant = checked.collect {
-      case (method, _, Finding.Rule.ConstantArgument, _, Some(parameter)) => (method.node, method.short, parameter)
+      case (method, _, Finding.Rule.ConstantArgument, _, Some(parameter), _) => (method.node, method.short, parameter)
     }.toSet
     val results = model.usages.view.filter(usage =>
       !usage.method.overriding && !usage.method.exported && usage.calls >= MinimumCalls &&
@@ -148,6 +157,14 @@ object Smells {
         onlyTests = usage.testCalls == usage.calls,
         line = usage.method.line
       )
+    }.toVector
+    val unwrappedTries = model.usages.view.filter(usage =>
+      !usage.method.overriding && !usage.method.exported && usage.result.startsWith("scala.util.Try[") &&
+        usage.calls - usage.testCalls >= MinimumCalls && usage.unwrapped == usage.calls - usage.testCalls
+    ).flatMap { usage =>
+      val detail =
+        s"${usage.method.short}: its Try result is unwrapped with get at all ${usage.unwrapped} production calls"
+      Finding.at(nodes, usage.method.node, Finding.Rule.UnwrappedTry, detail, line = usage.method.line)
     }.toVector
     val inverted = model.usages.view.filter(usage =>
       usage.result.equalsIgnoreCase("boolean") &&
@@ -221,19 +238,27 @@ object Smells {
       )
     }
     val spare = model.spares.flatMap { spare =>
-      val detail = s"${spare.owner}.${spare.parameter} has a default that none of its ${spare.sites.size} calls " +
-        "relies on; remove the default"
-      Finding.at(
-        nodes,
-        spare.node,
-        Finding.Rule.UnusedDefault,
-        detail,
-        onlyTests = Algebra.onlyTests(spare.sites),
-        suppressed = spare.suppressed,
-        line = spare.line
-      )
+      if (spare.fixed && constant.exists((node, _, parameter) => node == spare.node && parameter == spare.parameter))
+        None
+      else {
+        val calls  = s"${spare.sites.size} ${if (spare.sites.sizeIs == 1) "call" else "calls"}"
+        val detail =
+          if (spare.fixed) s"${spare.owner}.${spare.parameter} is never set, as its default is the value at all $calls"
+          else s"${spare.owner}.${spare.parameter} has a default that none of its $calls relies on; remove the default"
+        Finding.at(
+          nodes,
+          spare.node,
+          if (spare.fixed) Finding.Rule.FixedDefault else Finding.Rule.UnusedDefault,
+          detail,
+          if (spare.fixed) Finding.Level.Info else Finding.Level.Warning,
+          onlyTests = Algebra.onlyTests(spare.sites),
+          suppressed = spare.suppressed,
+          line = spare.line
+        )
+      }
     }
-    arguments ++ results ++ unused ++ inverted ++ modules ++ implementations ++ fixed ++ redundant ++ spare ++
+    arguments ++ results ++ unwrappedTries ++ unused ++ inverted ++ modules ++ implementations ++ fixed ++ redundant ++
+      spare ++
       clumps(reviewed.filterNot(_.test), products, hot.getOrElse(Set.empty), model.sites).flatMap((key, detail, line) =>
         Finding.at(nodes, key, Finding.Rule.DataClump, detail, line = line)
       )
@@ -302,12 +327,13 @@ object Smells {
   private def parameters(
       method: Method,
       sites: Vector[Algebra.Site]
-  ): Vector[(Finding.Rule, String, Option[String])] = {
+  ): Vector[(Finding.Rule, String, Option[String], Finding.Level)] = {
     // Java calls are kept at every arity, so a varargs call with another count is not a call of these parameters.
     val calls = sites.filter(_.arguments.size == method.fields.size)
     if (calls.isEmpty) Vector.empty
     else {
-      val columns = calls.map(_.arguments).transpose
+      val columns    = calls.map(_.arguments).transpose
+      val production = calls.filterNot(_.test).map(_.arguments).transpose
       // A flag the method only stores is data of the value it builds, which no branch splits, and an inline method is
       // specialised on its literal at every expansion already, and a flag tested deeper in the body leaves one body
       // shared, which a method per value would duplicate.
@@ -322,7 +348,8 @@ object Smells {
           Finding.Rule.FlagArgument,
           s"${method.short}: ${method.fields(first).name} and ${method.fields(second).name} take only 3 of their " +
             s"4 combinations across ${calls.size} calls; they encode three states, which an enum names",
-          None
+          None,
+          Finding.Level.Warning
         )
       }
       val paired = encoded.flatMap((first, second) => Vector(first, second)).toSet
@@ -337,32 +364,53 @@ object Smells {
             (
               Finding.Rule.ConstantArgument,
               s"${method.short}.${field.name} is null at $absent of ${values.size} calls and given a value at the others",
-              Some(field.name)
+              Some(field.name),
+              Finding.Level.Warning
             )
           )
         else if (field.kind == Kind.Other) None
-        // A value the model does not know is not a constant one, and the rule says nothing of it.
-        else if (values.exists(value => value == Argument.Unknown || value == Argument.Present)) None
-        // the constant of an abstract method with several implementations picks a layout they share
-        else if (values.distinct.size == 1)
+        else if (known(values) && values.distinct.size == 1)
+          // the constant of an abstract method with several implementations picks a layout they share
           Option.when(!method.shared) {
             val plural = if (calls.size == 1) "call" else "calls"
             (
               Finding.Rule.ConstantArgument,
               s"${method.short}.${field.name} is always ${values.head.shown} across ${calls.size} $plural",
-              Some(field.name)
+              Some(field.name),
+              Finding.Level.Warning
             )
           }
-        else
-          Option.when(splits(index) && !paired(index)) {
-            val enabled = values.count(_ == Argument.True)
-            val detail  = s"${method.short}.${field.name} is a literal at all ${calls.size} calls " +
-              s"($enabled true, ${calls.size - enabled} false); each value selects a different method"
-            (Finding.Rule.FlagArgument, detail, Some(field.name))
-          }
+        else if (known(values) && splits(index) && !paired(index)) {
+          val enabled = values.count(_ == Argument.True)
+          val detail  = s"${method.short}.${field.name} is a literal at all ${calls.size} calls " +
+            s"($enabled true, ${calls.size - enabled} false); each value selects a different method"
+          Some((Finding.Rule.FlagArgument, detail, Some(field.name), Finding.Level.Warning))
+        } else productionConstant(method, field, production.lift(index).getOrElse(Vector.empty))
       }.toVector
     }
   }
+
+  // a value the model does not know is not a constant one
+  private def known(values: Vector[Argument]): Boolean =
+    !values.exists(value => value == Argument.Unknown || value == Argument.Present)
+
+  // Tests pass their own values to exercise a method, which says nothing of what production varies.
+  private def productionConstant(
+      method: Method,
+      field: Algebra.Field,
+      production: Vector[Argument]
+  ): Option[(Finding.Rule, String, Option[String], Finding.Level)] =
+    Option.when(
+      !method.shared && production.sizeIs >= MinimumCalls && known(production) && production.distinct.sizeIs == 1
+    )(
+      (
+        Finding.Rule.ConstantArgument,
+        s"${method.short}.${field.name} is always ${production.head.shown} across ${production.size} production " +
+          "calls; tests pass other values",
+        Some(field.name),
+        Finding.Level.Info
+      )
+    )
 
   // Flags that between them take three of their four combinations are three states, which an enum names; each flag
   // belongs to at most one pair.
@@ -393,6 +441,19 @@ object Smells {
       )
     )
 
+  private def constructor(method: Method): Boolean = method.name.split('.').takeRight(2).distinct.sizeIs == 1
+
+  private def operation(method: Method): String = method.name.takeWhile(_ != '(').split('.').last.stripSuffix("0")
+
+  // Methods that share many parameters are variants of one operation, whichever types declare them.
+  private def shared(signatures: Vector[(Method, Vector[String])]): Map[Set[String], Set[Method]] = {
+    val wide = signatures.filter((method, items) => items.sizeIs >= SharedClumpFields && !constructor(method))
+      .map((method, items) => method -> items.toSet)
+    wide.combinations(2).map(pair => pair.map(_._2).reduce(_ intersect _)).filter(_.size >= SharedClumpFields).toSet
+      .map(items => items -> wide.collect { case (method, own) if items.subsetOf(own) => method }.toSet)
+      .filter((_, methods) => methods.map(operation(_)).sizeIs > 1).toMap
+  }
+
   /** Parameter groups that recur together across methods of different types, which a parameter object would name. */
   private def clumps(
       methods: Vector[Method],
@@ -422,13 +483,21 @@ object Smells {
           s"${field.name}: ${field.shape}" -> field.shape.toString
       }
     ).toMap
-    val frequent = support.view.collect {
+    lazy val shapes =
+      products.sortBy(product => (product.fields.size, product.name)).map(product =>
+        product -> product.fields.map(field => s"${field.name}: ${field.shape}").toSet
+      )
+    def modelled(items: Set[String]) = shapes.exists((_, fields) => items.subsetOf(fields))
+    val frequent                     = support.view.collect {
       case (items, users)
           if users.size >= MinimumClumpMethods && users.map(_.owner).distinct.size > 1 &&
             (items.size >= WideClumpFields || users.size >= WideClumpMethods) &&
             !(items.forall(numeric.contains) && items.map(numeric).size == 1) =>
         items -> users.toSet
-    }.toMap
+    }.toMap ++
+      shared(signatures).filterNot((items, _) =>
+        items.forall(numeric.contains) && items.map(numeric).size == 1 || modelled(items)
+      )
     val maximal = frequent.groupMap(_._2)(_._1).toVector.flatMap { (methods, candidates) =>
       candidates.collect { case items if Itemsets.maximal(items, candidates) => items -> methods }
     }.sortBy((items, methods) => (-items.size * methods.size, items.toVector.sorted.mkString))
@@ -439,19 +508,16 @@ object Smells {
       )
       if (distinct) kept :+ candidate else kept
     }
-    lazy val shapes =
-      products.sortBy(product => (product.fields.size, product.name)).map(product =>
-        product -> product.fields.map(field => s"${field.name}: ${field.shape}").toSet
-      )
     chosen.map { (items, methods) =>
-      val owners   = methods.map(_.owner).size
-      val modelled = shapes.collectFirst { case (product, fields) if items.subsetOf(fields) => product }
+      val owners  = methods.map(_.owner).size
+      val types   = if (owners == 1) "type" else "types"
+      val product = shapes.collectFirst { case (product, fields) if items.subsetOf(fields) => product }
         .fold("")(product => s"; already the fields of ${Finding.simple(product.name)}")
       val first = methods.minBy(method => (method.name, method.node))
       (
         first.node,
-        s"(${items.toVector.sorted.mkString(", ")}) recur in ${methods.size} methods across $owners types: " +
-          Finding.listed(methods.toVector.map(_.short).sorted, Shown) + modelled,
+        s"(${items.toVector.sorted.mkString(", ")}) recur in ${methods.size} methods across $owners $types: " +
+          Finding.listed(methods.toVector.map(_.short).sorted, Shown) + product,
         first.line
       )
     }
