@@ -110,6 +110,13 @@ class ClassSourceSuite extends FunSuite {
     assertEquals(lookup(None, Vector.empty, Vector.empty, "java/lang/Object"), None)
   }
 
+  withRoot("a jdk 8 java.home is the jre directory, whose release file lies beside it") { root =>
+    val home = root.resolve("jdk8")
+    write(home, "release", "JAVA_VERSION=\"1.8.0_512\"\n")
+    jar(home.resolve("jre/lib/rt.jar"), "java/lang/Object.class" -> "rt")
+    assertEquals(lookup(Some(home.resolve("jre")), Vector.empty, Vector.empty, "java/lang/Object"), Some("rt"))
+  }
+
   withRoot("a multi-release jar gives the class of the target release") { root =>
     val library = root.resolve("lib.jar")
     jar(library, multiRelease, "app/Main.class" -> "base", "META-INF/versions/9/app/Main.class" -> "nine")

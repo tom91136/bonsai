@@ -27,7 +27,8 @@ private[analysis] object ClassSource {
   }
 
   private def targetOf(home: Path): Either[String, Target] = {
-    val release = home.resolve("release")
+    val own     = home.resolve("release")
+    val release = if (!Files.isRegularFile(own) && home.endsWith("jre")) home.resolveSibling("release") else own
     featureOf(release).toRight(s"$release: no JAVA_VERSION").flatMap { feature =>
       if (feature >= 9) Either.cond(isImage(home), Target(feature, home), s"$home: no lib/modules")
       else rtJar(home).map(Target(feature, _)).toRight(s"$home: no rt.jar")
