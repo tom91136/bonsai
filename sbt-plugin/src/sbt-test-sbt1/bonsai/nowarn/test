@@ -1,0 +1,2 @@
+# the unused warnings the plugin asks for do not fail a build with fatal warnings over a @nowarn that suppresses nothing
+> compile

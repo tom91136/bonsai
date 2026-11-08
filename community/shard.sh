@@ -2,7 +2,7 @@
 # Runs the projects of one shard one after another within a time budget, through run.sh.
 # usage: shard.sh <projects.jsonl> <shard> <of> <budget seconds> <per-project timeout seconds> [run.sh options]
 # A project is a JSON object per line: {"url": ..., "ref": ..., "java": 17, "sbt": ["bonsaiAnalyse"], "name": ...};
-# "sbt" and "name" are optional. Project i belongs to shard i mod <of>.
+# "sbt", "name" and "fetch_tag" (a tag, or ALL, to fetch) are optional. Project i belongs to shard i mod <of>.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -24,8 +24,10 @@ jq -c --argjson shard "$shard" --argjson of "$of" -s \
     ref=$(jq -r .ref <<<"$project")
     java=$(jq -r .java <<<"$project")
     name=$(jq -r '.name // empty' <<<"$project")
+    tag=$(jq -r '.fetch_tag // empty' <<<"$project")
     args=(--url "$url" --ref "$ref" --java "$java")
     [[ -z $name ]] || args+=(--name "$name")
+    [[ -z $tag ]] || args+=(--tag "$tag")
     while IFS= read -r command; do args+=(--sbt "$command"); done < <(jq -r '(.sbt // [])[]' <<<"$project")
     remaining=$((deadline - SECONDS - 600))
     limit=$((remaining < per_project ? remaining : per_project))

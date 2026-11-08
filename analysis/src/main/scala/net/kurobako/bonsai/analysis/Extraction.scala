@@ -146,7 +146,7 @@ object Extraction {
     val skipped      =
       unreadable.map(file => s"class file ${file.getFileName.toString.stripSuffix(".tasty")} could not be read")
     val roots           = manifest.outputs.flatMap(output => Outputs.entryPoints(output.path)).toSet
-    val matchers        = Texts.matchers(generated)
+    val matchers        = Texts.matchers(generated) :+ manifest.generatedMatcher
     val reflectiveGlobs = reflective.map(Globs.qualifiedNames)
     val java            = JavaConversion.collected(manifest, matchers, parallel, reflectiveGlobs)
     val moduleUses      = Modules.uses(manifest, java.nodes, java.reflections)

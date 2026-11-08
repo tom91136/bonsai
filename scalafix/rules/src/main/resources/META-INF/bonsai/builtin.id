@@ -12,3 +12,4 @@ DisableSyntax.noFinalize
 ExplicitResultTypes.fetchScala3CompilerArtifactsOnVersionMismatch = true
 -Wunused:all
 -Wconf:msg=^unused\s.*:i
+-Wconf:msg=^@nowarn\sannotation\s.*:i

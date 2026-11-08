@@ -10,12 +10,12 @@ def configuration(base: File): String = IO.read(base / "bonsai" / "scalafix.conf
 
 lazy val app = project.in(file(".")).settings(
   flagged := {
-    val options = scalacOptions.value
+    val options = (Compile / scalacOptions).value
     val wanted  = Def.spaceDelimited().parsed
     assert(wanted.forall(options.contains), options.mkString(" "))
   },
   unflagged := {
-    val options = scalacOptions.value
+    val options = (Compile / scalacOptions).value
     val wanted  = Def.spaceDelimited().parsed
     assert(!wanted.exists(options.contains), options.mkString(" "))
   },

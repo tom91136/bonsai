@@ -1,0 +1,5 @@
+# what a build generates, in its managed source directory or elsewhere, is generated code, which no rule reports
+> bonsaiAnalyse
+# a source written by hand is reported all the same
+$ copy-file changes/Spare.scala src/main/scala/demo/Spare.scala
+-> bonsaiAnalyse

@@ -16,7 +16,7 @@ lazy val app = project.in(file(".")).settings(
     assert(disabled == Set("duplicate-code", "*"), disabled.toString)
   },
   checkChecked := Def.uncached {
-    val options = scalacOptions.value
+    val options = (Compile / scalacOptions).value
     assert(options.contains("-P:bonsai:checked=demo.where"), options.mkString(" "))
   }
 )

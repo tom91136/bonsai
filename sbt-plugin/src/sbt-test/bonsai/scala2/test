@@ -1,0 +1,19 @@
+# a Scala 2 project in the build is left out, and the Scala 3 ones are analysed
+> bonsaiAnalyse
+> analysed modern both
+> skipped legacy
+# a cross-built project is left out while it builds with Scala 2
+> set both / scalaVersion := "2.13.16"
+> bonsaiAnalyse
+> analysed modern
+> skipped legacy both
+# the analysis runs whichever Scala version the project that starts it builds with
+> set root / scalaVersion := "2.13.16"
+> bonsaiAnalyse
+> analysed modern
+> set root / scalaVersion := "2.12.20"
+> bonsaiAnalyse
+> analysed modern
+# a build with nothing in Scala 3 has nothing to analyse, which is no failure
+> set modern / scalaVersion := "2.13.16"
+> bonsaiAnalyse

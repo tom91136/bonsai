@@ -1,0 +1,7 @@
+# a build that asks for -Wunused:all itself gets it once, as the compiler of the 3.3 line insists
+> once -Wunused:all
+> compile
+# one that does not gets it from the plugin
+> set scalacOptions -= "-Wunused:all"
+> once -Wunused:all
+> compile

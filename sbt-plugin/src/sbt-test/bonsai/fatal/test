@@ -1,0 +1,29 @@
+# options the build assigns to scalacOptions leave bonsai's in place, for Test as well
+> flagged -P:bonsai:mode=dev -Werror
+> testing -P:bonsai:mode=dev
+# a finding that only warns in Dev does not fail a build with fatal warnings
+> compile
+# a finding the build makes an error still fails it, with bonsai's setting or the compiler's own
+> set bonsaiErrors += "acyclic"
+-> compile
+> set bonsaiErrors -= "acyclic"
+> set scalacOptions += "-Wconf:msg=\\[bonsai.acyclic\\]:e"
+-> compile
+> set scalacOptions -= "-Wconf:msg=\\[bonsai.acyclic\\]:e"
+# in CI a strict check fails, with or without fatal warnings
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
+-> compile
+> set scalacOptions -= "-Werror"
+-> compile
+> set scalacOptions += "-Werror"
+# a check the build keeps a warning does not fail in CI whatever the compiler does with warnings
+> set bonsaiWarnings += "acyclic"
+> compile
+# a check that only warns in CI fails with fatal warnings, as the build asked of every warning
+$ copy-file changes/Branches.scala src/main/scala/demo/Branches.scala
+-> compile
+> set bonsaiWarnings += "identical-branches"
+> compile
+# without fatal warnings nothing is demoted
+> set scalacOptions -= "-Werror"
+> undemoted

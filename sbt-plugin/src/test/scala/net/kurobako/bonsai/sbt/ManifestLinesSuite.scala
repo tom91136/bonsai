@@ -47,4 +47,27 @@ class ManifestLinesSuite extends munit.FunSuite {
       "output\tapi\tmain\t/api/classes\nclasspath\tapi\t/lib/cats.jar\nroot\t/build\n"
     )
   }
+
+  test("generated sources are named by the managed directory that holds them, or by their own file") {
+    assertEquals(
+      ManifestLines.generated(
+        Seq("/b/target/src_managed/main", "/b/target/src_managed/test"),
+        Seq(
+          "/b/target/src_managed/main/A.scala",
+          "/b/target/src_managed/main/demo/B.scala",
+          "/b/target/emitted/C.scala",
+          "/b/target/src_managed/main2/D.scala"
+        )
+      ),
+      Seq(
+        "generated\t/b/target/emitted/C.scala",
+        "generated\t/b/target/src_managed/main",
+        "generated\t/b/target/src_managed/main2/D.scala"
+      )
+    )
+  }
+
+  test("a build that generates nothing has no generated lines") {
+    assertEquals(ManifestLines.generated(Seq("/b/target/src_managed/main"), Nil), Nil)
+  }
 }

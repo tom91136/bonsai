@@ -2,6 +2,7 @@ package net.kurobako.bonsai.analysis
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.PathMatcher
 import scala.jdk.CollectionConverters.*
 
 object Manifest {
@@ -11,8 +12,8 @@ object Manifest {
 
   /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <module> <entry>`, `library <module>`,
     * `platform <module>`, `option <module> <compiler option>`, `source <module> <scope> <file>`, `model <module>
-    * <scope> <file>`, `jdk <home>`, `root <directory>`, `text-exclude <glob>` and `text <rule index> <field> <value>`
-    * lines.
+    * <scope> <file>`, `generated <path>`, `jdk <home>`, `root <directory>`, `text-exclude <glob>` and `text <rule
+    * index> <field> <value>` lines.
     */
   def read(path: Path): Either[String, Manifest] =
     Files.readAllLines(path).asScala.toVector.zipWithIndex.filter(_._1.nonEmpty)
@@ -45,6 +46,8 @@ object Manifest {
                 scopeOf(path, index, scope).map {
                   parsed => current.copy(models = current.models :+ Output(module, parsed, Path.of(location)))
                 }
+              case List("generated", location) =>
+                Right(current.copy(generated = current.generated :+ Path.of(location)))
               case List("jdk", location) =>
                 val home = Path.of(location)
                 if (current.jdk.exists(_ != home)) Left(s"$path:${index + 1}: conflicting jdk: $location")
@@ -70,8 +73,9 @@ object Manifest {
   * module, `sources` the source files written by hand, and `root` the directory of the build, which reported paths are
   * relative to. `platforms` are the Scala.js and Scala Native twins of JVM modules, which compile the shared sources
   * again. `texts` holds the fields of each repository text rule by its index, and `textExclusions` the files no text
-  * rule reads. `models` holds the files the javac plugin collected the model of the Java code of each module in, and
-  * `jdk` the home of the JDK the build targets, whose classes are read before the outputs.
+  * rule reads. `models` holds the files the javac plugin collected the model of the Java code of each module in,
+  * `generated` the directories and files the build generates sources in, and `jdk` the home of the JDK the build
+  * targets, whose classes are read before the outputs.
   */
 case class Manifest(
     outputs: Vector[Output],
@@ -84,8 +88,19 @@ case class Manifest(
     texts: Map[Int, Map[String, Vector[String]]] = Map.empty,
     textExclusions: Vector[String] = Vector.empty,
     models: Vector[Output] = Vector.empty,
-    jdk: Option[Path] = None
+    jdk: Option[Path] = None,
+    generated: Vector[Path] = Vector.empty
 ) {
+
+  /** Whether a source lies in, or is, one of the directories and files the build generates, named by its path or
+    * relative to `root`.
+    */
+  def isGenerated(source: Path): Boolean = {
+    val absolute = root.fold(source)(_.resolve(source))
+    generated.exists(absolute.startsWith(_))
+  }
+
+  def generatedMatcher: PathMatcher = isGenerated(_)
 
   /** The entries of the classpaths of `modules`, in their order, each once. */
   def classpathOf(modules: Seq[String]): Vector[Path] =

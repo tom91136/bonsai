@@ -36,6 +36,18 @@ private[sbt] object ScalaVersions {
   def explicitResultTypes(version: String): Boolean =
     numbers(version).exists { case (minor, _) => !BonsaiArtifacts.resultTypesExcluded.contains(s"3.$minor") }
 
+  /** Whether the release is of Scala 2, whose classes carry no TASTy for the analysis to read. */
+  def scala2(version: String): Boolean = version.startsWith("2.")
+
+  /** The log line naming the projects left out of the analysis as (project, Scala version) pairs, if any. */
+  def skipped(projects: Seq[(String, String)]): Option[String] =
+    if (projects.isEmpty) None
+    else
+      Some(
+        "note: bonsai analyses Scala 3 only and left out " +
+          projects.sorted.map { case (project, version) => s"$project (Scala $version)" }.mkString(", ")
+      )
+
   /** Whether the compiler of the analysis reads the TASTy of the release, which a compiler does for its own minor line
     * and the older ones.
     */

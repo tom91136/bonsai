@@ -511,6 +511,9 @@ lazy val root = project.in(file("."))
         ManifestLines.outputs(id, scope, configured.library(id).getOrElse(false), classes.toString) ++
           ManifestLines.sources(id, scope, sources.map(_.toString))
       }
+      val managed = Def.task((managedSourceDirectories.value.map(_.toString), managedSources.value.map(_.toString)))
+        .all(analysedOutputs).value
+      val generated = ManifestLines.generated(managed.flatMap(_._1).distinct, managed.flatMap(_._2).distinct)
       val classpath = Def.task {
         val converter = fileConverter.value
         thisProject.value.id -> externalDependencyClasspath.value.map(entry => converter.toPath(entry.data).toString)
@@ -523,7 +526,7 @@ lazy val root = project.in(file("."))
       val manifest = target.value / "bonsai" / "manifest.tsv"
       IO.write(
         manifest,
-        ManifestLines.render(outputs ++ jdk ++ classpath ++ options ++ configured.text, base)
+        ManifestLines.render(outputs ++ generated ++ jdk ++ classpath ++ options ++ configured.text, base)
       )
       manifest
     },
@@ -533,10 +536,8 @@ lazy val root = project.in(file("."))
       val findings   =
         (BonsaiIds.of(base / findingSource, BonsaiIds.Findings) ++
           BonsaiIds.of(base / lintSource, BonsaiIds.Lints) ++ (collections / javaLawIds).value).toSet
-      val generated = sourceManaged.all(analysedOutputs).value.map(BonsaiConfiguration.generatedGlob(base, _)).toSet
       val built     = configured.analysis(configured.build)
-      val chosen    = built.copy(generated = built.generated ++ generated)
-      val arguments = Seq("--manifest", analysisManifest.value.toString) ++ chosen.options(
+      val arguments = Seq("--manifest", analysisManifest.value.toString) ++ built.options(
         findings,
         base / configured.baseline.getOrElse(BonsaiConfiguration.DefaultBaseline),
         base / configured.purity.getOrElse(BonsaiConfiguration.DefaultPurity)

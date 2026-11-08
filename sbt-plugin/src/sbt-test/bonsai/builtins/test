@@ -32,7 +32,7 @@ $ copy-file changes/Inferred.scala src/main/scala/demo/Inferred.scala
 $ delete src/main/scala/demo/Inferred.scala
 # a build that asks the compiler for unused warnings itself keeps its own options
 > set ThisBuild / scalacOptions += "-Wunused:imports"
-> unflagged -Wunused:all -Wconf:msg=^unused\s.*:i
+> unflagged -Wunused:all -Wconf:msg=^unused\s.*:i -Wconf:msg=^@nowarn\sannotation\s.*:i
 > scalafixAll --check
 # a line whose compiler scalafix cannot load leaves ExplicitResultTypes out rather than breaking the build
 > set ThisBuild / scalaVersion := "3.4.3"

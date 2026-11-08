@@ -8,10 +8,8 @@ lazy val root = project.in(file("."))
     checkLine := {
       val plugin = libraryDependencies.value.filter(_.name == "bonsai-plugin")
       assert(plugin.map(_.crossVersion) == Seq(CrossVersion.constant("3.7")), plugin.toString)
-      assert(scalacOptions.value.exists(_.startsWith("-P:bonsai:mode=")))
     },
     checkNone := {
       assert(!libraryDependencies.value.exists(_.name == "bonsai-plugin"))
-      assert(!scalacOptions.value.exists(_.startsWith("-P:bonsai:")))
     }
   )

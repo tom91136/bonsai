@@ -10,6 +10,8 @@
 #   --timeout SEC    wall-clock limit for the sbt run (default 3600)
 #   --cache VOLUME   named volume holding the dependency caches, kept afterwards (default: a fresh volume, removed after)
 #   --version V      bonsai version in the ivy repository (default 0.1.0-SNAPSHOT)
+#   --bonsai no      build the project without bonsai, as the control of a run
+#   --tag TAG        a git tag to fetch beside the ref, or ALL to unshallow with every tag, for builds that read tags
 # --ivy is the ivy home the bonsai artefacts were published to with -Dsbt.ivy.home; its local/ is mounted read-only.
 # A build that fails, times out or crashes is a result in <out>/<name>/status, not an error of this script.
 set -euo pipefail
@@ -22,7 +24,7 @@ memory=12g
 heap=6g
 timeout_seconds=3600
 version=0.1.0-SNAPSHOT
-url= ref= java= ivy= name= cpus= cache=
+url= ref= java= ivy= name= cpus= cache= tag= inject=yes
 sbt=()
 
 while (($#)); do
@@ -40,6 +42,8 @@ while (($#)); do
     --timeout) timeout_seconds=$2 ;;
     --cache) cache=$2 ;;
     --version) version=$2 ;;
+    --tag) tag=$2 ;;
+    --bonsai) inject=$2 ;;
     --sbt) sbt+=("$2") ;;
     *)
       echo "unknown option: $1" >&2
@@ -85,7 +89,7 @@ timeout -k 60 $((timeout_seconds + 900)) "$engine" run --name "$cname" \
   -v "$dir:/out" \
   -v "$here/build.sh:/opt/community/build.sh:ro" \
   "${mounts[@]}" \
-  -e PROJECT_URL="$url" -e PROJECT_REF="$ref" -e JAVA_MAJOR="$java" \
+  -e PROJECT_URL="$url" -e PROJECT_REF="$ref" -e JAVA_MAJOR="$java" -e PROJECT_TAG="$tag" -e BONSAI_INJECT="$inject" \
   -e TIMEOUT_SECONDS="$timeout_seconds" -e BONSAI_VERSION="$version" \
   -e SBT_OPTS="-Dsbt.color=false -Dsbt.supershell=false -Xmx$heap" \
   "$image" bash /opt/community/build.sh "${sbt[@]}"

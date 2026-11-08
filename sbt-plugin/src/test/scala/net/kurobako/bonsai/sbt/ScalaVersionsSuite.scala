@@ -58,4 +58,19 @@ class ScalaVersionsSuite extends munit.FunSuite {
   test("every line the plugin is built for is one the analysis reads") {
     assert(BonsaiArtifacts.lines.forall(line => ScalaVersions.readable(s"$line.0")), BonsaiArtifacts.lines.toString)
   }
+
+  test("a Scala 2 release is told from a Scala 3 one") {
+    assert(ScalaVersions.scala2("2.13.16"))
+    assert(ScalaVersions.scala2("2.12.21"))
+    assert(!ScalaVersions.scala2("3.3.5"))
+    assert(!ScalaVersions.scala2(BonsaiArtifacts.analysisScala))
+    assert(!ScalaVersions.scala2("3.99.0"))
+  }
+
+  test("the projects left out are named with their versions, in order, or not at all") {
+    assertEquals(ScalaVersions.skipped(Nil), None)
+    val note = ScalaVersions.skipped(Seq("legacy" -> "2.13.16", "both" -> "2.12.21")).get
+    assert(note.startsWith("note: "), note)
+    assert(note.endsWith("both (Scala 2.12.21), legacy (Scala 2.13.16)"), note)
+  }
 }
