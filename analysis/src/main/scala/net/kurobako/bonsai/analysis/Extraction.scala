@@ -46,7 +46,9 @@ object Extraction {
       problems: Vector[String],
       nesting: Nesting.Model = Nesting.Model.empty,
       reach: Reach = Reach.empty,
-      notes: Vector[String] = Vector.empty
+      notes: Vector[String] = Vector.empty,
+      @SuppressWarnings(Array("bonsai:test-only-member"))
+      dictionaries: Vector[Dictionaries.Parameter] = Vector.empty
   )
 
   private case class Settings(
@@ -295,7 +297,8 @@ object Extraction {
           problems ++ unread,
           phase.nesting(graph.rooted),
           reach,
-          notes
+          notes,
+          phase.dictionaries
         ))
       }
     }

@@ -10,5 +10,6 @@ private[analysis] case class Components(
     structure: StructureObserver,
     comparisons: Comparisons,
     library: Library,
+    dictionaries: Dictionaries,
     recorder: Recorder
 )

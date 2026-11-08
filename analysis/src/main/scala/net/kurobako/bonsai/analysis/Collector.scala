@@ -77,6 +77,7 @@ private[analysis] class Collector(
   private val reads       = Reads(symbols, (symbol, from) => use(symbol, from))
   private val derivations = Derivations(symbol => symbols.key(symbol).isDefined)
   private val dispatching = Dispatch(symbols, bodies.contains(_))
+  private val dictionary  = Dictionaries(symbols)
   private val structure   = StructureObserver(symbols, () => dispatching.classes, lines)
   private val comparing   = Comparisons(symbols, () => dispatching.classes, lines)
   import symbols.*
@@ -110,6 +111,7 @@ private[analysis] class Collector(
   private val complexityList = mutable.ArrayBuffer.empty[Complexity.Summary]
   private val unusedList     = mutable.ArrayBuffer.empty[Complexity.Bounded]
   private val pipelineList   = mutable.ArrayBuffer.empty[Pipelines.Lifted]
+  private val dictionaryList = mutable.ArrayBuffer.empty[Dictionaries.Parameter]
   private val templates      = mutable.Map.empty[Symbol, tpd.Template]
   // The phase runs once, and its results are read by the extraction that follows.
   private var purityModel  = Purity.Model.empty        // scalafix:ok DisableSyntax.var
@@ -139,6 +141,7 @@ private[analysis] class Collector(
         structure,
         comparing,
         library,
+        dictionary,
         this
       )
     placements = Some(placing)
@@ -200,6 +203,7 @@ private[analysis] class Collector(
     clones ++= fragments.groups()
     absorbUsers(twinned)
     dispatching.resolve()
+    dictionaryList ++= dictionary.parameters()
     linked = link.map(_(graph))
     val bytecode = linked.fold(BytecodeEffects.none)(_.summaries)
     val declared = Complexity.Declared(bounded)
@@ -301,6 +305,8 @@ private[analysis] class Collector(
   def pipelines: Vector[Pipelines.Lifted] = pipelineList.toVector
 
   def megamorphic: Vector[Megamorphic.Site] = dispatching.megamorphic
+
+  def dictionaries: Vector[Dictionaries.Parameter] = dictionaryList.toVector
 
   def purity: Purity.Model = purityModel
 

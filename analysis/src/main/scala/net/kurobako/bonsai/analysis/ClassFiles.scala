@@ -112,6 +112,17 @@ private[analysis] object ClassFiles {
       } else null // scalafix:ok DisableSyntax.null
   }
 
+  /** The body of the method `name` with `descriptor` that the class `bytes` declares, when it has code. */
+  @SuppressWarnings(Array("bonsai:test-only-member"))
+  def body(bytes: Array[Byte], name: String, descriptor: String): Option[MethodNode] = {
+    val selected = mutable.ArrayBuffer.empty[MethodNode]
+    ClassReader(bytes).accept(
+      Selector(_ == ((name, descriptor)), selected),
+      ClassReader.SKIP_FRAMES | ClassReader.SKIP_DEBUG
+    )
+    selected.headOption.filter(_.instructions.size > 0)
+  }
+
   /** What the `methods` of the class `bytes` hold do to the objects they may not own, by name and descriptor. */
   def trace(bytes: Array[Byte], owner: String, methods: Vector[Method]): Map[(String, String), Trace] = {
     val wanted   = methods.map(method => (method.name, method.descriptor) -> method).toMap
@@ -159,7 +170,15 @@ private[analysis] object ClassFiles {
     case _                    => (Vector.empty, arguments)
   }
 
-  private def kindOf(opcode: Int): Kind = opcode match {
+  /** The erased functional interface method and the implementation of a `LambdaMetafactory` call site. */
+  def lambdaSite(bootstrap: Handle, arguments: Seq[AnyRef]): Option[(Type, Handle)] =
+    arguments match {
+      case Seq(sam: Type, implementation: Handle, _*) if bootstrap.getOwner == lambdaMetafactory =>
+        Some((sam, implementation))
+      case _ => None
+    }
+
+  def kindOf(opcode: Int): Kind = opcode match {
     case Opcodes.INVOKEVIRTUAL   => Kind.Virtual
     case Opcodes.INVOKEINTERFACE => Kind.Interface
     case Opcodes.INVOKESTATIC    => Kind.Static
@@ -268,8 +287,8 @@ private[analysis] object ClassFiles {
         bootstrap: Handle,
         arguments: AnyRef*
     ): Unit =
-      (arguments.toVector, bootstrap.getOwner == lambdaMetafactory) match {
-        case (Vector(sam: Type, implementation: Handle, _*), true) =>
+      lambdaSite(bootstrap, arguments) match {
+        case Some((sam, implementation)) =>
           val (markers, bridges) = extras(arguments.toVector, bootstrap.getName)
           lambdas += Lambda(
             Type.getReturnType(descriptor).getInternalName,
@@ -282,7 +301,7 @@ private[analysis] object ClassFiles {
             implementation.getDesc,
             implementation.getTag
           ): Unit
-        case _ => dynamics += Dynamic(bootstrap.getOwner, bootstrap.getName): Unit
+        case None => dynamics += Dynamic(bootstrap.getOwner, bootstrap.getName): Unit
       }
 
     override def visitEnd(): Unit =

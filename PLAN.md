@@ -50,6 +50,8 @@ Criteria by step:
 - `CallGraph` builds a method-level call graph over bytecode by rapid type analysis from the roots, counting each lambda as its own receiver class. `Reach` decides liveness per method from it, so `Liveness` and `Members` count a use only when its method is reachable.
 - `BytecodeEffects` infers the effects of methods that have bytecode and no TASTy, for the methods `Purity` and `Costs` ask about and those they reach.
 - `Recursion` treats a method returning an effect that continues into itself through `flatMap`, `>>`, `foreverM` or `tailRecM` as a loop.
+- `ReceiverFlow` tells the receivers of a virtual call apart by the method that passes them in. It follows the receiver in the bytecode of its method to where it is made (`new`, a `MODULE$` load, a lambda) or to the parameter it is, and from there to the matching argument of each caller. A field, a call result or an array element is open, as is a value a lambda captures. It reads only the methods on the way back and runs on demand, so the call graph stays context-insensitive and costs nothing more.
+- `Dictionaries` records the given arguments of each call in production code, which TASTy writes out as trees, and follows them through the parameters that forward them. `Extraction.Result.dictionaries` lists, per method key and parameter, the instances that reach each `using` parameter and whether any caller passes a value no instance names. A method nothing in production code calls is open.
 - `Megamorphic` reports virtual calls inside loops of a build type with more than two receivers in the call graph, lambdas and library classes included.
 - In `--mode ci`, a problem fails the run: an unreadable TASTy header, Java model or build class file, or a unit the analysis could not read. Notes, such as classes the classpath lacks, never do.
 
@@ -68,7 +70,6 @@ All of these pass on JDK 25 with sbt 2.0.10 and Maven 3.9; the Maven plugin buil
 
 1. `Dispatch.implementations` still resolves a call by class hierarchy analysis and returns `None` when an override lies outside the build. The call graph's receiver sets are finite, but only `Megamorphic` reads them.
 2. Dynamic sites are recorded but not classified by whether their targets can be known.
-3. Receiver sets are per callee, not per caller, and the given instances reaching each dictionary parameter are not recorded.
 
 ## Design decisions
 
@@ -128,7 +129,7 @@ Library sources are never attributed with javac. That needs each library's exact
 
 ## Step 1: whole-program model
 
-Done, but for the receiver sets per caller and the given instances reaching each dictionary parameter (gap 3), which the dispatch findings of step 2 need first.
+Done. The dispatch findings of step 2 will read the receivers per caller from `ReceiverFlow` and the dictionary instances from `Dictionaries`; no finding does yet.
 
 ## Step 2: findings
 
@@ -161,8 +162,8 @@ Outputs:
 
 | Opportunity | Detected from | Fix |
 |---|---|---|
-| Tagless final `F[_]` that the closed world only instantiates to one effect | TASTy: given arguments are trees, so the instances reaching each dictionary parameter are known | bytecode: clone the method with the dictionary fixed, turning `invokeinterface` on the type class into `invokevirtual` on the instance class; source: make the method concrete |
-| A shared generic body whose callers pass different receivers, polluting its profile | call graph with receiver sets per caller | bytecode: split the body per caller |
+| Tagless final `F[_]` that the closed world only instantiates to one effect | `Dictionaries`: given arguments are TASTy trees, so the instances reaching each dictionary parameter are known | bytecode: clone the method with the dictionary fixed, turning `invokeinterface` on the type class into `invokevirtual` on the instance class; source: make the method concrete |
+| A shared generic body whose callers pass different receivers, polluting its profile | `ReceiverFlow`: receiver sets per caller | bytecode: split the body per caller |
 | A higher-order call passing a lambda, such as `traverse` or `map2` | TASTy: the argument is a `Closure` | bytecode: inline the callee and eliminate the closure; source: `inline def` with `inline` function parameters |
 | A site few classes reach although more are loaded | RTA or type flow | bytecode: an `instanceof` cascade of direct calls |
 | A hot `match` over a large sealed type, which compiles to a linear `instanceof` chain | TASTy and the `Algebra` sum model | source: switch on an ordinal or tag |

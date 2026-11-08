@@ -3,6 +3,7 @@ package net.kurobako.bonsai.analysis
 import net.kurobako.bonsai.analysis.ClassFiles.*
 import net.kurobako.bonsai.analysis.ClassWorld.*
 import org.objectweb.asm.Opcodes
+import org.objectweb.asm.tree.MethodNode
 import scala.collection.mutable
 
 private[analysis] object ClassWorld {
@@ -38,6 +39,11 @@ private[analysis] class ClassWorld(load: String => Option[Array[Byte]]) {
     */
   def trace(owner: String, methods: Vector[Method]): Map[(String, String), Trace] =
     load(owner).fold(Map.empty)(ClassFiles.trace(_, owner, methods))
+
+  /** The code of the method `reference` names, read afresh each time. */
+  @SuppressWarnings(Array("bonsai:test-only-member"))
+  def body(reference: Reference): Option[MethodNode] =
+    load(reference.owner).flatMap(ClassFiles.body(_, reference.name, reference.descriptor))
 
   def key(reference: Reference): String =
     ClassFiles.key(reference, get(reference.owner).flatMap(_.enclosingInstance))

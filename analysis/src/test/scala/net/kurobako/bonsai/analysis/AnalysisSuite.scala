@@ -53,6 +53,40 @@ trait AnalysisSuite extends FunSuite {
       bounded: Vector[Complexity.Bounded] = Vector.empty,
       removed: Seq[String] = Nil
   ): Extraction.Result =
+    inspect(
+      main,
+      test,
+      resources,
+      libraries,
+      dependencies,
+      absent,
+      concurrent,
+      generated,
+      reflective,
+      twins,
+      hot,
+      bounded,
+      removed
+    )((result, _) => result)
+
+  /** As `extract`, with the class directories the build compiled to, which are gone once this returns, for `use` to
+    * read the classes of beside the result.
+    */
+  protected def inspect[A](
+      main: Seq[(String, String)],
+      test: Seq[(String, String)] = Nil,
+      resources: Seq[(String, String)] = Nil,
+      libraries: Set[String] = Set.empty,
+      dependencies: Seq[(String, String)] = Nil,
+      absent: Seq[(String, String)] = Nil,
+      concurrent: Set[String] = Set.empty,
+      generated: Vector[String] = Vector.empty,
+      reflective: Vector[String] = Vector.empty,
+      twins: Seq[Seq[(String, String)]] = Nil,
+      hot: Vector[String] = Vector.empty,
+      bounded: Vector[Complexity.Bounded] = Vector.empty,
+      removed: Seq[String] = Nil
+  )(use: (Extraction.Result, Vector[Path]) => A): A =
     Scratch.using("bonsai-") { directory =>
       val external =
         Option.when(dependencies.nonEmpty)(compile(directory.resolve("dependencies"), dependencies, Vector.empty))
@@ -94,7 +128,7 @@ trait AnalysisSuite extends FunSuite {
           identity
         )
       assert(result.problems.isEmpty, result.problems.mkString("\n"))
-      result
+      use(result, external.toVector ++ missing ++ Vector(mainClasses, testClasses))
     }
 
   /** Compiles Java sources under the package `demo`, and reads the model the javac plugin collects from them. */
