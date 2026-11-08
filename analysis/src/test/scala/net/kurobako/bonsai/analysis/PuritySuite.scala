@@ -696,6 +696,21 @@ class PuritySuite extends AnalysisSuite {
           |  def exchanged(cell: java.util.concurrent.atomic.AtomicInteger): Int = cell.compareAndExchange(0, 1)
           |  def accumulated(cell: java.util.concurrent.atomic.AtomicInteger): Int = cell.accumulateAndGet(1, _ + _)
           |  def read(cell: java.util.concurrent.atomic.AtomicInteger): Int = cell.get()
+          |  def buffered(): Int = {
+          |    val buffer = java.nio.ByteBuffer.allocate(8)
+          |    buffer.putInt(1)
+          |    buffer.flip()
+          |    buffer.getInt()
+          |  }
+          |  def ordered(): Int =
+          |    java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(1).flip().getInt()
+          |  def stamped(): Long = java.nio.file.attribute.FileTime.fromMillis(1).toMillis
+          |  def sized(attributes: java.nio.file.attribute.BasicFileAttributes): Long = attributes.size()
+          |  def decoded(in: java.io.DataInputStream): Int = in.readInt()
+          |  def memory(bytes: Array[Byte]): Int = java.io.DataInputStream(java.io.ByteArrayInputStream(bytes)).readInt()
+          |  def opened(file: java.io.File): Int = java.io.FileInputStream(file).read()
+          |  def console(): String = java.io.BufferedReader(java.io.InputStreamReader(System.in)).readLine()
+          |  def current(): Thread = Thread.currentThread()
           |}""".stripMargin,
     Seq(
       "Slf4j.scala" ->
@@ -719,6 +734,21 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(effects("Behaviours.copied"), Set(Kind.Writes))
     assertEquals(effects("Behaviours.printed"), Set(Kind.Output))
     assertEquals(effects("Behaviours.logged"), Set(Kind.Output))
+  }
+
+  test("memory buffers, values and streams over memory are pure, and reading a stream given is input") {
+    assertEquals(effects("Behaviours.buffered"), Set.empty[Kind])
+    assertEquals(effects("Behaviours.ordered"), Set.empty[Kind])
+    assertEquals(effects("Behaviours.stamped"), Set.empty[Kind])
+    assertEquals(effects("Behaviours.memory"), Set.empty[Kind])
+    assertEquals(effects("Behaviours.sized"), Set.empty[Kind])
+    assertEquals(effects("Behaviours.decoded"), Set(Kind.Input))
+  }
+
+  test("opening a file or the console to read is input, reading the thread is not") {
+    assertEquals(effects("Behaviours.opened"), Set(Kind.Input))
+    assertEquals(effects("Behaviours.console"), Set(Kind.Input))
+    assertEquals(effects("Behaviours.current"), Set(Kind.Reads))
   }
 
   test("atomic updates write, whichever of the atomic's methods performs them") {

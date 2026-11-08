@@ -56,6 +56,18 @@ object Purity {
       suppressed: Set[String]
   )
 
+  /** A call of the file system or the network in a function passed to a traversal, whose arguments no element changes.
+    */
+  case class Invariant(
+      method: String,
+      operation: String,
+      call: String,
+      node: String,
+      location: String,
+      line: Int,
+      suppressed: Set[String]
+  )
+
   /** A kind of effect a method has, shown by its first cause, whether it acts on the method's receiver alone, and
     * whether a library body it reaches performs it.
     */
@@ -136,7 +148,8 @@ object Purity {
       writes: Vector[SharedWrite],
       methods: Map[String, Method],
       library: Int,
-      ordered: Vector[Ordered] = Vector.empty
+      ordered: Vector[Ordered] = Vector.empty,
+      invariant: Vector[Invariant] = Vector.empty
   ) {
     def verdicts: Map[String, Verdict] = methods.view.mapValues(_.verdict).toMap
   }
@@ -222,6 +235,18 @@ object Purity {
         Finding.Level.Info,
         suppressed = order.suppressed,
         line = order.line
+      )
+    ) ++ model.invariant.flatMap(probe =>
+      Finding.at(
+        nodes,
+        probe.node,
+        Finding.Rule.InvariantInput,
+        s"${probe.method}: ${probe.call} reads from outside the program for every element of the ${probe.operation} at " +
+          s"${probe.location}, and nothing it is given or binds changes its arguments; read it once before the " +
+          probe.operation,
+        Finding.Level.Info,
+        suppressed = probe.suppressed,
+        line = probe.line
       )
     ) ++ model.methods.toVector.sortBy(_._1).flatMap((name, method) =>
       method.role.flatMap(role =>
@@ -602,6 +627,7 @@ object Purity {
         operation: String,
         lambda: Facts,
         function: Symbol,
+        definition: tpd.DefDef,
         body: Span,
         tree: tpd.Tree,
         view: Boolean
@@ -876,6 +902,57 @@ object Purity {
         own.minOption.map(effect =>
           (site.method, site.operation, effect.shown, site.tree, viewed, own.forall(clock(_)))
         )
+      }
+    }
+
+    /** Calls of the file system or the network that a function passed to a traversal makes with arguments that neither
+      * its parameters nor anything it binds reach, by enclosing method, with the traversal and the call. A function
+      * nested in it that is not a traversal itself may run any number of times, and is left out.
+      */
+    def invariant: Vector[(Symbol, String, tpd.Tree)] =
+      transforms.toVector.flatMap { site =>
+        val definition = site.definition
+        val bound      =
+          (definition.termParamss.flatten.map(_.symbol) ++ definition.rhs.filterSubTrees {
+            case _: tpd.DefTree => true
+            case _              => false
+          }.map(_.symbol)).toSet
+        val probes = Probes(bound)
+        probes.traverse(definition.rhs)
+        probes.found.map(call => (site.method, site.operation, call))
+      }
+
+    private class Probes(bound: Set[Symbol]) extends tpd.TreeTraverser {
+      val found: mutable.ArrayBuffer[tpd.Tree] = mutable.ArrayBuffer.empty[tpd.Tree]
+
+      def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
+        case tpd.DefDef(_, _, _, _) | tpd.TypeDef(_, _) | tpd.Closure(_, _, _) => ()
+        case application: tpd.Apply                                            =>
+          val spine     = Calls.spine(application)
+          val symbol    = spine.function.symbol
+          val qualifier = Calls.selected(spine.function).map(_.qualifier)
+          val operands  = qualifier.toList ++ spine.nodes.flatMap {
+            case tpd.Apply(_, arguments) => arguments
+            case _                       => Nil
+          }
+          if (symbol.exists && Axioms.probes(axioms.of(symbol, qualifier)) && operands.forall(stable(_)))
+            found += application
+          operands.foreach(traverse(_))
+        case _ => traverseChildren(tree)
+      }
+
+      private def stable(operand: tpd.Tree): Boolean = !operand.existsSubTree {
+        case reference @ (_: tpd.Ident | _: tpd.Select) =>
+          val symbol = reference.symbol
+          bound(symbol) || symbol.is(Flags.Mutable) || symbol.is(Flags.Method) && !constant(reference)
+        case tpd.Closure(_, _, _) => true
+        case _                    => false
+      }
+
+      private def constant(reference: tpd.Tree): Boolean = {
+        val symbol = reference.symbol
+        Axioms.effects(axioms.of(symbol, Calls.selected(reference).map(_.qualifier))).forall(_.kind == Kind.Throws) ||
+        silent(symbol)
       }
     }
 
@@ -1634,6 +1711,8 @@ object Purity {
           val symbol = reference.symbol
           parameters.get(symbol).filter(_ => symbol.info.isInstanceOf[ExprType]).foreach(invokes += _)
           if (symbol.is(Flags.Mutable)) effects ++= access(Kind.Reads, reference, s"reads ${symbol.name}")
+          if (symbol.exists && s"${qualified(symbol.owner)}.${symbol.name}" == Axioms.Console)
+            effects += plain(Kind.Input, s"reads ${Axioms.Console}")
           traverseChildren(tree)
         case _ => traverseChildren(tree)
       }
@@ -1696,6 +1775,7 @@ object Purity {
                     method.name.toString,
                     lambda,
                     definition.symbol,
+                    definition,
                     definition.span,
                     tree,
                     viewed(qualifier)

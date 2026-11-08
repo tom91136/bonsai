@@ -310,7 +310,8 @@ private[analysis] object BytecodeEffects {
             if (access.static) found += Fact(EffectKind.Writes, cause) else on(holder, EffectKind.Writes, cause)
           } else if (!isFinal(declared, access)) {
             if (access.static) found += Fact(EffectKind.Reads, cause) else on(holder, EffectKind.Reads, cause)
-          }
+          } else if (declared.exists(owner => s"${qualified(owner)}.${access.name}" == Axioms.Console))
+            found += Fact(EffectKind.Input, cause)
         }
       }
       method.dynamics.filterNot(_.owner == concatenation).foreach { dynamic =>

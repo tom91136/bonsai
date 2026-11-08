@@ -2591,6 +2591,7 @@ class LintSuite extends FunSuite {
         |    monad.unit(1)
         |  }
         |  def read[F[_]](monad: Monad[F]): F[Int] = monad.unit(cell.get() + history.size + adder.sum().toInt)
+        |  def decoded[F[_]](monad: Monad[F]): F[Int] = monad.unit(java.nio.ByteBuffer.allocate(4).putInt(1).position())
         |  def own[F[_]](monad: Monad[F]): F[Int] = {
         |    val sink = new StringBuilder
         |    sink.append("x")

@@ -81,7 +81,7 @@ object Calls {
     symbol.exists && symbol.name.toString == "identity" && symbol.owner == defn.ScalaPredefModuleClass
 
   // Packages whose companions build collections that can be mutated.
-  private val MutablePackages = Vector("scala.collection.mutable.", "java.util.")
+  private val MutablePackages = Vector("scala.collection.mutable.", "java.util.", "java.nio.")
 
   /** Whether `tree` builds a new object, mutable collection, array or iterator, which no one else holds yet. */
   def allocates(tree: tpd.Tree)(using Context): Boolean = {
@@ -93,8 +93,16 @@ object Calls {
         (module == defn.ArrayModule || MutablePackages.exists(qualified(module).startsWith(_)))
     )
     method.isConstructor || Set("iterator", "toArray", "toBuffer", "clone")(name) ||
-    factory && Set("apply", "empty", "from", "ofDim", "fill", "tabulate", "newBuilder")(name)
+    factory &&
+    Set("apply", "empty", "from", "ofDim", "fill", "tabulate", "newBuilder", "allocate", "allocateDirect")(name) ||
+    configures(function)
   }
+
+  // A buffer is configured and filled by chained calls on itself.
+  private def configures(function: tpd.Tree)(using Context): Boolean =
+    selected(function).map(_.qualifier).exists(qualifier =>
+      Classes.derives(qualifier.tpe.widen, "java.nio.Buffer") && allocates(qualifier)
+    )
 
   /** What a call on `qualifier` acts on; `fresh` holds for the locals of the method that hold a value it allocated. */
   def receiver(qualifier: Option[tpd.Tree], fresh: Symbol => Boolean)(using Context): Receiver[Symbol] =

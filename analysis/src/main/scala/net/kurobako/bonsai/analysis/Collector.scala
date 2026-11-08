@@ -354,6 +354,11 @@ private[analysis] class Collector(
         site(method, whole).map((node, location, line) =>
           Purity.Ordered(short(method), operator, shown(input), shown(pure), node, location, line, suppressions(method))
         )
+      ),
+      effects.invariant.flatMap((method, operation, call) =>
+        site(method, call).map((node, location, line) =>
+          Purity.Invariant(short(method), operation, shown(call), node, location, line, suppressions(method))
+        )
       )
     )
   }

@@ -96,6 +96,7 @@ object Finding {
     val PureDiscard: Rule             = rule("pure-discard")
     val EffectfulTransform: Rule      = rule("effectful-transform")
     val InputBeforePure: Rule         = rule("io-before-pure")
+    val InvariantInput: Rule          = rule("invariant-input")
     val WarningsNotFatal: Rule        = rule("warnings-not-fatal")
     val PlatformDuplicate: Rule       = rule("platform-duplicate-source")
     val DetachedCompanion: Rule       = rule("detached-companion")

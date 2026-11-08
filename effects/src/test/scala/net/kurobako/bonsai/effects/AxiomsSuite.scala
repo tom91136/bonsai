@@ -95,7 +95,6 @@ class AxiomsSuite extends munit.FunSuite {
     assertEquals(kinds(call("java.lang.System.exit")), Set(Kind.Output))
     assertEquals(kinds(call("java.lang.System.lineSeparator")), Set.empty)
     assertEquals(kinds(call("java.lang.Thread.sleep")), Set(Kind.Output))
-    assertEquals(kinds(call("java.lang.Thread.currentThread")), Set(Kind.Input))
     assertEquals(kinds(call("java.net.URI.create")), Set.empty)
     assertEquals(kinds(call("java.nio.file.Files.write")), Set(Kind.Output))
     assertEquals(kinds(call("java.nio.file.Files.readString")), Set(Kind.Input))
@@ -106,6 +105,96 @@ class AxiomsSuite extends munit.FunSuite {
     assertEquals(kinds(call("scala.io.Source.fromFile")), Set(Kind.Input))
     assertEquals(kinds(call("scala.Array.copy")), Set(Kind.Writes))
     assertEquals(kinds(call("scala.collection.ArrayOps.copyToArray")), Set(Kind.Writes))
+  }
+
+  private val inputStream = on("java.io.InputStream")
+
+  test("only calls that reach the file system, the network or the host are input") {
+    List(
+      call("java.nio.file.Files.size"),
+      call("java.io.File.length"),
+      call("java.nio.file.Files.newInputStream"),
+      call("java.nio.channels.FileChannel.open"),
+      call("java.io.RandomAccessFile.length"),
+      call("scala.io.Source.fromFile"),
+      call("scala.io.StdIn.readLine"),
+      call(
+        "java.nio.file.attribute.BasicFileAttributeView.readAttributes",
+        on("java.nio.file.attribute.AttributeView")
+      ),
+      call("java.lang.Process.exitValue"),
+      call("java.lang.Runtime.availableProcessors"),
+      call("java.awt.Toolkit.getScreenSize"),
+      call("java.net.Socket.getInputStream")
+    ).foreach(input => assertEquals(kinds(input), Set(Kind.Input), input.full))
+    List("java.io.FileInputStream", "java.io.FileReader", "java.io.RandomAccessFile").foreach(owner =>
+      assertEquals(kinds(Call(owner, "<init>", constructor = true)), Set(Kind.Input), owner)
+    )
+  }
+
+  test("conversions and buffers in memory are not input") {
+    List(
+      call("java.nio.ByteBuffer.allocate"),
+      call("java.nio.ByteBuffer.wrap"),
+      call("java.nio.file.attribute.FileTime.fromMillis"),
+      call("java.nio.file.attribute.FileTime.toMillis", on("java.nio.file.attribute.FileTime")),
+      call("java.nio.file.attribute.BasicFileAttributes.size", on("java.nio.file.attribute.BasicFileAttributes")),
+      call("java.nio.file.attribute.PosixFilePermissions.fromString"),
+      call("java.nio.file.StandardOpenOption.values"),
+      call("java.nio.charset.Charset.forName"),
+      call("java.nio.ByteOrder.nativeOrder"),
+      call("scala.io.Codec.fallbackSystemCodec"),
+      call("java.io.IOException.getCause")
+    ).foreach(pure => assertEquals(kinds(pure), Set.empty[Kind], pure.full))
+    assertEquals(kinds(call("java.nio.ByteBuffer.putInt", on("java.nio.ByteBuffer"), java = true)), Set(Kind.Writes))
+    assertEquals(kinds(call("java.nio.ByteBuffer.getInt", on("java.nio.ByteBuffer"), java = true)), Set(Kind.Reads))
+  }
+
+  test("reading a stream is input of the stream, which opening it decides") {
+    List(
+      call(
+        "java.io.DataInputStream.readInt",
+        on("java.io.FilterInputStream", "java.io.InputStream", "java.io.DataInput")
+      ),
+      call("java.io.ByteArrayInputStream.read", inputStream),
+      call("java.io.FileInputStream.read", inputStream),
+      call("java.io.BufferedReader.readLine", on("java.io.Reader")),
+      call("java.io.InputStream.skip", inputStream),
+      call("java.io.InputStream.readAllBytes", inputStream),
+      call("java.nio.channels.FileChannel.read", on("java.nio.channels.ReadableByteChannel"))
+    ).foreach { read =>
+      val effects = Axioms.effects(read)
+      assertEquals(effects.map(_.kind), Set(Kind.Input), read.full)
+      assert(effects.forall(_.onThis), read.full)
+    }
+  }
+
+  test("a thread or a component is read in the process, not from outside it") {
+    assertEquals(kinds(call("java.lang.Thread.currentThread")), Set(Kind.Reads))
+    assertEquals(kinds(call("java.lang.Thread.isInterrupted", on("java.lang.Thread"), java = true)), Set(Kind.Reads))
+    assertEquals(kinds(call("javax.swing.JPanel.getWidth", on("javax.swing.JPanel"), java = true)), Set(Kind.Reads))
+    assertEquals(kinds(call("java.awt.Component.isVisible", on("java.awt.Component"), java = true)), Set(Kind.Reads))
+    assertEquals(kinds(call("java.lang.Thread.sleep")), Set(Kind.Output))
+  }
+
+  test("a probe asks the file system or the network and gets the same answer until something outside changes") {
+    List("java.nio.file.Files.size", "java.nio.file.Files.exists", "java.nio.file.Files.isRegularFile").foreach(probe =>
+      assert(Axioms.probes(call(probe)), probe)
+    )
+    assert(Axioms.probes(call("java.io.File.exists", on("java.io.File"), java = true)))
+    assert(Axioms.probes(call("java.nio.file.Path.toRealPath", on("java.nio.file.Path"), java = true)))
+    assert(Axioms.probes(call("java.net.InetAddress.getByName")))
+    List(
+      call("java.lang.System.getenv"),
+      call("java.lang.System.currentTimeMillis"),
+      call("java.nio.file.Files.write"),
+      call("java.nio.file.Files.delete"),
+      call("java.io.DataInputStream.readInt", on("java.io.InputStream")),
+      call("scala.io.StdIn.readLine"),
+      call("java.nio.ByteBuffer.allocate"),
+      call("java.nio.file.Path.resolve")
+    ).foreach(other => assert(!Axioms.probes(other), other.full))
+    assert(!Axioms.probes(Call("java.io.FileInputStream", "<init>", constructor = true)))
   }
 
   test("partial methods of pure owners throw, and a companion's apply does not") {

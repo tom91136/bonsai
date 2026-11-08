@@ -32,6 +32,9 @@ object Axioms {
     "java.lang.Math.random"
   )
 
+  /** The field holding the standard input of the process, whose streams read the console. */
+  val Console = "java.lang.System.in"
+
   val Randoms: Vector[String] = Vector("java.util.Random", "scala.util.Random")
 
   /** Methods that change a collection, a buffer, a queue or an atomic they are called on. */
@@ -113,11 +116,61 @@ object Axioms {
       "javax.swing.",
       "java.awt."
     )
+  // Owners whose queries read the state of the process, beside the windowing system they ask.
+  private val Local    = Vector("java.lang.Thread", "javax.swing.", "java.awt.")
+  private val Displays = Vector(
+    "java.awt.GraphicsEnvironment",
+    "java.awt.GraphicsDevice",
+    "java.awt.GraphicsConfiguration",
+    "java.awt.Toolkit",
+    "java.awt.Desktop",
+    "java.awt.MouseInfo",
+    "java.awt.Robot",
+    "java.awt.SystemTray"
+  )
   // Classes of java.net that build and take apart values, and touch no network.
   private val Values  = Set("java.net.URLDecoder", "java.net.URLEncoder", "java.net.URI")
   private val Logging = Vector("org.slf4j.", "java.util.logging.", "scala.Console")
   private val Reading = Vector("java.io.", "java.nio.", "scala.io.")
-  private val Paths   =
+  // Classes of Reading that reach the file system, the network or the console, where the rest hold bytes in memory.
+  private val Hosts = Vector(
+    "java.io.File",
+    "java.io.RandomAccessFile",
+    "java.io.Console",
+    "java.nio.file.Files",
+    "java.nio.file.FileStore",
+    "java.nio.file.Watch",
+    "java.nio.file.DirectoryStream",
+    "java.nio.file.SecureDirectoryStream",
+    "java.nio.file.spi.",
+    "java.nio.channels.",
+    "java.nio.file.attribute.UserPrincipalLookupService",
+    "scala.io.Source",
+    "scala.io.StdIn"
+  )
+  // A view of file attributes reads and writes them in the file system, where the attributes it returns are values.
+  private val Views = Vector("java.nio.file.attribute.AttributeView")
+  // Reading these reaches outside only as far as they do, which is decided where they are opened.
+  private val Sources = Vector(
+    "java.io.InputStream",
+    "java.io.Reader",
+    "java.io.DataInput",
+    "java.io.ObjectInput",
+    "java.nio.channels.ReadableByteChannel"
+  )
+  private val Consuming = Vector("read", "skip", "unread", "transfer", "lines")
+  // Streams whose constructors open a file.
+  private val Opening = Set("java.io.FileInputStream", "java.io.FileReader", "java.io.RandomAccessFile")
+  // Owners of the file system and the network, whose calls answer the same until something outside changes.
+  private val Probed = Vector(
+    "java.nio.file.",
+    "java.nio.channels.",
+    "java.io.File",
+    "java.io.RandomAccessFile",
+    "java.net.",
+    "scala.io.Source"
+  )
+  private val Paths =
     Vector("java.nio.file.Path", "java.nio.file.Paths", "java.nio.file.FileSystem", "java.nio.file.PathMatcher")
   private val Changing = Vector(
     "write",
@@ -229,7 +282,8 @@ object Axioms {
     "java.time.Duration",
     "java.util.concurrent.TimeUnit",
     // memoises in a field, which no caller observes
-    "cats.Eval"
+    "cats.Eval",
+    "java.nio.file.attribute."
   )
 
   /** Classes whose instances change as they are used, which the receiver decides for. */
@@ -260,23 +314,29 @@ object Axioms {
     def effect(kind: Kind)               = Set(Effect(kind, s"calls $full"))
     def stateful(kind: Kind)             = Set(Effect(kind, s"calls $full", onThis = true))
     val none                             = Set.empty[Effect[Nothing]]
-    if (call.constructor || Registrations(name)) none
+    if (call.constructor) if (Opening(owner)) effect(Kind.Input) else none
+    else if (Registrations(name)) none
     else if (Clocks(full) || derives(Randoms) || owner == "scala.util.Random") effect(Kind.Random)
     else if (derives(Outputs) || Logging.exists(owner.startsWith(_)) || owner == "scala.Predef" && Printing(name))
       effect(Kind.Output)
     else if (Values(owner)) none
     else if (Acting.exists(owner.startsWith(_)))
-      effect(if (Queries.exists(name.startsWith(_))) Kind.Input else Kind.Output)
+      if (!Queries.exists(name.startsWith(_))) effect(Kind.Output)
+      else if (Local.exists(owner.startsWith(_)) && !Displays.exists(owner.startsWith(_)))
+        Set(Effect(Kind.Reads, s"calls $full", onThis = received.exists(!_.module)))
+      else effect(Kind.Input)
     else if (full == "scala.Array.copy" || full == "java.lang.System.arraycopy") effect(Kind.Writes)
     else if (owner == "java.lang.System")
       if (Variables(name)) effect(Kind.Input)
       else if (Set("lineSeparator", "identityHashCode")(name)) none
       else effect(Kind.Output)
+    else if (derives(Sources) && Consuming.exists(name.startsWith(_))) stateful(Kind.Input)
     else if (Paths.exists(owner.startsWith(_)) || owner == "java.io.File" && Naming(name))
       if (Set("toRealPath", "toAbsolutePath")(name)) effect(Kind.Input) else none
     else if (owner == "java.nio.file.Files" || owner == "java.io.File")
       effect(if (Changing.exists(name.startsWith(_))) Kind.Output else Kind.Input)
-    else if (Reading.exists(owner.startsWith(_))) effect(Kind.Input)
+    else if (Hosts.exists(owner.startsWith(_)) || derives(Views)) effect(Kind.Input)
+    else if (Reading.exists(owner.startsWith(_)) && !received.exists(!_.module)) none
     else if (derives(Stateful) || owner.startsWith(Atomics))
       if (name == "length" && received.exists(_.derives("scala.Array"))) none
       else if (Filling(name)) effect(Kind.Writes)
@@ -307,7 +367,11 @@ object Axioms {
     else effect(Kind.Unknown)
   }
 
+  /** Whether `call` asks the file system or the network, which answer the same until something outside changes. */
+  def probes(call: Call): Boolean =
+    !call.constructor && Probed.exists(call.owner.startsWith(_)) && effects(call).exists(_.kind == Kind.Input)
+
   /** The summary of `call`, which runs the function and by-name parameters at the indices `runs`. */
   def summary(call: Call, runs: Set[Int]): Summary[Nothing] =
-    if (call.constructor) Summary(Nil, Set.empty) else Summary(effects(call), runs)
+    Summary(effects(call), if (call.constructor) Set.empty else runs)
 }
