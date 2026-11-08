@@ -8,9 +8,9 @@ import scala.util.Using
 object Scratch {
 
   private val root = {
-    val root = Files.createTempDirectory("bonsai-tests-")
-    sys.runtime.addShutdownHook(Thread(() => delete(root)))
-    root
+    val directory = Files.createTempDirectory("bonsai-tests-")
+    sys.runtime.addShutdownHook(Thread(() => delete(directory)))
+    directory
   }
 
   def directory(prefix: String): Path = Files.createTempDirectory(root, prefix)

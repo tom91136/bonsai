@@ -1,6 +1,5 @@
 /*
 rule = PatternShadow
-PatternShadow.locals = true
  */
 package fix
 

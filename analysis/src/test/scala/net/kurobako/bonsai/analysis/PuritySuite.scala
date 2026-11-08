@@ -307,16 +307,16 @@ class PuritySuite extends AnalysisSuite {
     "library methods are judged by their own bodies when no override can replace them, as on receivers built there " +
       "or of sealed classes"
   ) {
-    def verdict(name: String) = linked.purity.verdicts.getOrElse(name, fail(s"no verdict for $name"))
-    assertEquals(verdict("Invocations.added"), Purity.Verdict.Pure)
-    assertEquals(verdict("Invocations.shouted"), impure("calls Library.shout, which performs output"))
-    assertEquals(verdict("Invocations.boxed"), Purity.Verdict.Pure)
-    assertEquals(verdict("Invocations.kept"), Purity.Verdict.Pure)
-    assert(isUnknown(clue(verdict("Invocations.shaped"))))
-    assert(isUnknown(clue(verdict("Invocations.opened"))))
-    assertEquals(verdict("Invocations.built"), Purity.Verdict.Pure)
-    assertEquals(verdict("Invocations.sized"), Purity.Verdict.Pure)
-    assert(isUnknown(clue(verdict("Invocations.hidden"))))
+    def linkedVerdict(name: String) = linked.purity.verdicts.getOrElse(name, fail(s"no verdict for $name"))
+    assertEquals(linkedVerdict("Invocations.added"), Purity.Verdict.Pure)
+    assertEquals(linkedVerdict("Invocations.shouted"), impure("calls Library.shout, which performs output"))
+    assertEquals(linkedVerdict("Invocations.boxed"), Purity.Verdict.Pure)
+    assertEquals(linkedVerdict("Invocations.kept"), Purity.Verdict.Pure)
+    assert(isUnknown(clue(linkedVerdict("Invocations.shaped"))))
+    assert(isUnknown(clue(linkedVerdict("Invocations.opened"))))
+    assertEquals(linkedVerdict("Invocations.built"), Purity.Verdict.Pure)
+    assertEquals(linkedVerdict("Invocations.sized"), Purity.Verdict.Pure)
+    assert(isUnknown(clue(linkedVerdict("Invocations.hidden"))))
   }
 
   private lazy val traced = analysed(
@@ -373,20 +373,20 @@ class PuritySuite extends AnalysisSuite {
     "functions are followed through values, tables, returns, lift and local methods, and receivers through instances " +
       "and this"
   ) {
-    def verdict(name: String) = traced.purity.verdicts.getOrElse(name, fail(s"no verdict for $name"))
+    def tracedVerdict(name: String) = traced.purity.verdicts.getOrElse(name, fail(s"no verdict for $name"))
     Vector("doubled", "lifted", "quietly", "added", "shownInt", "ranQuiet", "every", "positive").foreach(name =>
-      assertEquals(verdict(s"Traced.$name"), Purity.Verdict.Pure, name)
+      assertEquals(tracedVerdict(s"Traced.$name"), Purity.Verdict.Pure, name)
     )
     Vector("shouted", "loudly", "shownString", "ranLoud", "printed").foreach(name =>
-      assert(isImpure(clue(verdict(s"Traced.$name"))), name)
+      assert(isImpure(clue(tracedVerdict(s"Traced.$name"))), name)
     )
   }
 
   test("functions stored in objects only the build constructs run what every construction passes them") {
-    def verdict(name: String) = traced.purity.verdicts.getOrElse(name, fail(s"no verdict for $name"))
-    assertEquals(verdict("Stored.Quiet.apply"), Purity.Verdict.Pure)
-    assert(isImpure(clue(verdict("Stored.Loud.apply"))))
-    assert(isUnknown(clue(verdict("Open.apply"))))
+    def tracedVerdict(name: String) = traced.purity.verdicts.getOrElse(name, fail(s"no verdict for $name"))
+    assertEquals(tracedVerdict("Stored.Quiet.apply"), Purity.Verdict.Pure)
+    assert(isImpure(clue(tracedVerdict("Stored.Loud.apply"))))
+    assert(isUnknown(clue(tracedVerdict("Open.apply"))))
   }
 
   private def cycles(bodies: Seq[(String, String)]): Map[String, Purity.Verdict] = extract(
@@ -434,27 +434,28 @@ class PuritySuite extends AnalysisSuite {
   }
 
   test("a method that was pure fails the lock once it is not, and the lock records the pure methods of main code") {
-    val found = Purity.regressions(result.purity, result.graph.nodes, Set("Pure.double", "Pure.logged", "Gone.method"))
-    assertEquals(found.map(_.rule), Vector(Finding.Rule.PurityRegression))
-    assertFinding(found, "purity-regression", "Pure.logged was pure and now calls scala.Predef.println")
+    val regressed =
+      Purity.regressions(result.purity, result.graph.nodes, Set("Pure.double", "Pure.logged", "Gone.method"))
+    assertEquals(regressed.map(_.rule), Vector(Finding.Rule.PurityRegression))
+    assertFinding(regressed, "purity-regression", "Pure.logged was pure and now calls scala.Predef.println")
     val locked = Report.keys(Purity.lock(result.purity, result.graph.nodes))
     assert(locked("Pure.double"))
     assert(!locked("Pure.logged"))
   }
 
   test("effects policies hold packages and classes to the kinds they allow, the most specific one deciding") {
-    val found = Purity.violations(
+    val violated = Purity.violations(
       result.purity,
       result.graph.nodes,
       Vector(Purity.Policy("Pure", Set.empty), Purity.Policy("Pure.read", Set(Kind.Input)))
     )
     assertFinding(
-      found,
+      violated,
       "effect-policy",
       "Pure.logged calls scala.Predef.println; the effects policy for Pure allows no effects"
     )
-    assertFinding(found, "effect-policy", "Pure.pool")
-    assertNoFinding(found)(finding =>
+    assertFinding(violated, "effect-policy", "Pure.pool")
+    assertNoFinding(violated)(finding =>
       finding.detail.startsWith("Pure.read ") || finding.detail.startsWith("Pure.double ")
     )
     val wildcard =
@@ -606,7 +607,7 @@ class PuritySuite extends AnalysisSuite {
   }
 
   test("assignments a worker makes while holding a lock of the scheduler that runs it are not shared writes") {
-    val result = extract(
+    val scheduled = extract(
       Seq(
         "Main.scala" ->
           "object Main { def main(args: Array[String]): Unit = { Scheduler.run(Vector(1))(_ => ()); Scheduler.loose() } }",
@@ -659,7 +660,7 @@ class PuritySuite extends AnalysisSuite {
             |}""".stripMargin
       )
     )
-    val found = Purity.findings(result.purity, result.graph.nodes).collect {
+    val found = Purity.findings(scheduled.purity, scheduled.graph.nodes).collect {
       case finding if finding.rule == Finding.Rule.SharedWrite => finding.detail
     }
     assertEquals(found.size, 1, found.mkString("\n"))

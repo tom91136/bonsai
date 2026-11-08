@@ -250,9 +250,9 @@ class ComplexitySuite extends AnalysisSuite {
       )
     )
     assertEquals(result.unusedBounds, Vector.empty)
-    val found = Complexity.findings(result.complexities, result.graph.nodes, result.hot)
-    assertNoFinding(found)(_.detail.startsWith("Execution."))
-    assertNoFinding(found)(_.detail.startsWith("Machine.decode"))
+    val reported = Complexity.findings(result.complexities, result.graph.nodes, result.hot)
+    assertNoFinding(reported)(_.detail.startsWith("Execution."))
+    assertNoFinding(reported)(_.detail.startsWith("Machine.decode"))
   }
 
   private lazy val arrivals = {

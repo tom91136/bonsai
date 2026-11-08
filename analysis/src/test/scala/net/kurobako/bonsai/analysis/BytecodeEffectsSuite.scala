@@ -1084,12 +1084,12 @@ public class Dual$ {
         Seq("ScalaApi.scala" -> scalaApi, "ScalaMixed.scala" -> scalaMixed),
         Vector(interfaces)
       )
-    val classes = Files.createDirectories(directory.resolve("java"))
-    val sources =
+    val classes     = Files.createDirectories(directory.resolve("java"))
+    val javaSources =
       Seq("fixture/JavaSide.java" -> javaSide, "fixture/JavaMixed.java" -> javaMixed, "fixture/Dual$.java" -> dual)
-    write(directory.resolve("src"), sources)
+    write(directory.resolve("src"), javaSources)
     javac(
-      sources.map((name, _) => directory.resolve("src").resolve(name)),
+      javaSources.map((name, _) => directory.resolve("src").resolve(name)),
       classes,
       classpath ++ Vector(interfaces, scala)
     ): Unit

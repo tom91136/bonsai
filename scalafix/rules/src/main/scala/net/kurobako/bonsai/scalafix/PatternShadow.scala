@@ -10,15 +10,14 @@ import scalafix.v1.*
   * scope, as are the names a for comprehension binds before. Typed bindings cannot be mistaken for a match against a
   * value, and rebinding the scrutinee under its own name binds the same value.
   *
-  * With `PatternShadow.locals = true`, local values, variables and methods that hide a field, method or constructor
-  * parameter of an enclosing class or object are reported as well, when their types agree. The setting is off by
-  * default, as naming a local after the member that computes it is common.
+  * Local values, variables and methods that hide a field, method or constructor parameter of an enclosing class or
+  * object are reported as well, when their types agree, unless `PatternShadow.locals = false`.
   */
 class PatternShadow(locals: Boolean) extends SemanticRule("PatternShadow") {
-  def this() = this(false)
+  def this() = this(true)
 
   override def withConfiguration(config: Configuration): Configured[Rule] = Configured.Ok(
-    PatternShadow(settings.section(config.conf, "PatternShadow").get("locals").contains(Conf.Bool(true)))
+    PatternShadow(settings.section(config.conf, "PatternShadow").get("locals").forall(_ != Conf.Bool(false)))
   )
 
   override def fix(using document: SemanticDocument): Patch = document.tree.collect {
@@ -63,7 +62,11 @@ class PatternShadow(locals: Boolean) extends SemanticRule("PatternShadow") {
       }
     }
     hidden.fold(Patch.empty) { kind =>
-      lint("local-shadow", s"${name.value} hides the $kind ${name.value} that encloses it; rename the local", name.pos)
+      lint(
+        "local-shadow",
+        s"${name.value} hides the $kind ${name.value} of the enclosing type; rename the local",
+        name.pos
+      )
     }
   }
 
