@@ -1,3 +1,5 @@
+# only the Scala 3 project takes the options of the compiler plugin
+> checkOptions
 # a Scala 2 project in the build is left out, and the Scala 3 ones are analysed
 > bonsaiAnalyse
 > analysed modern both

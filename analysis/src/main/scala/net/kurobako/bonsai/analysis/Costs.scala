@@ -487,7 +487,7 @@ private class Costs(
     }
 
     private def outside(tree: tpd.Tree): Boolean = sizes.peeled(tree) match {
-      case ident: tpd.Ident => ident.symbol.owner.isTerm
+      case ident: tpd.Ident => ident.symbol.exists && ident.symbol.owner.isTerm
       case _                => false
     }
 

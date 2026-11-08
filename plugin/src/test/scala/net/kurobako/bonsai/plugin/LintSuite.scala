@@ -522,6 +522,13 @@ class LintSuite extends FunSuite {
     assert(!found.exists(_.contains("toLong")), found.mkString("\n"))
   }
 
+  test("a conversion of the result of a polymorphic function is no wrapped conversion") {
+    val source = """object Lints {
+                   |  def converted(lift: [A] => A => A, value: Int): Double = lift(value).toDouble
+                   |}""".stripMargin
+    assertEquals(tagged(warnings(source), "wrapped-conversion"), Nil)
+  }
+
   test("a Java big number wrapped in its Scala counterpart only to be converted is converted directly") {
     val source = """object Lints {
                    |  def wrapped(value: java.math.BigDecimal): Double  = BigDecimal(value).toDouble
@@ -2699,6 +2706,17 @@ class LintSuite extends FunSuite {
         "get retried through interrupts, restoring the interrupt flag afterwards, reimplements CompletableFuture.join"
       )
     )
+  }
+
+  test("a polymorphic function applied in a future on the global pool is no blocking call") {
+    val found = warnings(
+      """import scala.concurrent.Future
+        |import scala.concurrent.ExecutionContext.Implicits.global
+        |object Pooled {
+        |  def lifted(lift: [A] => A => A, input: Int): Future[Int] = Future(lift(input))
+        |}""".stripMargin
+    )
+    assertEquals(tagged(found, "blocking-common-pool"), Nil)
   }
 
   test("a one-shot memo cell is not an unbounded wait, but a cell it never runs still is") {

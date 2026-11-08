@@ -587,6 +587,16 @@ class BranchesSuite extends FunSuite {
     assertEquals(rewritten(source), source)
   }
 
+  test("a value computed by a polymorphic function value compiles and is not moved") {
+    val source = """object Bindings {
+                   |  def lifted(lift: [A] => List[A] => List[A], flag: Boolean, xs: List[Int]): Int = {
+                   |    val doubled = lift(xs).map(_ * 2)
+                   |    if (flag) doubled.size else 0
+                   |  }
+                   |}""".stripMargin
+    assertEquals(found(source, binding), Nil)
+  }
+
   private val lazily = "hand-written-lazy"
 
   test("a method filling a flag and a cache on its first call is a lazy val") {

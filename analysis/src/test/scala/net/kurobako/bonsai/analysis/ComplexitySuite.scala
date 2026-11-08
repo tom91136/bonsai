@@ -405,6 +405,21 @@ class ComplexitySuite extends AnalysisSuite {
     assertEquals(early.map(_.detail), Vector.empty)
   }
 
+  test("fields left to their default value have no size, and the methods beside them are still costed") {
+    val wild = complexities(
+      "Wild",
+      """object Wild {
+        |  class Holder {
+        |    private var cells: Array[Int] = _
+        |    private var names: List[String] = _
+        |    def load(xs: Array[Int], ns: List[String]): Unit = { cells = xs; names = ns }
+        |    def squares(values: Vector[Int]): Int = values.map(value => values.count(_ == value)).sum
+        |  }
+        |}""".stripMargin
+    )
+    assertFinding(wild, "complexity", "Holder.squares is O(|values|^2)")
+  }
+
   test("where the build marks classes hot, quadratic findings elsewhere are dropped and cubic ones stay") {
     def reported(hot: Vector[String]) = {
       val result = extract(

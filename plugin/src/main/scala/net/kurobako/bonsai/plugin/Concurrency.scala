@@ -155,7 +155,7 @@ private class Concurrency(checks: Checks)(using Context) extends tpd.TreeTravers
   private def blocking(application: tpd.Apply): Option[String] = {
     val symbol                     = application.fun.symbol
     val name                       = symbol.name.toString
-    def member(owner: ClassSymbol) = symbol.owner.derivesFrom(owner)
+    def member(owner: ClassSymbol) = symbol.exists && symbol.owner.derivesFrom(owner)
     Option.when(
       BlockingMembers.exists((owners, blocks) => owners.exists(member(_)) && blocks(name)) ||
         Waiters.exists((owner, methods) => member(owner) && methods(name)) ||

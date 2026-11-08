@@ -106,7 +106,7 @@ private class Sizes(
     case _: (tpd.Ident | tpd.Select) if tree.symbol.is(Flags.Module) => Some(root(tree.symbol.moduleClass))
     case tpd.Ident(_)                                                =>
       scope.paths.get(tree.symbol).orElse(
-        Option.when(tree.symbol.owner.isClass && field(tree.symbol))(s"${root(tree.symbol.owner)}.${tree.symbol.name}")
+        Option.when(field(tree.symbol) && tree.symbol.owner.isClass)(s"${root(tree.symbol.owner)}.${tree.symbol.name}")
       )
     case select: tpd.Select if field(select.symbol) =>
       path(select.qualifier, scope).map(base => s"$base.${select.name}")
@@ -158,7 +158,7 @@ private class Sizes(
       variable.initial.map(_ + Polynomial.product(scope.loops.drop(variable.level).map(_.trips)) * variable.growth)
 
   private def accessed(tree: tpd.Tree, scope: Scope): Option[Polynomial] =
-    if (!library.sized(tree.tpe)) None
+    if (!library.sized(tree.tpe) || !tree.symbol.exists) None
     else if (tree.symbol.is(Flags.Module)) Some(Polynomial.One)
     else declaredBound(tree).orElse {
       if (library.growable(tree.tpe)) path(tree, scope).map(Atoms.size(_))
@@ -176,7 +176,7 @@ private class Sizes(
   def static(tree: tpd.Tree): Boolean = tree match {
     case tpd.Typed(expression, _)          => static(expression)
     case _ if tree.symbol.is(Flags.Module) => true
-    case tpd.Ident(_) => tree.symbol.owner.is(Flags.Module) && field(tree.symbol) && !tree.symbol.is(Flags.Mutable)
+    case tpd.Ident(_) => field(tree.symbol) && tree.symbol.owner.is(Flags.Module) && !tree.symbol.is(Flags.Mutable)
     case select: tpd.Select => field(select.symbol) && !select.symbol.is(Flags.Mutable) && static(select.qualifier)
     case _                  => false
   }

@@ -652,6 +652,7 @@ object Purity {
     private var scratch    = Scratch() // scalafix:ok DisableSyntax.var
     private val sites      = mutable.Map.empty[Symbol, mutable.ArrayBuffer[(Symbol, Vector[Argument])]]
     private val tracing    = mutable.Set.empty[Symbol]
+    private val reached    = mutable.Map.empty[Symbol, Value]
     private val pending    = mutable.Queue.empty[(Symbol, Int)]
     private val explored   = mutable.Set.empty[Symbol]
     private val unread     = mutable.LinkedHashSet.empty[Symbol]
@@ -1412,25 +1413,31 @@ object Purity {
     }
 
     /** What the build passes `parameter`, when only the build can call its method: the values of the arguments at every
-      * call, followed through the parameters of the callers in turn. A call passing a parameter on to itself adds
-      * nothing; any other cycle is opaque.
+      * call, followed through the parameters of the callers in turn, once for each parameter. A call passing a
+      * parameter on to itself adds nothing; any other cycle is opaque.
       */
     private def passed(parameter: Symbol): Value = {
       val method = parameter.owner
       val index  = terms(method).indexOf(parameter)
       if (index < 0 || tracing(parameter) || !closed(method)) Value.Opaque
       else
-        sites.get(method).fold(Value.Opaque) { calls =>
-          tracing += parameter
-          try several(calls.toVector.flatMap((root, arguments) =>
-              (arguments.lift(index) match {
-                case Some(Argument.Function(body))      => Some(Value.Function(body, frame(root, None)))
-                case Some(Argument.Parameter(other))    => terms(root).lift(other).map(Value.Parameter(_))
-                case Some(Argument.Expression(tree, _)) => Some(evaluate(tree, frame(root, None)))
-                case _                                  => Some(Value.Opaque)
-              }).collect { case value if value != Value.Parameter(parameter) => followed(value) }
-            ))
-          finally tracing -= parameter
+        reached.get(parameter) match {
+          case Some(value) => value
+          case None        =>
+            val value = sites.get(method).fold(Value.Opaque) { calls =>
+              tracing += parameter
+              try several(calls.toVector.flatMap((root, arguments) =>
+                  (arguments.lift(index) match {
+                    case Some(Argument.Function(body))      => Some(Value.Function(body, frame(root, None)))
+                    case Some(Argument.Parameter(other))    => terms(root).lift(other).map(Value.Parameter(_))
+                    case Some(Argument.Expression(tree, _)) => Some(evaluate(tree, frame(root, None)))
+                    case _                                  => Some(Value.Opaque)
+                  }).collect { case value if value != Value.Parameter(parameter) => followed(value) }
+                ))
+              finally tracing -= parameter
+            }
+            reached(parameter) = value
+            value
         }
     }
 

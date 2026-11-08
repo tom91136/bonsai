@@ -119,7 +119,8 @@ private object Pures {
 
   private def field(symbol: Symbol)(using Context): Boolean = {
     val name = symbol.name.toString
-    Purity.Syntactic.value(symbol) || symbol.owner.exists && defn.isTupleClass(symbol.owner) && name.startsWith("_")
+    symbol.exists &&
+    (Purity.Syntactic.value(symbol) || symbol.owner.exists && defn.isTupleClass(symbol.owner) && name.startsWith("_"))
   }
 
   private def allowed(symbol: Symbol)(using Context): Boolean = {

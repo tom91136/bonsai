@@ -528,13 +528,26 @@ class Fragments(lines: Lines)(using Context) {
     }))
   }
 
-  /** Types with the type parameters of `method` opened to any type within their bounds. */
-  private class Opened(method: Symbol)(using Context) extends Types.TypeMap {
+  /** Types with the type parameters of `method` opened to any type within their bounds. Bounds stand as type arguments
+    * only; anywhere else, such as an operand of an intersection, the upper bound stands.
+    */
+  private class Opened(method: Symbol)(using Context) extends Types.TypeMap { opened =>
+    private class Closed extends Types.TypeMap {
+      def apply(tpe: Types.Type): Types.Type = (tpe, opened(tpe)) match {
+        case (Types.TypeBounds(_, _), mapped) => mapped
+        case (_, Types.TypeBounds(_, upper))  => upper
+        case (_, mapped)                      => mapped
+      }
+      def inside(tpe: Types.Type): Types.Type = mapOver(tpe)
+    }
+    private val closed = Closed()
+
     def apply(tpe: Types.Type): Types.Type = tpe match {
       case reference: Types.TypeRef if reference.symbol.exists && reference.symbol.owner == method =>
         reference.symbol.info.bounds
       case Types.TypeParamRef(_, _) => Types.TypeBounds.empty
-      case _                        => mapOver(tpe)
+      case Types.AppliedType(_, _)  => mapOver(tpe)
+      case _                        => closed.inside(tpe)
     }
   }
 

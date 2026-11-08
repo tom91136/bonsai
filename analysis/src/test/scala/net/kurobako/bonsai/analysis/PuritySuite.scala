@@ -918,4 +918,22 @@ class PuritySuite extends AnalysisSuite {
       )
     )
   }
+
+  test("a function handed down a long chain of methods that each call the next twice is followed once per method") {
+    val depth   = 40
+    val methods = (1 to depth).map(n => s"  private def m$n(f: Int => Int): Int = m${n - 1}(f) + m${n - 1}(f)")
+    val chained = extract(
+      Seq(
+        "Main.scala"  -> "object Main { def main(args: Array[String]): Unit = println(Chain) }",
+        "Chain.scala" ->
+          s"""object Chain {
+             |  private class Runner(f: Int => Int) { def go: Int = f(1) }
+             |  private def m0(f: Int => Int): Int = new Runner(f).go + new Runner(f).go
+             |${methods.mkString("\n")}
+             |  def quiet: Int = m$depth(_ + 1)
+             |}""".stripMargin
+      )
+    )
+    assertEquals(chained.purity.verdicts("Chain.quiet"), Purity.Verdict.Pure)
+  }
 }

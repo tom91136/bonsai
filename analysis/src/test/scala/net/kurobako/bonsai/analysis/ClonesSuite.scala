@@ -296,6 +296,37 @@ class ClonesSuite extends AnalysisSuite {
     assertEquals(found.size, 1, found.mkString("\n"))
   }
 
+  private def scopedMask(owner: String, shift: Int, mask: String, sign: String, input: String) =
+    s"""object $owner {
+       |  def classMask[R](input: $input): Long = {
+       |    val exponent = (input.bits >>> $shift) & $mask
+       |    val negative = (input.bits & $sign) != 0L
+       |    val classBit =
+       |      if (exponent == $mask) if (negative) 2 else 9
+       |      else if (exponent == 0) if (negative) 4 else 7
+       |      else if (negative) 3 else 8
+       |    1L << classBit
+       |  }
+       |}""".stripMargin
+
+  private def maskCopies(input: String) = Seq(
+    "Scoped.scala" ->
+      "object Scoped { trait Scope; final class Input[-R](val bits: Long); final class Lifted[F[_]](val bits: Long) }",
+    "Binary16.scala" -> scopedMask("Binary16", 10, "0x1f", "0x8000L", input),
+    "Binary32.scala" -> scopedMask("Binary32", 23, "0xff", "0x80000000L", input),
+    "Binary64.scala" -> scopedMask("Binary64", 52, "0x7ff", "0x8000000000000000L", input)
+  )
+
+  test("copies that take a value whose type intersects a type parameter are near duplicates") {
+    val found = findings(maskCopies("Scoped.Input[R & Scoped.Scope]"))
+    assertFinding(found, "near-duplicate-code", "3 copies of", "Binary16.scala", "Binary32.scala", "Binary64.scala")
+  }
+
+  test("copies that take a value whose type applies a type lambda are near duplicates") {
+    val found = findings(maskCopies("Scoped.Lifted[[X] =>> List[X]]"))
+    assertFinding(found, "near-duplicate-code", "3 copies of", "Binary16.scala", "Binary32.scala", "Binary64.scala")
+  }
+
   test("copies that repeat exactly join near duplicates that differ in literals") {
     val found = findings(Seq(
       "First.scala"  -> classMask("First", 23, "0xff", "0x80000000L"),

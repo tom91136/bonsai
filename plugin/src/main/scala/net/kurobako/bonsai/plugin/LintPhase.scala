@@ -668,7 +668,7 @@ private class LintPhase(
     */
   private def wrapped(tree: tpd.Select)(using Context): Unit = Unwrapped.get(tree.name.toString).foreach { method =>
     Calls.peelInlined(tree.qualifier) match {
-      case tpd.Apply(function, List(argument)) =>
+      case tpd.Apply(function, List(argument)) if function.symbol.exists =>
         val symbol = function.symbol
         val owner  = symbol.owner.companionClass
         Wrappers.get(Calls.qualified(owner)).filter((java, converter) =>
