@@ -146,23 +146,28 @@ class Lifter(purity: Purity, hot: String => Boolean = _ => false)(using Context)
       }
       val file    = visible(source).sourcePos.source
       val extents = links.collect { case found if !found.transparent => balanced(file.content(), found.shown.span) }
-      val lifted  = Lifted(
-        Chain(
-          Argument(visible(source), purity, owner),
-          steps,
-          assertion(tree, ancestors),
-          heated(surrounding),
-          yielded(tree, ancestors)
-        ),
-        file,
-        balanced(file.content(), visible(source).span),
-        extents,
-        standalone(tree, ancestors),
-        defined(tree, ancestors),
-        subtracted(tree, ancestors)
-      )
-      (lifted, links.flatMap(_.spine).toList :+ tree)
-    }
+      for {
+        whole <- balanced(file.content(), visible(source).span)
+        ends  <- Option.when(extents.forall(_.isDefined))(extents.flatten)
+      } yield {
+        val lifted = Lifted(
+          Chain(
+            Argument(visible(source), purity, owner),
+            steps,
+            assertion(tree, ancestors),
+            heated(surrounding),
+            yielded(tree, ancestors)
+          ),
+          file,
+          whole,
+          ends,
+          standalone(tree, ancestors),
+          defined(tree, ancestors),
+          subtracted(tree, ancestors)
+        )
+        (lifted, links.flatMap(_.spine).toList :+ tree)
+      }
+    }.flatten
   }
 
   private def heated(owner: Symbol): Boolean =
@@ -203,7 +208,7 @@ class Lifter(purity: Purity, hot: String => Boolean = _ => false)(using Context)
   /** `span` of `content`, ended later where it closes fewer brackets than it opens, which the span of an infix call
     * with a parenthesised argument does.
     */
-  private def balanced(content: Array[Char], span: Span): Span = {
+  private[lifting] def balanced(content: Array[Char], span: Span): Option[Span] = {
     @tailrec def opened(at: Int, depth: Int): Int =
       if (at < span.end) opened(
         at + 1,
@@ -219,7 +224,7 @@ class Lifter(purity: Purity, hot: String => Boolean = _ => false)(using Context)
       if (depth > 0 && end < content.length && (content(end) == ')' || content(end) == ']' || content(end) == '}'))
         closed(end + 1, depth - 1)
       else end
-    Span(span.start, closed(span.end, opened(span.start, 0)))
+    Option.when(span.end <= content.length)(Span(span.start, closed(span.end, opened(span.start, 0))))
   }
 
   private def assertion(tree: tpd.Tree, ancestors: List[tpd.Tree]): Boolean = ancestors.headOption.exists {

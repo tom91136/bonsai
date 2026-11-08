@@ -198,7 +198,8 @@ object Extraction {
           entry,
           link
         )
-      def reading(phase: Collector, files: Vector[Path], classpath: Vector[Path]) = Reader(phase).process(
+      val tastyPaths                                                              = relativePaths(manifest)
+      def reading(phase: Collector, files: Vector[Path], classpath: Vector[Path]) = Reader(phase, tastyPaths).process(
         Array(
           "-from-tasty",
           "-Yretain-trees",
@@ -307,12 +308,20 @@ object Extraction {
     }
   }
 
-  private class Reader(phase: Collector) extends Driver {
-    override protected def newCompiler(using Context): Compiler = Reading(phase)
+  // TASTy names sources relative to the build root, which the reader resolves against the working directory.
+  private def relativePaths(manifest: Manifest): Vector[(String, Path)] = manifest.root.toVector.flatMap { root =>
+    val base = root.toAbsolutePath.normalize
+    manifest.sources.map(_.path.toAbsolutePath.normalize).filter(_.startsWith(base)).map(file =>
+      base.relativize(file).toString.replace(File.separatorChar, '/') -> file
+    )
   }
 
-  private class Reading(phase: Collector) extends TASTYCompiler {
-    override protected def frontendPhases: List[List[Phase]]  = List(List(Unpickling(phase)))
+  private class Reader(phase: Collector, tastyPaths: Vector[(String, Path)]) extends Driver {
+    override protected def newCompiler(using Context): Compiler = Reading(phase, tastyPaths)
+  }
+
+  private class Reading(phase: Collector, tastyPaths: Vector[(String, Path)]) extends TASTYCompiler {
+    override protected def frontendPhases: List[List[Phase]]  = List(List(Unpickling(phase, tastyPaths)))
     override protected def picklerPhases: List[List[Phase]]   = Nil
     override protected def transformPhases: List[List[Phase]] = Nil
     override protected def backendPhases: List[List[Phase]]   = Nil
@@ -320,8 +329,9 @@ object Extraction {
 
   // Collection runs in the reading phase: the compiler skips later phases once any class fails to read, and one
   // class the compiler cannot read back must not hide the rest of the build.
-  private class Unpickling(collector: Collector) extends ReadTasty {
+  private class Unpickling(collector: Collector, tastyPaths: Vector[(String, Path)]) extends ReadTasty {
     override def runOn(units: List[CompilationUnit])(using Context): List[CompilationUnit] = {
+      tastyPaths.foreach((name, path) => ctx.getFile(path.toString).foreach(file => ctx.base.files(name) = file))
       val read = units.flatMap { unit =>
         try readTASTY(unit)(using ctx.fresh.setCompilationUnit(unit)).toList
         catch {

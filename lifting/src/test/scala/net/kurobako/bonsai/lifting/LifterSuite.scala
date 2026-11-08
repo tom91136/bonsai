@@ -3,6 +3,7 @@ package net.kurobako.bonsai.lifting
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Symbols.Symbol
+import dotty.tools.dotc.util.Spans.Span
 import munit.FunSuite
 import net.kurobako.bonsai.collections.*
 import scala.io.Source
@@ -496,6 +497,10 @@ class LifterSuite extends FunSuite {
   test("a reduced body is left for the caller to delimit") {
     assertEquals(argument("pureLambdas", 3).applied("v"), "v != bound && v < 9")
     assertEquals(argument("pureNegated", 1).applied("v"), "-v")
+  }
+
+  test("a span running past the end of its source is not balanced") {
+    assertEquals(Lifter(Always).balanced("f(a".toCharArray, Span(0, 4)), None)
   }
 
   test("every chain of the fixture lifts without failing") {

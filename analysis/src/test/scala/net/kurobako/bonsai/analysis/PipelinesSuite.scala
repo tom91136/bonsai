@@ -59,6 +59,22 @@ class PipelinesSuite extends AnalysisSuite {
     assert(result.graph.nodes.contains("Chains"), result.graph.nodes.keys.toString)
   }
 
+  test("chains are lifted when the analysis runs from another directory than the build root") {
+    given Finding.Level = Finding.Level.Info
+    val result          = extract(
+      Seq(
+        "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Chains.pipeline(Nil)) }",
+        "Chains.scala" -> "object Chains { def pipeline(values: List[Int]): Int = values.map(_ + 1).filter(_ > 0).sum }"
+      ),
+      rooted = true
+    )
+    assertFinding(
+      Pipelines.findings(result.pipelines, result.graph.nodes),
+      "intermediate-collections",
+      "Chains.pipeline: map then filter"
+    )
+  }
+
   test("chains of strict transformations are reported once per method") {
     given Finding.Level = Finding.Level.Info
     assertFinding(found, "intermediate-collections", "Chains.pipeline: map then filter", "use a view")

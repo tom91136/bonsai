@@ -36,7 +36,9 @@ trait AnalysisSuite extends FunSuite {
     * publishes its main output for other builds to use, `dependencies` are compiled onto the classpath outside the
     * build, `absent` are compiled against but left off the analysed classpath, as a dependency a manifest misses is,
     * `concurrent` names methods that run the functions passed to them on other threads, and `twins` holds the sources
-    * each platform twin, module `t0` and on, compiles beside the main ones, in place of those it names alike.
+    * each platform twin, module `t0` and on, compiles beside the main ones, in place of those it names alike. `rooted`
+    * compiles the build's sources under the build directory as their source root, and names it the root of the
+    * manifest, as a build does.
     */
   protected def extract(
       main: Seq[(String, String)],
@@ -51,7 +53,8 @@ trait AnalysisSuite extends FunSuite {
       twins: Seq[Seq[(String, String)]] = Nil,
       hot: Vector[String] = Vector.empty,
       bounded: Vector[Complexity.Bounded] = Vector.empty,
-      removed: Seq[String] = Nil
+      removed: Seq[String] = Nil,
+      rooted: Boolean = false
   ): Extraction.Result =
     inspect(
       main,
@@ -66,7 +69,8 @@ trait AnalysisSuite extends FunSuite {
       twins,
       hot,
       bounded,
-      removed
+      removed,
+      rooted
     )((result, _) => result)
 
   /** As `extract`, with the class directories the build compiled to, which are gone once this returns, for `use` to
@@ -85,15 +89,18 @@ trait AnalysisSuite extends FunSuite {
       twins: Seq[Seq[(String, String)]] = Nil,
       hot: Vector[String] = Vector.empty,
       bounded: Vector[Complexity.Bounded] = Vector.empty,
-      removed: Seq[String] = Nil
+      removed: Seq[String] = Nil,
+      rooted: Boolean = false
   )(use: (Extraction.Result, Vector[Path]) => A): A =
     Scratch.using("bonsai-") { directory =>
-      val external =
+      val sourceRoot = Option.when(rooted)(directory)
+      val external   =
         Option.when(dependencies.nonEmpty)(compile(directory.resolve("dependencies"), dependencies, Vector.empty))
       val missing     = Option.when(absent.nonEmpty)(compile(directory.resolve("absent"), absent, Vector.empty))
-      val mainClasses = compile(directory.resolve("main"), main, external.toVector ++ missing)
+      val mainClasses = compile(directory.resolve("main"), main, external.toVector ++ missing, sourceRoot)
       write(mainClasses, resources)
-      val testClasses = compile(directory.resolve("test"), test, mainClasses +: (external.toVector ++ missing))
+      val testClasses =
+        compile(directory.resolve("test"), test, mainClasses +: (external.toVector ++ missing), sourceRoot)
       removed.foreach(name => Files.delete(directory.resolve("main").resolve(name)))
       def located(module: String, scope: Output.Scope, root: String, sources: Seq[(String, String)]) =
         sources.map((name, _) => Output(module, scope, directory.resolve(root).resolve(name))).toVector
@@ -103,7 +110,7 @@ trait AnalysisSuite extends FunSuite {
       val platforms         = twins.toVector.zipWithIndex.map { (own, index) =>
         val module  = s"t$index"
         val shared  = (mainByName -- own.map(_._1)).toVector
-        val classes = compile(directory.resolve(module), shared ++ own, platformClasspath)
+        val classes = compile(directory.resolve(module), shared ++ own, platformClasspath, sourceRoot)
         (
           Output(module, Output.Scope.Main, classes),
           located(module, Output.Scope.Main, "main", shared) ++ located(module, Output.Scope.Main, module, own)
@@ -119,6 +126,7 @@ trait AnalysisSuite extends FunSuite {
         libraries,
         sources = located("m", Output.Scope.Main, "main", main) ++ located("m", Output.Scope.Test, "test", test) ++
           platforms.flatMap(_._2),
+        root = sourceRoot,
         platforms = platforms.map(_._1.module).toSet,
         jdk = targetJdk
       )
@@ -231,7 +239,12 @@ trait AnalysisSuite extends FunSuite {
     Files.writeString(path, content): Unit
   }
 
-  protected def compile(directory: Path, sources: Seq[(String, String)], extra: Vector[Path]): Path = {
+  protected def compile(
+      directory: Path,
+      sources: Seq[(String, String)],
+      extra: Vector[Path],
+      sourceRoot: Option[Path] = None
+  ): Path = {
     val output = Files.createDirectories(directory.resolve("classes"))
     write(directory, sources)
     val files     = sources.map((name, _) => directory.resolve(name).toString)
@@ -244,7 +257,7 @@ trait AnalysisSuite extends FunSuite {
         "-color:never",
         "-Xmax-fuel",
         "100000"
-      ) ++ files
+      ) ++ sourceRoot.toSeq.flatMap(root => Seq("-sourceroot", root.toString)) ++ files
     val reporting = Promise[Reporter]()
     val thread    = Thread(
       Thread.currentThread.getThreadGroup,
