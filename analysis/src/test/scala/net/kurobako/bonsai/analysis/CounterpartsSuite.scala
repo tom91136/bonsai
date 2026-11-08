@@ -11,41 +11,6 @@ class CounterpartsSuite extends AnalysisSuite {
 
   private def of(found: Vector[Finding], rule: Finding.Rule): Vector[Finding] = found.filter(_.rule == rule)
 
-  private val Planning =
-    """package plan
-      |enum Kind { case Convert, Recode }
-      |case class Job(id: Int, name: String, kind: Kind)
-      |case class Plan(jobs: Vector[Job])
-      |case class Estimate(bytes: Long)
-      |object Planner {
-      |  def existingTarget(name: String): Option[String] = Option.when(name.isEmpty)(name)
-      |  def estimate(name: String): Estimate = Estimate(name.length.toLong)
-      |  def stamp(name: String): String = name.trim
-      |  def lookup(name: String): Int = name.length
-      |  def planRoot(root: String): Plan =
-      |    Plan(Vector(root).flatMap(name =>
-      |      existingTarget(name) match {
-      |        case Some(_) => None
-      |        case None    => Some(Job(estimate(stamp(name)).bytes.toInt + Estimate(0L).bytes.toInt, stamp(name), Kind.Convert))
-      |      }
-      |    ))
-      |}
-      |object Vncg {
-      |  def plan(source: String, extra: Int): Plan =
-      |    Plan(Vector(source).flatMap(entry =>
-      |      Planner.existingTarget(entry).fold(Some(Job(Planner.estimate(Planner.stamp(entry)).bytes.toInt + Estimate(1L).bytes.toInt + extra, Planner.stamp(entry), Kind.Convert)))(_ => None)
-      |    ))
-      |  def unrelated(name: String): Int = Planner.lookup(name) + Planner.lookup(Planner.stamp(name))
-      |}""".stripMargin
-
-  test("two methods that use the same rarely used symbols of the build are parallel implementations") {
-    val found = of(findings(Seq("Planning.scala" -> Planning)), Finding.Rule.ParallelImplementation)
-    assertEquals(found.size, 1, found.mkString("\n"))
-    assertEquals(found.head.level, Finding.Level.Info)
-    assert(found.head.detail.contains("Planner.planRoot and Vncg.plan"), found.head.detail)
-    assert(found.head.detail.contains("Estimate, Job, Kind, Plan"), found.head.detail)
-  }
-
   private val Mirroring =
     """package conv
       |enum Outcome[+R] {

@@ -105,7 +105,6 @@ object Finding {
     val MisplacedMember: Rule         = rule("misplaced-member")
     val SatelliteType: Rule           = rule("satellite-type")
     val EnumDispatchFunction: Rule    = rule("enum-dispatch-function")
-    val ParallelImplementation: Rule  = rule("parallel-implementation")
     val ParallelFamily: Rule          = rule("parallel-family")
     val MirroredCases: Rule           = rule("mirrored-cases")
     val CaseDeterminedField: Rule     = rule("case-determined-field")

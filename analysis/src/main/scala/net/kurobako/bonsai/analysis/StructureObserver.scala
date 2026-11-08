@@ -70,7 +70,6 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
   private val extents    = mutable.Map.empty[String, (Int, Int)]
   private val named      = mutable.ArrayBuffer.empty[(String, String, String, String, Node)]
   private val typed      = mutable.ArrayBuffer.empty[(String, Node)]
-  private val bodies     = mutable.ArrayBuffer.empty[Counterparts.Body]
   private val mirrors    = mutable.ArrayBuffer.empty[Counterparts.Mirror]
   private val wrapping   = Wrappers(symbols, lines)
   // Built once every class is declared, when the phase finishes.
@@ -231,18 +230,6 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
     })
   }
 
-  // The data a class holds, and the code the compiler adds, say nothing of the logic that reads them, and the cases of
-  // an enum are one choice between them.
-  private def counted(symbol: Symbol)(using Context): Option[Symbol] = {
-    val target = definition(symbol)
-    val fields = target.isOneOf(Flags.Accessor | Flags.ParamAccessor) && !target.owner.is(Flags.ModuleClass)
-    val parent = target.moduleClass.orElse(target)
-    if (fields || target.name.toString.contains('$') || target.name.is(DefaultGetterName)) None
-    else if (target.isAllOf(Flags.EnumCase) || parent.is(Flags.Case) && parent.owner.linkedClass.is(Flags.Enum))
-      Some(parent.owner.linkedClass)
-    else Some(target)
-  }
-
   private def mirror(method: Symbol, info: Node, cases: List[tpd.CaseDef])(using Context): Unit = {
     val pairs = cases.flatMap { clause =>
       for {
@@ -263,22 +250,14 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
     }
   }
 
-  /** Records the symbols of the build a method of production code names, which the rules comparing methods read. */
+  /** Records the raw calls a library wrapper stands for, and the matches of production code that translate cases. */
   def method(method: Symbol, body: tpd.Tree, info: Node)(using Context): Unit = {
     wrapping.method(method, body, info)
     if (!info.test && !info.generated) {
-      val uses = mutable.Set.empty[String]
-      body.foreachSubTree {
-        case reference: tpd.RefTree if reference.symbol.exists && !reference.symbol.ownersIterator.contains(method) =>
-          counted(reference.symbol).filter(key(_).isDefined).foreach(uses += qualifiedName(_))
-        case _ => ()
-      }
       body.foreachSubTree {
         case tpd.Match(_, cases) => mirror(method, info, cases)
         case _                   => ()
       }
-      if (uses.nonEmpty)
-        bodies += Counterparts.Body(qualifiedName(method), info.name, lines.line(method.sourcePos), uses.toSet)
     }
   }
 
@@ -366,7 +345,7 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
       grouped.toVector,
       dispatched.toVector,
       extents.view.mapValues((start, end) => end - start + 1).toMap,
-      Counterparts.Model(bodies.toVector, mirrors.toVector, families),
+      Counterparts.Model(mirrors.toVector, families),
       wrapping.bypasses
     )
   }
