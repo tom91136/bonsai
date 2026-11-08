@@ -230,10 +230,11 @@ class JavaModelSuite extends AnalysisSuite {
     )
   }
 
-  test("Java copies that differ in more literals than their size carries are not near duplicates") {
+  test("Java copies that differ in more independent literals than their size carries are not near duplicates") {
     val found = cloned(
-      fragment("demo.First", (8, 14), (100, 140), 30, exact = 1L, loose = 9L, literals = "a,b,c,d"),
-      fragment("demo.Second", (8, 14), (200, 240), 30, exact = 2L, loose = 9L, literals = "e,f,g,h")
+      fragment("demo.First", (8, 14), (100, 140), 30, exact = 1L, loose = 9L, literals = "p,x,m,s"),
+      fragment("demo.Second", (8, 14), (200, 240), 30, exact = 2L, loose = 9L, literals = "q,x,n,t"),
+      fragment("demo.Third", (8, 14), (300, 340), 30, exact = 3L, loose = 9L, literals = "r,y,m,t")
     )
     assert(found.isEmpty, found.mkString("\n"))
   }

@@ -107,8 +107,18 @@ object Algebra {
     }
   }
 
+  /** An argument computed from the arguments of the fields `sources`, as `template` with `$n` standing for field `n`.
+    */
+  case class Derivation(sources: Vector[Int], template: String)
+
   /** The arguments of one construction aligned with the product's fields, and where it happens. */
-  case class Site(arguments: Vector[Argument], test: Boolean, own: Boolean, location: String)
+  case class Site(
+      arguments: Vector[Argument],
+      test: Boolean,
+      own: Boolean,
+      location: String,
+      derivations: Map[Int, Derivation] = Map.empty
+  )
 
   /** Whether every site is test code, so a conclusion drawn from them says more about tests than the design. */
   def onlyTests(sites: Vector[Site]): Boolean = sites.nonEmpty && sites.forall(_.test)
@@ -255,6 +265,11 @@ object Algebra {
         )
       }
     }.toVector
+    val derived = written.view.flatMap { product =>
+      model.sites.get(product.name).toVector.flatMap(derivedFields(product, _)).flatMap(
+        Finding.at(nodes, product.node, Finding.Rule.DerivedField, _, Finding.Level.Info)
+      )
+    }.toVector
     val enumerations = model.enumerations.flatMap { hierarchy =>
       val name                 = Finding.simple(hierarchy.name)
       val (level, consequence) =
@@ -269,7 +284,7 @@ object Algebra {
         level
       )
     }
-    sums ++ duplicates ++ constructions ++ determined ++ enumerations
+    sums ++ duplicates ++ constructions ++ determined ++ derived ++ enumerations
   }
 
   /** Names relative to their longest common prefix, so same-named types in different owners stay distinguishable. */
@@ -336,6 +351,23 @@ object Algebra {
       if sites.exists(_.arguments(at) != value)
     } yield s"$name.${field.name} is always ${value.shown} when ${tag.name} is ${cases.map(_._1).sorted.mkString(", ")} " +
       s"across ${cases.map(_._2).sum} constructions; other constructions give it other values, so it may belong with the case"
+  }
+
+  private val Placeholder = "\\$(\\d+)".r
+
+  /** The fields every production construction computes the same way from the arguments of other fields. */
+  private def derivedFields(product: Product, sites: Vector[Site]): Vector[String] = {
+    val production = sites.filterNot(_.test)
+    val name       = Finding.simple(product.name)
+    val plural     = if (production.sizeIs == 1) "construction" else "constructions"
+    production.flatMap(_.derivations).groupMap(_._1)(_._2).toVector.sortBy(_._1).collect {
+      case (index, found) if found.sizeIs == production.size && found.distinct.sizeIs == 1 =>
+        val derivation = found.head
+        val formula    =
+          Placeholder.replaceAllIn(derivation.template, matched => product.fields(matched.group(1).toInt).name)
+        s"$name.${product.fields(index).name} is always $formula across ${production.size} $plural; " +
+          s"it follows from ${derivation.sources.map(product.fields(_).name).mkString(", ")} and need not be stored"
+    }
   }
 
   /** Correlations between the optional and flag arguments of every construction of a product. */

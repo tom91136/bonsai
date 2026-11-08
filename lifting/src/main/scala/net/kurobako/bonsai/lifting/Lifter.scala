@@ -157,7 +157,9 @@ class Lifter(purity: Purity, hot: String => Boolean = _ => false)(using Context)
         file,
         balanced(file.content(), visible(source).span),
         extents,
-        standalone(tree, ancestors)
+        standalone(tree, ancestors),
+        defined(tree, ancestors),
+        subtracted(tree, ancestors)
       )
       (lifted, links.flatMap(_.spine).toList :+ tree)
     }
@@ -231,6 +233,24 @@ class Lifter(purity: Purity, hot: String => Boolean = _ => false)(using Context)
     consumer.orElse(ancestors.headOption.collect {
       case tpd.Select(qualifier, name) if qualifier eq tree => name.toString
     }).contains("by")
+
+  private def defined(tree: tpd.Tree, ancestors: List[tpd.Tree]): Option[String] = ancestors.headOption.collect {
+    case definition: tpd.ValDef
+        if (definition.rhs eq tree) && !definition.symbol.owner.isClass && !definition.symbol.is(Flags.Mutable) =>
+      definition.symbol.name.toString
+  }
+
+  private def subtracted(tree: tpd.Tree, ancestors: List[tpd.Tree]): Option[String] = ancestors.headOption.flatMap {
+    case tpd.Apply(tpd.Select(minuend, name), List(subtrahend)) if name.toString == "-" && (subtrahend eq tree) =>
+      Calls.peelInlined(minuend) match {
+        case tpd.Select(collection, size) if size.toString == "size" || size.toString == "length" =>
+          Some(Texts.of(collection))
+        case tpd.Apply(tpd.Select(collection, size), Nil) if size.toString == "size" || size.toString == "length" =>
+          Some(Texts.of(collection))
+        case _ => None
+      }
+    case _ => None
+  }
 
   private def standalone(tree: tpd.Tree, ancestors: List[tpd.Tree]): Boolean = ancestors.headOption.exists {
     case definition: tpd.ValDef  => definition.rhs eq tree

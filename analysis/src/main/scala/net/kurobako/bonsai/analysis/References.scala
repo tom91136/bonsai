@@ -82,6 +82,8 @@ private[analysis] class References(components: Components, fragments: Fragments)
           comparisons.define(symbol)
         case value: tpd.ValDef if symbol.is(Flags.Synthetic) && !symbol.owner.isClass =>
           callSites.bind(symbol, value.rhs)
+        case value: tpd.ValDef if !symbol.owner.isClass && !symbol.isOneOf(Flags.Mutable | Flags.Lazy) =>
+          callSites.local(symbol, value.rhs)
         case method: tpd.DefDef if symbol.name.is(DefaultGetterName) => callSites.default(symbol, method.rhs)
         case tpd.TypeDef(_, _) if symbol.isAliasType && !symbol.is(Flags.Opaque) =>
           recorder.member(symbol)

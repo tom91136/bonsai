@@ -143,6 +143,76 @@ class SmellsSuite extends AnalysisSuite {
     )
   }
 
+  private val StablePair =
+    "object Runner { def a: Int = Recode.transcode(\"a\", Marker.Name, 1); def b: Int = Recode.transcode(\"b\", Marker.Name, 2) }"
+
+  private def productionConstants(tests: String): Vector[String] =
+    recoding(StablePair, Seq("Check.scala" -> tests)).filter(_.rule == Finding.Rule.ConstantArgument).map(_.detail)
+
+  test("a constant argument names tests that pass values the analysis cannot read") {
+    val found = productionConstants("object Check { def c(marker: String): Int = Recode.transcode(\"c\", marker, 3) }")
+    assert(found.exists(_.contains("tests pass values the analysis cannot read")), found.mkString("\n"))
+    assert(!found.exists(_.contains("tests pass other values")), found.mkString("\n"))
+  }
+
+  test("a constant argument names tests that pass other values") {
+    val found = productionConstants("object Check { def c: Int = Recode.transcode(\"c\", Marker.Other, 3) }")
+    assert(found.exists(_.endsWith("tests pass other values")), found.mkString("\n"))
+  }
+
+  test("a constant argument names tests that pass other or unreadable values") {
+    val found = productionConstants(
+      "object Check { def c(marker: String): Int = Recode.transcode(\"c\", marker, 3); def d: Int = Recode.transcode(\"d\", Marker.Other, 4) }"
+    )
+    assert(found.exists(_.endsWith("tests pass other or unreadable values")), found.mkString("\n"))
+  }
+
+  private def folded(body: String): Vector[Finding] =
+    findings("Tidy.scala" -> s"object Tidy { $body }").filter(_.rule.id == "folded-none")
+
+  test("an option parameter whose only use folds None to a constant has that constant as its default") {
+    val found = folded(
+      """def plan(root: String, minSize: Option[Long] = None): Long = minSize.fold(50L << 20)(_ + root.length)
+        |def limit(floor: Option[Int] = None): Int = floor.getOrElse(2)
+        |def label(name: Option[String] = None): String = name.map(_.trim).getOrElse("none")""".stripMargin
+    )
+    assertFinding(found, "folded-none", "Tidy.plan(root, minSize).minSize", "52428800")(using Finding.Level.Info)
+    assertFinding(found, "folded-none", "Tidy.limit(floor).floor", "2")(using Finding.Level.Info)
+    assertFinding(found, "folded-none", "Tidy.label(name).name", "\"none\"")(using Finding.Level.Info)
+  }
+
+  test("an option parameter that is used otherwise, or folds to something that is no constant, is no default") {
+    val bodies = Seq(
+      "def f(x: Option[Int] = None): Int = x.getOrElse(2) + x.size",
+      "def f(x: Option[Int] = None): Int = if (x.isDefined) x.getOrElse(2) else 0",
+      "def f(x: Option[Int] = None): Int = x.fold(1)(_ + 1) + x.getOrElse(2)",
+      "def f(x: Option[Int] = None, y: Int = 1): Int = x.getOrElse(y)",
+      "def g(x: Option[Int]): Int = x.getOrElse(0); def f(x: Option[Int] = None): Int = g(x)",
+      "def f(x: Option[Int]): Int = x.getOrElse(2)",
+      "def f(x: Int = 1): Int = Option(x).getOrElse(2)"
+    )
+    bodies.foreach(body => assertEquals(folded(body), Vector.empty, body))
+  }
+
+  test("an option parameter of an exported method is a default to move too") {
+    val result = extract(
+      Seq("Client.scala" ->
+        "package lib\nobject Client { def fetch(timeout: Option[Int] = None): Int = timeout.getOrElse(30) }"),
+      libraries = Set("m")
+    )
+    val found = Smells.findings(result.smells, result.algebra.products, result.graph.nodes)
+    assertFinding(found, "folded-none", "Client.fetch(timeout).timeout", "30")(using Finding.Level.Info)
+  }
+
+  test("an overriding option parameter is no default to move") {
+    val found = findings(
+      "Tidy.scala" ->
+        """trait Base { def f(x: Option[Int] = None): Int }
+          |object Tidy extends Base { def f(x: Option[Int] = None): Int = x.getOrElse(2) }""".stripMargin
+    )
+    assertEquals(found.filter(_.rule.id == "folded-none"), Vector.empty)
+  }
+
   test("a string default passed explicitly is redundant") {
     assertFinding(
       findings(

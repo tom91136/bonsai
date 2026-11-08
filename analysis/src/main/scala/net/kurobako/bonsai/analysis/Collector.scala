@@ -20,6 +20,7 @@ import dotty.tools.dotc.core.Types.TypeRef
 import java.nio.file.PathMatcher
 import net.kurobako.bonsai.java.{Model => JavaModel}
 import net.kurobako.bonsai.lifting.{Purity as _, *}
+import scala.annotation.tailrec
 import scala.annotation.targetName
 import scala.collection.mutable
 import scala.util.control.NonFatal
@@ -482,9 +483,70 @@ private[analysis] class Collector(
         suppressed = suppressions(method),
         rest = Shapes.clauses(method).drop(1).flatten,
         tested = Some(tested(method, body)),
+        folded = folded(method, body),
         line = lines.line(method.sourcePos)
       )
     }
+
+  private def literal(argument: Algebra.Argument): Boolean = argument match {
+    case Algebra.Argument.Absent | Algebra.Argument.Present | Algebra.Argument.Unknown => false
+    case _                                                                             => true
+  }
+
+  /** The optional parameters with a default of the first term parameter list that `body` only folds to one constant, by
+    * index.
+    */
+  private def folded(method: Symbol, body: tpd.Tree)(using Context): Map[Int, String] = {
+    @tailrec
+    def bare(tree: tpd.Tree): tpd.Tree = tree match {
+      case tpd.TypeApply(function, _) => bare(function)
+      case other                      => other
+    }
+    @tailrec
+    def receiver(tree: tpd.Tree): Option[Symbol] = Calls.peel(tree) match {
+      case reference @ tpd.Ident(_)     => Some(reference.symbol)
+      case tpd.Apply(function, List(_)) =>
+        bare(function) match {
+          case tpd.Select(inner, name) if name.toString == "map" => receiver(inner)
+          case _                                                 => None
+        }
+      case _ => None
+    }
+    def folding(function: tpd.Tree, name: String): Option[Symbol] = bare(function) match {
+      case tpd.Select(inner, called) if called.toString == name && function.symbol.owner == defn.OptionClass =>
+        receiver(inner)
+      case _ => None
+    }
+    val optional = Calls.termClauses(method).headOption.getOrElse(Nil).zipWithIndex.filter((parameter, _) =>
+      parameter.is(Flags.HasDefault) && parameter.info.widenDealias.isRef(defn.OptionClass)
+    )
+    if (optional.isEmpty) Map.empty
+    else {
+      val folds = body.filterSubTrees {
+        case tpd.Apply(tpd.Apply(function, List(_)), List(_)) => folding(function, "fold").isDefined
+        case tpd.Apply(function, List(_))                     => folding(function, "getOrElse").isDefined
+        case _                                                => false
+      }.flatMap {
+        case tpd.Apply(tpd.Apply(function, List(default)), List(_)) => folding(function, "fold").map(_ -> default)
+        case tpd.Apply(function, List(default))                     => folding(function, "getOrElse").map(_ -> default)
+        case _                                                      => None
+      }
+      optional.flatMap { (parameter, index) =>
+        val uses = body.filterSubTrees {
+          case reference: tpd.Ident => reference.symbol == parameter
+          case _                    => false
+        }.size
+        folds.collect { case (`parameter`, default) => Predicates.argument(default) } match {
+          case constants if constants.sizeIs == uses && constants.forall(_.exists(literal(_))) =>
+            constants.distinct match {
+              case List(Some(only)) => Some(index -> only.shown)
+              case _                => None
+            }
+          case _ => None
+        }
+      }.toMap
+    }
+  }
 
   /** The parameters of the first term parameter list that the first statement of `body` tests, or that `body` only
     * passes to calls of methods of the build other than constructors, by index.

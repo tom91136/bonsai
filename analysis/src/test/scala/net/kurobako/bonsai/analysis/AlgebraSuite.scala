@@ -858,4 +858,110 @@ class AlgebraSuite extends AnalysisSuite {
     )
     assert(undeclared.exists(_.rule.id == "common-factor"), undeclared.mkString("\n"))
   }
+
+  private val Archived = "Archive.scala" -> "case class Archive(path: String, isRar: Boolean, size: Int)"
+
+  private def derived(main: String): Vector[Finding] =
+    findings(Archived, "Main.scala" -> main).filter(_.rule.id == "derived-field")
+
+  test("a field every construction computes from another is derived, also through a local") {
+    val found = findings(
+      Archived,
+      "Main.scala" ->
+        """object Main {
+          |  def open(path: String, size: Int) = { val isRar = path.endsWith(".rar"); Archive(path, isRar, size) }
+          |  def named(name: String) = Archive(name, name.endsWith(".rar"), 1)
+          |}""".stripMargin
+    )
+    assertFinding(
+      found,
+      "derived-field",
+      "Archive.isRar is always path.endsWith(\".rar\") across 2 constructions",
+      "follows from path"
+    )(using
+      Finding.Level.Info
+    )
+  }
+
+  test("a single construction that computes a field from another is derived") {
+    assertFinding(
+      findings(
+        Archived,
+        "Main.scala" -> "object Main { def one(name: String) = Archive(name, name.endsWith(\".rar\"), 1) }"
+      ),
+      "derived-field",
+      "Archive.isRar"
+    )(using Finding.Level.Info)
+  }
+
+  test("a field computed from another with varargs is derived") {
+    assertFinding(
+      findings(
+        Archived,
+        "Main.scala" ->
+          """object Ext { def has(name: String, exts: String*): Boolean = exts.exists(name.endsWith) }
+            |object Main { def one(name: String) = Archive(name, Ext.has(name, "rar", "7z"), 1) }""".stripMargin
+      ),
+      "derived-field",
+      "Archive.isRar is always Ext.has(path, \"rar\", \"7z\")"
+    )(using Finding.Level.Info)
+  }
+
+  test("a field read from the file system at construction is no derived field") {
+    assertEquals(
+      findings(
+        "Sized.scala" -> "case class Sized(path: java.nio.file.Path, size: Long)",
+        "Main.scala"  ->
+          """import java.nio.file.{Files, Path}
+            |object Main {
+            |  def a(p: Path) = Sized(p, Files.size(p))
+            |  def b(q: Path) = Sized(q, Files.size(q))
+            |}""".stripMargin
+      ).filter(_.rule.id == "derived-field"),
+      Vector.empty
+    )
+  }
+
+  test("a field some construction gives another value is no derived field") {
+    assertEquals(
+      derived(
+        """object Main {
+          |  def a(name: String) = Archive(name, name.endsWith(".rar"), 1)
+          |  def b(name: String) = Archive(name, true, 2)
+          |}""".stripMargin
+      ),
+      Vector.empty
+    )
+  }
+
+  test("a field computed differently at two constructions is no derived field") {
+    assertEquals(
+      derived(
+        """object Main {
+          |  def a(name: String) = Archive(name, name.endsWith(".rar"), 1)
+          |  def b(name: String) = Archive(name, name.endsWith(".zip"), 2)
+          |}""".stripMargin
+      ),
+      Vector.empty
+    )
+  }
+
+  test("a field computed from something that is no other field, or by a branch, is no derived field") {
+    val twice = Seq(
+      "def a(name: String, other: String) = Archive(name, other.endsWith(\".rar\"), 1); def b(name: String, other: String) = Archive(name, other.endsWith(\".rar\"), 2)",
+      "def a(name: String) = Archive(name, if (name.isEmpty) true else false, 1); def b(name: String) = Archive(name, if (name.isEmpty) true else false, 2)",
+      "def a(name: String) = Archive(name, name.endsWith(\".rar\"), 1); def b(a: Archive, name: String) = a.copy(path = name)"
+    )
+    twice.foreach(body => assertEquals(derived(s"object Main { $body }"), Vector.empty, body))
+  }
+
+  test("a field passed the same value as another is not derived from it") {
+    assertEquals(
+      findings(
+        "Pair.scala" -> "case class Pair(left: String, right: String)",
+        "Main.scala" -> "object Main { def a(x: String) = Pair(x, x); def b(y: String) = Pair(y, y) }"
+      ).filter(_.rule.id == "derived-field"),
+      Vector.empty
+    )
+  }
 }

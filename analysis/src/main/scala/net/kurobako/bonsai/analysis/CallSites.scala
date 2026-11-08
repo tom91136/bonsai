@@ -53,6 +53,7 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   private val negatedCalls = mutable.Map.empty[Symbol, Int]
   private val tracked      = mutable.Map.empty[Symbol, Boolean]
   private val bindings     = mutable.Map.empty[Symbol, tpd.Tree]
+  private val locals       = mutable.Map.empty[Symbol, tpd.Tree]
   private val defaults     = mutable.Map.empty[Symbol, tpd.Tree]
   private val generics     = mutable.Map.empty[Symbol, (String, String, Vector[String])]
   private val arguments    = mutable.Map.empty[(Symbol, Int), mutable.Map[String, Int]]
@@ -72,8 +73,11 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
     spares.filterNot(spare => redundant((spare.node, spare.parameter))).toVector
   }
 
-  private def site(call: Pending, arguments: Vector[Algebra.Argument] = Vector.empty): Algebra.Site =
-    Algebra.Site(arguments, call.test, call.own, call.location)
+  private def site(
+      call: Pending,
+      arguments: Vector[Algebra.Argument] = Vector.empty,
+      derivations: Map[Int, Algebra.Derivation] = Map.empty
+  ): Algebra.Site = Algebra.Site(arguments, call.test, call.own, call.location, derivations)
 
   /** Classifies the calls kept, with `callees` those that have a model, and notes the default arguments they repeat and
     * the defaults no call overrides.
@@ -89,7 +93,10 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
       subject            <- callees.get(callee)
       aligned = recorded.filter(_.arguments.size == subject.arity) if aligned.nonEmpty
     } {
-      sites(subject.key) = aligned.map(call => site(call, call.arguments.map(classify(_)).toVector)).toVector
+      sites(subject.key) = aligned.map { call =>
+        val derived = if (callee.isClass) derivations(call.arguments) else Map.empty[Int, Algebra.Derivation]
+        site(call, call.arguments.map(classify(_)).toVector, derived)
+      }.toVector
       if (callee.isClass) forwarded(subject.key) = aligned.flatMap(expand(_, pending)).toVector
     }
     for {
@@ -308,6 +315,8 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
 
   def bind(symbol: Symbol, value: tpd.Tree): Unit = bindings(symbol) = value
 
+  def local(symbol: Symbol, value: tpd.Tree): Unit = locals(symbol) = value
+
   def default(getter: Symbol, value: tpd.Tree): Unit = defaults(getter) = value
 
   /** Keeps a construction of a case class, or a call to a method of the build, for classification at the end. A
@@ -434,6 +443,67 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   // The tree a named argument's binding or a default getter stands for.
   private def resolved(tree: tpd.Tree, depth: Int = 4)(using Context): tpd.Tree =
     binding(tree).filter(_ => depth > 0).fold(tree)(resolved(_, depth - 1))
+
+  // The tree a local value or a named argument's binding stands for.
+  private def origin(tree: tpd.Tree, depth: Int = 3)(using Context): tpd.Tree = {
+    val bare = Calls.peel(tree)
+    locals.get(bare.symbol).orElse(bindings.get(bare.symbol)).filter(_ => depth > 0).fold(bare)(origin(_, depth - 1))
+  }
+
+  // The arguments that are a plain value are the sources the others may be computed from.
+  private def derivations(arguments: List[tpd.Tree])(using Context): Map[Int, Algebra.Derivation] = {
+    val sources = arguments.zipWithIndex.collect {
+      case (argument, index) if sourceable(argument) => Calls.peel(argument).symbol -> index
+    }.toMap
+    if (sources.isEmpty) Map.empty
+    else
+      arguments.zipWithIndex.flatMap { (argument, index) =>
+        val used = mutable.SortedSet.empty[Int]
+        Option.unless(omitted(argument))(origin(argument)).flatMap(template(_, sources, index, used)).collect {
+          case text if used.nonEmpty && !Single.matches(text) => index -> Algebra.Derivation(used.toVector, text)
+        }
+      }.toMap
+  }
+
+  private val Single = "\\$\\d+".r
+
+  private val WorldPackages = Vector("java.io.", "java.nio.file.", "java.net.http.", "scala.io.", "scala.sys.")
+
+  private def sourceable(argument: tpd.Tree)(using Context): Boolean = {
+    val bare = Calls.peel(argument)
+    bare.isInstanceOf[tpd.Ident] && bare.symbol.exists && bare.symbol.isTerm &&
+    !bare.symbol.isOneOf(Flags.Method | Flags.Module) && !omitted(argument)
+  }
+
+  // The expression as text when it only applies methods to the sources and constants, which is how a field computed
+  // from others reads the same wherever it is built.
+  private def template(tree: tpd.Tree, sources: Map[Symbol, Int], own: Int, used: mutable.SortedSet[Int])(using
+      Context
+  ): Option[String] = {
+    def all(trees: List[tpd.Tree]): Option[List[String]] =
+      trees.foldRight(Option(List.empty[String]))((tree, rest) => rest.flatMap(tail => text(tree).map(_ :: tail)))
+    def text(tree: tpd.Tree): Option[String] = Calls.peel(tree) match {
+      case ident @ tpd.Ident(name) =>
+        sources.get(ident.symbol).filter(_ != own) match {
+          case Some(index)                                               => used += index; Some(s"$$$index")
+          case None if ident.symbol.isOneOf(Flags.Method | Flags.Module) => Some(name.toString)
+          case None                                                      => None
+        }
+      case select @ tpd.Select(qualifier, name) if !readsWorld(select.symbol) =>
+        text(qualifier).map(inner => s"$inner.$name")
+      case tpd.TypeApply(function, _)   => text(function)
+      case tpd.Apply(function, applied) =>
+        text(function).flatMap(inner => all(applied).map(rest => s"$inner(${rest.mkString(", ")})"))
+      case literal: tpd.Literal        => Some(literal.show)
+      case tpd.SeqLiteral(elements, _) => all(elements).map(rest => rest.mkString(", "))
+      case _                           => None
+    }
+    text(tree)
+  }
+
+  // A value read from the file system or network is a snapshot of it, which later reads need not agree with.
+  private def readsWorld(symbol: Symbol)(using Context): Boolean =
+    WorldPackages.exists(symbol.owner.fullName.toString.startsWith(_))
 
   /** The value two arguments are both known to have, shown; an option is known by its contents. */
   private def same(left: tpd.Tree, right: tpd.Tree)(using Context): Option[String] = {

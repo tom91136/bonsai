@@ -29,6 +29,7 @@ object Smells {
       suppressed: Set[String] = Set.empty,
       rest: Vector[Algebra.Field] = Vector.empty,
       tested: Option[Set[Int]] = None,
+      folded: Map[Int, String] = Map.empty,
       line: Int = 0
   ) {
     def short: String = Finding.short(name)
@@ -257,7 +258,15 @@ object Smells {
         )
       }
     }
+    val folds = reviewed.flatMap { method =>
+      method.folded.toVector.sorted.flatMap { (index, value) =>
+        val detail = s"${method.short}.${method.fields(index).name} is an option that is only ever folded to $value " +
+          "when empty; that value is its natural default"
+        Finding.at(nodes, method.node, Finding.Rule.FoldedNone, detail, Finding.Level.Info, line = method.line)
+      }
+    }
     arguments ++ results ++ unwrappedTries ++ unused ++ inverted ++ modules ++ implementations ++ fixed ++ redundant ++
+      folds ++
       spare ++
       clumps(reviewed.filterNot(_.test), products, hot.getOrElse(Set.empty), model.sites).flatMap((key, detail, line) =>
         Finding.at(nodes, key, Finding.Rule.DataClump, detail, line = line)
@@ -334,6 +343,7 @@ object Smells {
     else {
       val columns    = calls.map(_.arguments).transpose
       val production = calls.filterNot(_.test).map(_.arguments).transpose
+      val tested     = calls.filter(_.test).map(_.arguments).transpose
       // A flag the method only stores is data of the value it builds, which no branch splits, and an inline method is
       // specialised on its literal at every expansion already, and a flag tested deeper in the body leaves one body
       // shared, which a method per value would duplicate.
@@ -385,7 +395,13 @@ object Smells {
           val detail  = s"${method.short}.${field.name} is a literal at all ${calls.size} calls " +
             s"($enabled true, ${calls.size - enabled} false); each value selects a different method"
           Some((Finding.Rule.FlagArgument, detail, Some(field.name), Finding.Level.Warning))
-        } else productionConstant(method, field, production.lift(index).getOrElse(Vector.empty))
+        } else
+          productionConstant(
+            method,
+            field,
+            production.lift(index).getOrElse(Vector.empty),
+            tested.lift(index).getOrElse(Vector.empty)
+          )
       }.toVector
     }
   }
@@ -398,19 +414,26 @@ object Smells {
   private def productionConstant(
       method: Method,
       field: Algebra.Field,
-      production: Vector[Argument]
+      production: Vector[Argument],
+      tests: Vector[Argument]
   ): Option[(Finding.Rule, String, Option[String], Finding.Level)] =
     Option.when(
       !method.shared && production.sizeIs >= MinimumCalls && known(production) && production.distinct.sizeIs == 1
-    )(
+    ) {
+      val unreadable = !known(tests)
+      val other      = tests.exists(value => known(Vector(value)) && value != production.head)
+      val reason     =
+        if (unreadable && other) "other or unreadable values"
+        else if (unreadable) "values the analysis cannot read"
+        else "other values"
       (
         Finding.Rule.ConstantArgument,
         s"${method.short}.${field.name} is always ${production.head.shown} across ${production.size} production " +
-          "calls; tests pass other values",
+          s"calls; tests pass $reason",
         Some(field.name),
         Finding.Level.Info
       )
-    )
+    }
 
   // Flags that between them take three of their four combinations are three states, which an enum names; each flag
   // belongs to at most one pair.

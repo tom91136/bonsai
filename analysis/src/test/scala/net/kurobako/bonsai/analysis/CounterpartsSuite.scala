@@ -121,4 +121,46 @@ class CounterpartsSuite extends AnalysisSuite {
     )
     assertEquals(found.head.level, Finding.Level.Info)
   }
+
+  private def planned(recodes: Int) = {
+    val calls = (1 to recodes).map(index =>
+      s"""else if (e.startsWith("r$index")) job(e, Kind.Recode, nested = false)"""
+    )
+    s"""enum Kind { case Convert, Recode }
+       |case class Job(id: Int, source: String, kind: Kind, nested: Boolean)
+       |object Planner {
+       |  def planRoot(names: Vector[String], hint: Boolean): Vector[Job] = {
+       |    var id   = 0
+       |    val jobs = Vector.newBuilder[Job]
+       |    def job(source: String, kind: Kind, nested: Boolean): Unit = {
+       |      jobs += Job(id, source, kind, nested)
+       |      id += 1
+       |    }
+       |    names.foreach { e =>
+       |      if (e.isEmpty) job(e, Kind.Convert, hint)
+       |      else if (e.startsWith("c")) job(e, Kind.Convert, e.length > 3)
+       |      ${calls.mkString("\n      ")}
+       |    }
+       |    jobs.result()
+       |  }
+       |}""".stripMargin
+  }
+
+  private def determined(recodes: Int): Vector[String] = {
+    val result = extract(Seq("Planned.scala" -> planned(recodes)))
+    of(Algebra.findings(result.algebra, result.graph.nodes), Finding.Rule.CaseDeterminedField).map(_.detail)
+  }
+
+  test("a field a named argument fixes through a helper is determined by a case constructed three times") {
+    val found = determined(3)
+    assertEquals(
+      found.map(_.takeWhile(_ != ';')),
+      Vector("Job.nested is always False when kind is Recode across 3 constructions")
+    )
+  }
+
+  test("a case constructed once or twice does not determine a field, however the helper is called") {
+    assertEquals(determined(1), Vector.empty)
+    assertEquals(determined(2), Vector.empty)
+  }
 }

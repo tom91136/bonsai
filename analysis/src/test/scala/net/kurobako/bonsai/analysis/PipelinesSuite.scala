@@ -136,4 +136,105 @@ class PipelinesSuite extends AnalysisSuite {
       )
     )
   }
+
+  private lazy val scans = {
+    val result = extract(Seq(
+      "Main.scala"  -> "object Main { def main(args: Array[String]): Unit = println(Scans) }",
+      "Scans.scala" ->
+        """object Scans {
+          |  def nested(entries: List[String]): Int = {
+          |    val bytes = entries.filter(e => e.endsWith(".zip")).map(_.length).sum
+          |    val any   = entries.exists(e => e.endsWith(".zip"))
+          |    if (any) bytes else 0
+          |  }
+          |  def reversed(entries: List[String]): Boolean = {
+          |    val any   = entries.exists(_.endsWith(".zip"))
+          |    val names = entries.filter(_.endsWith(".zip"))
+          |    any && names.size > 1
+          |  }
+          |  def other(entries: List[String]): Boolean = {
+          |    val names = entries.filter(_.endsWith(".zip"))
+          |    entries.exists(_.endsWith(".rar")) && names.size > 1
+          |  }
+          |  def apart(entries: List[String], others: List[String]): Boolean = {
+          |    val names = entries.filter(_.endsWith(".zip"))
+          |    others.exists(_.endsWith(".zip")) && names.size > 1
+          |  }
+          |  def effectful(entries: List[String]): Boolean = {
+          |    val names = entries.filter { e => println(e); e.endsWith(".zip") }
+          |    entries.exists { e => println(e); e.endsWith(".zip") } && names.size > 1
+          |  }
+          |  def optional(entry: Option[String]): Boolean = {
+          |    val name = entry.filter(_.endsWith(".zip"))
+          |    entry.exists(_.endsWith(".zip")) && name.size > 1
+          |  }
+          |  def only(entries: List[String]): Boolean = entries.exists(_.endsWith(".zip"))
+          |}""".stripMargin
+    ))
+    Pipelines.findings(result.pipelines, result.graph.nodes).filter(_.rule.id == "repeated-predicate")
+  }
+
+  test("an exists that repeats the predicate of a filter on the same collection is a nonEmpty of the filtered one") {
+    assertFinding(scans, "repeated-predicate", "Scans.nested", "exists", "filter", "nonEmpty")(using
+      Finding.Level.Info
+    )
+    assertFinding(scans, "repeated-predicate", "Scans.reversed")(using Finding.Level.Info)
+  }
+
+  test("an exists and a filter that differ in predicate, collection, effects or kind are no repeated predicate") {
+    val quiet = Vector("other", "apart", "effectful", "optional", "only")
+    assertNoFinding(scans)(finding => quiet.exists(name => finding.detail.startsWith(s"Scans.$name:")))
+  }
+
+  private lazy val complements = {
+    val result = extract(Seq(
+      "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Counts) }",
+      "Counts.scala" ->
+        """object Counts {
+          |  def covers(urls: List[String]): Int = {
+          |    val downloaded = urls.map(u => u.length)
+          |    urls.size - downloaded.count(_ > 3)
+          |  }
+          |  def sorted(urls: Vector[String]): Int = {
+          |    val lengths = urls.map(_.length).sorted
+          |    urls.length - lengths.count(_ > 3)
+          |  }
+          |  def filtered(urls: List[String]): Int = {
+          |    val kept = urls.filter(_.nonEmpty)
+          |    urls.size - kept.count(_.length > 3)
+          |  }
+          |  def apart(urls: List[String], others: List[String]): Int = {
+          |    val downloaded = urls.map(u => u.length)
+          |    others.size - downloaded.count(_ > 3)
+          |  }
+          |  def reversed(urls: List[String]): Int = {
+          |    val downloaded = urls.map(u => u.length)
+          |    downloaded.count(_ > 3) - urls.size
+          |  }
+          |  def effectful(urls: List[String]): Int = {
+          |    val downloaded = urls.map(u => u.length)
+          |    urls.size - downloaded.count { n => println(n); n > 3 }
+          |  }
+          |  def distinct(urls: List[String]): Int = {
+          |    val lengths = urls.toSet.map((u: String) => u.length)
+          |    urls.size - lengths.count(_ > 3)
+          |  }
+          |}""".stripMargin
+    ))
+    Pipelines.findings(result.pipelines, result.graph.nodes).filter(_.rule.id == "complement-count")
+  }
+
+  test("a count subtracted from the size of the collection its subject maps one to one is a count of the failures") {
+    assertFinding(complements, "complement-count", "Counts.covers", "urls minus downloaded.count", "negated")(using
+      Finding.Level.Info
+    )
+    assertFinding(complements, "complement-count", "Counts.sorted", "urls minus lengths.count")(using
+      Finding.Level.Info
+    )
+  }
+
+  test("a count that is no complement of the size of its source is left alone") {
+    val quiet = Vector("filtered", "apart", "reversed", "effectful", "distinct")
+    assertNoFinding(complements)(finding => quiet.exists(name => finding.detail.startsWith(s"Counts.$name:")))
+  }
 }

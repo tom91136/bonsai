@@ -137,6 +137,9 @@ object Clones {
   // table differ in most of their literals.
   private val MaximumHoles = 3
   private val HoleCost     = 16
+  // Holes that take their values from the copies in step are one choice between them, which a single parameter makes,
+  // so more of them are allowed as long as they stay few and none is a string, which differs in rows of messages.
+  private val MaximumCorrelatedHoles = 6
   // Short bodies alike but for numbers are a family of methods, one per width or mask, once there are three; short
   // bodies alike but for strings are a table of names or messages.
   private val FamilyCopies = 3
@@ -413,10 +416,15 @@ object Clones {
     if (values.exists(_.size != values.head.size)) Vector.empty
     else values.transpose.filter(_.distinct.size > 1).distinct
 
+  // Holes are alike when they tell the same copies apart, whatever their values.
+  private def choices(holes: Vector[Vector[Literal]]): Int =
+    holes.map(values => values.map(values.indexOf(_))).distinct.size
+
   private def parameterised(copies: Vector[Candidate], holes: Vector[Vector[Literal]]): Boolean = {
     val cost = copies.head.cost
     holes.nonEmpty &&
-    (holes.size <= MaximumHoles || holes.size * HoleCost <= cost) &&
+    (holes.size <= MaximumHoles || holes.size * HoleCost <= cost ||
+      holes.size <= MaximumCorrelatedHoles && choices(holes) <= MaximumHoles && holes.flatten.forall(!_.string)) &&
     (copies.forall(_.solid) || copies.size >= FamilyCopies && holes.flatten.forall(!_.string)) &&
     !called(copies) &&
     !listed(copies)

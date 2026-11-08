@@ -322,10 +322,56 @@ class ClonesSuite extends AnalysisSuite {
     assertEquals(near(findings(rows(33))), Vector.empty)
   }
 
-  test("copies that differ in more literals than their size carries are not near duplicates") {
+  test("copies that differ in more independent literals than their size carries are not near duplicates") {
+    val found = findings(Seq(
+      "Half.scala"   -> classMask("Half", 10, "0x1f", "0x8000L"),
+      "Single.scala" -> classMask("Single", 23, "0xff", "0x80000000L", low = 5),
+      "Third.scala"  -> classMask("Third", 10, "0xff", "0x4000L", infinite = 1)
+    ))
+    assertEquals(found, Vector.empty)
+  }
+
+  test("two copies whose literals all vary together are one choice, however many they are") {
     val found = findings(Seq(
       "Half.scala"   -> classMask("Half", 10, "0x1f", "0x8000L"),
       "Single.scala" -> classMask("Single", 23, "0xff", "0x80000000L", infinite = 1, low = 5)
+    ))
+    assertFinding(found, "near-duplicate-code", "2 copies of", "{10, 23}", "{9, 1}", "{3, 5}")
+    assertEquals(found.size, 1, found.mkString("\n"))
+  }
+
+  private def labelled(owner: String, tag: String, noun: String, verb: String, separator: String) =
+    s"""object $owner {
+       |  def describe(values: List[Int]): String = {
+       |    val positive = values.filter(_ > 0).map(value => value * 2 + 1)
+       |    val total = positive.foldLeft(0)(_ + _) + positive.size * 3
+       |    val label = if (total > 10) "$tag" + positive.mkString("$separator") else "$noun" + total
+       |    if (positive.isEmpty) "$verb" + label else label + "$verb"
+       |  }
+       |}""".stripMargin
+
+  test("two copies whose strings vary together are messages, not one choice") {
+    val found = findings(Seq(
+      "Short.scala" -> labelled("Short", tag = "big:", noun = "small:", verb = "none", separator = ","),
+      "Long.scala"  -> labelled("Long", tag = "large number:", noun = "tiny number:", verb = "nothing", separator = ";")
+    ))
+    assertEquals(near(found), Vector.empty)
+  }
+
+  private def wide(owner: String, values: Seq[Int]) =
+    s"""object $owner {
+       |  def total(xs: List[Int]): Int = {
+       |    val scaled = xs.map(_ * ${values(0)} + ${values(1)})
+       |    val kept = scaled.filter(_ > ${values(2)}).map(_ - ${values(3)})
+       |    val capped = kept.map(value => math.min(value, ${values(4)}) + ${values(5)})
+       |    capped.sum + ${values(6)}
+       |  }
+       |}""".stripMargin
+
+  test("two copies that differ in more literals than a choice between them could carry are not near duplicates") {
+    val found = findings(Seq(
+      "First.scala"  -> wide("First", Seq(11, 12, 13, 14, 15, 16, 17)),
+      "Second.scala" -> wide("Second", Seq(21, 22, 23, 24, 25, 26, 27))
     ))
     assertEquals(found, Vector.empty)
   }
