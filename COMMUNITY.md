@@ -27,8 +27,11 @@ Most of the corpus is on sbt 1, so `sbt-bonsai` cross-builds for it rather than 
 
 One `Containerfile` serves the workstation and CI, so a run reproduces in either place.
 
-- The image holds the JDKs the corpus asks for, the sbt launcher, coursier, and the bonsai artefacts published into an
-  in-image repository. Nothing reads or writes the host home directory, `~/.ivy2`, or `~/.m2`.
+- The image holds JDKs 8, 11, 17, 21 and 25, the sbt launcher, coursier and scala-cli. The bonsai artefacts of the
+  revision under test are published into a repository mounted into each container, so the image changes only with the
+  toolchain. Nothing reads or writes the host home directory, `~/.ivy2`, or `~/.m2`.
+- CI keeps the image in the GitHub Actions cache as a compressed archive keyed by the `Containerfile` digest. The
+  archive stays well under the cache's 10 GB limit, since an entry past it is not saved at all.
 - Dependency caches live in a named volume per run.
 - Locally: `podman run` per project, 6 to 8 at a time, each under a memory cap.
 - CI: a `workflow_dispatch` workflow shards the list into a job matrix that runs the same image. Each job stays under the
@@ -60,8 +63,3 @@ Per project: build log, manifest, report, timings, peak heap, and any crash trac
 4. The full list, then Mill and scala-cli builds.
 
 Nothing goes upstream and no project is contacted without approval.
-
-## Open questions
-
-- Whether CI pulls a prebuilt image from GHCR or builds it in each run.
-- Which JDKs the image carries, and whether projects that need Java 8 stay in.
