@@ -4,6 +4,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import net.kurobako.bonsai.analysis.ClassFiles.*
 import net.kurobako.bonsai.testing.*
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.Opcodes
 import scala.collection.mutable
 import scala.util.Using
 
@@ -159,6 +161,30 @@ class FieldSub extends FieldBase {
     assertEquals(fresh.resolve(Reference(methods, "invokeWithArguments", "(I)Ljava/lang/Object;")), None)
     assertEquals(fresh.resolve(Reference(methods, "type", "(I)I")), None)
     assertEquals(fresh.resolve(Reference("java/lang/String", "format", "(I)Ljava/lang/String;")), None)
+  }
+
+  // scalafix:off DisableSyntax.null
+  @SuppressWarnings(Array("bonsai:long-arguments"))
+  private def handle(methods: (String, String)*): Array[Byte] = {
+    val writer = ClassWriter(0)
+    writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, "java/lang/invoke/MethodHandle", null, "java/lang/Object", null)
+    methods.foreach { (name, descriptor) =>
+      val flags = Opcodes.ACC_PUBLIC | Opcodes.ACC_NATIVE | Opcodes.ACC_VARARGS
+      writer.visitMethod(flags, name, descriptor, null, null).visitEnd()
+    }
+    writer.visitEnd()
+    writer.toByteArray
+  }
+
+  // scalafix:on DisableSyntax.null
+
+  test("a native varargs method of a method handle is polymorphic only when it takes nothing but the array") {
+    val bytes = handle("invoke" -> "([Ljava/lang/Object;)Ljava/lang/Object;", "other" -> "(I[Ljava/lang/Object;)V")
+    val world = ClassWorld(name => Option.when(name == "java/lang/invoke/MethodHandle")(bytes))
+    def resolved(name: String) =
+      world.resolve(Reference("java/lang/invoke/MethodHandle", name, "(II)V")).map(_.method.name)
+    assertEquals(resolved("invoke"), Some("invoke"))
+    assertEquals(resolved("other"), None)
   }
 
   test("a field is held by the class that declares it with that descriptor, found through the superclass") {

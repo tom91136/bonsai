@@ -23,13 +23,19 @@ private[analysis] object Reuse {
   case class Shown(failing: Boolean, text: String)
 
   /** What a run printed: the lines for the error stream, and the report lines, each with whether it fails. */
-  case class Record(diagnostics: Vector[String], report: Vector[Shown])
+  case class Record(diagnostics: Vector[String], report: Vector[Shown]) {
+    def problems: Vector[String] = diagnostics.filter(_.startsWith(Problem))
+  }
+
+  /** Starts the line of something the analysis could not do, and of something it did without. */
+  val Problem = "problem: "
+  val Note    = "note: "
 
   def store(manifest: Path): Path = manifest.resolveSibling("report.reuse")
 
   /** The scan of the texts in the form the key reads. */
   def rendered(texts: Either[String, Vector[Finding]], excluded: Vector[Finding]): Vector[String] =
-    texts.fold(problem => Vector(s"problem: $problem"), _.map(_.toString)) ++ excluded.map(_.toString)
+    texts.fold(problem => Vector(s"$Problem$problem"), _.map(_.toString)) ++ excluded.map(_.toString)
 
   /** Names everything the report depends on: the arguments, the manifest and the files it names, the baseline and the
     * purity lock (`named`), the code that runs, and the texts `scanned` finds.

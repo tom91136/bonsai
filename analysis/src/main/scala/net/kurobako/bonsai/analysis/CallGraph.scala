@@ -201,13 +201,12 @@ private[analysis] object CallGraph {
       }
     }
 
-    private def closure(at: LambdaSite, lambda: Lambda): Unit =
-      if (!closures.contains(at)) {
-        closures(at) = lambda
-        if (lambda.tag == Opcodes.H_NEWINVOKESPECIAL) instantiate(lambda.owner)
-        val types = (lambda.interface +: lambda.markers).flatMap(name => name +: world.ancestors(name))
-        receive(Receiver.Closure(at), (types :+ objectClass).distinct)
-      }
+    private def closure(at: LambdaSite, lambda: Lambda): Unit = {
+      closures(at) = lambda
+      if (lambda.tag == Opcodes.H_NEWINVOKESPECIAL) instantiate(lambda.owner)
+      val types = (lambda.interface +: lambda.markers).flatMap(name => name +: world.ancestors(name))
+      receive(Receiver.Closure(at), (types :+ objectClass).distinct)
+    }
 
     private def instantiate(name: String): Unit =
       if (instances.add(name)) {

@@ -26,7 +26,7 @@ case class Effect[+T](
     assumed: Boolean = false
 ) {
   // hashed far more often than built
-  override val hashCode: Int = (kind, cause, onThis, target, via, library, assumed).hashCode
+  override val hashCode: Int = scala.runtime.ScalaRunTime._hashCode(this)
 
   lazy val shown: String = via.fold(cause)(method => s"calls $method, which ${kind.shown}")
 }

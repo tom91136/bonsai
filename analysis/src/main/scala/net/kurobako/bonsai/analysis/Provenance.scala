@@ -81,7 +81,7 @@ private[analysis] object Provenance {
     override def copyOperation(insn: AbstractInsnNode, value: Slot): Slot = value
 
     override def unaryOperation(insn: AbstractInsnNode, value: Slot): Slot = insn match {
-      case field: FieldInsnNode => if (insn.getOpcode == Opcodes.GETFIELD) sized(Type.getType(field.desc)) else null
+      case field: FieldInsnNode => sized(Type.getType(field.desc))
       case _                    =>
         insn.getOpcode match {
           case Opcodes.LNEG | Opcodes.DNEG | Opcodes.I2L | Opcodes.I2D | Opcodes.L2D | Opcodes.F2L | Opcodes.F2D |
@@ -117,8 +117,7 @@ private[analysis] object Provenance {
 
     override def returnOperation(insn: AbstractInsnNode, value: Slot, expected: Slot): Unit = ()
 
-    override def merge(left: Slot, right: Slot): Slot =
-      if (left eq right) left else if (left.size == right.size) slot(left.size) else slot(1)
+    override def merge(left: Slot, right: Slot): Slot = if (left eq right) left else slot(1)
   }
   // scalafix:on DisableSyntax.null
 

@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.analysis
 
+import java.io.File
 import java.net.URI
 import java.nio.file.FileSystem
 import java.nio.file.FileSystems
@@ -15,6 +16,10 @@ import scala.util.Using
 private[analysis] object ClassSource {
 
   private[analysis] case class Target(feature: Int, root: Path)
+
+  private enum RootKind {
+    case Directory, Archive, Absent
+  }
 
   def of(outputs: Vector[Path], classpath: Vector[Path], jdk: Option[Path]): Either[String, ClassSource] = {
     val target = jdk.fold[Either[String, Option[Target]]](Right(None))(home => targetOf(home).map(Some(_)))
@@ -49,8 +54,11 @@ private[analysis] class ClassSource private (
     classpath: Vector[Path]
 ) extends AutoCloseable {
 
-  private val images = mutable.Map.empty[Path, FileSystem]
-  private val jars   = mutable.Map.empty[Path, Option[JarFile]]
+  private val images   = mutable.Map.empty[Path, FileSystem]
+  private val jars     = mutable.Map.empty[Path, Option[JarFile]]
+  private val packages = mutable.Map.empty[Path, Set[String]]
+  private val kinds    = mutable.Map.empty[Path, ClassSource.RootKind]
+  private val listed   = mutable.Map.empty[Path, Set[String]]
 
   def bytes(internal: String): Option[Array[Byte]] = {
     val entry = s"$internal.class"
@@ -86,14 +94,37 @@ private[analysis] class ClassSource private (
   }
 
   private def fromRoot(root: Path, entry: String): Option[Array[Byte]] =
-    if (Files.isDirectory(root)) {
-      val file = root.resolve(entry)
-      Option.when(Files.isRegularFile(file))(Files.readAllBytes(file))
-    } else if (Files.isRegularFile(root)) {
-      jarOf(root).flatMap(jar =>
-        Option(jar.getEntry(entry)).map(found => Using.resource(jar.getInputStream(found))(_.readAllBytes()))
-      )
-    } else None
+    rootKind(root) match {
+      case ClassSource.RootKind.Directory =>
+        Option.when(listed.getOrElseUpdate(
+          root,
+          listing(root)
+        ).contains(entry))(Files.readAllBytes(root.resolve(entry)))
+      case ClassSource.RootKind.Archive =>
+        jarOf(root).filter(jar => holds(root, jar, entry)).flatMap(jar =>
+          Option(jar.getEntry(entry)).map(found => Using.resource(jar.getInputStream(found))(_.readAllBytes()))
+        )
+      case ClassSource.RootKind.Absent => None
+    }
+
+  private def rootKind(root: Path): ClassSource.RootKind = kinds.getOrElseUpdate(
+    root,
+    if (Files.isDirectory(root)) ClassSource.RootKind.Directory
+    else if (Files.isRegularFile(root)) ClassSource.RootKind.Archive
+    else ClassSource.RootKind.Absent
+  )
+
+  private def listing(directory: Path): Set[String] =
+    Outputs.files(directory).map(file => directory.relativize(file).toString.replace(File.separatorChar, '/')).toSet
+
+  private def holds(file: Path, jar: JarFile, entry: String): Boolean = packages.getOrElseUpdate(
+    file,
+    jar.entries.asScala.map(found => directoryOf(Versioned.replaceFirstIn(found.getName, ""))).toSet
+  ).contains(directoryOf(entry))
+
+  private val Versioned = "^META-INF/versions/[0-9]+/".r
+
+  private def directoryOf(entry: String): String = entry.take(entry.lastIndexOf('/') + 1)
 
   private def jarOf(file: Path): Option[JarFile] = jars.getOrElseUpdate(
     file,

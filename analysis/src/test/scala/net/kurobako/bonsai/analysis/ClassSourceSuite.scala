@@ -119,6 +119,27 @@ class ClassSourceSuite extends FunSuite {
     assertEquals(lookup(Some(javaHome), Vector.empty, Vector(library), "app/Main"), Some("nine"))
   }
 
+  withRoot("a class is found in the first jar that has it, however many jars lack its package") { root =>
+    val jars = (1 to 20).map(index => root.resolve(s"other$index.jar")).toVector
+    jars.foreach(jar(_, "elsewhere/Thing.class" -> "other"))
+    val first       = root.resolve("first.jar")
+    val second      = root.resolve("second.jar")
+    jar(first, "app/Main.class"  -> "first", "Rooted.class"     -> "rooted")
+    jar(second, "app/Main.class" -> "second", "app/Extra.class" -> "extra")
+    val classpath   = jars ++ Vector(first, second)
+    assertEquals(lookup(None, Vector.empty, classpath, "app/Main"), Some("first"))
+    assertEquals(lookup(None, Vector.empty, classpath, "app/Extra"), Some("extra"))
+    assertEquals(lookup(None, Vector.empty, classpath, "Rooted"), Some("rooted"))
+    assertEquals(lookup(None, Vector.empty, classpath, "app/Absent"), None)
+  }
+
+  withRoot("a class only a newer release of a multi-release jar holds is found for that release") { root =>
+    val library = root.resolve("lib.jar")
+    jar(library, multiRelease, "META-INF/versions/9/app/Newer.class" -> "nine")
+    assertEquals(lookup(Some(javaHome), Vector.empty, Vector(library), "app/Newer"), Some("nine"))
+    assertEquals(lookup(None, Vector.empty, Vector(library), "app/Newer"), None)
+  }
+
   withRoot("a jdk home without a release file, or without a class image, is an error naming the home") { root =>
     val bare = root.resolve("bare")
     assert(ClassSource.of(Vector.empty, Vector.empty, Some(bare)).left.exists(_.contains(bare.toString)))

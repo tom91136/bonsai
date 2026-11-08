@@ -6,6 +6,7 @@ import dotty.tools.dotc.ast.tpd.TreeOps
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Contexts.ctx
 import dotty.tools.dotc.core.Flags
+import dotty.tools.dotc.core.MissingType
 import dotty.tools.dotc.core.NameKinds.DefaultGetterName
 import dotty.tools.dotc.core.Names.termName
 import dotty.tools.dotc.core.Names.typeName
@@ -84,6 +85,7 @@ private[analysis] class Collector(
   private val required       = mutable.Map.empty[Symbol, (String, Algebra.Product)]
   private val sums           = mutable.Map.empty[String, Algebra.Sum]
   private val failures       = mutable.ArrayBuffer.empty[String]
+  private val remarks        = mutable.ArrayBuffer.empty[String]
   private val methods        = mutable.Map.empty[Symbol, Smells.Method]
   private val overridden     = mutable.Map.empty[Symbol, Int]
   private val designed       = mutable.ArrayBuffer.empty[Designs.Method]
@@ -145,7 +147,7 @@ private[analysis] class Collector(
         given Context = ctx.withSource(unit.source)
         references(components, fragments).traverse(unit.tpdTree)
         placing.traverse(unit.tpdTree)
-      } catch { case NonFatal(error) => problem(s"${unit.source.path} could not be analysed: $error") }
+      } catch { case NonFatal(error) => failed(s"${unit.source.path} could not be analysed", error) }
     }
     qualifiedUses()
     symbols.absorb(twinned.symbols)
@@ -247,7 +249,19 @@ private[analysis] class Collector(
 
   def problem(message: String): Unit = failures += message
 
+  /** Records why `message` could not be done: a note when the classpath lacks a class, which a build may leave off, and
+    * a problem otherwise.
+    */
+  def failed(message: String, error: Throwable): Unit = error match {
+    case _: MissingType => note(s"$message: $error")
+    case _              => problem(s"$message: $error")
+  }
+
   def problems: Vector[String] = failures.toVector
+
+  def note(message: String): Unit = remarks += message
+
+  def notes: Vector[String] = remarks.toVector
 
   def graph: Graph = symbols.graph(entryPoints)
 
@@ -291,7 +305,7 @@ private[analysis] class Collector(
   private def inference(library: Library, bytecode: BytecodeEffects.Summaries)(using Context): Purity.Inference = {
     val effects = Purity.Inference(bodies, templates, dispatching.implementations(_), concurrent, library, bytecode)
     effects.run()
-    effects.unreadable.foreach(problem(_))
+    effects.unreadable.foreach(note(_))
     effects
   }
 

@@ -253,6 +253,25 @@ class Alternate {
   }
 }
 
+interface Gateway {
+  void pass();
+}
+
+interface Open extends Gateway {
+  default void pass() { Mark.plain(); }
+
+  void go();
+}
+
+interface Closed extends Gateway {}
+
+class Doors {
+  static void run() {
+    Open door = (Open & Closed) () -> Mark.work();
+    door.go();
+  }
+}
+
 class SBase {
   static int X = Mark.base();
 }
@@ -536,6 +555,7 @@ public class Cross {
         assertReaches(found, ref("Square", "area"), ref("Mark", "square"))
         assertMisses(found, ref("Circle", "area"), ref("Mark", "circle"))
         assert(found.instantiated.contains("fixture/Square"), entry)
+        assertEquals(found.dispatch.get(ref("Shape", "area")), Some(Set(ref("Square", "area"))))
       }
   }
 
@@ -906,6 +926,16 @@ public class Cross {
     withWorld() { world =>
       val found = CallGraph.build(world, Set(ref("Provider", "run", "()V")), build = _.startsWith("fixture/"))
       assertMisses(found, ref("Provider", "<init>", "()V"), ref("Mark", "dead"))
+    }
+  }
+
+  test("a lambda is a receiver of a call to a method one of its interfaces implements and another leaves abstract") {
+    withWorld() { world =>
+      val found = CallGraph.build(world, Set(ref("Doors", "run", "()V")))
+      val sites = found.lambdas.keySet.filter(_.holder == ref("Doors", "run", "()V"))
+      assertEquals(sites.size, 1)
+      val passing = found.receivers(ref("Gateway", "pass", "()V"), world)
+      assertEquals(passing.collect { case CallGraph.Receiver.Closure(site) => site }.toSet, sites)
     }
   }
 

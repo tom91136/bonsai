@@ -78,22 +78,24 @@ object CLI {
   /** Runs the analysis, printing the report to the console, and returns the exit status. */
   def run(args: List[String]): Int = {
     val result = parse(args).flatMap(options =>
-      Using.resource(Parallel(options.parallelism))(parallel => analyse(args, options, parallel))
+      Using.resource(Parallel(options.parallelism))(parallel => analyse(args, options, parallel)).map(options.mode -> _)
     )
     result match {
       case Left(error) =>
         Console.err.println(error)
         1
-      case Right(outcome) =>
+      case Right((mode, outcome)) =>
         outcome.record.diagnostics.foreach(Console.err.println(_))
-        outcome.scanProblem.foreach(problem => Console.err.println(s"problem: $problem"))
+        outcome.scanProblem.foreach(problem => Console.err.println(s"${Reuse.Problem}$problem"))
         outcome.record.report.foreach(shown => println(shown.text))
         if (outcome.reused) Console.err.println(Reuse.Marker)
-        if (outcome.record.report.exists(_.failing)) 1 else 0
+        if (outcome.record.report.exists(_.failing) || mode == Mode.CI && outcome.problematic) 1 else 0
     }
   }
 
-  private case class Outcome(record: Reuse.Record, scanProblem: Option[String], reused: Boolean)
+  private case class Outcome(record: Reuse.Record, scanProblem: Option[String], reused: Boolean) {
+    def problematic: Boolean = scanProblem.isDefined || record.problems.nonEmpty
+  }
 
   private type Scan = () => (Either[String, Vector[Finding]], Vector[Finding])
 
@@ -155,7 +157,8 @@ object CLI {
         Files.writeString(file, Report.write(Report(findings, result.graph.nodes, report.copy(info = false)))): Unit
       )
       Reuse.Record(
-        result.problems.map(problem => s"problem: $problem") ++
+        result.problems.map(problem => s"${Reuse.Problem}$problem") ++
+          result.notes.map(note => s"${Reuse.Note}$note") ++
           (if (options.purity) Purity.summary(result.purity) else Vector.empty),
         Report(findings, result.graph.nodes, report).map(line => Reuse.Shown(line.failing, line.show))
       )

@@ -93,8 +93,7 @@ trait AnalysisSuite extends FunSuite {
           errors => fail(errors.mkString("\n")),
           identity
         )
-      val problems = result.problems.filterNot(problem => absent.nonEmpty && problem.startsWith("undefined: "))
-      assert(problems.isEmpty, problems.mkString("\n"))
+      assert(result.problems.isEmpty, result.problems.mkString("\n"))
       result
     }
 

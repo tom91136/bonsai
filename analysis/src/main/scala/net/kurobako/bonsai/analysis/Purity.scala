@@ -478,12 +478,14 @@ object Purity {
       case Expression(tree: tpd.Tree, form: Form)
     }
 
-    /** What a call runs: the bodies of `targets`, code an axiom describes, the body of `method` the object `reference`
-      * takes it from decides, or `otherwise` when that object is unknown, or a function value.
+    /** What a call runs: the bodies of `targets`, code an axiom describes, the method with the key whose bytecode shows
+      * it, the body of `method` the object `reference` takes it from decides, or `otherwise` when that object is
+      * unknown, or a function value.
       */
     private enum Resolution {
       case Bodies(targets: Vector[Symbol])
       case Axiom(summary: Summary)
+      case Bytecode(key: String, via: String)
       case Dispatch(method: Symbol, reference: tpd.Tree, otherwise: Resolution)
       case Invocation(function: tpd.Tree)
     }
@@ -987,10 +989,20 @@ object Purity {
       case Resolution.Bodies(targets) =>
         joined(targets.map(target => Key(target, None, bound(target, target, arguments, frame))))
       case Resolution.Axiom(summary)                         => summary
+      case Resolution.Bytecode(key, via)                     => read(key, via)
       case Resolution.Dispatch(method, reference, otherwise) =>
         dispatched(method, Some(reference), arguments, frame).getOrElse(ran(otherwise, arguments, frame))
       case Resolution.Invocation(function) => invoke(evaluate(function, frame), frame)
     }
+
+    private val readings = mutable.HashMap.empty[(String, String), Summary]
+
+    private def read(key: String, via: String): Summary = readings.getOrElseUpdate(
+      (key, via),
+      bytecode.get(key).fold(Silent)(found =>
+        Summary(found.certain.map(effect => effect.copy(via = Some(via), library = true): Effect), Set.empty)
+      )
+    )
 
     @annotation.tailrec
     private def bodies(resolution: Resolution): Vector[Symbol] = resolution match {
@@ -1717,17 +1729,15 @@ object Purity {
               else {
                 val targets   = library(method, qualifier)
                 val otherwise =
-                  if (targets.isEmpty) Resolution.Axiom(read(method).getOrElse(known)) else Resolution.Bodies(targets)
+                  if (targets.nonEmpty) Resolution.Bodies(targets)
+                  else bytecoded(method).getOrElse(Resolution.Axiom(known))
                 Call(name, Resolution.Dispatch(method, function, otherwise), on, passed)
               }
           }
 
       // What the bytecode of a method without TASTy shows, where no axiom covers it.
-      private def read(method: Symbol): Option[Summary] =
-        Keys.of(method).flatMap(bytecode.get).map { found =>
-          val via = Some(short(method))
-          Summary(found.certain.map(effect => effect.copy(via = via, library = true): Effect), Set.empty)
-        }
+      private def bytecoded(method: Symbol): Option[Resolution] =
+        Keys.of(method).filter(bytecode.require).map(Resolution.Bytecode(_, short(method)))
 
       /** The library bodies a call runs: the callee's own when no override can replace it, the implementation in the
         * receiver's class when that class cannot be extended, or those of every class a sealed receiver may be. Bodies

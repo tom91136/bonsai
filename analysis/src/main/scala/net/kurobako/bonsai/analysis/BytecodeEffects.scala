@@ -35,8 +35,10 @@ import scala.reflect.NameTransformer
 private[analysis] object BytecodeEffects {
 
   /** The effects of one method, as its callers see them, and whether its running time is constant. */
-  class Behaviour(found: () => Set[Fact[Nothing]], val bounded: Boolean) {
+  class Behaviour(found: () => Set[Fact[Nothing]], constant: () => Boolean) {
     lazy val effects: Set[Fact[Nothing]] = found()
+
+    lazy val bounded: Boolean = constant()
 
     /** The effects that hold of every run: those that only some of the classes a call can reach perform are unknown. */
     lazy val certain: Set[Fact[Nothing]] = effects.map(effect =>
@@ -47,30 +49,44 @@ private[analysis] object BytecodeEffects {
   }
 
   /** A summarised method, with the contract it fulfils for collections and sorting, if any. */
-  case class Entry(method: Reference, key: String, summary: Behaviour, role: Option[String], synthetic: Boolean)
+  case class Entry(method: Reference, key: String, summary: Behaviour, role: Option[String])
 
-  /** The summaries by method key, which `ClassWorld.key` and `Keys` agree on for a method. */
-  class Summaries(val entries: Vector[Entry]) {
-    private val byKey: Map[String, Behaviour] = entries.groupMapReduce(_.key)(_.summary)((left, right) =>
-      Behaviour(() => left.effects ++ right.effects, left.bounded && right.bounded)
-    )
+  /** The summaries by method key, which `ClassWorld.key` and `Keys` agree on for a method. Only the methods whose
+    * summaries are read are worked out, with those they can reach. The effects of the methods `require`d settle
+    * together when the first is read, which saves working out the methods they share more than once; a method asked for
+    * after that settles with its own.
+    */
+  trait Summaries {
 
-    def get(key: String): Option[Behaviour] = byKey.get(key)
+    /** Whether the method has a summary. */
+    def require(key: String): Boolean
 
-    def isEmpty: Boolean = entries.isEmpty
+    def get(key: String): Option[Behaviour]
+
+    def isEmpty: Boolean
+
+    /** The summaries of the methods `wanted` accepts, given a method and whether the compiler made it. */
+    def owned(wanted: (Reference, Boolean) => Boolean): Vector[Entry]
 
     /** The cost of a call to a method that runs in constant time, which depends on no argument. */
     def callee(key: String): Option[Charges.Callee] =
-      get(key).filter(_.bounded).map(_ =>
-        Charges.Callee(Charges.Bound(Polynomial.One, Polynomial.Zero), Seq.empty)
-      )
+      get(key).filter(_.bounded).map(_ => Charges.Callee(Charges.Bound(Polynomial.One, Polynomial.Zero), Seq.empty))
   }
 
-  val none: Summaries = Summaries(Vector.empty)
+  private object Empty extends Summaries {
+    def require(key: String): Boolean = false
 
-  /** The summaries of every method of `graph` that has bytecode and no TASTy. */
-  def summarise(world: ClassWorld, graph: CallGraph): Summaries =
-    Inference(world, graph).run()
+    def get(key: String): Option[Behaviour] = None
+
+    def isEmpty: Boolean = true
+
+    def owned(wanted: (Reference, Boolean) => Boolean): Vector[Entry] = Vector.empty
+  }
+
+  val none: Summaries = Empty
+
+  /** The summaries of the methods of `graph` that have bytecode and no TASTy. */
+  def summarise(world: ClassWorld, graph: CallGraph): Summaries = Inference(world, graph).discovered()
 
   private val concatenation = "java/lang/invoke/StringConcatFactory"
 
@@ -87,24 +103,29 @@ private[analysis] object BytecodeEffects {
   }
 
   private def lasting(
-      effects: Iterable[Fact[Nothing]],
+      effect: Fact[Nothing],
       origin: Origin,
       wide: Boolean,
       via: Option[String]
-  ): Iterable[Fact[Nothing]] =
-    effects.flatMap { effect =>
-      val seen  = via.fold(effect)(name => effect.copy(via = Some(name)))
-      val shown = if (wide && effect.kind != EffectKind.Throws) seen.copy(assumed = true) else seen
-      if (!effect.onThis) Some(shown)
-      else
-        origin match {
-          case Origin.This                  => Some(shown)
-          case Origin.Fresh                 => None
-          case Origin.Other | Origin.Caught => Some(shown.copy(onThis = false))
-        }
-    }
+  ): Option[Fact[Nothing]] = {
+    val seen  = via.fold(effect)(name => effect.copy(via = Some(name)))
+    val shown = if (wide && effect.kind != EffectKind.Throws) seen.copy(assumed = true) else seen
+    if (!effect.onThis) Some(shown)
+    else
+      origin match {
+        case Origin.This                  => Some(shown)
+        case Origin.Fresh                 => None
+        case Origin.Other | Origin.Caught => Some(shown.copy(onThis = false))
+      }
+  }
 
-  private case class Reached(nodes: Vector[Int], absent: Boolean, declared: String)
+  private class Visit(val id: Int, val callees: Vector[Int]) {
+    val next: Array[Int] = Array(0)
+  }
+
+  private class Reached(val nodes: Vector[Int], val absent: Boolean, owner: () => String) {
+    lazy val declared: String = owner()
+  }
 
   /** A call: the nodes it can run, why some target has no summary, what the receiver is, and the name effects show. */
   private case class Step(
@@ -119,12 +140,25 @@ private[analysis] object BytecodeEffects {
     def wide: Boolean = targets.size > 1
   }
 
-  private class Inference(world: ClassWorld, graph: CallGraph) {
+  /** A call, or the initialiser of a class, before the trace of its method says what the receiver is. */
+  private case class Shape(
+      targets: Vector[Int],
+      absent: Boolean,
+      name: String,
+      axiom: Option[Set[Fact[Nothing]]],
+      position: Int
+  ) {
+    def initialiser: Boolean = position < 0
+
+    def step(trace: Trace): Step =
+      if (initialiser) Step(targets, absent, Origin.Other, name, axiom = None, exceptional = false, initialiser = true)
+      else
+        Step(targets, absent, trace.receivers(position), name, axiom, trace.exceptional(position), initialiser = false)
+  }
+
+  private class Inference(world: ClassWorld, graph: CallGraph) extends Summaries {
     private val references = mutable.ArrayBuffer.empty[Reference]
     private val methods    = mutable.ArrayBuffer.empty[(ClassFile, Method)]
-    private val steps      = mutable.ArrayBuffer.empty[Vector[Step]]
-    private val locals     = mutable.ArrayBuffer.empty[Set[Fact[Nothing]]]
-    private val traces     = mutable.ArrayBuffer.empty[Trace]
     private val ids        = mutable.HashMap.empty[Reference, Option[Int]]
     private val outers     = mutable.HashMap.empty[String, Boolean]
     private val lineages   = mutable.HashMap.empty[String, Set[String]]
@@ -132,46 +166,59 @@ private[analysis] object BytecodeEffects {
     private val coverings  = mutable.HashMap.empty[(String, String, Boolean, String), Option[Set[Fact[Nothing]]]]
     private val chains     = mutable.HashMap.empty[String, Vector[String]]
     private val reaches    = mutable.HashMap.empty[(Kind, Reference), Reached]
-    private val owned      = mutable.HashMap.empty[String, mutable.ArrayBuffer[Method]]
-    private val traced     = mutable.HashMap.empty[(String, String, String), Trace]
+    private val shaped     = mutable.HashMap.empty[Int, Vector[Shape]]
+    private val traced     = mutable.HashMap.empty[Int, Trace]
+    private val stepped    = mutable.HashMap.empty[Int, Vector[Step]]
+    private val localised  = mutable.HashMap.empty[Int, Set[Fact[Nothing]]]
+    private val bounds     = mutable.HashMap.empty[Int, Boolean]
+    private val owned      = mutable.HashMap.empty[String, mutable.ArrayBuffer[Int]]
+    private val required   = mutable.BitSet.empty
+    private val settled    = mutable.HashMap.empty[Int, Array[Option[Fact[Nothing]]]]
 
     private lazy val closures: Map[String, Vector[Lambda]] = graph.lambdas.values.filter(lambda =>
       lambda.tag == Opcodes.H_INVOKEVIRTUAL || lambda.tag == Opcodes.H_INVOKEINTERFACE
     ).toVector.groupBy(_.sam)
 
-    def run(): Summaries = {
+    private lazy val byKey: Map[String, Vector[Int]] =
+      references.indices.toVector.groupBy(id => world.key(references(id)))
+
+    /** Numbers every method that has a body, in the order a full pass over them reaches them. */
+    def discovered(): this.type = {
       graph.reachable.foreach(nodeFor(_))
       Iterator.from(0).takeWhile(_ < references.size).foreach { id =>
         val (file, method) = methods(id)
-        val trace          = traceOf(file, method)
-        traces += trace
-        locals += local(file, method, trace)
-        steps += stepsOf(file, method, trace)
+        method.invocations.foreach(reached(_))
+        starting(file, method).foreach(name => nodeFor(Reference(name, "<clinit>", "()V")))
       }
-      val count      = references.size
-      val successors = Array.tabulate(count)(id =>
-        steps(id).filterNot(step => step.exceptional || step.initialiser).flatMap(_.targets).distinct.toArray
-      )
-      val effects = propagate(count)
-      val bounded = Array.fill(count)(false)
-      Tarjan.components(count, successors).foreach { component =>
-        val cyclic = component.size > 1 || successors(component.head).contains(component.head)
-        component.foreach(id => bounded(id) = !cyclic && constant(id, bounded))
-      }
-      Summaries(Vector.tabulate(count) { id =>
-        val reference      = references(id)
-        val (file, method) = methods(id)
-        val axiom          = ownAxiom(id)
-        val inferred       = effects(id)
-        Entry(
-          reference,
-          world.key(reference),
-          Behaviour(() => axiom.getOrElse(inferred()), bounded(id)),
-          role(file, method),
-          (method.access & (Opcodes.ACC_SYNTHETIC | Opcodes.ACC_BRIDGE)) != 0
-        )
-      })
+      this
     }
+
+    def isEmpty: Boolean = references.isEmpty
+
+    def require(key: String): Boolean = byKey.get(key).exists { found =>
+      required ++= found
+      true
+    }
+
+    def get(key: String): Option[Behaviour] = byKey.get(key).map { found =>
+      Behaviour(() => found.map(effectsOf(_)).reduce(_ ++ _), () => found.forall(bounded(_)))
+    }
+
+    def owned(wanted: (Reference, Boolean) => Boolean): Vector[Entry] = {
+      val chosen = references.indices.filter(id => wanted(references(id), synthetic(methods(id)._2))).toVector
+      required ++= chosen
+      chosen.map { id =>
+        val (file, method) = methods(id)
+        Entry(
+          references(id),
+          world.key(references(id)),
+          Behaviour(() => effectsOf(id), () => bounded(id)),
+          role(file, method)
+        )
+      }
+    }
+
+    private def synthetic(method: Method): Boolean = (method.access & (Opcodes.ACC_SYNTHETIC | Opcodes.ACC_BRIDGE)) != 0
 
     private def role(file: ClassFile, method: Method): Option[String] = {
       val comparing = lineage(file.name).exists(Comparisons)
@@ -189,22 +236,25 @@ private[analysis] object BytecodeEffects {
             world.method(reference).filterNot(_.isAbstract).map { method =>
               references += reference
               methods += file -> method
-              owned.getOrElseUpdate(file.name, mutable.ArrayBuffer.empty) += method
+              owned.getOrElseUpdate(file.name, mutable.ArrayBuffer.empty) += references.size - 1
               references.size - 1
             }
           }
       )
 
-    // a class is read once for every method of it that is summarised by the time its first is
-    private def traceOf(file: ClassFile, method: Method): Trace = {
-      def key(of: Method) = (file.name, of.name, of.descriptor)
-      if (!traced.contains(key(method))) {
-        val batch = owned(file.name).view.filterNot(found => traced.contains(key(found))).toVector
-        world.trace(file.name, batch).foreach((signature, trace) =>
-          traced((file.name, signature._1, signature._2)) = trace
-        )
+    private def tracing(wanted: Iterable[Int]): Unit =
+      wanted.view.filterNot(traced.contains).toVector.groupBy(id => methods(id)._1.name).foreach {
+        (owner, group) =>
+          val found = world.trace(owner, group.map(methods(_)._2))
+          group.foreach { id =>
+            val method = methods(id)._2
+            traced(id) = found((method.name, method.descriptor))
+          }
       }
-      traced(key(method))
+
+    private def traceOf(id: Int): Trace = {
+      if (!traced.contains(id)) tracing(owned(methods(id)._1.name))
+      traced(id)
     }
 
     private def tasty(owner: String): Boolean =
@@ -236,6 +286,9 @@ private[analysis] object BytecodeEffects {
       covered(file.name, method.name, !method.isStatic, file.name)
     }
 
+    private def localOf(id: Int): Set[Fact[Nothing]] =
+      localised.getOrElseUpdate(id, local(methods(id)._1, methods(id)._2, traceOf(id)))
+
     private def local(file: ClassFile, method: Method, trace: Trace): Set[Fact[Nothing]] = {
       val found                                                     = mutable.Set.empty[Fact[Nothing]]
       val initialising                                              = method.name == "<clinit>"
@@ -263,7 +316,7 @@ private[analysis] object BytecodeEffects {
       method.dynamics.filterNot(_.owner == concatenation).foreach { dynamic =>
         found += Fact(EffectKind.Unknown, s"runs dynamic code of ${short(dynamic.owner, dynamic.name)}")
       }
-      if (method.name == "<init>") found.filterNot(_.onThis).toSet else found.toSet
+      found.toSet
     }
 
     private def isFinal(declared: Option[String], access: FieldAccess): Boolean =
@@ -302,45 +355,40 @@ private[analysis] object BytecodeEffects {
       Reached(
         nodes.flatten,
         targets.isEmpty || nodes.exists(_.isEmpty),
-        world.resolve(callee).fold(callee.owner)(_.owner)
+        () => world.resolve(callee).fold(callee.owner)(_.owner)
       )
     }
 
-    private def stepsOf(file: ClassFile, method: Method, trace: Trace): Vector[Step] = {
-      val calls = Vector.newBuilder[Step]
-      method.invocations.zipWithIndex.foreach { (invocation, position) =>
-        val found = reached(invocation)
-        calls += Step(
-          found.nodes,
-          found.absent,
-          trace.receivers(position),
-          short(found.declared, invocation.name),
-          covered(found.declared, invocation.name, invocation.kind != Kind.Static, invocation.owner),
-          trace.exceptional(position),
-          initialiser = false
-        )
+    private def shapesOf(id: Int): Vector[Shape] = shaped.getOrElseUpdate(
+      id, {
+        val (file, method) = methods(id)
+        val calls          = method.invocations.zipWithIndex.map { (invocation, position) =>
+          val found = reached(invocation)
+          Shape(
+            found.nodes,
+            found.absent,
+            short(found.declared, invocation.name),
+            covered(found.declared, invocation.name, invocation.kind != Kind.Static, invocation.owner),
+            position
+          )
+        }
+        calls ++ starting(file, method).map { name =>
+          val node = nodeFor(Reference(name, "<clinit>", "()V"))
+          Shape(node.toVector, node.isEmpty, short(name, "<clinit>"), axiom = None, position = -1)
+        }
       }
-      calls.result() ++ initialisers(file, method)
-    }
+    )
 
-    private def initialisers(file: ClassFile, method: Method): Vector[Step] = {
+    private def stepsOf(id: Int): Vector[Step] =
+      stepped.getOrElseUpdate(id, shapesOf(id).map(_.step(traceOf(id))))
+
+    private def starting(file: ClassFile, method: Method): Vector[String] = {
       val used = method.instantiated ++
         method.invocations.filter(_.kind == Kind.Static).flatMap(invocation =>
           world.resolve(Reference(invocation.owner, invocation.name, invocation.descriptor)).map(_.owner)
         ) ++ method.fields.filter(_.static).flatMap(world.fieldHolder(_))
       val ready = initialised(file.name).toSet
-      used.toVector.flatMap(initialised(_)).distinct.filterNot(ready).map { name =>
-        val node = nodeFor(Reference(name, "<clinit>", "()V"))
-        Step(
-          node.toVector,
-          node.isEmpty,
-          Origin.Other,
-          short(name, "<clinit>"),
-          axiom = None,
-          exceptional = false,
-          initialiser = true
-        )
-      }
+      used.toVector.flatMap(initialised(_)).distinct.filterNot(ready)
     }
 
     // the classes with an initialiser that using `name` runs, its own and those of its ancestors
@@ -354,99 +402,121 @@ private[analysis] object BytecodeEffects {
 
     private def slot(effect: Fact[Nothing]): Int = effect.kind.ordinal * 2 + (if (effect.onThis) 1 else 0)
 
-    /** The effects of each node, reached by passing each new effect of a callee to its callers until none is new. A
-      * node keeps one effect of each kind on its receiver and of each kind elsewhere, the first to reach it that is not
-      * assumed. That is all a verdict and a report of the kinds a method has read, so a summary stays as small as the
-      * kinds are few, however many fields and callees a cycle of the JDK's methods reaches.
+    private def effectsOf(id: Int): Set[Fact[Nothing]] = ownAxiom(id).getOrElse {
+      if (!settled.contains(id)) settle(if (settled.isEmpty) required += id else Seq(id))
+      settled(id).flatten.toSet
+    }
+
+    /** `ids` and the methods whose effects they take, which are the ones their calls without an axiom reach. A method
+      * takes effects from those alone, so they settle as they would among all the methods.
       */
-    private def propagate(count: Int): Array[() => Set[Fact[Nothing]]] = {
-      val slots   = EffectKind.values.length * 2
-      val held    = Array.fill(count)(Array.fill(slots)(Option.empty[Fact[Nothing]]))
-      val callers = Array.fill(count)(mutable.ArrayBuffer.empty[(Int, Step)])
+    private def reaching(ids: Iterable[Int]): Array[Int] = {
+      val seen    = mutable.BitSet.empty ++= ids
+      val pending = mutable.Stack.from(ids)
+      while (pending.nonEmpty)
+        shapesOf(pending.pop()).foreach(shape =>
+          if (shape.axiom.isEmpty) shape.targets.foreach(target => if (seen.add(target)) pending.push(target))
+        )
+      seen.toArray
+    }
+
+    private def settle(seeds: Iterable[Int]): Unit = {
+      val order = reaching(seeds.filter(ownAxiom(_).isEmpty))
+      tracing(order)
+      propagate(order).zip(order).foreach((held, id) => settled.getOrElseUpdate(id, held))
+    }
+
+    /** The effects of each of the methods `order` holds, reached by passing each new effect of a callee to its callers
+      * until none is new. A node keeps one effect of each kind on its receiver and of each kind elsewhere, the first to
+      * reach it that is not assumed. That is all a verdict and a report of the kinds a method has read, so a summary
+      * stays as small as the kinds are few, however many fields and callees a cycle of the JDK's methods reaches.
+      */
+    private def propagate(order: Array[Int]): Array[Array[Option[Fact[Nothing]]]] = {
+      val slots    = EffectKind.values.length * 2
+      val position = Array.fill(references.size)(-1)
+      order.indices.foreach(at => position(order(at)) = at)
+      val held    = Array.fill(order.length)(Array.fill(slots)(Option.empty[Fact[Nothing]]))
+      val callers = Array.fill(order.length)(mutable.ArrayBuffer.empty[(Int, Step)])
       val queue   = mutable.Queue.empty[(Int, Fact[Nothing])]
-      def offer(id: Int, effect: Fact[Nothing]): Unit =
-        if (!(effect.onThis && methods(id)._2.name == "<init>")) {
+      def offer(at: Int, effect: Fact[Nothing]): Unit =
+        if (!(effect.onThis && methods(order(at))._2.name == "<init>")) {
           val place = slot(effect)
-          if (held(id)(place).forall(current => current.assumed && !effect.assumed)) {
-            held(id)(place) = Some(effect)
-            queue.enqueue(id -> effect)
+          if (held(at)(place).forall(current => current.assumed && !effect.assumed)) {
+            held(at)(place) = Some(effect)
+            queue.enqueue(at -> effect)
           }
         }
-      (0 until count).foreach { id =>
-        locals(id).foreach(offer(id, _))
-        steps(id).foreach { step =>
+      order.indices.foreach { at =>
+        localOf(order(at)).foreach(offer(at, _))
+        stepsOf(order(at)).foreach { step =>
           step.axiom match {
-            case Some(axiom) => lasting(axiom, step.origin, wide = false, via = None).foreach(offer(id, _))
-            case None        =>
-              if (step.absent) offer(id, Fact(EffectKind.Unknown, s"calls ${step.name}"))
-              step.targets.foreach(target => callers(target) += id -> step)
+            case Some(axiom) =>
+              axiom.view.flatMap(lasting(_, step.origin, wide = false, via = None)).foreach(offer(at, _))
+            case None =>
+              if (step.absent) offer(at, Fact(EffectKind.Unknown, s"calls ${step.name}"))
+              step.targets.foreach(target => callers(position(target)) += at -> step)
           }
         }
       }
       while (queue.nonEmpty) {
-        val (id, effect) = queue.dequeue()
-        if (held(id)(slot(effect)).contains(effect))
-          callers(id).foreach((caller, step) =>
-            lasting(Seq(effect), step.origin, step.wide, Some(step.name)).foreach(offer(caller, _))
+        val (at, effect) = queue.dequeue()
+        if (held(at)(slot(effect)).contains(effect))
+          callers(at).foreach((caller, step) =>
+            lasting(effect, step.origin, step.wide, Some(step.name)).foreach(offer(caller, _))
           )
       }
-      Array.tabulate(count)(id => () => held(id).flatten.toSet)
+      held
     }
 
-    private def constant(id: Int, bounded: Array[Boolean]): Boolean = {
-      val (_, method) = methods(id)
-      !method.isNative && !traces(id).loops && !traces(id).allocates && method.dynamics.isEmpty &&
-      steps(id).forall(step =>
-        step.exceptional || step.initialiser || !step.absent && step.targets.forall(bounded(_))
-      )
-    }
-  }
+    private def bounded(id: Int): Boolean = bounds.getOrElse(id, descend(id))
 
-  private object Tarjan {
-
-    /** The strongly connected components, each before any component that reaches it. */
-    def components(count: Int, successors: Array[Array[Int]]): Vector[Vector[Int]] = {
-      val index                  = Array.fill(count)(-1)
-      val low                    = Array.fill(count)(0)
-      val onStack                = Array.fill(count)(false)
-      val stack                  = mutable.Stack.empty[Int]
-      val result                 = Vector.newBuilder[Vector[Int]]
-      val counter                = Array(0)
-      val frames                 = mutable.Stack.empty[(Int, Int)]
-      def enter(node: Int): Unit = {
-        index(node) = counter(0)
-        low(node) = counter(0)
-        counter(0) += 1
-        stack.push(node)
-        onStack(node) = true
-        frames.push((node, 0))
+    /** Whether the method and every method it calls, bar the paths that only throw and the initialisers, runs in
+      * constant time. A method that reaches itself does not, so a call back to a method being walked ends the walk.
+      */
+    private def descend(root: Int): Boolean = {
+      val path                    = mutable.ArrayBuffer.empty[Visit]
+      val onPath                  = mutable.BitSet.empty
+      def enter(id: Int): Boolean = {
+        val constant = constantBody(id)
+        if (constant) {
+          path += Visit(
+            id,
+            stepsOf(id).view.filterNot(step => step.exceptional || step.initialiser).flatMap(_.targets).toVector
+          )
+          onPath += id
+        } else bounds(id) = false
+        constant
       }
-      (0 until count).foreach { root =>
-        if (index(root) == -1) {
-          enter(root)
-          while (frames.nonEmpty) {
-            val (node, position) = frames.pop()
-            if (position < successors(node).length) {
-              frames.push((node, position + 1))
-              val next = successors(node)(position)
-              if (index(next) == -1) enter(next)
-              else if (onStack(next)) low(node) = math.min(low(node), index(next))
-            } else {
-              if (low(node) == index(node)) {
-                @annotation.tailrec
-                def popped(members: List[Int]): List[Int] = {
-                  val member = stack.pop()
-                  onStack(member) = false
-                  if (member == node) member :: members else popped(member :: members)
-                }
-                result += popped(Nil).toVector
-              }
-              frames.headOption.foreach((parent, _) => low(parent) = math.min(low(parent), low(node)))
+      def refuse(): Boolean = {
+        path.foreach(visit => bounds(visit.id) = false)
+        false
+      }
+      @annotation.tailrec
+      def walk(): Boolean = path.lastOption match {
+        case None        => true
+        case Some(visit) =>
+          if (visit.next(0) < visit.callees.size) {
+            val next = visit.callees(visit.next(0))
+            visit.next(0) += 1
+            bounds.get(next) match {
+              case Some(true)  => walk()
+              case Some(false) => refuse()
+              case None        => if (onPath(next) || !enter(next)) refuse() else walk()
             }
+          } else {
+            path.remove(path.size - 1): Unit
+            onPath -= visit.id
+            bounds(visit.id) = true
+            walk()
           }
-        }
       }
-      result.result()
+      if (enter(root)) walk() else false
+    }
+
+    private def constantBody(id: Int): Boolean = {
+      val (_, method) = methods(id)
+      !method.isNative && method.dynamics.isEmpty && !traceOf(id).loops && !traceOf(id).allocates &&
+      stepsOf(id).forall(step => step.exceptional || step.initialiser || !step.absent)
     }
   }
 }

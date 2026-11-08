@@ -23,8 +23,8 @@ import scala.util.control.NonFatal
 /** Builds the reference graph and algebraic model of a whole build from the TASTy in its outputs. */
 object Extraction {
 
-  /** The extracted model, with classes that could not be read or analysed listed as problems; `hot` holds the nodes of
-    * the classes the build marks hot, when it marks any.
+  /** The extracted model, with classes that could not be read or analysed listed as problems, and what the classpath
+    * lacks as notes; `hot` holds the nodes of the classes the build marks hot, when it marks any.
     */
   case class Result(
       graph: Graph,
@@ -45,7 +45,8 @@ object Extraction {
       lints: Vector[JavaLints.Found],
       problems: Vector[String],
       nesting: Nesting.Model = Nesting.Model.empty,
-      reach: Reach = Reach.empty
+      reach: Reach = Reach.empty,
+      notes: Vector[String] = Vector.empty
   )
 
   // The TASTy unpickler recurses over long import selector lists and deep trees.
@@ -227,15 +228,16 @@ object Extraction {
       // The replaced copies resolve against their own twin first, and the rest of the build behind it.
       val behind   = primary.map(_.path) ++ merged
       val outputs  = manifest.outputs.groupMap(_.module)(_.path)
-      val absorbed = replacements.flatMap { (module, files) =>
+      val absorbed = replacements.map { (module, files) =>
         val twin  = collector(Vector.empty, Set.empty, None)
         val own   = outputs.getOrElse(module, Vector.empty)
         val found = reading(twin, files, own ++ manifest.classpathOf(Seq(module)) ++ behind)
         phase.absorb(twin)
-        found
+        (twin.problems, found ++ twin.notes)
       }
       val errors   = reading(phase, tasty, merged)
-      val problems = skipped ++ java.problems ++ phase.problems ++ errors ++ absorbed
+      val problems = skipped ++ java.problems ++ phase.problems ++ absorbed.flatMap(_._1)
+      val notes    = phase.notes ++ errors ++ absorbed.flatMap(_._2)
       val graph    = JavaConversion.merge(phase.graph, java)
       // A platform twin replaces some sources with its own of the same name, so the types in them cannot move.
       val twinned = manifest.sources.filter(source => manifest.platforms(source.module)).groupMap(_.module)(_.path)
@@ -267,7 +269,7 @@ object Extraction {
         moduleUses = moduleUses
       )
       val isHot = Globs.heat(hot)
-      if (graph.nodes.isEmpty && problems.nonEmpty) Left(problems)
+      if (graph.nodes.isEmpty && problems.nonEmpty) Left(problems ++ notes)
       else {
         val linked                       = phase.calls.getOrElse(Reach.link(manifest, graph, world))
         val Reach.Reached(reach, unread) = Reach.of(linked, graph)
@@ -298,7 +300,8 @@ object Extraction {
           java.lints,
           problems ++ unread,
           phase.nesting(graph.rooted),
-          reach
+          reach,
+          notes
         ))
       }
     }
@@ -323,7 +326,7 @@ object Extraction {
         try readTASTY(unit)(using ctx.fresh.setCompilationUnit(unit)).toList
         catch {
           case NonFatal(error) =>
-            collector.problem(s"$unit could not be read: $error")
+            collector.failed(s"$unit could not be read", error)
             Nil
         }
       }

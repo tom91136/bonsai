@@ -203,7 +203,7 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
-  test("a library body that refers to a package the classpath lacks is one problem, not a failed extraction") {
+  test("a library body that refers to a package the classpath lacks is one note, not a failed extraction") {
     Scratch.using("bonsai-") { directory =>
       val missing = compile(
         directory.resolve("missing"),
@@ -253,9 +253,11 @@ class ExtractionSuite extends AnalysisSuite {
       val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       assert(result.graph.nodes.keySet.exists(_.contains("Use")), result.graph.nodes.keySet.toString)
       assertEquals(
-        result.problems.filter(_.startsWith("could not read library bodies")),
+        result.notes.filter(_.startsWith("could not read library bodies")),
         Vector(s"could not read library bodies of helper.Helper in $helper")
       )
+      assertEquals(result.problems, Vector.empty)
+      assert(result.notes.exists(_.contains("Use.tasty could not be analysed: dotty.tools.dotc.core.MissingType")))
     }
   }
 

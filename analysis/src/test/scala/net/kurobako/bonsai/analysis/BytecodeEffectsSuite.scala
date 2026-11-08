@@ -6,6 +6,8 @@ import net.kurobako.bonsai.analysis.ClassFiles.*
 import net.kurobako.bonsai.effects.Kind as EffectKind
 import net.kurobako.bonsai.java.Model as JavaModel
 import net.kurobako.bonsai.testing.*
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.Opcodes
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
@@ -226,6 +228,10 @@ public class Gone {
 
 public class Missing {
   public static int call() { return Gone.m(); }
+  public static int guarded(int i) {
+    if (i < 0) throw new IllegalStateException(String.valueOf(Gone.m()));
+    return i;
+  }
 }
 """,
     "fixture/Point.java" -> """package fixture;
@@ -242,6 +248,211 @@ public class Dyn {
 
 public class Refl {
   public static Object call(java.lang.reflect.Method m, Object o) throws Exception { return m.invoke(o); }
+}
+""",
+    "scala/Predef$.java" -> """package scala;
+
+public class Predef$ {
+  public void println(Object o) { }
+}
+""",
+    "scala/runtime/Boot.java" -> """package scala.runtime;
+
+public class Boot {
+  static String home = System.getProperty("user.home");
+  static int made;
+
+  public Boot() { made++; }
+}
+""",
+    "fixture/Cell.java" -> """package fixture;
+
+public class Cell {
+  static int total;
+  int n;
+
+  public Cell() {}
+  public Cell(int v) { setN(v); }
+  void setN(int v) { n = v; }
+  public void tick() { total++; }
+  public void both() { n = 1; total++; }
+
+  public static void freshTick() { new Cell().tick(); }
+  public static void paramTick(Cell c) { c.tick(); }
+  public static void freshBoth() { new Cell().both(); }
+  public static void paramBoth(Cell c) { c.both(); }
+  public static Cell build(int v) { return new Cell(v); }
+  public static void maybe(boolean c, Cell p) { Cell b = c ? new Cell() : p; b.n = 1; }
+  public static void maybeSwapped(boolean c, Cell p) { Cell b = c ? p : new Cell(); b.n = 1; }
+  public static void bothFresh(boolean c) { Cell b = c ? new Cell() : new Cell(); b.n = 1; }
+  public static synchronized void locked() {}
+}
+""",
+    "fixture/Counted.java" -> """package fixture;
+
+public class Counted {
+  static int made;
+
+  public Counted() { made++; }
+
+  public static Counted make() { return new Counted(); }
+}
+""",
+    "fixture/Job.java" -> """package fixture;
+
+public abstract class Job {
+  public abstract int run();
+}
+""",
+    "fixture/Failing.java" -> """package fixture;
+
+public class Failing extends Job {
+  public int run() { throw new IllegalStateException(); }
+}
+""",
+    "fixture/Silent.java" -> """package fixture;
+
+public class Silent extends Job {
+  public int run() { return 1; }
+}
+""",
+    "fixture/Jobs.java" -> """package fixture;
+
+public class Jobs {
+  public static int run(Job j) { return j.run(); }
+  public static Job failing() { return new Failing(); }
+  public static Job silent() { return new Silent(); }
+}
+""",
+    "fixture/Twin.java" -> """package fixture;
+
+public class Twin {
+  public static int m(int[] a) { return a.length; }
+}
+""",
+    "fixture/Twin$.java" -> """package fixture;
+
+public class Twin$ {
+  public static int m(int[] a) { int s = 0; for (int x : a) s += x; return s; }
+}
+""",
+    "fixture/Ranked.java" -> """package fixture;
+
+public class Ranked implements Comparable<Ranked> {
+  int rank;
+
+  public int compareTo(Ranked o) { return rank - o.rank; }
+  public boolean equals(Object o) { return o == this; }
+  public int hashCode() { return rank; }
+  public int hashCode(int seed) { return seed; }
+}
+""",
+    "fixture/Ordering.java" -> """package fixture;
+
+public class Ordering implements java.util.Comparator<Ranked> {
+  public int compare(Ranked a, Ranked b) { return a.rank - b.rank; }
+}
+""",
+    "fixture/Plain.java" -> """package fixture;
+
+public class Plain {
+  public int compare(int a, int b) { return a - b; }
+  public int compareTo(Plain o) { return 0; }
+}
+""",
+    "fixture/Holder.java" -> """package fixture;
+
+public class Holder {
+  public static class Nested {
+    public static int m() { return 1; }
+  }
+}
+""",
+    "fixture/GoneField.java" -> """package fixture;
+
+public class GoneField {
+  public static int x;
+}
+""",
+    "fixture/Peeks.java" -> """package fixture;
+
+public class Peeks {
+  public static int created() { return Registry.created; }
+  public static int absent() { return GoneField.x; }
+  public static Object konst() { return new Konsts(); }
+}
+""",
+    "fixture/Konst.java" -> """package fixture;
+
+public interface Konst {
+  Object ZERO = new Object();
+}
+""",
+    "fixture/Konsts.java" -> """package fixture;
+
+public class Konsts implements Konst {
+  public static Konsts make() { return new Konsts(); }
+}
+""",
+    "fixture/Name.java" -> """package fixture;
+
+public class Name {
+  String text = "x";
+
+  public String text() { return text; }
+}
+""",
+    "fixture/Source.java" -> """package fixture;
+
+public interface Source<T> {
+  T get();
+}
+""",
+    "fixture/Text.java" -> """package fixture;
+
+public interface Text extends Source<String> {
+  String get();
+}
+""",
+    "fixture/Tag.java" -> """package fixture;
+
+public interface Tag {}
+""",
+    "fixture/Sized.java" -> """package fixture;
+
+public interface Sized {
+  int size();
+}
+""",
+    "fixture/Fixed.java" -> """package fixture;
+
+public class Fixed implements Sized {
+  int n;
+
+  public int size() { return n; }
+}
+""",
+    "fixture/Sizing.java" -> """package fixture;
+
+import java.util.function.Supplier;
+
+public class Sizing {
+  public static Supplier<Integer> sizer(Sized s) { return s::size; }
+  public static Sized fixed() { return new Fixed(); }
+  public static int pull(Supplier<Integer> s) { return s.get(); }
+}
+""",
+    "fixture/Pulls.java" -> """package fixture;
+
+import java.util.function.Supplier;
+
+public class Pulls {
+  public static Text bound(Name n) { return n::text; }
+  public static Supplier<String> tagged(Name n) { return (Supplier<String> & Tag) n::text; }
+  public static Object pull(Source<String> s) { return s.get(); }
+  public static String pullText(Text t) { return t.get(); }
+  public static String pullSupplier(Supplier<String> s) { return s.get(); }
+  public static Name name() { return new Name(); }
 }
 """
   )
@@ -317,6 +528,7 @@ public class Refl {
       assert(isPure(at("fresh")))
       assertEquals(kinds(at("param", "(Lfixture/Box;)V")), Set(EffectKind.Writes))
       assertEquals(kinds(at("viaCall", "(Lfixture/Box;)V")), Set(EffectKind.Writes))
+      assert(at("viaCall", "(Lfixture/Box;)V").effects.forall(effect => !effect.onThis && !effect.assumed))
       assertEquals(kinds(at("store", "([I)V")), Set(EffectKind.Writes))
     }
   }
@@ -405,6 +617,165 @@ public class Refl {
       val loud = of(world, summaries, Reference("scala/runtime/Loud", "bump", "()I"))
       assert(isPure(loud))
       assert(isPure(of(world, summaries, ref("Authority", "loud"))))
+      val logs = of(world, summaries, ref("Authority", "logs"))
+      assert(logs.effects.forall(!_.assumed))
+      assertEquals(logs.certain, logs.effects)
+    }
+  }
+
+  test("an axiom keyed by a class that has a companion object covers the methods of the object") {
+    summarised() { (world, summaries) =>
+      val shown = of(world, summaries, Reference("scala/Predef$", "println", "(Ljava/lang/Object;)V"))
+      assertEquals(kinds(shown), Set(EffectKind.Output))
+    }
+  }
+
+  test("an axiom covers a method but not a constructor or an initialiser, whose bodies speak for themselves") {
+    summarised() { (world, summaries) =>
+      assertEquals(
+        kinds(of(world, summaries, Reference("scala/runtime/Boot", "<clinit>", "()V"))),
+        Set(EffectKind.Input)
+      )
+      assertEquals(
+        kinds(of(world, summaries, ref("Counted", "<init>", "()V"))),
+        Set(EffectKind.Writes, EffectKind.Reads)
+      )
+      assertEquals(
+        kinds(of(world, summaries, Reference("scala/runtime/Boot", "<init>", "()V"))),
+        Set(EffectKind.Writes, EffectKind.Reads)
+      )
+      assertEquals(
+        kinds(of(world, summaries, ref("Counted", "make", "()Lfixture/Counted;"))),
+        Set(EffectKind.Writes, EffectKind.Reads)
+      )
+    }
+  }
+
+  test("a callee's effects reach the caller as the receiver allows: kept for a parameter, hidden for a fresh object") {
+    summarised() { (world, summaries) =>
+      def at(name: String, descriptor: String = "()V") = of(world, summaries, ref("Cell", name, descriptor))
+      def shapes(summary: BytecodeEffects.Behaviour)   = summary.effects.map(effect => (effect.kind, effect.onThis))
+      assertEquals(kinds(at("freshTick")), Set(EffectKind.Writes, EffectKind.Reads))
+      assertEquals(kinds(at("paramTick", "(Lfixture/Cell;)V")), Set(EffectKind.Writes, EffectKind.Reads))
+      assertEquals(
+        shapes(at("both")),
+        Set((EffectKind.Writes, true), (EffectKind.Writes, false), (EffectKind.Reads, false))
+      )
+      assertEquals(shapes(at("freshBoth")), Set((EffectKind.Writes, false), (EffectKind.Reads, false)))
+      assertEquals(
+        shapes(at("paramBoth", "(Lfixture/Cell;)V")),
+        Set((EffectKind.Writes, false), (EffectKind.Reads, false))
+      )
+    }
+  }
+
+  test("a constructor that calls its own setter has no effect on the object it builds") {
+    summarised() { (world, summaries) =>
+      assert(of(world, summaries, ref("Cell", "<init>", "(I)V")).effects.isEmpty)
+      assert(isPure(of(world, summaries, ref("Cell", "build", "(I)Lfixture/Cell;"))))
+    }
+  }
+
+  test("a value that is a fresh object on one path and a parameter on another is not fresh, and on both paths is") {
+    summarised() { (world, summaries) =>
+      def at(name: String, descriptor: String) = of(world, summaries, ref("Cell", name, descriptor))
+      assertEquals(kinds(at("maybe", "(ZLfixture/Cell;)V")), Set(EffectKind.Writes))
+      assertEquals(kinds(at("maybeSwapped", "(ZLfixture/Cell;)V")), Set(EffectKind.Writes))
+      assert(isPure(at("bothFresh", "(Z)V")))
+    }
+  }
+
+  test("a static synchronized method locks nothing the caller holds") {
+    summarised() { (world, summaries) =>
+      val locked = of(world, summaries, ref("Cell", "locked", "()V"))
+      assertEquals(locked.effects.map(effect => (effect.kind, effect.onThis)), Set((EffectKind.Writes, false)))
+    }
+  }
+
+  test("a throw is not an effect only some implementations have, as the call cannot choose to throw") {
+    summarised() { (world, summaries) =>
+      val run    = of(world, summaries, ref("Jobs", "run", "(Lfixture/Job;)I"))
+      val thrown = run.effects.filter(_.kind == EffectKind.Throws)
+      assert(thrown.nonEmpty, run.effects.toString)
+      assert(thrown.forall(!_.assumed))
+    }
+  }
+
+  test("methods of classes whose names differ only by a trailing dollar share a key, and a loop in either bounds both") {
+    summarised() { (world, summaries) =>
+      val key = world.key(Reference("fixture/Twin", "m", "([I)I"))
+      assertEquals(key, world.key(Reference("fixture/Twin$", "m", "([I)I")))
+      assert(!summaries.get(key).getOrElse(fail("no summary")).bounded)
+      assertEquals(summaries.callee(key), None)
+    }
+  }
+
+  test("a method is a comparison or an equality contract by its class and signature") {
+    summarised() { (_, summaries) =>
+      val roles = summaries.owned((_, _) => true).map(entry =>
+        (entry.method.owner, entry.method.name, entry.method.descriptor) -> entry.role
+      ).toMap
+      def role(owner: String, name: String, descriptor: String) = roles((s"fixture/$owner", name, descriptor))
+      assertEquals(role("Ranked", "compareTo", "(Lfixture/Ranked;)I"), Some("compareTo"))
+      assertEquals(role("Ranked", "compareTo", "(Ljava/lang/Object;)I"), Some("compareTo"))
+      assertEquals(role("Ranked", "equals", "(Ljava/lang/Object;)Z"), Some("equals"))
+      assertEquals(role("Ranked", "hashCode", "()I"), Some("hashCode"))
+      assertEquals(role("Ranked", "hashCode", "(I)I"), None)
+      assertEquals(role("Ordering", "compare", "(Lfixture/Ranked;Lfixture/Ranked;)I"), Some("compare"))
+      assertEquals(role("Plain", "compare", "(II)I"), None)
+      assertEquals(role("Plain", "compareTo", "(Lfixture/Plain;)I"), None)
+    }
+  }
+
+  test("a nested class has a summary when its outer class is not on the class path") {
+    summarised(absent = Set("fixture/Holder")) { (_, summaries) =>
+      assert(summaries.owned((_, _) => true).exists(_.method.owner == "fixture/Holder$Nested"))
+    }
+  }
+
+  test("the reads of a static field of a class the world lacks are an effect, and its initialiser is not guessed at") {
+    summarised(absent = Set("fixture/GoneField")) { (world, summaries) =>
+      assertEquals(kinds(of(world, summaries, ref("Peeks", "absent"))), Set(EffectKind.Reads))
+    }
+  }
+
+  test("a static field access runs the initialiser of the class that holds it") {
+    summarised() { (world, summaries) =>
+      assertEquals(kinds(of(world, summaries, ref("Peeks", "created"))), Set(EffectKind.Reads, EffectKind.Input))
+    }
+  }
+
+  test("every initialiser the program can run is a method, including those of interfaces nothing else reaches") {
+    val konst = ref("Peeks", "konst", "()Ljava/lang/Object;")
+    summarised(Seq(konst), rooted = _ => false) { (_, summaries) =>
+      val owned = summaries.owned((_, _) => true).map(_.method)
+      assert(owned.contains(Reference("fixture/Konst", "<clinit>", "()V")), owned.toString)
+    }
+  }
+
+  test("a call to a missing class on a path that only throws leaves the method bounded, and one that returns does not") {
+    summarised(absent = Set("fixture/Gone")) { (world, summaries) =>
+      assert(of(world, summaries, ref("Missing", "guarded", "(I)I")).bounded)
+      assert(!of(world, summaries, ref("Missing", "call")).bounded)
+    }
+  }
+
+  test("a call through a super-interface, a bridge or a marked lambda reaches the method the lambda binds") {
+    def pulls(name: String, descriptor: String) = Reference("fixture/Pulls", name, descriptor)
+    val roots                                   = Seq(
+      pulls("bound", "(Lfixture/Name;)Lfixture/Text;"),
+      pulls("tagged", "(Lfixture/Name;)Ljava/util/function/Supplier;"),
+      pulls("name", "()Lfixture/Name;"),
+      pulls("pull", "(Lfixture/Source;)Ljava/lang/Object;"),
+      pulls("pullText", "(Lfixture/Text;)Ljava/lang/String;"),
+      pulls("pullSupplier", "(Ljava/util/function/Supplier;)Ljava/lang/String;")
+    )
+    summarised(roots, rooted = _ => false) { (world, summaries) =>
+      roots.drop(3).foreach { root =>
+        val found = of(world, summaries, root)
+        assertEquals(found.effects.map(_.cause), Set("reads text"), root.name)
+        assert(found.effects.forall(!_.assumed), root.name)
+      }
     }
   }
 
@@ -482,6 +853,11 @@ public class Refl {
       assert(summaries.callee(world.key(ref("Bounds", "constant", "(I)I"))).isDefined)
       assertEquals(summaries.callee(world.key(ref("Bounds", "looped", "([I)I"))), None)
       assertEquals(summaries.callee("fixture.Nothing.at(I)I"), None)
+      assert(summaries.require(world.key(ref("Bounds", "constant", "(I)I"))))
+      assert(!summaries.require("fixture.Nothing.at(I)I"))
+      assert(!BytecodeEffects.none.require(world.key(ref("Bounds", "constant", "(I)I"))))
+      assertEquals(BytecodeEffects.none.get(world.key(ref("Bounds", "constant", "(I)I"))), None)
+      assert(BytecodeEffects.none.owned((_, _) => true).isEmpty)
     }
   }
 
@@ -614,23 +990,126 @@ object ScalaApi {
 public class JavaSide {
   public static int callBack() { return ScalaApi.run(); }
   public static int own() { return 3; }
+  public static Object mod() { return ScalaApi$.MODULE$; }
+  public static int mixed(Mixed m) { return m.run(); }
+  public static Mixed javaMixed() { return new JavaMixed(); }
+  public static Mixed scalaMixed() { return new ScalaMixed(); }
 }
 """
 
+  private val mixed = """package fixture;
+
+public interface Mixed {
+  int run();
+}
+"""
+
+  private val javaMixed = """package fixture;
+
+public class JavaMixed implements Mixed {
+  public int run() { return 2; }
+}
+"""
+
+  private val scalaMixed = """package fixture
+
+class ScalaMixed extends Mixed {
+  def run(): Int = 4
+}
+
+class Dual {
+  def one: Int = 1
+}
+
+class Bare {
+  def one: Int = 1
+}
+"""
+
+  private val dual = """package fixture;
+
+public class Dual$ {
+  public static int three() { return 3; }
+}
+"""
+
+  test("a call through the method handle of an interface method reaches the implementations") {
+    def sizing(name: String, descriptor: String) = Reference("fixture/Sizing", name, descriptor)
+    val roots                                    = Seq(
+      sizing("sizer", "(Lfixture/Sized;)Ljava/util/function/Supplier;"),
+      sizing("fixed", "()Lfixture/Sized;"),
+      sizing("pull", "(Ljava/util/function/Supplier;)I")
+    )
+    summarised(roots, rooted = _ => false) { (world, summaries) =>
+      val found = of(world, summaries, roots(2))
+      assertEquals(found.effects.map(_.cause), Set("reads n"))
+      assert(found.effects.forall(!_.assumed))
+    }
+  }
+
+  // scalafix:off DisableSyntax.null
+  @SuppressWarnings(Array("bonsai:long-arguments", "bonsai:same-type-arguments"))
+  private def legacy(directory: Path): Path = {
+    def emit(name: String, source: Option[String]): Unit = {
+      val writer = ClassWriter(0)
+      writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, s"fixture/$name", null, "java/lang/Object", null)
+      source.foreach(writer.visitSource(_, null))
+      val method = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "one", "()I", null, null)
+      method.visitCode()
+      method.visitInsn(Opcodes.ICONST_1)
+      method.visitInsn(Opcodes.IRETURN)
+      method.visitMaxs(1, 0)
+      method.visitEnd()
+      writer.visitEnd()
+      Files.write(
+        Files.createDirectories(directory.resolve("fixture")).resolve(s"$name.class"),
+        writer.toByteArray
+      ): Unit
+    }
+    emit("Legacy", Some("Legacy.scala"))
+    emit("Bare$", None)
+    directory
+  }
+
+  // scalafix:on DisableSyntax.null
+
   test("classes with TASTy get no summary and are unknown to the bytecode that calls them") {
-    val directory = Scratch.directory("bonsai-bytecode-tasty-")
-    val scala     = compile(directory.resolve("scala"), Seq("ScalaApi.scala" -> scalaApi), Vector.empty)
-    val classes   = Files.createDirectories(directory.resolve("java"))
-    write(directory.resolve("src"), Seq("fixture/JavaSide.java" -> javaSide))
-    javac(Seq(directory.resolve("src/fixture/JavaSide.java")), classes, classpath ++ Vector(scala)): Unit
-    summarised(outputs = Vector(classes, scala)) { (world, summaries) =>
-      val owners = summaries.entries.map(_.method.owner).toSet
-      assert(!owners.exists(_.startsWith("fixture/ScalaApi")), owners.toString)
-      assert(owners.contains("fixture/JavaSide"))
-      assert(world.get("fixture/ScalaApi").exists(_.tasty))
-      assert(world.get("fixture/ScalaApi$").exists(!_.tasty))
-      assertEquals(kinds(of(world, summaries, ref("JavaSide", "callBack"))), Set(EffectKind.Unknown))
-      assert(isPure(of(world, summaries, ref("JavaSide", "own"))))
+    val directory  = Scratch.directory("bonsai-bytecode-tasty-")
+    val interfaces = Files.createDirectories(directory.resolve("interfaces"))
+    write(directory.resolve("src"), Seq("fixture/Mixed.java" -> mixed))
+    javac(Seq(directory.resolve("src/fixture/Mixed.java")), interfaces, classpath): Unit
+    val scala =
+      compile(
+        directory.resolve("scala"),
+        Seq("ScalaApi.scala" -> scalaApi, "ScalaMixed.scala" -> scalaMixed),
+        Vector(interfaces)
+      )
+    val classes = Files.createDirectories(directory.resolve("java"))
+    val sources =
+      Seq("fixture/JavaSide.java" -> javaSide, "fixture/JavaMixed.java" -> javaMixed, "fixture/Dual$.java" -> dual)
+    write(directory.resolve("src"), sources)
+    javac(
+      sources.map((name, _) => directory.resolve("src").resolve(name)),
+      classes,
+      classpath ++ Vector(interfaces, scala)
+    ): Unit
+    summarised(outputs = Vector(classes, interfaces, scala, legacy(directory.resolve("legacy")))) {
+      (world, summaries) =>
+        val owners = summaries.owned((_, _) => true).map(_.method.owner).toSet
+        assert(!owners.exists(_.startsWith("fixture/ScalaApi")), owners.toString)
+        assert(!owners.contains("fixture/ScalaMixed") && !owners.contains("fixture/Dual"), owners.toString)
+        assert(owners.contains("fixture/JavaSide") && owners.contains("fixture/JavaMixed"))
+        assert(owners.contains("fixture/Dual$"), owners.toString)
+        assert(owners.contains("fixture/Legacy") && owners.contains("fixture/Bare$"), owners.toString)
+        assert(world.get("fixture/ScalaApi").exists(_.tasty))
+        assert(world.get("fixture/ScalaApi$").exists(!_.tasty))
+        assertEquals(kinds(of(world, summaries, ref("JavaSide", "callBack"))), Set(EffectKind.Unknown))
+        assert(isPure(of(world, summaries, ref("JavaSide", "own"))))
+        assert(kinds(of(world, summaries, ref("JavaSide", "mixed", "(Lfixture/Mixed;)I"))).contains(EffectKind.Unknown))
+        val mod = of(world, summaries, ref("JavaSide", "mod", "()Ljava/lang/Object;"))
+        assertEquals(kinds(mod), Set(EffectKind.Unknown))
+        assert(mod.effects.forall(_.cause.endsWith("<clinit>")), mod.effects.toString)
+        assert(mod.bounded)
     }
   }
 

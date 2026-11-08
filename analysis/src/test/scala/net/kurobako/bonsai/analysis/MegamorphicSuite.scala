@@ -1,5 +1,10 @@
 package net.kurobako.bonsai.analysis
 
+import java.nio.file.Files
+import net.kurobako.bonsai.analysis.ClassFiles.*
+import net.kurobako.bonsai.testing.*
+import scala.util.Using
+
 class MegamorphicSuite extends AnalysisSuite {
   private val shapes = """trait Shape { def area: Int }
                          |class Circle extends Shape { def area = 1 }
@@ -433,5 +438,107 @@ class MegamorphicSuite extends AnalysisSuite {
       )
     )
     assertFinding(named, "megamorphic-call", "Main.total calls Shape.area in a loop", "One, Three, Two")
+  }
+
+  private val handlers = Seq(
+    "fixture/Handler.java" -> "package fixture;\n\npublic interface Handler { int handle(); }\n",
+    "fixture/Alpha.java"   ->
+      "package fixture;\n\npublic class Alpha implements Handler { public int handle() { return 1; } }\n",
+    "fixture/Beta.java" ->
+      "package fixture;\n\npublic class Beta implements Handler { public int handle() { return 2; } }\n",
+    "fixture/Gamma.java" ->
+      "package fixture;\n\npublic class Gamma implements Handler { public int handle() { return 3; } }\n",
+    "fixture/Mod$.java" ->
+      "package fixture;\n\npublic class Mod$ implements Handler { public int handle() { return 4; } }\n",
+    "fixture/Outer.java" ->
+      """package fixture;
+        |
+        |public class Outer {
+        |  public static class One implements Handler { public int handle() { return 5; } }
+        |  public static class Two implements Handler { public int handle() { return 6; } }
+        |  public static class Three implements Handler { public int handle() { return 7; } }
+        |}
+        |""".stripMargin,
+    "fixture/Wire.java" ->
+      """package fixture;
+        |
+        |public class Wire {
+        |  public static int run(Handler h) { return h.handle(); }
+        |  public static void trio() { new Alpha(); new Beta(); new Gamma(); }
+        |  public static void modules() { new Alpha(); new Beta(); new Mod$(); }
+        |  public static void lambdas() { Handler h = () -> 9; new Alpha(); new Beta(); }
+        |  public static void nested() { new Outer.One(); new Outer.Two(); new Outer.Three(); }
+        |}
+        |""".stripMargin
+  )
+
+  private def node(name: String, scope: Output.Scope = Output.Scope.Main): (String, Node) =
+    name -> Node(name, "m", scope, "", 0, generated = false, exported = false, outer = None)
+
+  private def site(
+      at: String = "fixture.Handler",
+      stable: Boolean = false,
+      unreaching: Set[String] = Set.empty
+  ): Megamorphic.Site = Megamorphic.Site(
+    "fixture.Wire.run",
+    at,
+    "Handler.handle",
+    "fixture.Handler.handle()I",
+    unreaching,
+    stable,
+    Set.empty
+  )
+
+  private def resolved(root: String, nodes: Map[String, Node], at: Megamorphic.Site): Vector[Megamorphic.Found] =
+    Scratch.using("bonsai-megamorphic-") { directory =>
+      val classes = Files.createDirectories(directory.resolve("classes"))
+      write(directory.resolve("src"), handlers)
+      javac(handlers.map((name, _) => directory.resolve("src").resolve(name)), classes, classpath): Unit
+      ClassSource.of(Vector(classes), classpath, None).fold(
+        error => fail(error),
+        source =>
+          Using.resource(source) { source =>
+            val world = ClassWorld(source.bytes(_))
+            val roots =
+              Set(Reference("fixture/Wire", root, "()V"), Reference("fixture/Wire", "run", "(Lfixture/Handler;)I"))
+            Megamorphic.resolve(Vector(at), nodes, CallGraph.build(world, roots), world)
+          }
+      )
+    }
+
+  test("receivers outside the build count, and a nested class is the build's by its enclosing class") {
+    val handler = Map(node("fixture.Handler"))
+    assertEquals(resolved("trio", handler, site()).map(_.count), Vector(3))
+    val nested = handler + node("fixture.Outer", Output.Scope.Test)
+    assertEquals(resolved("nested", nested, site()), Vector.empty)
+    assertEquals(resolved("nested", handler, site()).map(_.count), Vector(3))
+  }
+
+  test("a call at a site the build does not know is main code") {
+    val tests = Seq("Alpha", "Beta", "Gamma").map(name => node(s"fixture.$name", Output.Scope.Test))
+    val nodes = Map(node("fixture.Handler")) ++ tests
+    assertEquals(resolved("trio", nodes, site("fixture.Main")), Vector.empty)
+    assertEquals(resolved("trio", nodes, site()), Vector.empty)
+    val inTests = tests.toMap + node("fixture.Handler", Output.Scope.Test)
+    assertEquals(resolved("trio", inTests, site()).map(_.count), Vector(3))
+  }
+
+  test("a member every receiver implements by reading a field is exempt only when the build holds every receiver") {
+    val some = Map(node("fixture.Handler"), node("fixture.Alpha"), node("fixture.Beta"))
+    assertEquals(resolved("trio", some, site(stable = true)).map(_.count), Vector(3))
+    val all = some + node("fixture.Gamma")
+    assertEquals(resolved("trio", all, site(stable = true)), Vector.empty)
+    assertEquals(resolved("trio", all, site()).map(_.count), Vector(3))
+  }
+
+  test("a lambda is never a member that the build holds") {
+    val nodes = Map(node("fixture.Handler"), node("fixture.Alpha"), node("fixture.Beta"))
+    assertEquals(resolved("lambdas", nodes, site(stable = true)).map(_.count), Vector(3))
+  }
+
+  test("a module is named without the dollar or the dot") {
+    val nodes = Map(node("fixture.Handler"))
+    assertEquals(resolved("modules", nodes, site()).map(_.names), Vector(Vector("Alpha", "Beta", "Mod")))
+    assertEquals(resolved("modules", nodes, site(unreaching = Set("fixture.Mod"))), Vector.empty)
   }
 }
