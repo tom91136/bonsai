@@ -18,6 +18,7 @@ import dotty.tools.dotc.util.SourcePosition
 import dotty.tools.dotc.util.Spans.Span
 import dotty.tools.dotc.util.SrcPos
 import java.nio.file.Path
+import java.nio.file.Paths
 import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
@@ -57,7 +58,7 @@ private class Checks(
   )(using Context): Unit = {
     require(reported.forall(_(check)), s"${check.id} is not among the checks this pass reports")
     if (
-      !disabled(check) && !instrumented(Path.of(position.sourcePos.source.path)) &&
+      !disabled(check) && !instrumented(Paths.get(position.sourcePos.source.path)) &&
       !suppressed(check, position)
     ) {
       val tagged = s"$message [bonsai:${check.id}]"

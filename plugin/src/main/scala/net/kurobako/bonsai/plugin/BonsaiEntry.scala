@@ -23,7 +23,6 @@ class BonsaiEntry extends StandardPlugin {
   override def init(options: List[String]): List[PluginPhase] =
     if (interactive) Nil else implementation.init(options)
 
-  private def interactive: Boolean = StackWalker.getInstance().walk { frames =>
-    frames.anyMatch(_.getClassName == classOf[InteractiveDriver].getName)
-  }
+  private def interactive: Boolean =
+    Thread.currentThread.getStackTrace.exists(_.getClassName == classOf[InteractiveDriver].getName)
 }

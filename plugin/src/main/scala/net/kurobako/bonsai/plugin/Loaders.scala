@@ -1,10 +1,12 @@
 package net.kurobako.bonsai.plugin
 
 import dotty.tools.dotc.plugins.BonsaiLoaders
+import java.io.DataInputStream
 import java.lang.invoke.MethodHandles
 import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.util.AbstractMap.SimpleImmutableEntry
 import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipFile
@@ -25,7 +27,7 @@ private object Loaders {
     * the plugin is a directory, whose stamp says nothing of the files in it.
     */
   def of(entry: Class[?], compiler: Class[?]): ClassLoader =
-    Option(entry.getProtectionDomain.getCodeSource).map(source => Path.of(source.getLocation.toURI)) match {
+    Option(entry.getProtectionDomain.getCodeSource).map(source => Paths.get(source.getLocation.toURI)) match {
       case Some(jar) if Files.isRegularFile(jar) => shared(compiler, jar)
       case _                                     => entry.getClassLoader
     }
@@ -64,8 +66,17 @@ private object Loaders {
 
   private def defined(compiler: Class[?], jar: Path): Class[?] = {
     val bytes = Using.resource(ZipFile(jar.toFile)) { archive =>
-      Using.resource(archive.getInputStream(archive.getEntry(Holder.replace('.', '/') + ".class")))(_.readAllBytes())
+      val entry   = archive.getEntry(Holder.replace('.', '/') + ".class")
+      val content = Array.ofDim[Byte](entry.getSize.toInt)
+      Using.resource(archive.getInputStream(entry))(DataInputStream(_).readFully(content))
+      content
     }
-    MethodHandles.privateLookupIn(compiler, MethodHandles.lookup()).defineClass(bytes)
+    if (JdkPackages.modular) MethodHandles.privateLookupIn(compiler, MethodHandles.lookup()).defineClass(bytes)
+    else {
+      val define = classOf[ClassLoader]
+        .getDeclaredMethod("defineClass", classOf[String], classOf[Array[Byte]], classOf[Int], classOf[Int])
+      define.setAccessible(true)
+      define.invoke(compiler.getClassLoader, Holder, bytes, 0, bytes.length).asInstanceOf[Class[?]]
+    }
   }
 }
