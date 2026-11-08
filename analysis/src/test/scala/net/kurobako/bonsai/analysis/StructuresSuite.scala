@@ -5,9 +5,10 @@ class StructuresSuite extends AnalysisSuite {
       main: Seq[(String, String)],
       test: Seq[(String, String)] = Nil,
       twins: Seq[Seq[(String, String)]] = Nil,
-      generated: Vector[String] = Vector.empty
+      generated: Vector[String] = Vector.empty,
+      libraries: Set[String] = Set.empty
   ): Vector[Finding] = {
-    val result = extract(main, test, twins = twins, generated = generated)
+    val result = extract(main, test, twins = twins, generated = generated, libraries = libraries)
     Structures.findings(result.structures, result.graph)
   }
 
@@ -216,7 +217,7 @@ class StructuresSuite extends AnalysisSuite {
     )
   }
 
-  test("a small type alone in its file that one type uses belongs beside it, unless a platform has its own") {
+  test("a type alone in its file that one type uses belongs beside it, as a tiny one two types use does") {
     val found = findings(
       Seq(
         "Small.scala"  -> "case class Small(value: Int)",
@@ -225,16 +226,20 @@ class StructuresSuite extends AnalysisSuite {
         "Others.scala" -> "class First { def c: Common = Common(2) }\nclass Second { def c: Common = Common(3) }",
         "Wide.scala"   ->
           ("case class Wide(value: Int) {\n" + (1 to 10).map(n => s"  def f$n: Int = $n").mkString("\n") + "\n}"),
-        "Uses.scala"  -> "class Uses { def wide: Wide = Wide(1) }",
+        "Uses.scala"  -> s"class Uses {\n  def wide: Wide = Wide(1)\n${body("more", 12)}\n}",
         "Fence.scala" -> "object Fence { def fence(): Int = 1 }",
         "Heap.scala"  -> "class Heap { def allocate: Int = Fence.fence() }"
       ),
+      Seq("WideSuite.scala" -> "class WideSuite { def wide: Wide = Wide(2) }"),
       // One platform shares the source another replaces.
       twins = Seq(Seq("Fence.scala" -> "object Fence { def fence(): Int = 2 }"), Seq.empty)
     )
     assertEquals(
       of(found, Finding.Rule.SatelliteType),
-      Vector("Small is 1 line in a file of its own, used only by Big")
+      Vector(
+        "Small is 1 line in a file of its own, used only by Big",
+        "Wide is 12 lines in a file of its own, used only by Uses"
+      )
     )
   }
 
@@ -295,5 +300,227 @@ class StructuresSuite extends AnalysisSuite {
         Finding.Level.Info    -> "order matches its Phase parameter phase over its cases"
       )
     )
+  }
+
+  private def satellites(found: Vector[Finding]): Vector[String] =
+    found.collect { case finding if finding.rule == Finding.Rule.SatelliteType => finding.detail }.sorted
+
+  private def body(name: String, lines: Int): String = (1 to lines).map(n => s"  def $name$n: Int = $n").mkString("\n")
+
+  test("a type tied by its signatures to another belongs with it, whichever type calls it") {
+    val found = findings(Seq(
+      "Tidy.scala" ->
+        s"""object Tidy {
+           |  case class Plan(moves: Vector[String])
+           |  case class Op(name: String)
+           |  def scan(root: String): Vector[String] = Vector(root)
+           |${body("extra", 10)}
+           |}""".stripMargin,
+      "AviTidy.scala" ->
+        s"""object AviTidy {
+           |  def plan(root: String): Tidy.Plan = Tidy.Plan(Tidy.scan(root))
+           |  def op(name: String): Tidy.Op = Tidy.Op(name)
+           |${body("more", 10)}
+           |}""".stripMargin,
+      "StripPrefix.scala" ->
+        s"""object StripPrefix {
+           |  def plan(dir: String): Tidy.Plan = Tidy.Plan(Vector(dir))
+           |${body("more", 10)}
+           |}""".stripMargin,
+      "Commands.scala" ->
+        """class Commands {
+          |  def avi: Int = AviTidy.plan("a").moves.size
+          |  def strip: Int = StripPrefix.plan("b").moves.size
+          |  def tidy: Int = Tidy.scan("c").size
+          |}""".stripMargin
+    ))
+    assertEquals(
+      satellites(found),
+      Vector(
+        "AviTidy is 14 lines in a file of its own, tied to Tidy by its signatures; nest it in the companion of Tidy",
+        "StripPrefix is 13 lines in a file of its own, tied to Tidy by its signatures; nest it in the companion of Tidy"
+      )
+    )
+  }
+
+  test("a type extending the nested trait of one type is tied to it, and not to the types it merely holds") {
+    val found = findings(Seq(
+      "Scheduler.scala" ->
+        s"""object Scheduler {
+           |  case class Outcome(ok: Boolean)
+           |  trait Listener { def done(outcome: Outcome): Unit }
+           |${body("extra", 10)}
+           |}""".stripMargin,
+      "Progress.scala"    -> s"class Progress {\n  def finished(): Unit = ()\n${body("more", 10)}\n}",
+      "JobReporter.scala" ->
+        s"""class JobReporter(progress: Progress) extends Scheduler.Listener {
+           |  def done(outcome: Scheduler.Outcome): Unit = progress.finished()
+           |${body("more", 10)}
+           |}""".stripMargin,
+      "Routes.scala" ->
+        s"""object Routes {
+           |  def show(progress: Progress): Int = progress.hashCode
+           |${body("more", 10)}
+           |}""".stripMargin,
+      "Runner.scala" ->
+        """class Runner {
+          |  def reporter(progress: Progress): Int = JobReporter(progress).hashCode + Routes.show(progress)
+          |  def listen(listener: Scheduler.Listener): Unit = listener.done(Scheduler.Outcome(true))
+          |}""".stripMargin,
+      "Video.scala" ->
+        "class Video { def reporter(progress: Progress): Int = JobReporter(progress).hashCode + Routes.more1 }"
+    ))
+    assertEquals(
+      satellites(found).filter(finding => finding.startsWith("JobReporter") || finding.startsWith("Routes")),
+      Vector(
+        "JobReporter is 13 lines in a file of its own, tied to Scheduler by its signatures; " +
+          "nest it in the companion of Scheduler"
+      )
+    )
+  }
+
+  test("a type that only takes the nested types of another as settings belongs with the type that calls it") {
+    val found = findings(Seq(
+      "Http.scala"   -> s"object Http {\n  class Retrying(val attempts: Int)\n${body("more", 40)}\n}",
+      "Discuz.scala" ->
+        s"object Discuz {\n  def fetch(retrying: Http.Retrying): Int = retrying.attempts\n${body("more", 20)}\n}",
+      "Dm.scala" ->
+        s"""class Dm {
+           |  def go: Int = Discuz.fetch(Http.Retrying(1)) + Http.more1
+           |${body("more", 40)}
+           |}""".stripMargin
+    ))
+    assertEquals(
+      satellites(found).filter(_.startsWith("Discuz")),
+      Vector("Discuz is 23 lines in a file of its own, used only by Dm; nest it in the companion of Dm")
+    )
+  }
+
+  test("a type that only one other names in a signature belongs with it, whoever else calls it") {
+    val found = findings(Seq(
+      "VNDB.scala" ->
+        s"""class VNDB(url: String) {
+           |  def lookup(id: String): VNDB.Entry = VNDB.Entry(id)
+           |${body("more", 10)}
+           |}
+           |object VNDB {
+           |  case class Entry(title: String)
+           |  val DefaultUrl: String = "u"
+           |}""".stripMargin,
+      "VNCG.scala" -> s"""object VNCG {
+           |  def name(entry: VNDB.Entry): String = entry.title
+           |  def fetch(vndb: VNDB): String = vndb.lookup("a").title
+           |${body("more", 20)}
+           |}""".stripMargin,
+      "Commands.scala" ->
+        """class Commands {
+          |  def named: String = VNCG.name(VNDB(VNDB.DefaultUrl).lookup("a"))
+          |}""".stripMargin
+    ))
+    assertEquals(
+      satellites(found).filter(finding => finding.startsWith("VNDB") || finding.startsWith("VNCG")),
+      Vector(
+        "VNDB is 17 lines in a file of its own, named in a signature only by VNCG; nest it in the companion of VNCG"
+      )
+    )
+  }
+
+  test("a type far larger than its host, or one of three a host would take, is offered no home") {
+    val found = findings(Seq(
+      "Large.scala"  -> s"object Large {\n${body("more", 60)}\n}",
+      "Holder.scala" -> "class Holder { def go: Int = Large.more1 }",
+      "Hub.scala"    ->
+        s"""class Hub {
+           |  def first: Int = First.more1
+           |  def second: Int = Second.more1
+           |  def third: Int = Third.more1
+           |${body("more", 30)}
+           |}""".stripMargin,
+      "First.scala"  -> s"object First {\n${body("more", 8)}\n}",
+      "Second.scala" -> s"object Second {\n${body("more", 8)}\n}",
+      "Third.scala"  -> s"object Third {\n${body("more", 8)}\n}"
+    ))
+    assertEquals(satellites(found), Vector.empty)
+  }
+
+  test("an entry point that only runs one type belongs in the companion of that type") {
+    val found = findings(Seq(
+      "Commands.scala" -> "case class Commands(out: String) {\n  def run(args: Vector[String]): Int = args.size\n}",
+      "Other.scala"    -> "case class Other(out: String) {\n  def run(args: Vector[String]): Int = args.size\n}",
+      "Cli.scala"      ->
+        """object Cli {
+          |  def run(args: Vector[String], out: String): Int = Commands(out).run(args)
+          |  def main(args: Array[String]): Unit = sys.exit(run(args.toVector, "o"))
+          |}""".stripMargin,
+      "Tool.scala" ->
+        """object Tool {
+          |  def main(args: Array[String]): Unit = Commands("t").run(Vector.empty)
+          |  def helper: Int = 3
+          |}""".stripMargin,
+      "Pair.scala" ->
+        """object Pair {
+          |  def main(args: Array[String]): Unit = {
+          |    Commands("a").run(Vector.empty)
+          |    Other("b").run(Vector.empty)
+          |  }
+          |}""".stripMargin
+    ))
+    assertEquals(
+      satellites(found).filter(_.startsWith("Cli")),
+      Vector("Cli is an entry point of 4 lines that only runs Commands; nest it in the companion of Commands")
+    )
+    assertEquals(
+      satellites(found).filter(finding => finding.startsWith("Tool") || finding.startsWith("Pair")),
+      Vector.empty
+    )
+  }
+
+  test("a helper several types use, or one that tests use alone, is no satellite") {
+    val found = findings(
+      Seq(
+        "Locks.scala" ->
+          """import java.util.concurrent.locks.ReentrantLock
+             |object Locks {
+             |  extension (lock: ReentrantLock) {
+             |    inline def locked[A](inline body: => A): A = {
+             |      lock.lock()
+             |      try body
+             |      finally lock.unlock()
+             |    }
+             |  }
+             |}""".stripMargin,
+        "Stamp.scala" ->
+          s"case class Stamp(size: Long) {\n  def same(other: Stamp): Boolean = size == other.size\n${body("more", 10)}\n}",
+        "Marker.scala"    -> s"object Marker {\n  val Name: String = \"m\"\n${body("more", 10)}\n}",
+        "Alone.scala"     -> s"object Alone {\n${body("more", 12)}\n}",
+        "Operation.scala" ->
+          """import java.util.concurrent.locks.ReentrantLock
+            |class Operation { def go(lock: ReentrantLock): Long = Locks.locked(lock)(Stamp(1).size) }""".stripMargin,
+        "Check.scala" ->
+          """import java.util.concurrent.locks.ReentrantLock
+            |class Check { def go(lock: ReentrantLock): Boolean = Locks.locked(lock)(Stamp(1).same(Stamp(2))) }""".stripMargin,
+        "Recode.scala" ->
+          """import java.util.concurrent.locks.ReentrantLock
+            |class Recode { def go(lock: ReentrantLock): String = Locks.locked(lock)(Marker.Name) }""".stripMargin,
+        "Scan.scala" -> "class Scan { def go: String = Marker.Name; def again: String = Marker.Name + Marker.Name }",
+        "Tag.scala"  -> "class Tag { def go: String = Marker.Name }"
+      ),
+      Seq("AloneSuite.scala" -> "class AloneSuite { def go: Int = Alone.more1 }")
+    )
+    assertEquals(
+      satellites(found).filter(finding => Vector("Locks", "Stamp", "Marker", "Alone").exists(finding.startsWith(_))),
+      Vector.empty
+    )
+  }
+
+  test("a type of a library's exported API is no satellite, however few types use it") {
+    val found = findings(
+      Seq(
+        "Zip.scala"    -> s"object Zip {\n${body("more", 20)}\n}",
+        "Recode.scala" -> "class Recode { def go: Int = Zip.more1 }"
+      ),
+      libraries = Set("m")
+    )
+    assertEquals(satellites(found), Vector.empty)
   }
 }

@@ -37,6 +37,9 @@ object Structures {
       nearby: Boolean
   )
 
+  /** A build type named by the visible signature of a member of `owner`, or by the parents of `owner`. */
+  case class Signature(owner: String, named: String, result: Boolean)
+
   object Model {
     val empty: Model =
       Model(
@@ -48,6 +51,7 @@ object Structures {
         Vector.empty,
         Map.empty,
         Counterparts.Model.empty,
+        Vector.empty,
         Vector.empty
       )
   }
@@ -62,13 +66,19 @@ object Structures {
       dispatches: Vector[Dispatch],
       extents: Map[String, Int],
       counterparts: Counterparts.Model,
-      bypasses: Vector[Wrappers.Bypass]
+      bypasses: Vector[Wrappers.Bypass],
+      signatures: Vector[Signature]
   )
 
   private val MinimumFamily = 3
   private val MinimumSide   = 3
   private val MinimumGroup  = 2
-  private val Satellite     = 10
+  private val Tiny          = 10
+  private val Small         = 60
+  private val Tied          = 120
+  private val Callers       = 3
+  private val Takes         = 2
+  private val Launchers     = Set("main", "run")
   private val Shown         = 4
 
   def findings(model: Model, built: Graph): Vector[Finding] = {
@@ -76,7 +86,7 @@ object Structures {
     val nodes = graph.nodes
     stutters(model.stutters, nodes) ++ stale(model.mentions, nodes) ++ families(model.applied, nodes) ++
       packages(graph) ++ bases(model.concretes, nodes) ++ disjoint(model.members, nodes) ++
-      satellites(model.extents, graph) ++ dispatches(model.dispatches, nodes) ++
+      satellites(model, graph) ++ dispatches(model.dispatches, nodes) ++
       Counterparts.findings(model.counterparts, nodes) ++ Wrappers.findings(model.bypasses, nodes)
   }
 
@@ -250,30 +260,104 @@ object Structures {
       )
     }
 
-  /** Small top-level types alone in their file that only one or two other types use. */
-  private def satellites(extents: Map[String, Int], graph: Graph): Vector[Finding] = {
-    val nodes = graph.nodes
-    val alone = nodes.values.filter(_.outer.isEmpty).groupBy(_.source).values.view.map(_.toVector).collect {
-      case Vector(node) if !node.test && !node.exported => node
+  private case class Move(node: String, why: String, host: Option[String], entry: Boolean)
+
+  /** Top-level types alone in their file that few other types use, and entry points that only run one type, with the
+    * type each belongs in. A type whose results and parents are nested types of one other goes there, whoever calls it;
+    * so does one that only that other names in a signature, up to twice the size a lone user is given. Failing both, a
+    * small type one type uses goes to it, and a tiny one two types use has no host to name. A type is no larger than
+    * half as much again as its host, and a host takes at most two.
+    */
+  private def satellites(model: Model, graph: Graph): Vector[Finding] = {
+    val nodes                   = graph.nodes
+    def production(key: String) = nodes.get(key).exists(!_.test)
+    val links                   = graph.edges.toVector
+      .flatMap((from, targets) => targets.map(target => outermost(nodes, from) -> outermost(nodes, target)))
+      .distinct
+      .filter((from, to) => from != to && production(from) && production(to))
+    val linked = links.toSet
+    val users  = links.groupMap(_._2)(_._1)
+    val uses   = links.groupMap(_._1)(_._2)
+    val named  = model.signatures.flatMap(signature =>
+      nodes.get(signature.named).map(node =>
+        (outermost(nodes, signature.owner), outermost(nodes, signature.named), node.outer.nonEmpty && signature.result)
+      )
+    ).filter((owner, to, _) => linked(owner -> to))
+    // A type that builds or extends the nested types of another is a part of it; one that takes them as parameters
+    // only configures itself with them.
+    val building  = named.collect { case (owner, to, true) => owner -> to }.groupMap(_._1)(_._2)
+    val naming    = named.groupMap(_._2)(_._1)
+    val launchers = model.members.groupMap(_.owner)(_.name).collect {
+      case (owner, names) if names.contains("main") && names.forall(Launchers) => owner
+    }.toSet
+    def sole(candidates: Iterable[String]): Option[String] = candidates.toVector.distinct match {
+      case Vector(only) => Some(only)
+      case _            => None
     }
-    val users = graph.edges.toVector
-      .flatMap((from, targets) => targets.map(_ -> outermost(nodes, from)))
-      .groupMap(_._1)(_._2)
-    alone.toVector.sortBy(_.name).flatMap { node =>
-      val by =
-        users.getOrElse(node.name, Vector.empty).filter(user => user != node.name && nodes.get(user).exists(!_.test))
-          .distinct
-      extents.get(node.name).filter(lines => lines < Satellite && by.nonEmpty && by.size <= 2).flatMap(lines =>
-        Finding.at(
-          nodes,
-          node.name,
-          Finding.Rule.SatelliteType,
-          s"${Finding.simple(node.name)} is ${counted(lines, "line")} in a file of its own, used only by " +
-            s"${by.map(Finding.simple(_)).sorted.mkString(" and ")}; nest it in the companion of the type it belongs with",
-          Finding.Level.Info
+    def bound(node: Node): Option[(String, String)] = {
+      val hosts = building.getOrElse(node.name, Vector.empty)
+      sole(hosts).map(host => host -> s"tied to ${Finding.simple(host)} by its signatures").orElse(
+        Option.when(hosts.isEmpty)(sole(naming.getOrElse(node.name, Vector.empty))).flatten.map(host =>
+          host -> s"named in a signature only by ${Finding.simple(host)}"
         )
       )
     }
+    def hostable(node: Node, lines: Int)(host: String) =
+      nodes(host).module == node.module && model.extents.get(host).exists(size => lines * 2 <= size * 3)
+    val alone = nodes.values.filter(_.outer.isEmpty).groupBy(_.source).values.view.map(_.toVector).collect {
+      case Vector(node) if !node.test && !node.exported => node
+    }
+    val moves = alone.toVector.sortBy(_.name).flatMap { node =>
+      val by    = users.getOrElse(node.name, Vector.empty)
+      val roots = graph.rooted(node.name)
+      val entry = roots && launchers(node.name)
+      model.extents.get(node.name).flatMap { lines =>
+        val size    = s"${Finding.simple(node.name)} is ${counted(lines, "line")}"
+        val hosting = hostable(node, lines)
+        val moved   =
+          if (entry)
+            sole(uses.getOrElse(node.name, Vector.empty)).filter(hosting).map(host =>
+              s"${Finding.simple(node.name)} is an entry point of ${counted(lines, "line")} that only runs ${Finding.simple(host)}" ->
+                Some(host)
+            )
+          else if (roots || by.isEmpty || by.size > Callers) None
+          else
+            bound(node).filter((host, _) => lines <= Tied && hosting(host) && by != Vector(host)).map((host, why) =>
+              s"$size in a file of its own, $why" -> Some(host)
+            ).orElse(by match {
+              case Vector(only) if lines <= Small && hosting(only) =>
+                Some(s"$size in a file of its own, used only by ${Finding.simple(only)}" -> Some(only))
+              case Vector(_, _) if lines < Tiny =>
+                Some(
+                  s"$size in a file of its own, used only by ${by.map(Finding.simple(_)).sorted.mkString(" and ")}" ->
+                    None
+                )
+              case _ => None
+            })
+        moved.map((why, host) => Move(node.name, why, host, entry))
+      }
+    }
+    val hostOf  = moves.map(move => move.node -> move.host).toMap
+    val offered = moves.filterNot(move =>
+      move.host.exists(host =>
+        hostOf.get(host).contains(Some(move.node)) &&
+          Ordering[(Int, String)].gt((model.extents(move.node), move.node), (model.extents(host), host))
+      )
+    )
+    val taken   = offered.collect { case Move(_, _, Some(host), false) => host }.toSet
+    val staying = offered.filter(move => move.entry || !taken(move.node))
+    val load    = staying.collect { case Move(_, _, Some(host), false) => host }.groupMapReduce(identity)(_ => 1)(_ + _)
+    staying.flatMap(move =>
+      Option.when(move.entry || move.host.forall(load(_) <= Takes))(()).flatMap(_ =>
+        Finding.at(
+          nodes,
+          move.node,
+          Finding.Rule.SatelliteType,
+          s"${move.why}; nest it in the companion of ${move.host.fold("the type it belongs with")(Finding.simple)}",
+          Finding.Level.Info
+        )
+      )
+    )
   }
 
   // A match naming fewer than half of the cases leaves the rest to a default, which is not a dispatch.

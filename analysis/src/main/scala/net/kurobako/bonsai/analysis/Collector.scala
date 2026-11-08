@@ -775,6 +775,7 @@ private[analysis] class Collector(
           key(target).filterNot(Node.within(nodes, from, _)).foreach(exposed += _)
         )
         signature.foreach(named.traverse(_))
+        if (!symbol.ownersIterator.exists(confined(_))) structure.expose(symbol, from)
       }
 
   /** Records a named given that code in other files can refer to; private givens are left to scalafix. */

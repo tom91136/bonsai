@@ -12,6 +12,9 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.ConstantType
+import dotty.tools.dotc.core.Types.NamedType
+import dotty.tools.dotc.core.Types.Type
+import dotty.tools.dotc.core.Types.TypeTraverser
 import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
@@ -43,6 +46,14 @@ private[analysis] object StructureObserver {
   private def stutters(cls: String, field: String): Boolean =
     Vector(cls, s"${cls}s", s"${cls}es").exists(field.equalsIgnoreCase(_))
 
+  // The types a type names, not the objects that hold them: `Scheduler.Listener` names `Listener` only.
+  private class NamedTypes(record: Symbol => Unit)(using Context) extends TypeTraverser {
+    def traverse(tpe: Type): Unit = tpe match {
+      case named: NamedType => record(named.symbol)
+      case _                => traverseChildren(tpe)
+    }
+  }
+
   @annotation.tailrec
   private def concluding(tree: tpd.Tree)(using Context): tpd.Tree = Calls.peel(tree) match {
     case tpd.Block(_, expression) => concluding(expression)
@@ -71,6 +82,7 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
   private val named      = mutable.ArrayBuffer.empty[(String, String, String, String, Node)]
   private val typed      = mutable.ArrayBuffer.empty[(String, Node)]
   private val mirrors    = mutable.ArrayBuffer.empty[Counterparts.Mirror]
+  private val signed     = mutable.Set.empty[Structures.Signature]
   private val wrapping   = Wrappers(symbols, lines)
   // Built once every class is declared, when the phase finishes.
   private var model = Structures.Model.empty // scalafix:ok DisableSyntax.var
@@ -85,6 +97,21 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
 
   /** Makes the libraries a compilation unit imports the ones its methods are checked for bypassed wrappers. */
   def enter(unit: tpd.Tree)(using Context): Unit = wrapping.enter(unit)
+
+  /** Records the build types named by the signature of the visible member `symbol` of the type `from`, and whether each
+    * is named by its result or parents rather than its parameters.
+    */
+  def expose(symbol: Symbol, from: String)(using Context): Unit = {
+    def record(result: Boolean)(types: List[Type]) = {
+      val named = NamedTypes(target => key(target).foreach(signed += Structures.Signature(from, _, result)))
+      types.foreach(named.traverse(_))
+    }
+    if (symbol.isClass) record(true)(symbol.asClass.parentTypes)
+    else {
+      record(false)(symbol.info.paramInfoss.flatten)
+      record(true)(List(symbol.info.finalResultType))
+    }
+  }
 
   /** Whether a member of an object names nothing else of its object and uses no type of the build but its own. */
   def detachable(member: Symbol): Boolean = detached(member)
@@ -346,7 +373,8 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
       dispatched.toVector,
       extents.view.mapValues((start, end) => end - start + 1).toMap,
       Counterparts.Model(mirrors.toVector, families),
-      wrapping.bypasses
+      wrapping.bypasses,
+      signed.toVector
     )
   }
 }
