@@ -1,0 +1,62 @@
+FROM docker.io/library/ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+
+ARG JDK8_URL=https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u512-b09/OpenJDK8U-jdk_x64_linux_hotspot_8u512b09.tar.gz
+ARG JDK8_SHA256=fb3bfa869012419b562bb4235d0d83ec4f8c1dda62ae432ba20c6c3a7e43f7e4
+ARG JDK11_URL=https://github.com/adoptium/temurin11-binaries/releases/download/jdk-11.0.33%2B10/OpenJDK11U-jdk_x64_linux_hotspot_11.0.33_10.tar.gz
+ARG JDK11_SHA256=c4b8eaf56c93b95b689ffc08d155df1bcdbbffb666f8f71d21d97aedaea6f0ec
+ARG JDK17_URL=https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.21_9.tar.gz
+ARG JDK17_SHA256=8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1368add1dfe8711
+ARG JDK21_URL=https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz
+ARG JDK21_SHA256=d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c
+ARG JDK25_URL=https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz
+ARG JDK25_SHA256=68982529869257d0ee6b824ec5aa270ff8b118bb438670da0b97ebdab178d7fb
+ARG SBT_URL=https://github.com/sbt/sbt/releases/download/v2.0.12/sbt-2.0.12.tgz
+ARG SBT_SHA256=a797e1d940260c9d6e8a0a434ff8fc3247c1b711d2cf302bae62ae243293fe55
+ARG COURSIER_URL=https://github.com/coursier/coursier/releases/download/v2.1.26/cs-x86_64-pc-linux.gz
+ARG COURSIER_SHA256=348e37bc2a8c706640e6b032c4551a0e055a7f1537485b4a91540e9d3598ec6d
+ARG SCALA_CLI_URL=https://github.com/VirtusLab/scala-cli/releases/download/v1.18.0/scala-cli-x86_64-pc-linux.gz
+ARG SCALA_CLI_SHA256=eb41442f870bcae75aa5d6622ac96a173dae14fed59f71c97125eb21536bb060
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      bzip2 ca-certificates curl git procps unzip xz-utils zip \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    curl -fsSL -o /tmp/jdk.tgz "$JDK8_URL"; echo "$JDK8_SHA256  /tmp/jdk.tgz" | sha256sum -c -; \
+    mkdir -p /opt/jdk/8; tar -xzf /tmp/jdk.tgz -C /opt/jdk/8 --strip-components=1; rm /tmp/jdk.tgz /opt/jdk/8/src.zip
+RUN set -eux; \
+    curl -fsSL -o /tmp/jdk.tgz "$JDK11_URL"; echo "$JDK11_SHA256  /tmp/jdk.tgz" | sha256sum -c -; \
+    mkdir -p /opt/jdk/11; tar -xzf /tmp/jdk.tgz -C /opt/jdk/11 --strip-components=1; rm /tmp/jdk.tgz /opt/jdk/11/lib/src.zip
+RUN set -eux; \
+    curl -fsSL -o /tmp/jdk.tgz "$JDK17_URL"; echo "$JDK17_SHA256  /tmp/jdk.tgz" | sha256sum -c -; \
+    mkdir -p /opt/jdk/17; tar -xzf /tmp/jdk.tgz -C /opt/jdk/17 --strip-components=1; rm /tmp/jdk.tgz /opt/jdk/17/lib/src.zip
+RUN set -eux; \
+    curl -fsSL -o /tmp/jdk.tgz "$JDK21_URL"; echo "$JDK21_SHA256  /tmp/jdk.tgz" | sha256sum -c -; \
+    mkdir -p /opt/jdk/21; tar -xzf /tmp/jdk.tgz -C /opt/jdk/21 --strip-components=1; rm /tmp/jdk.tgz /opt/jdk/21/lib/src.zip
+RUN set -eux; \
+    curl -fsSL -o /tmp/jdk.tgz "$JDK25_URL"; echo "$JDK25_SHA256  /tmp/jdk.tgz" | sha256sum -c -; \
+    mkdir -p /opt/jdk/25; tar -xzf /tmp/jdk.tgz -C /opt/jdk/25 --strip-components=1; rm /tmp/jdk.tgz /opt/jdk/25/lib/src.zip
+
+RUN set -eux; \
+    curl -fsSL -o /tmp/sbt.tgz "$SBT_URL"; echo "$SBT_SHA256  /tmp/sbt.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/sbt.tgz -C /opt; rm /tmp/sbt.tgz; \
+    ln -s /opt/sbt/bin/sbt /usr/local/bin/sbt
+RUN set -eux; \
+    curl -fsSL -o /tmp/cs.gz "$COURSIER_URL"; echo "$COURSIER_SHA256  /tmp/cs.gz" | sha256sum -c -; \
+    gunzip -c /tmp/cs.gz > /usr/local/bin/cs; chmod +x /usr/local/bin/cs; rm /tmp/cs.gz
+RUN set -eux; \
+    curl -fsSL -o /tmp/scala-cli.gz "$SCALA_CLI_URL"; echo "$SCALA_CLI_SHA256  /tmp/scala-cli.gz" | sha256sum -c -; \
+    gunzip -c /tmp/scala-cli.gz > /usr/local/bin/scala-cli; chmod +x /usr/local/bin/scala-cli; rm /tmp/scala-cli.gz
+
+RUN userdel -r ubuntu \
+ && useradd -m -u 1000 -s /bin/bash bonsai \
+ && mkdir -p /home/bonsai/.ivy2/local /work /out \
+ && chown -R bonsai:bonsai /home/bonsai /work /out
+
+ENV JAVA_HOME=/opt/jdk/21 \
+    PATH=/opt/jdk/21/bin:$PATH \
+    LANG=C.UTF-8 \
+    SBT_OPTS=-Dsbt.color=false
+USER bonsai
+WORKDIR /work

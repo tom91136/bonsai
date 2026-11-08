@@ -1,0 +1,139 @@
+name: community
+
+on:
+  workflow_dispatch:
+    inputs:
+      projects:
+        description: 'Projects as a JSON array or one JSON object per line: {"url": ..., "ref": ..., "java": 17, "sbt": [...], "name": ...}'
+        required: true
+        type: string
+      shards:
+        description: Jobs to spread the projects over, at most 256; 0 for one job per project
+        default: '0'
+        type: string
+      project-timeout-minutes:
+        description: Wall-clock limit of one project's sbt run
+        default: '60'
+        type: string
+      memory:
+        description: Memory cap of one project's container
+        default: 12g
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: key
+        run: echo "key=community-image-$(sha256sum community/Containerfile | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache/restore@v6
+        with:
+          path: image.tar.zst
+          key: ${{ steps.key.outputs.key }}
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          podman build -t localhost/bonsai-community:latest -f community/Containerfile community
+          podman save localhost/bonsai-community:latest | zstd -T0 -19 -o image.tar.zst
+          ls -l image.tar.zst
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: image.tar.zst
+          key: ${{ steps.key.outputs.key }}
+
+  bonsai:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - run: |
+          set -euo pipefail
+          sbt --batch "-Dsbt.ivy.home=$RUNNER_TEMP/ivy" "-Divy.home=$RUNNER_TEMP/ivy" publishLocalAll
+          tar -C "$RUNNER_TEMP/ivy" -cf - local | zstd -T0 -3 -o "$RUNNER_TEMP/bonsai-ivy.tar.zst"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bonsai-ivy
+          path: ${{ runner.temp }}/bonsai-ivy.tar.zst
+          compression-level: 0
+          retention-days: 1
+
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      projects: ${{ steps.plan.outputs.projects }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - id: plan
+        env:
+          PROJECTS: ${{ inputs.projects }}
+          SHARDS: ${{ inputs.shards }}
+        run: |
+          set -euo pipefail
+          projects=$(jq -c -s 'if (.[0] | type) == "array" then .[0] else . end' <<< "$PROJECTS")
+          jq -e 'length > 0 and all(.[]; (.url | type) == "string" and (.ref | type) == "string" and (.java | tostring | test("^(8|11|17|21|25)$")))' \
+            <<< "$projects" > /dev/null
+          count=$(jq length <<< "$projects")
+          shards=$SHARDS
+          if ((shards < 1 || shards > count)); then shards=$count; fi
+          if ((shards > 256)); then shards=256; fi
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(jq -nc --argjson n "$shards" '{shard: [range($n)]}')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [image, bonsai, plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/cache/restore@v6
+        with:
+          path: image.tar.zst
+          key: ${{ needs.image.outputs.key }}
+          fail-on-cache-miss: true
+      - run: zstd -dc image.tar.zst | podman load
+      - uses: actions/download-artifact@v8
+        with:
+          name: bonsai-ivy
+          path: ${{ runner.temp }}
+      - env:
+          PROJECTS: ${{ needs.plan.outputs.projects }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.plan.outputs.shards }}
+          TIMEOUT_MINUTES: ${{ inputs.project-timeout-minutes }}
+          MEMORY: ${{ inputs.memory }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ivy"
+          zstd -dc "$RUNNER_TEMP/bonsai-ivy.tar.zst" | tar -C "$RUNNER_TEMP/ivy" -xf -
+          jq -c '.[]' <<< "$PROJECTS" > "$RUNNER_TEMP/projects.jsonl"
+          community/shard.sh "$RUNNER_TEMP/projects.jsonl" "$SHARD" "$SHARDS" $((345 * 60)) $((TIMEOUT_MINUTES * 60)) \
+            --ivy "$RUNNER_TEMP/ivy" --out "$GITHUB_WORKSPACE/out" --memory "$MEMORY"
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: outputs-${{ matrix.shard }}
+          path: out
+          if-no-files-found: warn
