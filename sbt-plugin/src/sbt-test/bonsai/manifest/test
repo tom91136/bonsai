@@ -1,0 +1,3 @@
+# the manifest the analysis reads has the same lines on every sbt line, jdk included
+> bonsaiAnalyse
+> checkManifest

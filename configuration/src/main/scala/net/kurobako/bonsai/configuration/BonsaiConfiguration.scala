@@ -5,7 +5,6 @@ import com.typesafe.config.ConfigException
 import com.typesafe.config.ConfigFactory
 import com.typesafe.config.ConfigUtil
 import java.io.File
-import scala.jdk.CollectionConverters.*
 
 /** `.bonsai.conf`, read alike by the sbt plugin, by the analysis for the Maven plugin, and by a build that analyses
   * itself without either.
@@ -13,7 +12,7 @@ import scala.jdk.CollectionConverters.*
 object BonsaiConfiguration {
 
   /** A configuration that cannot be read, which the message says why. */
-  class ConfigurationError(message: String) extends Exception(message)
+  case class ConfigurationError(message: String) extends Exception(message)
 
   case class Settings(
       disabled: Option[Set[String]],
@@ -106,23 +105,23 @@ object BonsaiConfiguration {
       flags("--disable", disabled & findings) ++ flags("--error", errors & findings) ++
         flags("--warn", warnings & findings) ++
         Seq("--baseline", baseline.getAbsolutePath, "--purity-lock", purity.getAbsolutePath) ++
-        effects.toSeq.sortBy(_._1).flatMap((prefix, kinds) =>
+        effects.toSeq.sortBy(_._1).flatMap { case (prefix, kinds) =>
           Seq("--effects", s"$prefix=${kinds.toSeq.sorted.mkString(",")}")
-        ) ++ flags("--concurrent", concurrent) ++ flags("--generated", generated) ++
+        } ++ flags("--concurrent", concurrent) ++ flags("--generated", generated) ++
         flags("--generated-disable", generatedDisabled) ++
         flags("--reflective", reflective) ++ flags("--hot", hot) ++ flags("--intended", intended) ++
-        bounded.flatMap((member, max, reason) => Seq("--bounded", member, max.toString, reason)) ++
+        bounded.flatMap { case (member, max, reason) => Seq("--bounded", member, max.toString, reason) } ++
         (if (nesting.isEmpty) Nil
          else "--nesting" +:
-           nesting.toSeq.sortBy(_._1).flatMap((limit, value) => Seq(s"--nesting-$limit", value.toString)))
+           nesting.toSeq.sortBy(_._1).flatMap { case (limit, value) => Seq(s"--nesting-$limit", value.toString) })
   }
 
   def read(file: File): Configuration =
     try {
       val config   = if (file.exists) ConfigFactory.parseFile(file).resolve() else ConfigFactory.empty()
-      val projects = Option.when(config.hasPath("projects"))(config.getConfig("projects")).fold(Map.empty) {
+      val projects = present(config, "projects")(config.getConfig("projects")).fold(Map.empty[String, Settings]) {
         projects =>
-          projects.root.keySet.asScala.toSeq.map(id =>
+          names(projects).map(id =>
             id -> settings(projects.getConfig(ConfigUtil.joinPath(id)), s"projects.$id.", Set.empty)
           ).toMap
       }
@@ -149,9 +148,9 @@ object BonsaiConfiguration {
         ),
         optionalString(config, "baseline"),
         optionalString(config, "purity"),
-        Option.when(config.hasPath("effects"))(config.getConfig("effects")).map(effects =>
-          effects.root.keySet.asScala.toSeq.map(prefix =>
-            prefix -> effects.getStringList(ConfigUtil.joinPath(prefix)).asScala.toSet
+        present(config, "effects")(config.getConfig("effects")).map(effects =>
+          names(effects).map(prefix =>
+            prefix -> strings(effects.getStringList(ConfigUtil.joinPath(prefix))).toSet
           ).toMap
         ),
         stringSet(config, "concurrent"),
@@ -161,22 +160,31 @@ object BonsaiConfiguration {
         stringSet(config, "reflective"),
         stringSet(config, "intended"),
         stringSet(config, "checked"),
-        Option.when(config.hasPath("bounded"))(config.getConfigList("bounded").asScala.toVector.map(entry =>
-          (entry.getString("member"), entry.getInt("max"), entry.getString("reason"))
-        )).getOrElse(Vector.empty),
+        present(config, "bounded")(config.getConfigList("bounded")).fold(Vector.empty[(String, Int, String)])(entries =>
+          vector(entries).map(entry => (entry.getString("member"), entry.getInt("max"), entry.getString("reason")))
+        ),
         nesting(config),
-        Option.when(config.hasPath("text"))(config.getConfig("text")).fold(Vector.empty)(texts(_)),
+        present(config, "text")(config.getConfig("text")).fold(Vector.empty[String])(texts(_)),
         projects
       )
     } catch {
       case error: ConfigException => throw ConfigurationError(s"bonsai: $file: ${error.getMessage}")
     }
 
+  private def present[A](config: Config, key: String)(read: => A): Option[A] =
+    if (config.hasPath(key)) Some(read) else None
+
+  private def vector[A](values: java.util.List[A]): Vector[A] = Vector.tabulate(values.size)(values.get(_))
+
+  private def strings(values: java.util.List[String]): Vector[String] = vector(values)
+
+  private def names(config: Config): Vector[String] = config.root.keySet.toArray(Array.ofDim[String](0)).toVector
+
   private def stringSet(config: Config, key: String): Option[Set[String]] =
-    Option.when(config.hasPath(key))(config.getStringList(key).asScala.toSet)
+    present(config, key)(strings(config.getStringList(key)).toSet)
 
   private def optionalString(config: Config, key: String): Option[String] =
-    Option.when(config.hasPath(key))(config.getString(key))
+    present(config, key)(config.getString(key))
 
   private def rejectUnknown(unknown: Set[String], where: String, keys: Seq[String]): Unit =
     if (unknown.nonEmpty)
@@ -195,9 +203,9 @@ object BonsaiConfiguration {
     if (!config.hasPath("nesting")) Map.empty
     else {
       val block   = config.getConfig("nesting")
-      val unknown = block.root.keySet.asScala.toSet -- NestingLimits
+      val unknown = names(block).toSet -- NestingLimits
       rejectUnknown(unknown, "nesting.", NestingLimits.map("nesting." + _))
-      NestingLimits.view.filter(block.hasPath(_)).map(limit => limit -> block.getInt(limit)).toMap
+      NestingLimits.filter(block.hasPath(_)).map(limit => limit -> block.getInt(limit)).toMap
     }
 
   private val TextKinds  = Seq("terms", "patterns", "binary", "licences", "preceded", "followed")
@@ -208,7 +216,7 @@ object BonsaiConfiguration {
     "licences" -> Set("message"),
     "preceded" -> Set("pattern", "message"),
     "followed" -> Set("pattern", "continues", "neutral", "message")
-  ).view.mapValues(_ ++ Set("files", "exclude", "level")).toMap
+  ).map { case (kind, fields) => kind -> (fields ++ Set("files", "exclude", "level")) }
   private val TextLists = Set("words", "files", "exclude")
 
   /** The manifest lines of the text rules: the exclusions, then each rule's fields by its index. */
@@ -220,18 +228,18 @@ object BonsaiConfiguration {
       if (value.exists(character => character == '\t' || character == '\n'))
         throw ConfigurationError(s"bonsai: .bonsai.conf text values cannot hold tabs or newlines: $value")
       else value
-    known(config.root.keySet.asScala.toSet, TextKinds.toSet + "exclude", "text.")
-    val exclusions = Option.when(config.hasPath("exclude"))(config.getStringList("exclude").asScala.toVector)
+    known(names(config).toSet, TextKinds.toSet + "exclude", "text.")
+    val exclusions = present(config, "exclude")(strings(config.getStringList("exclude")))
       .getOrElse(Vector.empty).map(glob => s"text-exclude\t${plain(glob)}")
     val rules = TextKinds.flatMap(kind =>
       if (!config.hasPath(kind)) Nil
       else if (kind == "binary" || kind == "licences") List(kind -> config.getConfig(kind))
-      else config.getConfigList(kind).asScala.toList.map(kind -> _)
+      else vector(config.getConfigList(kind)).toList.map(kind -> _)
     )
     exclusions ++ rules.zipWithIndex.flatMap { case ((kind, rule), index) =>
-      known(rule.root.keySet.asScala.toSet, TextFields(kind), s"text.$kind.")
-      s"text\t$index\tkind\t$kind" +: rule.root.keySet.asScala.toVector.sorted.flatMap(field =>
-        (if (TextLists(field)) rule.getStringList(field).asScala.toVector else Vector(rule.getString(field)))
+      known(names(rule).toSet, TextFields(kind), s"text.$kind.")
+      s"text\t$index\tkind\t$kind" +: names(rule).sorted.flatMap(field =>
+        (if (TextLists(field)) strings(rule.getStringList(field)) else Vector(rule.getString(field)))
           .map(value => s"text\t$index\t$field\t${plain(value)}")
       )
     }
@@ -239,15 +247,15 @@ object BonsaiConfiguration {
 
   private def settings(config: Config, where: String, others: Set[String]): Settings = {
     val keys    = Set("disabled", "enabled", "errors", "warnings", "wildcards", "library", "option-fold")
-    val unknown = config.root.keySet.asScala.toSet -- keys -- others
+    val unknown = names(config).toSet -- keys -- others
     rejectUnknown(unknown, where, (keys ++ others).toSeq.sorted)
     Settings(
       stringSet(config, "disabled"),
       stringSet(config, "enabled"),
       stringSet(config, "errors"),
       stringSet(config, "warnings"),
-      Option.when(config.hasPath("wildcards"))(config.getInt("wildcards")),
-      Option.when(config.hasPath("library"))(config.getBoolean("library")),
+      present(config, "wildcards")(config.getInt("wildcards")),
+      present(config, "library")(config.getBoolean("library")),
       optionalString(config, "option-fold").map { value =>
         if (!OptionFolds.contains(value))
           throw ConfigurationError(

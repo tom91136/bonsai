@@ -1,17 +1,19 @@
 package net.kurobako.bonsai.configuration
 
-import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 import net.kurobako.bonsai.configuration.BonsaiConfiguration.*
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
 
 class BonsaiConfigurationSuite extends munit.FunSuite {
 
   private val directory = FunFixture[Path](
     _ => Files.createTempDirectory("bonsai-configuration-"),
-    path => Using.resource(Files.walk(path))(_.toList.asScala.reverse.foreach(Files.delete(_)))
+    path => {
+      val walk = Files.walk(path)
+      try walk.sorted(java.util.Comparator.reverseOrder[Path]()).forEach(entry => Files.delete(entry))
+      finally walk.close()
+    }
   )
 
   private def read(path: Path, conf: String): Configuration = {
@@ -40,7 +42,7 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
     val configured = BonsaiConfiguration.read(path.resolve("absent.conf").toFile)
     assertEquals(configured.build, BonsaiConfiguration.Settings(None, None, None, None, None, None, None))
     assertEquals(configured.text, Vector.empty)
-    assertEquals(configured.projects, Map.empty)
+    assertEquals(configured.projects, Map.empty[String, Settings])
   }
 
   directory.test("the build-level settings and lists are read") { path =>
@@ -226,8 +228,8 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
     )
     val options = analysis.options(
       Set("duplicate-code", "unused-member", "huge-method"),
-      File("/b/base.tsv"),
-      File("/b/pure.tsv")
+      Paths.get("/b/base.tsv").toFile,
+      Paths.get("/b/pure.tsv").toFile
     )
     assertEquals(
       options,

@@ -12,6 +12,10 @@ lazy val munitVersion   = "1.3.6"
 // The Scala version sbt 2 runs on, which its plugins and what they depend on are built with.
 lazy val sbtScalaVersion = "3.8.4"
 
+// The Scala version and the sbt version of the sbt 1 line, whose plugins build with Scala 2.12.
+lazy val sbt1ScalaVersion = "2.12.21"
+lazy val sbt1Version      = "1.13.1"
+
 // The newest Scala version scalafix publishes its test kit for, which the rules and their fixtures build with.
 lazy val scalafixScalaVersion = "3.9.0"
 
@@ -31,8 +35,22 @@ addCommandAlias(
     s"++$scala3Version").mkString("; ")
 )
 
-// The scripted tests build with older lines too, so their compiler plugins are published first.
-addCommandAlias("scriptedAll", "publishLocalAll; sbtBonsai/scripted")
+// The scripted tests build with older lines too, so their compiler plugins are published first. The sbt plugin is then
+// tested on each sbt line, and the build returned to the Scala versions it loads with.
+addCommandAlias(
+  "scriptedAll",
+  s"publishLocalAll; sbtBonsai/scripted; ++$sbt1ScalaVersion; sbtBonsai/scripted; reload"
+)
+
+// A module that sbt plugins build on is built for the Scala of sbt 2 and, in the subset both compile, of sbt 1.
+lazy val sbtLines = Seq(
+  crossScalaVersions := Seq(sbtScalaVersion, sbt1ScalaVersion),
+  scalacOptions ++=
+    (scalaBinaryVersion.value match {
+      case "2.12" => Seq("-deprecation", "-Xsource:3", "-Ywarn-unused")
+      case _      => Seq("-deprecation", "-Wunused:all")
+    })
+)
 
 lazy val perLine = Seq(
   crossScalaVersions := scala3Versions,
@@ -141,9 +159,9 @@ lazy val effects = linted(project.in(file("effects")))
   */
 lazy val bonsaiConfig = linted(project.in(file("configuration")))
   .settings(
+    sbtLines,
     name         := "bonsai-configuration",
     scalaVersion := sbtScalaVersion,
-    scalacOptions ++= Seq("-deprecation", "-Wunused:all"),
     libraryDependencies ++= Seq(
       "com.typesafe"   % "config" % "1.4.3",
       "org.scalameta" %% "munit"  % munitVersion % Test
@@ -293,10 +311,38 @@ lazy val plugin = linted(project.in(file("plugin")))
     }
   )
 
-/** A module linted by bonsai's scalafix rules, which scalafix loads from the sources of this build. The compiler plugin
-  * cannot check the modules it is built from or tested with, so these are linted only.
+/** The scalafix configuration of the build without the rules of bonsai, which are built for Scala 3 and cannot run in
+  * the scalafix of Scala 2.12; the built-in rules and the settings stay.
   */
-def linted(module: Project): Project = module.dependsOn(rules % ScalafixConfig)
+def builtinScalafixConfig(root: File, target: File): File = {
+  val bonsai = BonsaiIds.of(root / ruleSource, BonsaiIds.Rules).toSet
+  val file   = target / "scalafix-builtin.conf"
+  IO.writeLines(file, IO.readLines(root / ".scalafix.conf").filterNot(line => bonsai(line.trim)))
+  file
+}
+
+/** A module linted by bonsai's scalafix rules, which scalafix loads from the sources of this build. The compiler plugin
+  * cannot check the modules it is built from or tested with, so these are linted only. The rules are built for Scala 3,
+  * so a module built for Scala 2.12 is linted by the built-in rules alone.
+  */
+def linted(module: Project): Project =
+  module.dependsOn(rules % ScalafixConfig).settings(
+    allowMismatchScala                           := true,
+    ScalafixConfig / internalDependencyClasspath := {
+      val own = (ScalafixConfig / internalDependencyClasspath).value
+      if (scalaBinaryVersion.value == "2.12") Nil else own
+    },
+    ScalafixConfig / externalDependencyClasspath := {
+      val own = (ScalafixConfig / externalDependencyClasspath).value
+      if (scalaBinaryVersion.value == "2.12") Nil else own
+    },
+    scalafixConfig := {
+      val own = scalafixConfig.value
+      if (scalaBinaryVersion.value == "2.12")
+        Some(builtinScalafixConfig((ThisBuild / baseDirectory).value, target.value))
+      else own
+    }
+  )
 
 /** A module linted by bonsai's scalafix rules and checked by its own compiler plugin, with every check an error. */
 def analysed(module: Project): Project = linted(module)
@@ -354,9 +400,14 @@ lazy val sbtBonsai = linted(project.in(file("sbt-plugin")))
   .enablePlugins(SbtPlugin)
   .dependsOn(bonsaiConfig)
   .settings(
-    name         := "sbt-bonsai",
-    scalaVersion := sbtScalaVersion,
-    scalacOptions ++= Seq("-deprecation", "-Wunused:all"),
+    sbtLines,
+    name                          := "sbt-bonsai",
+    scalaVersion                  := sbtScalaVersion,
+    pluginCrossBuild / sbtVersion :=
+      (scalaBinaryVersion.value match {
+        case "2.12" => sbt1Version
+        case _      => sbtVersion.value
+      }),
     libraryDependencies += "org.scalameta" %% "munit" % munitVersion % Test,
     addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % Versions.scalafix),
     Compile / sourceGenerators += Def.task {
@@ -377,7 +428,7 @@ lazy val sbtBonsai = linted(project.in(file("sbt-plugin")))
         file,
         s"""package net.kurobako.bonsai.sbt
            |
-           |private object BonsaiArtifacts {
+           |private[sbt] object BonsaiArtifacts {
            |  val organization: String       = "${organization.value}"
            |  val version: String            = "${version.value}"
            |  val lines: Seq[String]         = Seq(${scala3Versions.map(version =>
@@ -398,22 +449,32 @@ lazy val sbtBonsai = linted(project.in(file("sbt-plugin")))
       )
       Seq(file)
     }.taskValue,
+    sbtTestDirectory := sourceDirectory.value /
+      (scalaBinaryVersion.value match {
+        case "2.12" => "sbt-test-sbt1"
+        case _      => "sbt-test"
+      }),
     scriptedLaunchOpts ++= Seq(
       "-Xmx4g",
+      s"-Dbonsai.shared=${sourceDirectory.value / "sbt-test-shared"}",
       s"-Dplugin.version=${version.value}",
       s"-Dbonsai.oldest=${scala3Versions.map(scalaLine).map(line => s"$line:${oldestPatch(line)}").mkString(",")}",
       s"-Dbonsai.fixtures=${(ThisBuild / baseDirectory).value}"
     ),
     scriptedBufferLog    := false,
-    scriptedDependencies := Def.uncached {
-      val _ = (
-        (rules / publishLocal).value,
-        (plugin / publishLocal).value,
-        (analysis / publishLocal).value,
-        (bonsaiConfig / publishLocal).value,
-        publishLocal.value
-      )
-    }
+    scriptedDependencies := Def.uncached(Def.taskDyn {
+      val tools = scalaBinaryVersion.value match {
+        case "2.12" => Seq.empty[ProjectReference]
+        case _      => Seq[ProjectReference](rules, plugin, analysis)
+      }
+      Def.task {
+        val _ = (
+          publishLocal.all(ScopeFilter(inProjects(tools *))).value,
+          (bonsaiConfig / publishLocal).value,
+          publishLocal.value
+        )
+      }
+    }.value)
   )
 
 lazy val root = project.in(file("."))

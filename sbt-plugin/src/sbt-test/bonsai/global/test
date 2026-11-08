@@ -1,0 +1,7 @@
+# a plugin added for every build, as a runner does, applies to the build and leaves its definition alone
+> compile
+> show bonsaiMode
+> reload plugins
+> compile
+> reload return
+> compile

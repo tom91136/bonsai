@@ -15,10 +15,10 @@ private[sbt] object ScalaVersions {
   /** The line of the compiler plugin that runs in the compiler of the release. Every patch of a line from the oldest
     * the plugin runs in takes the plugin built for the line, which shares its compiler internals.
     */
-  def plugin(version: String): Option[String] = parse(version).flatMap { (minor, patch) =>
+  def plugin(version: String): Option[String] = parse(version).flatMap { case (minor, patch) =>
     val line   = s"3.$minor"
-    val oldest = BonsaiArtifacts.oldest.get(line).flatMap(parse(_)).fold(0)((_, first) => first)
-    Option.when(BonsaiArtifacts.lines.contains(line) && patch >= oldest)(line)
+    val oldest = BonsaiArtifacts.oldest.get(line).flatMap(parse(_)).fold(0) { case (_, first) => first }
+    Some(line).filter(_ => BonsaiArtifacts.lines.contains(line) && patch >= oldest)
   }
 
   private def numbers(version: String): Option[(Int, Int)] = version match {
@@ -34,12 +34,12 @@ private[sbt] object ScalaVersions {
 
   /** Whether scalafix can load the presentation compiler of the release, which ExplicitResultTypes types with. */
   def explicitResultTypes(version: String): Boolean =
-    numbers(version).exists((minor, _) => !BonsaiArtifacts.resultTypesExcluded.contains(s"3.$minor"))
+    numbers(version).exists { case (minor, _) => !BonsaiArtifacts.resultTypesExcluded.contains(s"3.$minor") }
 
   /** Whether the compiler of the analysis reads the TASTy of the release, which a compiler does for its own minor line
     * and the older ones.
     */
-  def readable(version: String): Boolean = parse(version).exists((project, _) =>
-    parse(BonsaiArtifacts.analysisScala).exists((newest, _) => project <= newest)
-  )
+  def readable(version: String): Boolean = parse(version).exists { case (project, _) =>
+    parse(BonsaiArtifacts.analysisScala).exists { case (newest, _) => project <= newest }
+  }
 }

@@ -9,7 +9,7 @@ object ManifestLines {
     if (test || fixtures(project)) "test" else "main"
 
   def outputs(project: String, scope: String, library: Boolean, classes: String): Seq[String] =
-    s"output\t$project\t$scope\t$classes" +: Option.when(library && scope == "main")(s"library\t$project").toSeq
+    s"output\t$project\t$scope\t$classes" +: (if (library && scope == "main") Seq(s"library\t$project") else Nil)
 
   def sources(project: String, scope: String, files: Seq[String]): Seq[String] =
     files.map(file => s"source\t$project\t$scope\t$file")
