@@ -460,7 +460,7 @@ lazy val sbtBonsai = linted(project.in(file("sbt-plugin")))
       s"-Dplugin.version=${version.value}",
       s"-Dbonsai.oldest=${scala3Versions.map(scalaLine).map(line => s"$line:${oldestPatch(line)}").mkString(",")}",
       s"-Dbonsai.fixtures=${(ThisBuild / baseDirectory).value}"
-    ),
+    ) ++ Seq("sbt.ivy.home", "ivy.home").flatMap(key => sys.props.get(key).map(home => s"-D$key=$home")),
     scriptedBufferLog    := false,
     scriptedDependencies := Def.uncached(Def.taskDyn {
       val tools = scalaBinaryVersion.value match {
