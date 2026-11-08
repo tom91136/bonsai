@@ -2,6 +2,8 @@
 # Runs the bonsai scalafix rules over a Scala CLI project, rewriting its sources, or only reporting them with --check.
 # The project's .scalafix.conf is used when it has one, otherwise every rule the rules artefact registers is enabled,
 # with the rules, bans and settings it publishes for scalafix's own syntax and unused code. Opt-in rules are left out.
+# It fails when the rules artefact registers no rules or the configuration in use requests none, which scalafix itself
+# passes without running anything.
 # usage: scalafix.sh <project directory> [--check]
 set -euo pipefail
 project=$(cd "${1:?usage: scalafix.sh <project directory> [--check]}" && pwd)
@@ -42,10 +44,12 @@ supported() {
   esac
 }
 builtin=$(published builtin.id | grep -v '^?')
+registered=$(unzip -p "$rules" META-INF/services/scalafix.v1.Rule | sed -nE 's/^.*\.([^.]+)$/  \1/p')
+[[ -n "$registered" ]] || { echo "scalafix.sh: $rules registers no rules" >&2; exit 1; }
 scalac=()
 {
   echo 'rules = ['
-  unzip -p "$rules" META-INF/services/scalafix.v1.Rule | sed -nE 's/^.*\.([^.]+)$/  \1/p'
+  echo "$registered"
   while read -r rule; do
     if supported "$rule"; then echo "  $rule"; fi
   done < <(awk '!/^-/ && !/=/ && !/\./' <<<"$builtin")
@@ -63,5 +67,11 @@ if [[ -f "$project/.scalafix.conf" ]]; then
   config="$project/.scalafix.conf"
   scalac=()
 fi
+status=0
 scala-cli fix --power --enable-built-in=false --scalafix-conf="$config" --scalafix-arg=--tool-classpath="$tool" \
-  "${scalac[@]}" "${check[@]}" "$project"
+  "${scalac[@]}" "${check[@]}" "$project" 2>&1 | tee "$work/fix.log" || status=$?
+if grep -q 'No rules requested to run' "$work/fix.log"; then
+  echo "scalafix.sh: no rules ran; $config requests none" >&2
+  exit 1
+fi
+exit "$status"

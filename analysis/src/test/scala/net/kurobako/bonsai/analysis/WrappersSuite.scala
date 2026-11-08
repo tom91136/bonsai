@@ -9,10 +9,14 @@ class WrappersSuite extends AnalysisSuite {
         |import java.nio.file.Files
         |import java.nio.file.LinkOption
         |import java.nio.file.Path
+        |import java.nio.charset.Charset
+        |import java.nio.charset.StandardCharsets.UTF_8
         |object paths {
         |  extension (p: Path) {
         |    inline def exists(inline options: LinkOption*): Boolean = Files.exists(p, options*)
         |    inline def isSymLink: Boolean                           = Files.isSymbolicLink(p)
+        |    inline def createDirIfNotExists(): Path                   = Files.createDirectories(p)
+        |    inline def readString(inline charset: Charset = UTF_8): String = String(Files.readAllBytes(p), charset)
         |    def digest(algorithm: String, size: Int = 8): String     = algorithm + p + size
         |    inline def sha256(size: Int = 8): String                = digest("SHA-256", size)
         |    def name: String                                         = p.getFileName.toString
@@ -47,6 +51,41 @@ class WrappersSuite extends AnalysisSuite {
     assertFinding(found, "bypassed-wrapper", "Plan.hash", "digest", "paths.sha256")(using Finding.Level.Info)
   }
 
+  test("a call with the varargs left empty is bypassing a wrapper that leaves them empty") {
+    val found = findings(
+      "Plan.scala" ->
+        """import java.nio.file.Files
+          |import java.nio.file.Path
+          |import lib.paths.*
+          |object Plan {
+          |  def prepare(trash: Path): Path = Files.createDirectories(trash.resolve("files"))
+          |}""".stripMargin
+    )
+    assertFinding(
+      found,
+      "bypassed-wrapper",
+      "Plan.prepare",
+      "Files.createDirectories",
+      "paths.createDirIfNotExists"
+    )(using
+      Finding.Level.Info
+    )
+  }
+
+  test("a constructor around another call is bypassing a wrapper that composes the two") {
+    val found = findings(
+      "Plan.scala" ->
+        """import java.nio.charset.StandardCharsets
+          |import java.nio.file.Files
+          |import java.nio.file.Path
+          |import lib.paths.*
+          |object Plan {
+          |  def read(p: Path): String = String(Files.readAllBytes(p), StandardCharsets.UTF_8)
+          |}""".stripMargin
+    )
+    assertFinding(found, "bypassed-wrapper", "Plan.read", "paths.readString")(using Finding.Level.Info)
+  }
+
   test("calls that differ from the wrapper, or reach it, or that cannot import it, bypass nothing") {
     val found = findings(
       "Plan.scala" ->
@@ -59,6 +98,8 @@ class WrappersSuite extends AnalysisSuite {
           |  def other(p: Path): String = p.digest("MD5") + p.sha256()
           |  def remove(p: Path): Boolean = Files.deleteIfExists(p)
           |  def label(p: Path): String = p.name
+          |  def raw(p: Path): Array[Byte] = Files.readAllBytes(p)
+          |  def built(size: Int): String = String(Array.fill(size)(0.toByte), java.nio.charset.StandardCharsets.UTF_8)
           |}""".stripMargin,
       "Elsewhere.scala" ->
         """import java.nio.file.Files

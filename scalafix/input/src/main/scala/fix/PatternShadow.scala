@@ -90,4 +90,13 @@ object PatternShadow {
       case _             => 0
     }
   }
+
+  class Quiet {
+    private def total(xs: List[Int]): Int = xs.sum
+
+    def report(xs: List[Int]): Int = {
+      val total = xs.size
+      total
+    }
+  }
 }

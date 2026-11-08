@@ -191,6 +191,25 @@ class LintSuite extends FunSuite {
     assertEquals(lines(found, "throwing-helper"), Nil, found.mkString("\n"))
   }
 
+  test("a Try around a call that already returns an Option, flattened, conflates failure with absence") {
+    val found = diagnostics(
+      """import scala.util.Try
+        |object Lints {
+        |  def acquire(path: String): Option[String] = if (path.isEmpty) None else Some(path)
+        |  def lock(path: String): Option[String] = Try(acquire(path)).toOption.flatten
+        |  def orNone(path: String): Option[String] = Try(acquire(path)).getOrElse(None)
+        |  def orOther(path: String): Option[String] = Try(acquire(path)).getOrElse(Some("other"))
+        |  def sized(path: String): Option[Int] = Try(path.toInt).toOption
+        |  def plain(path: String): Option[String] = acquire(path)
+        |  def listed(xs: List[Option[Int]]): List[Int] = xs.flatten
+        |  def either(path: String): Option[Int] = Try(path.toInt).toOption.flatMap(Some(_))
+        |}""".stripMargin
+    ).filter(_.contains("as the absence it returns itself"))
+    assertEquals(found.size, 2, found.mkString("\n"))
+    assert(found.head.startsWith("info: "), found.head)
+    assert(found.head.contains("acquire"), found.head)
+  }
+
   test("partial calls inside a handler are reported, and a Try around one with a total alternative is redundant") {
     val source =
       """import scala.util.control.NonFatal

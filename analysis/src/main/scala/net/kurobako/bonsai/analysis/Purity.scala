@@ -44,6 +44,18 @@ object Purity {
       suppressed: Set[String]
   )
 
+  /** A test that reads from outside the program, written before a pure one in a conjunction or disjunction. */
+  case class Ordered(
+      method: String,
+      operator: String,
+      input: String,
+      pure: String,
+      node: String,
+      location: String,
+      line: Int,
+      suppressed: Set[String]
+  )
+
   /** A kind of effect a method has, shown by its first cause, whether it acts on the method's receiver alone, and
     * whether a library body it reaches performs it.
     */
@@ -123,7 +135,8 @@ object Purity {
       transforms: Vector[Transform],
       writes: Vector[SharedWrite],
       methods: Map[String, Method],
-      library: Int
+      library: Int,
+      ordered: Vector[Ordered] = Vector.empty
   ) {
     def verdicts: Map[String, Verdict] = methods.view.mapValues(_.verdict).toMap
   }
@@ -197,6 +210,18 @@ object Purity {
            else "keep transformations pure and perform effects in foreach or a loop"),
         suppressed = transform.suppressed,
         line = transform.line
+      )
+    ) ++ model.ordered.flatMap(order =>
+      Finding.at(
+        nodes,
+        order.node,
+        Finding.Rule.InputBeforePure,
+        s"${order.method}: ${order.input} reads from outside the program before ${order.pure}, which does not, in a " +
+          s"chain of ${order.operator} at ${order.location}; test ${order.pure} first so that the read is skipped when " +
+          "it settles the result",
+        Finding.Level.Info,
+        suppressed = order.suppressed,
+        line = order.line
       )
     ) ++ model.methods.toVector.sortBy(_._1).flatMap((name, method) =>
       method.role.flatMap(role =>
@@ -582,6 +607,7 @@ object Purity {
         view: Boolean
     )
     private case class WriteSite(method: Symbol, variable: Symbol, entry: String, tree: tpd.Tree)
+    private case class OrderSite(method: Symbol, operator: String, operands: Vector[(tpd.Tree, Facts)], tree: tpd.Tree)
     private case class DiscardSite(method: Symbol, name: String, facts: Facts, tree: tpd.Tree)
 
     private val summaries = mutable.Map.empty[Key, Summary]
@@ -607,9 +633,10 @@ object Purity {
     private val fresh      = mutable.Set.empty[Symbol]
     private val transforms = mutable.ArrayBuffer.empty[TransformSite]
     // View transformations a strict call traverses once, and whether that call may stop before the end.
-    private val consumed = mutable.Map.empty[Span, Boolean]
-    private val discards = mutable.ArrayBuffer.empty[DiscardSite]
-    private val writes   = mutable.ArrayBuffer.empty[WriteSite]
+    private val consumed  = mutable.Map.empty[Span, Boolean]
+    private val discards  = mutable.ArrayBuffer.empty[DiscardSite]
+    private val writes    = mutable.ArrayBuffer.empty[WriteSite]
+    private val orderings = mutable.ArrayBuffer.empty[OrderSite]
 
     // Methods that run the functions passed to them on other threads.
     private val Spawning = Set(
@@ -653,6 +680,7 @@ object Purity {
       "span",
       "distinctBy"
     )
+    private val Connectives   = Set("&&", "||")
     private val View          = requiredClass("scala.collection.View")
     private val IteratorClass = requiredClass("scala.collection.Iterator")
     private val LockClass     = requiredClass("java.util.concurrent.locks.Lock")
@@ -871,6 +899,35 @@ object Purity {
       writes.toVector.map(site => (site.method, site.variable.name.toString, site.entry, site.tree))
 
     private val Observable = Set(Kind.Writes, Kind.Output, Kind.Random)
+    private val Acting     = Set(Kind.Writes, Kind.Output, Kind.Random, Kind.Unknown)
+
+    private def effectsOf(facts: Facts, method: Symbol): (Boolean, Vector[Effect]) = {
+      val summary = resolve(facts, frame(method, None), None)
+      (runsOnlyKnown(summary), decoded(summary.effects))
+    }
+
+    /** Tests in conjunctions and disjunctions that read from outside the program before one that has no effect, by
+      * enclosing method, with the operator, the reading test, the pure one and the whole expression.
+      */
+    def reordered: Vector[(Symbol, String, tpd.Tree, tpd.Tree, tpd.Tree)] =
+      orderings.toVector.distinctBy(_.tree.span).sortBy(site => (site.method.id, site.tree.span.start)).flatMap {
+        site =>
+          val classified = site.operands.map { (operand, facts) =>
+            val (known, effects) = effectsOf(facts, site.method)
+            (
+              operand,
+              effects.exists(_.kind == Kind.Input) && !effects.exists(effect => Acting(effect.kind)),
+              known && effects.isEmpty
+            )
+          }
+          for {
+            reading <- classified.indexWhere(_._2) match {
+              case -1    => None
+              case index => Some(index)
+            }
+            pure <- classified.drop(reading + 1).find(_._3)
+          } yield (site.method, site.operator, classified(reading)._1, pure._1, site.tree)
+      }
 
     private def clock(effect: Effect): Boolean =
       effect.kind == Kind.Random && Axioms.Clocks(effect.cause.stripPrefix("calls "))
@@ -1646,6 +1703,8 @@ object Purity {
               )
             case _ => ()
           }
+        if (depth == 0 && method.exists && method.owner == defn.BooleanClass && Connectives(method.name.toString))
+          connected(tree, method)
         if (depth == 0 && (method +: method.allOverriddenSymbols.toVector).exists(spawns(_)))
           passed.zip(arguments).foreach {
             case (Argument.Function(_), argument) =>
@@ -1656,6 +1715,28 @@ object Purity {
             case _ => ()
           }
         calls += resolveCall(function, qualifier, passed, parameters)
+      }
+
+      // The tests a chain of one connective joins, with the connectives along its left edge.
+      private def joined(tree: tpd.Tree, operator: Symbol): (List[tpd.Tree], List[tpd.Tree]) =
+        Calls.peel(tree) match {
+          case chain @ tpd.Apply(tpd.Select(left, _), List(right)) if chain.symbol == operator =>
+            val (tests, edge) = joined(left, operator)
+            (tests :+ right, chain :: edge)
+          case other => (List(other), Nil)
+        }
+
+      private def connected(tree: tpd.Tree, operator: Symbol): Unit = {
+        val (tests, edge) = joined(tree, operator)
+        if (tests.sizeIs > 1) {
+          orderings.filterInPlace(site => !edge.exists(_ eq site.tree))
+          orderings += OrderSite(
+            root,
+            operator.name.toString,
+            tests.toVector.map(test => test -> Walker(root, scope, 1).facts(test)),
+            tree
+          )
+        }
       }
 
       // A function value runs what it evaluates to, which resolving the call works out.

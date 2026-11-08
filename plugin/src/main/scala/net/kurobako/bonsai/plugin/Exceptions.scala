@@ -18,6 +18,7 @@ import scala.collection.mutable
 private object Exceptions {
   val Checks: Set[Check] = Set(
     Check.BroadCatch,
+    Check.ConflatedFailure,
     Check.DiscardedCause,
     Check.DiscardedEffectError,
     Check.LocalThrow,
@@ -121,6 +122,7 @@ private class Exceptions(
       traverseChildren(tree)
     case application @ tpd.Apply(function, arguments) =>
       redundant(application)
+      conflated(application)
       default(application)
       swallowed(application)
       traverse(function)
@@ -313,14 +315,43 @@ private class Exceptions(
       }
     )
 
-  // A Try around one partial call whose failure is then discarded, where the call has an Option alternative.
-  private def redundant(tree: tpd.Tree)(using Context): Unit = {
-    def tried(candidate: tpd.Tree): Option[(tpd.Tree, tpd.Tree)] = Calls.peelInlined(candidate) match {
+  private def tried(candidate: tpd.Tree)(using Context): Option[(tpd.Tree, tpd.Tree)] =
+    Calls.peelInlined(candidate) match {
       case application @ tpd.Apply(function, List(argument))
           if Calls.qualified(function.symbol) == "scala.util.Try.apply" =>
         Some(application -> Calls.peelInlined(argument))
       case _ => None
     }
+
+  // A flattened Try of a call that already returns an Option reports its failure as the absence it returns itself.
+  private def conflated(tree: tpd.Tree)(using Context): Unit = tree match {
+    case tpd.Apply(function, arguments) =>
+      Calls.selected(function).flatMap(select =>
+        if (select.name.toString == "flatten" && select.symbol.owner == defn.OptionClass)
+          Calls.peelInlined(select.qualifier) match {
+            case tpd.Select(qualifier, name) if name.toString == "toOption" => Some(qualifier)
+            case _                                                          => None
+          }
+        else
+          Option.when(
+            Calls.qualified(select.symbol) == "scala.util.Try.getOrElse" &&
+              arguments.map(Calls.peelInlined(_).symbol).map(Calls.qualified(_)) == List("scala.None")
+          )(select.qualifier)
+      ).flatMap(tried(_)).filter((_, argument) =>
+        argument.tpe.widen.derivesFrom(defn.OptionClass)
+      ).foreach((call, argument) =>
+        checks(
+          Check.ConflatedFailure,
+          s"${Trees.text(call)} reports a failure of ${Trees.text(argument)} as the absence it returns itself; " +
+            "match the Try to tell the two apart, or drop it if the call cannot fail",
+          tree.srcPos
+        )
+      )
+    case _ => ()
+  }
+
+  // A Try around one partial call whose failure is then discarded, where the call has an Option alternative.
+  private def redundant(tree: tpd.Tree)(using Context): Unit = {
     val shape: Option[(tpd.Tree, String => String)] = tree match {
       case tpd.Select(qualifier, name) if name.toString == "toOption" || name.toString == "isSuccess" =>
         Some(qualifier -> (alternative => if (name.toString == "toOption") alternative else s"$alternative.isDefined"))

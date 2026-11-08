@@ -11,7 +11,8 @@ object Smells {
     * which each expansion specialises on, and `rest` the fields of the term parameter lists after the first; `tested`
     * those its first statement branches on or its body only forwards to calls, when the body is known; an `inline`
     * method folds the literals it is passed at each expansion; `shared` marks an abstract method with several
-    * implementations, whose literal arguments pick a layout the instances share.
+    * implementations, whose literal arguments pick a layout the instances share; `entry` holds the annotated parameters
+    * of a command line entry point, each as written.
     */
   case class Method(
       name: String,
@@ -30,7 +31,8 @@ object Smells {
       rest: Vector[Algebra.Field] = Vector.empty,
       tested: Option[Set[Int]] = None,
       folded: Map[Int, String] = Map.empty,
-      line: Int = 0
+      line: Int = 0,
+      entry: Vector[String] = Vector.empty
   ) {
     def short: String = Finding.short(name)
   }
@@ -110,6 +112,7 @@ object Smells {
   private val MaximumClumpFields    = 6
   private val MaximumClumpSignature = 10
   private val MinimumClumpMethods   = 3
+  private val MinimumEntryFields    = 2
   private val SharedClumpFields     = 6
   private val WideClumpFields       = 4
   private val WideClumpMethods      = 5
@@ -270,6 +273,9 @@ object Smells {
       spare ++
       clumps(reviewed.filterNot(_.test), products, hot.getOrElse(Set.empty), model.sites).flatMap((key, detail, line) =>
         Finding.at(nodes, key, Finding.Rule.DataClump, detail, line = line)
+      ) ++
+      entryClumps(reviewed.filterNot(_.test)).flatMap((key, detail, line) =>
+        Finding.at(nodes, key, Finding.Rule.DataClump, detail, Finding.Level.Info, line = line)
       )
   }
 
@@ -521,17 +527,7 @@ object Smells {
       shared(signatures).filterNot((items, _) =>
         items.forall(numeric.contains) && items.map(numeric).size == 1 || modelled(items)
       )
-    val maximal = frequent.groupMap(_._2)(_._1).toVector.flatMap { (methods, candidates) =>
-      candidates.collect { case items if Itemsets.maximal(items, candidates) => items -> methods }
-    }.sortBy((items, methods) => (-items.size * methods.size, items.toVector.sorted.mkString))
-    // Overlapping groups over mostly the same methods describe one parameter object.
-    val chosen = maximal.foldLeft(Vector.empty[(Set[String], Set[Method])]) { (kept, candidate) =>
-      val distinct = kept.forall((_, methods) =>
-        methods.intersect(candidate._2).size * 2 < methods.union(candidate._2).size
-      )
-      if (distinct) kept :+ candidate else kept
-    }
-    chosen.map { (items, methods) =>
+    distinctGroups(frequent).map { (items, methods) =>
       val owners  = methods.map(_.owner).size
       val types   = if (owners == 1) "type" else "types"
       val product = shapes.collectFirst { case (product, fields) if items.subsetOf(fields) => product }
@@ -545,4 +541,45 @@ object Smells {
       )
     }
   }
+
+  // The largest groups of each set of methods; overlapping groups over mostly the same methods describe one object.
+  private def distinctGroups(frequent: Map[Set[String], Set[Method]]): Vector[(Set[String], Set[Method])] = {
+    val maximal = frequent.groupMap(_._2)(_._1).toVector.flatMap { (methods, candidates) =>
+      candidates.collect { case items if Itemsets.maximal(items, candidates) => items -> methods }
+    }.sortBy((items, methods) => (-items.size * methods.size, items.toVector.sorted.mkString))
+    maximal.foldLeft(Vector.empty[(Set[String], Set[Method])]) { (kept, candidate) =>
+      val distinct = kept.forall((_, methods) =>
+        methods.intersect(candidate._2).size * 2 < methods.union(candidate._2).size
+      )
+      if (distinct) kept :+ candidate else kept
+    }
+  }
+
+  /** Annotated parameters that three or more command line entry points of a type declare alike, which a case class
+    * annotated as an entry point states once, as the argument parser flattens it into each.
+    */
+  private def entryClumps(methods: Vector[Method]): Vector[(String, String, Int)] =
+    methods.filter(_.entry.sizeIs >= MinimumEntryFields).groupBy(_.owner).toVector.sortBy(_._1).flatMap {
+      (owner, siblings) =>
+        val support = siblings.flatMap { method =>
+          val items = method.entry.distinct.sorted
+          val sizes =
+            if (items.size > MaximumClumpSignature) Vector(MinimumEntryFields)
+            else MinimumEntryFields to MaximumClumpFields
+          sizes.flatMap(items.combinations(_).map(_.toSet -> method))
+        }.groupMap(_._1)(_._2)
+        val frequent = support.collect {
+          case (items, users) if users.size >= MinimumClumpMethods => items -> users.toSet
+        }
+        distinctGroups(frequent).map { (items, users) =>
+          val first = users.minBy(method => (method.name, method.node))
+          (
+            first.node,
+            s"(${items.toVector.sorted.mkString(", ")}) recur in ${users.size} @main methods of " +
+              s"${Finding.simple(owner)}: ${Finding.listed(users.toVector.map(_.short).sorted, Shown)}; " +
+              "a @main case class with these parameters is flattened into each by mainargs",
+            first.line
+          )
+        }
+    }
 }

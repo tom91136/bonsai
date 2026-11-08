@@ -1829,4 +1829,45 @@ class SmellsSuite extends AnalysisSuite {
     assertEquals(found.size, 1, found.mkString("\n"))
     assert(found.head.startsWith("(w: Int, x: Int, y: Long, z: Int)"), found.head)
   }
+
+  private val Mainargs = Seq(
+    "Mainargs.scala" ->
+      """package mainargs
+        |class main(doc: String = "") extends scala.annotation.StaticAnnotation
+        |class arg(doc: String = "", positional: Boolean = false) extends scala.annotation.StaticAnnotation""".stripMargin
+  )
+
+  test("annotated parameters that several entry points declare alike are a data clump a case class names once") {
+    val result = extract(
+      Seq(
+        "Commands.scala" ->
+          """import mainargs.arg
+            |import mainargs.main
+            |object Commands {
+            |  val ApplyDoc = "perform the work"
+            |  val LogDoc   = "run log"
+            |  @main def webp(@arg(doc = ApplyDoc) apply: Boolean, @arg(doc = LogDoc) log: Option[String] = None, @arg(doc = "quality") quality: Int = 90): Unit = ()
+            |  @main def vncg(@arg(doc = ApplyDoc) apply: Boolean, @arg(doc = LogDoc) log: Option[String] = None, @arg(doc = "output") out: String = ""): Unit = ()
+            |  @main def tidy(@arg(doc = ApplyDoc) apply: Boolean, @arg(doc = LogDoc) log: Option[String] = None): Unit = ()
+            |  @main def other(@arg(doc = "something else") apply: Boolean, @arg(doc = LogDoc) log: Option[String] = None): Unit = ()
+            |  def helper(apply: Boolean, log: Option[String]): Unit = ()
+            |  def again(apply: Boolean, log: Option[String]): Unit = ()
+            |  def third(apply: Boolean, log: Option[String]): Unit = ()
+            |}""".stripMargin
+      ),
+      dependencies = Mainargs
+    )
+    val found = Smells.findings(result.smells, result.algebra.products, result.graph.nodes)
+      .filter(_.rule == Finding.Rule.DataClump)
+    assertFinding(
+      found,
+      "data-clump",
+      "@arg(doc = ApplyDoc) apply",
+      "@arg(doc = LogDoc) log",
+      "recur in 3 @main methods",
+      "Commands.webp",
+      "@main case class"
+    )(using Finding.Level.Info)
+    assertEquals(found.size, 1, found.mkString("\n"))
+  }
 }

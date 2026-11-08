@@ -40,6 +40,7 @@ private object Check {
   val PartialInTry: Check            = check("partial-in-try", strict = true)
   val RedundantTry: Check            = check("redundant-try", strict = true)
   val BroadCatch: Check              = check("broad-catch", strict = true)
+  val ConflatedFailure: Check        = check("conflated-failure", severity = Check.Severity.Info)
   val DiscardedCause: Check          = check("discarded-cause", strict = true)
   val DiscardedEffectError: Check    = check("discarded-effect-error")
   val EagerEffect: Check             = check("eager-effect")

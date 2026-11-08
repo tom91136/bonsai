@@ -349,8 +349,29 @@ private[analysis] class Collector(
             )
         )
       ).toMap,
-      effects.library
+      effects.library,
+      effects.reordered.flatMap((method, operator, input, pure, whole) =>
+        site(method, whole).map((node, location, line) =>
+          Purity.Ordered(short(method), operator, shown(input), shown(pure), node, location, line, suppressions(method))
+        )
+      )
     )
+  }
+
+  private def short(method: Symbol)(using Context): String = Finding.short(qualifiedName(method))
+
+  // The source text of a tree, or its callee where the source is not at hand or no longer the one compiled.
+  private def shown(tree: tpd.Tree)(using Context): String = {
+    val position = tree.sourcePos
+    val text     = if (position.exists) position.source.content() else Array.empty[Char]
+    val written  =
+      if (position.exists && position.end <= text.length) String(text, position.start, position.end - position.start)
+      else ""
+    val name    = tree.symbol.name.toString
+    val current = written.nonEmpty && written.count(_ == '(') == written.count(_ == ')') &&
+      (!name.forall(character => character.isLetterOrDigit || character == '_') || name == "apply" ||
+        written.contains(name))
+    if (current) written.linesIterator.map(_.trim).mkString(" ") else Finding.short(qualifiedName(tree.symbol))
   }
 
   // The build's own methods: members of its classes, not synthetic.
@@ -484,8 +505,21 @@ private[analysis] class Collector(
         rest = Shapes.clauses(method).drop(1).flatten,
         tested = Some(tested(method, body)),
         folded = folded(method, body),
-        line = lines.line(method.sourcePos)
+        line = lines.line(method.sourcePos),
+        entry = entry(method)
       )
+    }
+
+  private def entry(method: Symbol)(using Context): Vector[String] =
+    if (!method.annotations.exists(_.symbol.fullName.toString == "mainargs.main")) Vector.empty
+    else {
+      val shapes = Shapes.clauses(method).flatten.map(field => field.name -> field.shape).toMap
+      Calls.termClauses(method).flatten.toVector.flatMap { parameter =>
+        parameter.annotations.find(_.symbol.fullName.toString == "mainargs.arg").map { annotation =>
+          val shape = shapes.get(parameter.name.toString).fold(parameter.info.widenExpr.show)(_.toString)
+          s"@${shown(annotation.tree)} ${parameter.name}: $shape"
+        }
+      }
     }
 
   private def literal(argument: Algebra.Argument): Boolean = argument match {

@@ -26,6 +26,7 @@ private[analysis] object Twins {
     copies.filter((_, file) => replaced(file)).groupMap(_._1.module)(_._2).toVector
   }
 
+  @SuppressWarnings(Array("bonsai:conflated-failure"))
   private def sourceFile(tasty: Path): Option[String] =
     Try(TastyUnpickler(Files.readAllBytes(tasty)).unpickle(Attribution)).toOption.flatten.flatMap(_.sourceFile)
 

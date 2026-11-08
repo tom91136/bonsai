@@ -12,10 +12,28 @@ import scala.util.control.NonFatal
 
 private[analysis] object Wrappers {
 
-  /** What a wrapper passes on: one of its parameters, or a value it fixes. */
+  /** What a wrapper passes on: one of its parameters, a value it fixes, varargs it leaves empty, or the result of
+    * another call that is itself made of these.
+    */
   enum Spec {
     case Parameter(index: Int, tpe: Type, repeated: Boolean)
     case Constant(value: String)
+    case Empty
+    case Nested(target: Symbol, specs: List[Spec])
+
+    /** Whether the wrapper fixes a value, here or in a call it makes. */
+    def fixes: Boolean = this match {
+      case Constant(_)      => true
+      case Nested(_, specs) => specs.exists(_.fixes)
+      case _                => false
+    }
+
+    /** Whether the wrapper passes its parameter `index` on, here or in a call it makes. */
+    def passes(index: Int): Boolean = this match {
+      case Parameter(at, _, _) => at == index
+      case Nested(_, specs)    => specs.exists(_.passes(index))
+      case _                   => false
+    }
   }
 
   /** A method of a library whose body is a call to `target` that passes its parameters on and fixes the rest. */
@@ -97,10 +115,23 @@ private[analysis] class Wrappers(symbols: Symbols, lines: Lines) {
   }
 
   private def matches(wrapper: Wrapper, arguments: List[tpd.Tree])(using Context): Boolean =
-    wrapper.specs.sizeIs == arguments.size && wrapper.specs.lazyZip(arguments).forall {
+    agrees(wrapper.specs, arguments)
+
+  private def agrees(specs: List[Spec], arguments: List[tpd.Tree])(using Context): Boolean =
+    specs.sizeIs == arguments.size && specs.lazyZip(arguments).forall {
       case (Spec.Constant(value), argument)          => constant(argument).contains(value)
       case (Spec.Parameter(_, _, true), _)           => true
       case (Spec.Parameter(_, tpe, false), argument) => argument.tpe.widen <:< tpe
+      case (Spec.Empty, argument)                    => Calls.peel(argument) match {
+          case tpd.SeqLiteral(Nil, _) => true
+          case _                      => false
+        }
+      case (Spec.Nested(target, inner), argument) => Calls.peel(argument) match {
+          case call: tpd.Apply =>
+            val (symbol, nested) = flatten(call)
+            symbol == target && agrees(inner, nested)
+          case _ => false
+        }
     }
 
   @annotation.tailrec
@@ -115,8 +146,8 @@ private[analysis] class Wrappers(symbols: Symbols, lines: Lines) {
 
   private def flatten(application: tpd.Apply)(using Context): (Symbol, List[tpd.Tree]) = {
     val receiver = head(application) match {
-      case tpd.Select(qualifier, _) if !static(qualifier) => List(qualifier)
-      case _                                              => Nil
+      case tpd.Select(qualifier, _) if !static(qualifier) && !qualifier.isInstanceOf[tpd.New] => List(qualifier)
+      case _                                                                                  => Nil
     }
     (application.symbol, receiver ++ Calls.arguments(application))
   }
@@ -160,19 +191,10 @@ private[analysis] class Wrappers(symbols: Symbols, lines: Lines) {
           case application: tpd.Apply =>
             val (target, arguments) = flatten(application)
             val specs               = arguments.map(argument => spec(argument, parameters))
-            val fixing              = specs.flatten.exists {
-              case Spec.Constant(_) => true
-              case _                => false
-            }
+            val fixing              = specs.flatten.exists(_.fixes)
             Option.when(
               target.exists && target != member && (fixing || target.owner != member.owner) &&
-                specs.forall(_.isDefined) &&
-                parameters.indices.forall(index =>
-                  specs.flatten.exists {
-                    case Spec.Parameter(at, _, _) => at == index
-                    case _                        => false
-                  }
-                )
+                specs.forall(_.isDefined) && parameters.indices.forall(index => specs.flatten.exists(_.passes(index)))
             )(Wrapper(member, target, specs.flatten, member.name.toString, Finding.short(qualifiedName(member))))
           case _ => None
         }
@@ -182,7 +204,15 @@ private[analysis] class Wrappers(symbols: Symbols, lines: Lines) {
     val peeled = Calls.peel(argument)
     val index  = parameters.indexOf(peeled.symbol)
     if (index >= 0) Some(Spec.Parameter(index, parameters(index).info.widen, parameters(index).info.isRepeatedParam))
-    else constant(peeled).map(Spec.Constant(_))
+    else
+      peeled match {
+        case tpd.SeqLiteral(Nil, _) => Some(Spec.Empty)
+        case call: tpd.Apply        =>
+          val (target, arguments) = flatten(call)
+          val nested              = arguments.map(spec(_, parameters))
+          Option.when(target.exists && nested.forall(_.isDefined))(Spec.Nested(target, nested.flatten))
+        case _ => constant(peeled).map(Spec.Constant(_))
+      }
   }
 
   // A library body is unpickled on first read, and a reference in it to a class the classpath lacks can fail that.
