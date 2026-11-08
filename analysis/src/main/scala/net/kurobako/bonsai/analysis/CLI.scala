@@ -214,67 +214,90 @@ object CLI {
       case Some(limit) => Right(options.copy(bounded = options.bounded :+ Complexity.Bounded(member, limit, reason)))
     }
 
-  @scala.annotation.tailrec
-  private def parse(args: List[String], options: Options): Either[String, Options] = args match {
-    case Nil                                   => Right(options)
-    case "--manifest" :: path :: rest          => parse(rest, options.copy(manifest = Some(Path.of(path))))
-    case "--info" :: rest                      => parse(rest, options.copy(info = true))
-    case "--purity" :: rest                    => parse(rest, options.copy(purity = true))
-    case "--baseline" :: path :: rest          => parse(rest, options.copy(baseline = Some(Path.of(path))))
-    case "--write-baseline" :: path :: rest    => parse(rest, options.copy(record = Some(Path.of(path))))
-    case "--purity-lock" :: path :: rest       => parse(rest, options.copy(lock = Some(Path.of(path))))
-    case "--write-purity-lock" :: path :: rest => parse(rest, options.copy(relock = Some(Path.of(path))))
-    case "--concurrent" :: method :: rest      => parse(rest, options.copy(concurrent = options.concurrent + method))
-    case "--reflective" :: glob :: rest        => parse(rest, options.copy(reflective = options.reflective :+ glob))
-    case "--hot" :: glob :: rest               => parse(rest, options.copy(hot = options.hot :+ glob))
+  private type Step = Either[String, (List[String], Options)]
+
+  private def inputArgs(options: Options): PartialFunction[List[String], Step] = {
+    case "--manifest" :: path :: rest          => Right(rest -> options.copy(manifest = Some(Path.of(path))))
+    case "--info" :: rest                      => Right(rest -> options.copy(info = true))
+    case "--purity" :: rest                    => Right(rest -> options.copy(purity = true))
+    case "--baseline" :: path :: rest          => Right(rest -> options.copy(baseline = Some(Path.of(path))))
+    case "--write-baseline" :: path :: rest    => Right(rest -> options.copy(record = Some(Path.of(path))))
+    case "--purity-lock" :: path :: rest       => Right(rest -> options.copy(lock = Some(Path.of(path))))
+    case "--write-purity-lock" :: path :: rest => Right(rest -> options.copy(relock = Some(Path.of(path))))
+  }
+
+  private def analysisArgs(options: Options): PartialFunction[List[String], Step] = {
+    case "--concurrent" :: method :: rest => Right(rest -> options.copy(concurrent = options.concurrent + method))
+    case "--reflective" :: glob :: rest   => Right(rest -> options.copy(reflective = options.reflective :+ glob))
+    case "--hot" :: glob :: rest          => Right(rest -> options.copy(hot = options.hot :+ glob))
+    case "--generated" :: pattern :: rest => Right(rest -> options.copy(generated = options.generated :+ pattern))
     case "--bounded" :: member :: max :: reason :: rest =>
       bounded(options, member, max, reason) match {
         case Left(error) => Left(error)
-        case Right(next) => parse(rest, next)
-      }
-    case "--nesting" :: rest => parse(rest, options.copy(nesting = options.nesting.copy(enabled = true)))
-    case "--nesting-depth" :: levels :: rest =>
-      positive("nesting depth", levels, 1) match {
-        case Left(error)  => Left(error)
-        case Right(depth) => parse(rest, options.copy(nesting = options.nesting.copy(depth = depth)))
-      }
-    case "--nesting-damping" :: users :: rest =>
-      positive("nesting damping", users, 0) match {
-        case Left(error)    => Left(error)
-        case Right(damping) => parse(rest, options.copy(nesting = options.nesting.copy(damping = damping)))
-      }
-    case "--parallelism" :: threads :: rest =>
-      positive("parallelism", threads, 1) match {
-        case Left(error)  => Left(error)
-        case Right(count) => parse(rest, options.copy(parallelism = count))
-      }
-    case "--nesting-size" :: lines :: rest =>
-      positive("nesting size", lines, 1) match {
-        case Left(error) => Left(error)
-        case Right(size) => parse(rest, options.copy(nesting = options.nesting.copy(size = size)))
+        case Right(next) => Right(rest -> next)
       }
     case "--intended" :: pair :: rest =>
       intended(pair) match {
         case Left(error)   => Left(s"$error\n$usage")
-        case Right(parsed) => parse(rest, options.copy(intended = options.intended :+ parsed))
+        case Right(parsed) => Right(rest -> options.copy(intended = options.intended :+ parsed))
       }
     case "--effects" :: policy :: rest =>
       Purity.Policy.parse(policy) match {
         case Left(error)   => Left(s"$error\n$usage")
-        case Right(parsed) => parse(rest, options.copy(policies = options.policies :+ parsed))
+        case Right(parsed) => Right(rest -> options.copy(policies = options.policies :+ parsed))
       }
-    case "--generated" :: pattern :: rest =>
-      parse(rest, options.copy(generated = options.generated :+ pattern))
+  }
+
+  private def tuningArgs(options: Options): PartialFunction[List[String], Step] = {
+    case "--nesting" :: rest => Right(rest -> options.copy(nesting = options.nesting.copy(enabled = true)))
+    case "--nesting-depth" :: levels :: rest =>
+      positive("nesting depth", levels, 1) match {
+        case Left(error)  => Left(error)
+        case Right(depth) => Right(rest -> options.copy(nesting = options.nesting.copy(depth = depth)))
+      }
+    case "--nesting-damping" :: users :: rest =>
+      positive("nesting damping", users, 0) match {
+        case Left(error)    => Left(error)
+        case Right(damping) => Right(rest -> options.copy(nesting = options.nesting.copy(damping = damping)))
+      }
+    case "--nesting-size" :: lines :: rest =>
+      positive("nesting size", lines, 1) match {
+        case Left(error) => Left(error)
+        case Right(size) => Right(rest -> options.copy(nesting = options.nesting.copy(size = size)))
+      }
+    case "--parallelism" :: threads :: rest =>
+      positive("parallelism", threads, 1) match {
+        case Left(error)  => Left(error)
+        case Right(count) => Right(rest -> options.copy(parallelism = count))
+      }
+  }
+
+  private def ruleArgs(options: Options): PartialFunction[List[String], Step] = {
     case "--mode" :: mode :: _ if !Mode.values.exists(_.id == mode) => Left(s"unknown mode: $mode\n$usage")
-    case "--mode" :: mode :: rest => parse(rest, options.copy(mode = Mode.values.find(_.id == mode).get))
+    case "--mode" :: mode :: rest => Right(rest -> options.copy(mode = Mode.values.find(_.id == mode).get))
     case flag :: rule :: _ if ruleFlags(flag) && !(wildcardFlags(flag) && rule == "*") && !rules(rule) =>
       Left(s"unknown rule: $rule\n$usage")
     case "--disable" :: rule :: rest =>
-      parse(rest, options.copy(disabled = options.disabled + disable(rule, Report.Scope.Everywhere)))
+      Right(rest -> options.copy(disabled = options.disabled + disable(rule, Report.Scope.Everywhere)))
     case "--generated-disable" :: rule :: rest =>
-      parse(rest, options.copy(disabled = options.disabled + disable(rule, Report.Scope.Generated)))
-    case "--warn" :: rule :: rest  => parse(rest, options.copy(warnings = options.warnings + rule))
-    case "--error" :: rule :: rest => parse(rest, options.copy(errors = options.errors + rule))
-    case other :: _                => Left(s"unknown argument: $other\n$usage")
+      Right(rest -> options.copy(disabled = options.disabled + disable(rule, Report.Scope.Generated)))
+    case "--warn" :: rule :: rest  => Right(rest -> options.copy(warnings = options.warnings + rule))
+    case "--error" :: rule :: rest => Right(rest -> options.copy(errors = options.errors + rule))
+  }
+
+  @scala.annotation.tailrec
+  private def parse(args: List[String], options: Options): Either[String, Options] = args match {
+    case Nil        => Right(options)
+    case other :: _ =>
+      val step = inputArgs(options)
+        .orElse(analysisArgs(options))
+        .orElse(tuningArgs(options))
+        .orElse(ruleArgs(options))
+        .lift(args)
+        .getOrElse(Left(s"unknown argument: $other\n$usage"))
+      step match {
+        case Left(error)         => Left(error)
+        case Right((rest, next)) => parse(rest, next)
+      }
   }
 }
