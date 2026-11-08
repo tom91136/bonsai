@@ -46,7 +46,12 @@ Criteria by step:
 - The javac plugin's model carries, beside nodes, methods, sites and fragments: cost trees per method (`CostTrees`), field writes and reassignable fields, constructor guards and method preconditions (`Guards`, `Constructors`), construction sites, and the chains its lint lifts into the `collections` engine.
 - `java/DataFlow.scala` tracks constants and nullness through Java code.
 - `Bytecode.scala` parses class files by hand to read method sizes. It knows every constant pool tag up to 20 and skips unknown attributes, so it reads any class file version.
-- `Megamorphic` reports virtual calls inside loops whose owner has more than two concrete implementations in the build.
+- `ClassSource` finds class files in the build outputs, the classpath and the JDK of the manifest's `jdk` line, and `ClassWorld` parses them with ASM as they are asked for.
+- `CallGraph` builds a method-level call graph over bytecode by rapid type analysis from the roots, counting each lambda as its own receiver class. `Reach` decides liveness per method from it, so `Liveness` and `Members` count a use only when its method is reachable.
+- `BytecodeEffects` infers the effects of methods that have bytecode and no TASTy, for the methods `Purity` and `Costs` ask about and those they reach.
+- `Recursion` treats a method returning an effect that continues into itself through `flatMap`, `>>`, `foreverM` or `tailRecM` as a loop.
+- `Megamorphic` reports virtual calls inside loops of a build type with more than two receivers in the call graph, lambdas and library classes included.
+- In `--mode ci`, a problem fails the run: an unreadable TASTy header, Java model or build class file, or a unit the analysis could not read. Notes, such as classes the classpath lacks, never do.
 
 ### Checking a change
 
@@ -61,12 +66,9 @@ All of these pass on JDK 25 with sbt 2.0.10 and Maven 3.9; the Maven plugin buil
 
 ### Gaps
 
-1. Every result assumes an open world. `implementations` returns `None` when an override lies outside the build. With the whole classpath known, that set is finite.
-2. `Graph` nodes are types with their companions merged, so liveness is per type. `Members` records the users of a member but not whether those users are reachable, so a method called only from a dead method of a live type counts as used.
-3. Dependencies are opaque. The classpaths of `manifest.classpath`, one per module, only resolve symbols.
-4. Dynamic sites are recorded but not classified by whether their targets can be known.
-5. `Megamorphic` cannot see effect code. A site counts only inside `while` or a collection traversal lambda, and only build classes count as implementations, so lambdas and library classes do not.
-6. `Purity` reads TASTy only. A Java-only build gets `Purity.Model.empty`, and a call into Java library code is unknown unless an axiom covers it, which is never taken for pure.
+1. `Dispatch.implementations` still resolves a call by class hierarchy analysis and returns `None` when an override lies outside the build. The call graph's receiver sets are finite, but only `Megamorphic` reads them.
+2. Dynamic sites are recorded but not classified by whether their targets can be known.
+3. Receiver sets are per callee, not per caller, and the given instances reaching each dictionary parameter are not recorded.
 
 ## Design decisions
 
@@ -89,7 +91,7 @@ Re-linking from TASTy, by pruning trees and running `-from-tasty` through the no
 The choice is `org.ow2.asm`. `scala3-compiler` 3.10.0 depends on `asm-util` and `asm-commons` 9.10.1, which bring `asm`, `asm-tree` and `asm-analysis`. The analysis is built once, against that compiler, so the ASM release follows one compiler.
 
 - Use the release the compiler resolves; do not pin ASM separately, or the two drift.
-- The ceiling on readable class file versions is that ASM release's. A newer compiler release raises it.
+- The ceiling on readable class file versions is that ASM release's. A newer compiler release raises it. ASM 9.10.1 reads up to version 71, Java 27.
 - Rewriting the major version in memory to read a newer class file is a last resort.
 
 ### Tool JDK and target JDK
@@ -126,18 +128,7 @@ Library sources are never attributed with javac. That needs each library's exact
 
 ## Step 1: whole-program model
 
-- An ASM reader over the build outputs, the classpath and the target JDK, loading classes on demand from the worklist. It is unnecessary to parse the whole JDK.
-- One class hierarchy across Scala and Java code, since each extends the other.
-- A method-level call graph built by rapid type analysis (RTA) from the existing roots, keyed by `Keys`. An override joins the graph once its class is instantiated.
-- For each call site:
-  - the receiver classes that reach it, counting each lambda as its own class;
-  - the given instances flowing into each dictionary parameter;
-  - the callers that share the body holding the site.
-- Monadic recursion as a loop: a method returning an effect that refers to itself through `flatMap`, `>>`, `foreverM` or `tailRecM`.
-- Effect inference over bytecode for code without TASTy, through the `effects` module: writes to fields of objects the method did not allocate, `native` methods, monitors, and calls into input and output roots. This closes gap 6 for Java-only builds and Java dependencies.
-- The cost model's unknown callees (library and JDK methods with no summary) take their bounds from bytecode summaries where the call graph reaches them.
-
-`Liveness` and `Members` move to method reachability, which makes the existing unused and test-only findings precise.
+Done, but for the receiver sets per caller and the given instances reaching each dictionary parameter (gap 3), which the dispatch findings of step 2 need first.
 
 ## Step 2: findings
 
@@ -178,8 +169,6 @@ Outputs:
 | Forwarder chains deeper than `MaxInlineLevel` (15), hot callees over `FreqInlineSize` (325 bytes) | `Bytecode` sizes | source or bytecode: collapse forwarders |
 
 HotSpot already devirtualises a call when only one implementation is loaded, and inlines a dominant receiver with a fallback (`TypeProfileMajorReceiverPercent`). The closed world adds value where many classes are loaded and few reach a site.
-
-`Megamorphic` moves onto the call graph's receiver sets, which counts lambdas and library classes and sees sites in effect code (gap 5).
 
 The continuation call in the cats-effect `IOFiber` run loop is megamorphic by nature. Fixing it would mean cloning the run loop per program, which is out of scope.
 
@@ -292,6 +281,5 @@ A prototype moved the purity fixpoint alone to plain data and compared it with t
 
 - Whether the Scala 3 backend emits the `ScalaInlineInfo` attribute. If it does, the bytecode side has inlining facts without TASTy.
 - Which post-8 APIs the `bonsai-plugin_3.3` jar and the 3.3 line's library reach; the first step 2 report answers it.
-- Which class file versions ASM 9.10.1 reads, against the newest target JDK users need.
 - How much profile pollution cats' own combinators cause compared with the dictionary calls. A `PrintInlining` run of a cats-effect benchmark answers it.
 - Folding `Bytecode.scala` into the ASM reader. ASM does not expose the length of the `Code` attribute directly.
