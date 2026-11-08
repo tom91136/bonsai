@@ -8,14 +8,42 @@ import dotty.tools.dotc.core.Types.MethodType
 import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
-@SuppressWarnings(Array("bonsai:test-only", "bonsai:test-only-member"))
 object Dictionaries {
 
   /** The instances that reach the dictionary parameter `index`, counted over all the term parameters of `method`, from
     * the calls of production code. `open` holds when some caller passes a value no instance names, or the parameter has
     * no caller to name one, as an exported method has none.
     */
-  case class Parameter(method: String, index: Int, instances: Vector[String], open: Boolean)
+  case class Parameter(
+      method: String,
+      index: Int,
+      instances: Vector[String],
+      open: Boolean,
+      generic: Option[Generic]
+  )
+
+  /** Where a dictionary parameter that source can make concrete is declared: a method, or the constructor of a class,
+    * with the type class of the parameter, which is over a type constructor. A method that returns the type class it
+    * takes, such as a summoner, passes the dictionary on and is left out.
+    */
+  case class Generic(name: String, node: String, typeClass: String, constructor: Boolean, suppressed: Set[String])
+
+  def findings(parameters: Vector[Parameter], nodes: Map[String, Node]): Vector[Finding] = for {
+    parameter <- parameters
+    generic   <- parameter.generic
+    instance  <- parameter.instances.headOption
+    if parameter.instances.size == 1 && !parameter.open
+    found <- Finding.at(
+      nodes,
+      generic.node,
+      Finding.Rule.FixedDictionary,
+      s"${Finding.short(generic.name)} takes a ${Finding.simple(generic.typeClass)} dictionary that only " +
+        s"${Finding.short(instance)} reaches in the build; make the ${if (generic.constructor) "class" else "method"} " +
+        "concrete",
+      level = Finding.Level.Info,
+      suppressed = generic.suppressed
+    )
+  } yield found
 
   private case class Slot(method: Symbol, index: Int)
 
@@ -111,15 +139,29 @@ private[analysis] class Dictionaries(symbols: Symbols) {
     inputs.keys.toVector.flatMap { slot =>
       Keys.of(slot.method).map { key =>
         val found = reached(slot)
-        Parameter(
-          key,
-          slot.index,
-          found.instances.toVector.sorted,
-          found.open
-        )
+        Parameter(key, slot.index, found.instances.toVector.sorted, found.open, generic(slot))
       }
     }.sortBy(parameter => (parameter.method, parameter.index))
   }
+
+  private def generic(slot: Slot)(using Context): Option[Generic] = {
+    val method    = slot.method
+    val typeClass = declared(method)(slot.index).info.widenDealias.typeSymbol
+    for {
+      node <- key(method)
+      if !method.is(Flags.Deferred) && method.allOverriddenSymbols.isEmpty && overTypeConstructor(typeClass) &&
+        method.info.finalResultType.widenDealias.typeSymbol != typeClass
+    } yield Generic(
+      qualifiedName(if (method.isConstructor) method.owner else method),
+      node,
+      Calls.qualified(typeClass),
+      method.isConstructor,
+      suppressions(method) ++ (if (method.isConstructor) suppressions(method.owner) else Set.empty)
+    )
+  }
+
+  private def overTypeConstructor(cls: Symbol)(using Context): Boolean =
+    cls.isClass && cls.typeParams.exists(_.paramInfo.hkTypeParams.nonEmpty)
 
   private def join(reaches: Iterable[Reaching]): Reaching =
     Reaching(reaches.flatMap(_.instances).toSet, reaches.exists(_.open))

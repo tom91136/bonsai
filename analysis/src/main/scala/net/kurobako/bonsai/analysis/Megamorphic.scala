@@ -7,7 +7,8 @@ import net.kurobako.bonsai.analysis.ClassFiles.*
 object Megamorphic {
 
   /** A method calling `callee` inside a loop. `key` names the bytecode method the call runs, as `Keys` does with the
-    * class of the receiver as the owner, `unreaching` the build classes whose type arguments rule them out as
+    * class of the receiver as the owner, `holder` the key of the calling method, `settled` whether every receiver is
+    * the same on each iteration of the loop, `unreaching` the build classes whose type arguments rule them out as
     * receivers, and `stable` holds when every implementation in the build reads a field.
     */
   case class Site(
@@ -15,6 +16,8 @@ object Megamorphic {
       node: String,
       callee: String,
       key: String,
+      holder: Option[String],
+      settled: Boolean,
       unreaching: Set[String],
       stable: Boolean,
       suppressed: Set[String]
@@ -22,6 +25,9 @@ object Megamorphic {
 
   /** A site whose receivers are `names`, in all `count` classes and lambdas. */
   case class Found(site: Site, count: Int, names: Vector[String])
+
+  /** A site whose `callers` pass `count` receiver classes in all, `names`, and no more than `perCaller` each. */
+  case class Shared(site: Site, callers: Int, count: Int, perCaller: Int, names: Vector[String])
 
   private val Shown = 4
 
@@ -34,10 +40,8 @@ object Megamorphic {
     * thousands that have nothing to do with the loop.
     */
   def resolve(sites: Vector[Site], nodes: Map[String, Node], graph: CallGraph, world: ClassWorld): Vector[Found] = {
-    val wanted  = sites.map(_.key).toSet
-    val callees = graph.dispatch.keys.view.map(callee => ClassFiles.key(callee, None) -> callee)
-      .filter((key, callee) => wanted(key) && located(callee.owner, nodes).isDefined).toVector.groupMap(_._1)(_._2)
-    val known = callees.values.flatten.toSet.map(callee => callee -> graph.receivers(callee, world)).toMap
+    val callees = calleesOf(sites, nodes, graph)
+    val known   = callees.values.flatten.toSet.map(callee => callee -> graph.receivers(callee, world)).toMap
     sites.flatMap { site =>
       val receivers =
         callees.getOrElse(site.key, Vector.empty).flatMap(known(_).filter(counts(_, site, nodes))).distinct
@@ -45,6 +49,49 @@ object Megamorphic {
         Found(site, receivers.size, names(receivers).sorted)
       )
     }
+  }
+
+  /** The sites of `found` whose body is shared by callers that each pass a closed set of receivers too small to make
+    * the call megamorphic, which are too many together. The profile of a call is kept per method, so it sees them all.
+    */
+  def shared(found: Vector[Found], nodes: Map[String, Node], graph: CallGraph, world: ClassWorld): Vector[Shared] =
+    if (found.isEmpty) Vector.empty
+    else {
+      val flow    = ReceiverFlow(world, graph)
+      val callees = calleesOf(found.map(_.site), nodes, graph)
+      found.flatMap { case Found(site, _, _) =>
+        callees.getOrElse(site.key, Vector.empty).flatMap { callee =>
+          flow.holders(callee).filter(holder =>
+            site.holder.contains(world.key(holder)) && flow.callers(holder).size > 1
+          ).flatMap(holder => pollution(site, flow.supplied(holder, callee), nodes))
+        }.headOption
+      }
+    }
+
+  private def pollution(site: Site, supplied: ReceiverFlow.Supplied, nodes: Map[String, Node]): Option[Shared] = {
+    val callers = supplied.byCaller.values.toVector
+    val sets    = callers.map(_.receivers.filter(counts(_, site, nodes))).filter(_.nonEmpty)
+    val all     = sets.flatten.distinct
+    Option.when(
+      sets.size > 1 && !supplied.own.open && callers.forall(!_.open) && sets.forall(_.size <= Inlined) &&
+        all.size > Inlined
+    )(
+      Shared(site, sets.size, all.size, sets.map(_.size).max, names(all).sorted)
+    )
+  }
+
+  def sharedFindings(shared: Vector[Shared], nodes: Map[String, Node]): Vector[Finding] = shared.flatMap {
+    case Shared(site, callers, count, perCaller, names) =>
+      Finding.at(
+        nodes,
+        site.node,
+        Finding.Rule.PollutedCall,
+        s"${Finding.short(site.caller)} calls ${site.callee} in a loop that its $callers callers share: they pass " +
+          s"$count receiver classes (${Finding.listed(names, Shown)}), at most $perCaller each, which HotSpot profiles " +
+          "together; split the body per caller",
+        level = Finding.Level.Info,
+        suppressed = site.suppressed
+      )
   }
 
   def findings(found: Vector[Found], nodes: Map[String, Node]): Vector[Finding] = found.flatMap {
@@ -57,6 +104,16 @@ object Megamorphic {
           s"(${Finding.listed(names, Shown)}); HotSpot inlines at most two receiver types at a call site",
         suppressed = site.suppressed
       )
+  }
+
+  private def calleesOf(
+      sites: Vector[Site],
+      nodes: Map[String, Node],
+      graph: CallGraph
+  ): Map[String, Vector[Reference]] = {
+    val wanted = sites.map(_.key).toSet
+    graph.dispatch.keys.view.map(callee => ClassFiles.key(callee, None) -> callee)
+      .filter((key, callee) => wanted(key) && located(callee.owner, nodes).isDefined).toVector.groupMap(_._1)(_._2)
   }
 
   private def counts(receiver: Receiver, site: Site, nodes: Map[String, Node]): Boolean =

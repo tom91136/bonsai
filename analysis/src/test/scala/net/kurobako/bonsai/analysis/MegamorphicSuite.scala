@@ -440,6 +440,111 @@ class MegamorphicSuite extends AnalysisSuite {
     assertFinding(named, "megamorphic-call", "Main.total calls Shape.area in a loop", "One, Three, Two")
   }
 
+  private def polluted(
+      main: Seq[(String, String)],
+      test: Seq[(String, String)] = Nil,
+      hot: Vector[String] = Vector("**")
+  ): Vector[Finding] = {
+    val result = extract(main, test, hot = hot)
+    Megamorphic.sharedFindings(result.shared, result.graph.nodes)
+  }
+
+  private def spinning(callers: String, extra: String = "") = Seq(
+    "Main.scala" ->
+      s"""object Main {
+         |  def main(args: Array[String]): Unit =
+         |    println((Callers.circle(3), Callers.square(3), Callers.triangle(3), Circle(), Square(), Triangle()))
+         |  def spin(shape: Shape, n: Int): Int = {
+         |    var total = 0
+         |    var index = 0
+         |    while (index < n) { total += shape.area; index += 1 }
+         |    total
+         |  }
+         |$extra
+         |}
+         |object Callers {
+         |$callers
+         |}""".stripMargin,
+    "Shapes.scala" -> shapes
+  )
+
+  private val separate =
+    """  def circle(n: Int): Int = Main.spin(Circle(), n)
+      |  def square(n: Int): Int = Main.spin(Square(), n)
+      |  def triangle(n: Int): Int = Main.spin(Triangle(), n)""".stripMargin
+
+  test("a loop in a body whose callers each pass fewer receivers than make it megamorphic is reported") {
+    val result = polluted(spinning(separate))
+    assertFinding(
+      result,
+      "polluted-call",
+      "Main.spin calls Shape.area in a loop",
+      "3 callers",
+      "3 receiver classes",
+      "Circle, Square, Triangle",
+      "split the body per caller"
+    )(using Finding.Level.Info)
+    assertEquals(result.size, 1)
+    assertEquals(megamorphic(spinning(separate), hot = Vector("**")), Vector.empty)
+  }
+
+  test("a body shared by callers that pass the same two receivers is bimorphic, not polluted") {
+    val callers =
+      """  def circle(n: Int): Int = Main.spin(Circle(), n) + Main.spin(Square(), n)
+        |  def square(n: Int): Int = Main.spin(Square(), n) + Main.spin(Circle(), n)
+        |  def triangle(n: Int): Int = Triangle().area""".stripMargin
+    assertEquals(polluted(spinning(callers)), Vector.empty)
+  }
+
+  test("a caller passing a receiver nothing names, or passing more than two, keeps the body out") {
+    val open =
+      """  def circle(n: Int): Int = Main.spin(Circle(), n)
+        |  def square(n: Int): Int = Main.spin(Square(), n)
+        |  def triangle(n: Int): Int = Main.spin(Main.pick(n), n)""".stripMargin
+    val many =
+      """  def circle(n: Int): Int = Main.spin(if (n > 0) Circle() else if (n < -1) Square() else Triangle(), n)
+        |  def square(n: Int): Int = Main.spin(Square(), n)
+        |  def triangle(n: Int): Int = Main.spin(Triangle(), n)""".stripMargin
+    assertEquals(
+      polluted(spinning(open, "  def pick(n: Int): Shape = if (n > 1) Circle() else Square()")),
+      Vector.empty
+    )
+    assertEquals(polluted(spinning(many)), Vector.empty)
+  }
+
+  test("a body with a single caller, and one outside the classes the build marks hot, are left alone") {
+    val single =
+      """  def circle(n: Int): Int = Main.spin(Circle(), n)
+        |  def square(n: Int): Int = Square().area
+        |  def triangle(n: Int): Int = Triangle().area""".stripMargin
+    assertEquals(polluted(spinning(single)), Vector.empty)
+    assertEquals(polluted(spinning(separate), hot = Vector.empty), Vector.empty)
+    assertEquals(polluted(spinning(separate), hot = Vector("**", "!Main")), Vector.empty)
+  }
+
+  test("a receiver forwarded through a caller is told apart by the caller of that caller") {
+    val forwarded =
+      """  def relay(shape: Shape, n: Int): Int = Main.spin(shape, n)
+        |  def circle(n: Int): Int = relay(Circle(), n)
+        |  def square(n: Int): Int = relay(Square(), n) + Main.spin(Triangle(), n)
+        |  def triangle(n: Int): Int = Triangle().area""".stripMargin
+    assertFinding(polluted(spinning(forwarded)), "polluted-call", "Main.spin calls Shape.area", "2 callers")(using
+      Finding.Level.Info
+    )
+  }
+
+  test("a suppression on the method silences the finding") {
+    val result = extract(
+      spinning(separate).map { (name, text) =>
+        name -> text.replace("  def spin", "  @SuppressWarnings(Array(\"bonsai:polluted-call\"))\n  def spin")
+      },
+      hot = Vector("**")
+    )
+    val options  = Report.Options(Set.empty, Set.empty, Set.empty, info = true)
+    val reported = Report(Megamorphic.sharedFindings(result.shared, result.graph.nodes), result.graph.nodes, options)
+    assertEquals(reported, Vector.empty)
+  }
+
   private val handlers = Seq(
     "fixture/Handler.java" -> "package fixture;\n\npublic interface Handler { int handle(); }\n",
     "fixture/Alpha.java"   ->
@@ -484,6 +589,8 @@ class MegamorphicSuite extends AnalysisSuite {
     at,
     "Handler.handle",
     "fixture.Handler.handle()I",
+    None,
+    settled = false,
     unreaching,
     stable,
     Set.empty

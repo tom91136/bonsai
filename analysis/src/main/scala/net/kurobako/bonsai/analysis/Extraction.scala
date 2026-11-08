@@ -40,6 +40,7 @@ object Extraction {
       unusedBounds: Vector[Complexity.Bounded],
       pipelines: Vector[Pipelines.Lifted],
       megamorphic: Vector[Megamorphic.Found],
+      shared: Vector[Megamorphic.Shared],
       hot: Option[Set[String]],
       purity: Purity.Model,
       lints: Vector[JavaLints.Found],
@@ -47,7 +48,6 @@ object Extraction {
       nesting: Nesting.Model = Nesting.Model.empty,
       reach: Reach = Reach.empty,
       notes: Vector[String] = Vector.empty,
-      @SuppressWarnings(Array("bonsai:test-only-member"))
       dictionaries: Vector[Dictionaries.Parameter] = Vector.empty
   )
 
@@ -172,6 +172,7 @@ object Extraction {
         Vector.empty,
         Vector.empty,
         Vector.empty,
+        Vector.empty,
         None,
         BytecodePurity.model(linked.summaries, java.nodes),
         java.lints,
@@ -269,6 +270,15 @@ object Extraction {
       else {
         val linked                       = phase.calls.getOrElse(Reach.link(manifest, graph, world))
         val Reach.Reached(reach, unread) = Reach.of(linked, graph)
+        // Megamorphic calls cost only where the JVM compiles hot code, which a platform twin never runs on.
+        val resolved = Megamorphic.resolve(
+          phase.megamorphic.filter(site =>
+            graph.nodes.get(site.node).exists(node => !manifest.platforms(node.module) && isHot(node.name))
+          ),
+          graph.nodes,
+          linked.graph,
+          world
+        )
         Right(Result(
           graph,
           algebra,
@@ -282,15 +292,8 @@ object Extraction {
           phase.complexities,
           phase.unusedBounds,
           phase.pipelines,
-          // Megamorphic calls cost only where the JVM compiles hot code, which a platform twin never runs on.
-          Megamorphic.resolve(
-            phase.megamorphic.filter(site =>
-              graph.nodes.get(site.node).exists(node => !manifest.platforms(node.module) && isHot(node.name))
-            ),
-            graph.nodes,
-            linked.graph,
-            world
-          ),
+          resolved.filterNot(_.site.settled),
+          Megamorphic.shared(resolved, graph.nodes, linked.graph, world),
           Option.when(hot.nonEmpty)(graph.nodes.keySet.filter(isHot)),
           phase.purity,
           java.lints,

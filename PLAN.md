@@ -52,7 +52,7 @@ Criteria by step:
 - `Recursion` treats a method returning an effect that continues into itself through `flatMap`, `>>`, `foreverM` or `tailRecM` as a loop.
 - `ReceiverFlow` tells the receivers of a virtual call apart by the method that passes them in. It follows the receiver in the bytecode of its method to where it is made (`new`, a `MODULE$` load, a lambda) or to the parameter it is, and from there to the matching argument of each caller. A field, a call result or an array element is open, as is a value a lambda captures. It reads only the methods on the way back and runs on demand, so the call graph stays context-insensitive and costs nothing more.
 - `Dictionaries` records the given arguments of each call in production code, which TASTy writes out as trees, and follows them through the parameters that forward them. `Extraction.Result.dictionaries` lists, per method key and parameter, the instances that reach each `using` parameter and whether any caller passes a value no instance names. A method nothing in production code calls is open.
-- `Megamorphic` reports virtual calls inside loops of a build type with more than two receivers in the call graph, lambdas and library classes included.
+- `Megamorphic` reports virtual calls inside loops of a build type with more than two receivers in the call graph, lambdas and library classes included. It also reports `polluted-call`, and `Dictionaries` reports `fixed-dictionary`, both at information level.
 - In `--mode ci`, a problem fails the run: an unreadable TASTy header, Java model or build class file, or a unit the analysis could not read. Notes, such as classes the classpath lacks, never do.
 
 ### Checking a change
@@ -129,7 +129,7 @@ Library sources are never attributed with javac. That needs each library's exact
 
 ## Step 1: whole-program model
 
-Done. The dispatch findings of step 2 will read the receivers per caller from `ReceiverFlow` and the dictionary instances from `Dictionaries`; no finding does yet.
+Done. The first two dispatch findings of step 2 read the receivers per caller from `ReceiverFlow` and the dictionary instances from `Dictionaries`.
 
 ## Step 2: findings
 
@@ -168,6 +168,11 @@ Outputs:
 | A site few classes reach although more are loaded | RTA or type flow | bytecode: an `instanceof` cascade of direct calls |
 | A hot `match` over a large sealed type, which compiles to a linear `instanceof` chain | TASTy and the `Algebra` sum model | source: switch on an ordinal or tag |
 | Forwarder chains deeper than `MaxInlineLevel` (15), hot callees over `FreqInlineSize` (325 bytes) | `Bytecode` sizes | source or bytecode: collapse forwarders |
+
+Two of these exist as findings at information level:
+
+- `fixed-dictionary`: a method or constructor whose `using` parameter, of a type class over a type constructor, receives exactly one instance across the build and no value the analysis cannot name. Methods nothing in production code calls are open, so an exported library API never matches. Abstract methods, overrides, and methods returning the type class they take, such as summoners, are left out. The fix text is to make the method concrete.
+- `polluted-call`: a virtual call in a loop of a hot class, in a method with two or more callers where each caller supplies a closed set of at most two receivers and the sets together exceed two. The call is megamorphic only because the body is shared. Unlike `megamorphic-call`, it counts receivers that do not change in the loop. It needs the receiver to be a parameter or `this` of the method holding the call, since a lambda that captures it or receives it from a library call is open. The fix text is to split the body per caller.
 
 HotSpot already devirtualises a call when only one implementation is loaded, and inlines a dominant receiver with a fallback (`TypeProfileMajorReceiverPercent`). The closed world adds value where many classes are loaded and few reach a site.
 

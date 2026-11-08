@@ -76,6 +76,8 @@ object Report {
       () => Complexity.findings(result.complexities, nodes, result.hot),
       () => Pipelines.findings(result.pipelines, nodes),
       () => Megamorphic.findings(result.megamorphic, nodes),
+      () => Megamorphic.sharedFindings(result.shared, nodes),
+      () => Dictionaries.findings(result.dictionaries, nodes),
       () => Purity.findings(result.purity, nodes),
       () => JavaLints.findings(result.lints, nodes),
       () => Nesting.findings(result.nesting, nesting)

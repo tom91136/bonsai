@@ -153,15 +153,14 @@ private[analysis] class References(components: Components, fragments: Fragments)
           owner.flatMap(symbols.described(_)).foreach(node =>
             dispatching.implement(closure.tpt.tpe.classSymbol, s"a lambda in ${node.name}", node.module)
           )
-        // An inline body runs as the code of each expansion, where its receivers have their own types, and a receiver
-        // the loop does not change dispatches to one class throughout it.
-        case select: tpd.Select
-            if looping.top && !synthetic.top && !methods.exists(_.is(Flags.Inline)) && !settled(select.qualifier) =>
+        // An inline body runs as the code of each expansion, where its receivers have their own types.
+        case select: tpd.Select if looping.top && !synthetic.top && !methods.exists(_.is(Flags.Inline)) =>
           dispatching.record(
             select.symbol,
             enclosingMethod,
             owner,
-            select.qualifier.tpe
+            select.qualifier.tpe,
+            settled(select.qualifier)
           )
         case _ => ()
       }

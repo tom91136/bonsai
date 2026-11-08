@@ -20,7 +20,6 @@ import org.objectweb.asm.tree.analysis.Value
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 
-@SuppressWarnings(Array("bonsai:test-only", "bonsai:test-only-member"))
 private[analysis] object ReceiverFlow {
 
   /** The classes and lambdas a value can be, and whether it can also be something not named: a field, a call result, or
@@ -151,7 +150,6 @@ private[analysis] object ReceiverFlow {
   *
   * Nothing is computed until asked, and only the methods on the way back are read.
   */
-@SuppressWarnings(Array("bonsai:test-only", "bonsai:test-only-member"))
 private[analysis] class ReceiverFlow(world: ClassWorld, graph: CallGraph) {
   import ReceiverFlow.*
 

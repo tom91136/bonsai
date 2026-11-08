@@ -113,7 +113,6 @@ private[analysis] object ClassFiles {
   }
 
   /** The body of the method `name` with `descriptor` that the class `bytes` declares, when it has code. */
-  @SuppressWarnings(Array("bonsai:test-only-member"))
   def body(bytes: Array[Byte], name: String, descriptor: String): Option[MethodNode] = {
     val selected = mutable.ArrayBuffer.empty[MethodNode]
     ClassReader(bytes).accept(

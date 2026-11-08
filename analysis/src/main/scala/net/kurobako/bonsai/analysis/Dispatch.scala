@@ -18,7 +18,7 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
   private val declared   = mutable.LinkedHashSet.empty[Symbol]
   private val reachable  = mutable.Map.empty[Symbol, Option[Vector[Symbol]]]
   private val subclasses = mutable.Map.empty[Symbol, mutable.ArrayBuffer[Symbol]]
-  private val dispatches = mutable.Map.empty[(Symbol, Symbol), (String, Type)]
+  private val dispatches = mutable.Map.empty[(Symbol, Symbol), (String, Type, Boolean)]
   private val abstracts  = mutable.Map.empty[Symbol, (String, String, String)]
   private val implements = mutable.Map.empty[Symbol, mutable.Set[(String, String)]]
   private val mixins     = mutable.Set.empty[Symbol]
@@ -73,7 +73,7 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
   /** Resolves the calls recorded to the keys class files name them by, once every class is declared. */
   def resolve()(using Context): Unit = {
     indexSubclasses()
-    sites ++= dispatches.toVector.flatMap { case ((caller, callee), (node, receiver)) =>
+    sites ++= dispatches.toVector.flatMap { case ((caller, callee), (node, receiver, settled)) =>
       // Test doubles never reach a call in main code at run time.
       val test    = nodes.get(node).exists(_.test)
       val classes = concreteSubclasses(callee.owner)
@@ -87,6 +87,8 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
           node,
           s"${callee.owner.name.toString.stripSuffix("$")}.${callee.name}",
           key,
+          Keys.of(caller),
+          settled,
           classes.diff(kept).map(Calls.qualified(_)).toSet,
           members.nonEmpty && members.forall(stableRead(_)),
           suppressions(caller)
@@ -152,7 +154,9 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
   }
   private def universal(owner: Symbol)(using Context): Boolean =
     owner == defn.AnyClass || owner == defn.ObjectClass || owner == defn.ProductClass || owner == defn.SerializableClass
-  def record(callee: Symbol, caller: Option[Symbol], node: Option[String], receiver: Type)(using Context): Unit =
+  def record(callee: Symbol, caller: Option[Symbol], node: Option[String], receiver: Type, settled: Boolean)(using
+      Context
+  ): Unit =
     if (
       // A val is read through a getter, which dispatches like any other method.
       callee.isTerm && !callee.is(Flags.Module) && !callee.isConstructor && callee.owner.isClass &&
@@ -161,5 +165,9 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
     ) for {
       method <- caller
       key    <- node
-    } dispatches((method, callee)) = (key, receiver)
+    } dispatches((method, callee)) = dispatches.get((method, callee)) match {
+      case Some(previous @ (_, _, false)) if settled => previous
+      case Some((_, _, before))                      => (key, receiver, settled && before)
+      case None                                      => (key, receiver, settled)
+    }
 }

@@ -69,6 +69,11 @@ class DictionariesSuite extends Graphed {
 
   private lazy val parameters = inspect(main, test)((result, _) => result.dictionaries)
 
+  private lazy val found =
+    inspect(main, test)((result, _) => Dictionaries.findings(result.dictionaries, result.graph.nodes))
+
+  private def subjects(findings: Vector[Finding]): Set[String] = findings.map(_.detail.takeWhile(_ != ' ')).toSet
+
   private def of(method: String): Vector[Dictionaries.Parameter] =
     parameters.filter(_.method.startsWith(s"fixture.$method("))
 
@@ -130,5 +135,88 @@ class DictionariesSuite extends Graphed {
       val key = world.key(Reference("fixture/Programs$", "single", single.head.descriptor))
       assertEquals(result.dictionaries.filter(_.method == key).map(_.index), Vector(0))
     }
+  }
+
+  test(
+    "a method or class whose dictionary only one instance reaches is reported with the type class and the instance"
+  ) {
+    assertFinding(
+      found,
+      "fixed-dictionary",
+      "Programs.outer takes a Monad dictionary that only Instances.vectorMonad reaches in the build",
+      "make the method concrete"
+    )(using Finding.Level.Info)
+    assertFinding(
+      found,
+      "fixed-dictionary",
+      "Service takes a Monad dictionary that only Instances.listMonad reaches",
+      "make the class concrete"
+    )(using Finding.Level.Info)
+    assertEquals(
+      subjects(found),
+      Set(
+        "Programs.outer",
+        "Programs.inner",
+        "Programs.bound",
+        "Programs.composite",
+        "Programs.viaClass",
+        "fixture.Service"
+      )
+    )
+  }
+
+  test("an instance built from a given is named with its arguments") {
+    assertFinding(
+      found,
+      "fixed-dictionary",
+      "Programs.composite",
+      "Instances.wrapped(fixture.Instances.optionMonad)"
+    )(using Finding.Level.Info)
+  }
+
+  test("several instances, an open dictionary, a summoner, an abstract method and an override are left alone") {
+    assertNoFinding(found)(finding =>
+      Seq("Programs.single", "Programs.several", "Programs.computed", "Programs.unused", "Programs.tested")
+        .exists(finding.detail.startsWith(_)) ||
+        Seq("Doer.run", "Runner.run", "Instances.wrapped").exists(finding.detail.startsWith(_))
+    )
+  }
+
+  private val shows = Seq(
+    "Shows.scala" ->
+      """package fixture
+        |
+        |trait Show[A] { def show(a: A): String }
+        |trait Console[F[_]] { def print(line: String): F[Unit] }
+        |trait Tag[T <: AnyKind]
+        |
+        |object Shows {
+        |  given Show[Int] with { def show(a: Int): String = a.toString }
+        |  given Tag[Int] with {}
+        |  given Console[Option] with { def print(line: String): Option[Unit] = Some(println(line)) }
+        |
+        |  def render[A](a: A)(using s: Show[A]): String = s.show(a)
+        |  def tagged[T <: AnyKind](using t: Tag[T]): String = t.toString
+        |  def greet[F[_]](using c: Console[F]): F[Unit] = c.print("hello")
+        |  @SuppressWarnings(Array("bonsai:fixed-dictionary"))
+        |  def quiet[F[_]](using c: Console[F]): F[Unit] = c.print("quiet")
+        |}
+        |
+        |object Main {
+        |  import Shows.given
+        |  def main(args: Array[String]): Unit = println((Shows.render(1), Shows.tagged[Int], Shows.greet[Option], Shows.quiet[Option]))
+        |}""".stripMargin
+  )
+
+  test("only a type class over a type constructor counts, and a suppression silences the finding") {
+    val options  = Report.Options(Set.empty, Set.empty, Set.empty, info = true)
+    val reported = inspect(shows) { (result, _) =>
+      Report(Dictionaries.findings(result.dictionaries, result.graph.nodes), result.graph.nodes, options)
+        .map(_.finding.detail)
+    }
+    assert(reported.exists(_.startsWith("Shows.greet takes a Console dictionary")), reported.mkString("\n"))
+    assert(!reported.exists(_.startsWith("Shows.render")), reported.mkString("\n"))
+    assert(!reported.exists(_.startsWith("Shows.tagged")), reported.mkString("\n"))
+    assert(!reported.exists(_.startsWith("Shows.quiet")), reported.mkString("\n"))
   }
 }

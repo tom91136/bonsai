@@ -41,7 +41,6 @@ private[analysis] class ClassWorld(load: String => Option[Array[Byte]]) {
     load(owner).fold(Map.empty)(ClassFiles.trace(_, owner, methods))
 
   /** The code of the method `reference` names, read afresh each time. */
-  @SuppressWarnings(Array("bonsai:test-only-member"))
   def body(reference: Reference): Option[MethodNode] =
     load(reference.owner).flatMap(ClassFiles.body(_, reference.name, reference.descriptor))
 
