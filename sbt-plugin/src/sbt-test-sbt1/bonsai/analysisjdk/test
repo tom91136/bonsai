@@ -1,0 +1,5 @@
+# the analysis runs on the JDK that bonsaiAnalysisJavaHome names, and refuses one older than 17
+-> refused/bonsaiAnalyse
+> fresh
+> accepted/bonsaiAnalyse
+> checkInvocation

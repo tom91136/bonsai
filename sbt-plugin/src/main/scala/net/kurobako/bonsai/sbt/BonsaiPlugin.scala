@@ -111,6 +111,9 @@ object BonsaiPlugin extends AutoPlugin {
       settingKey[File]("Methods recorded here as pure fail the analysis once they are not")
     val bonsaiJdk: SettingKey[File] =
       settingKey[File]("The JDK home the build targets, whose classes the analysis reads before any other")
+    val bonsaiAnalysisJavaHome: SettingKey[File] = settingKey[File](
+      "The JDK home the analysis runs on, which must be 17 or later; the JDK sbt runs on by default"
+    )
     val bonsaiEffects: SettingKey[Map[String, Set[String]]] = settingKey[Map[String, Set[String]]](
       "Kinds of effects (reads, writes, input, output, random, unknown) the methods of a package or class may have, by " +
         "its qualified name, with * for any one name; the most specific entry decides"
@@ -241,7 +244,8 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiBounded           := bonsaiConfiguration.value.bounded,
     bonsaiNesting           := bonsaiConfiguration.value.nesting,
     // The JVM would otherwise take a quarter of the host's memory, which a shared machine runs out of.
-    bonsaiAnalysisHeap := "4g"
+    bonsaiAnalysisHeap     := "4g",
+    bonsaiAnalysisJavaHome := ManifestLines.defaultJdk
   )
 
   override def projectSettings: Seq[Setting[?]] = Seq(
@@ -437,6 +441,7 @@ object BonsaiPlugin extends AutoPlugin {
 
   /** Runs the analysis with `extra` arguments derived from the baseline and purity files, returning its exit code. */
   private def analyse(extra: (File, File) => Seq[String]): Def.Initialize[Task[Int]] = Def.taskDyn {
+    val analysisJdk = AnalysisJdk.select(bonsaiAnalysisJavaHome.value, AnalysisJdk.probe).fold(Compat.fail, identity)
     // Aggregated projects bonsai does not run on, such as native toolchain builds, lack the JVM settings it reads.
     val data    = buildStructure.value.data
     val enabled = thisProjectRef.all(ScopeFilter(inAggregates(ThisProject))).value
@@ -539,7 +544,7 @@ object BonsaiPlugin extends AutoPlugin {
         ).options(Findings, baseline, purity) ++
         extra(baseline, purity)
       Fork.java(
-        ForkOptions().withRunJVMOptions(Vector(s"-Xmx${bonsaiAnalysisHeap.value}")),
+        ForkOptions().withJavaHome(analysisJdk).withRunJVMOptions(Vector(s"-Xmx${bonsaiAnalysisHeap.value}")),
         Seq(
           "-cp",
           tool.mkString(java.io.File.pathSeparator),

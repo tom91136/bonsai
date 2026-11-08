@@ -30,6 +30,8 @@ One `Containerfile` serves the workstation and CI, so a run reproduces in either
 - The image holds JDKs 8, 11, 17, 21 and 25, the sbt launcher, coursier and scala-cli. The bonsai artefacts of the
   revision under test are published into a repository mounted into each container, so the image changes only with the
   toolchain. Nothing reads or writes the host home directory, `~/.ivy2`, or `~/.m2`.
+- A project builds on `/opt/jdk/<major>`, which the manifest names as its target, while the analysis runs on JDK 25
+  through `bonsaiAnalysisJavaHome`, so Java 8 and 11 projects can be analysed.
 - CI keeps the image in the GitHub Actions cache as a compressed archive keyed by the `Containerfile` digest. The
   archive stays well under the cache's 10 GB limit, since an entry past it is not saved at all.
 - Dependency caches live in a named volume per run.

@@ -2,6 +2,7 @@
 # Runs inside the community image: clones one project, injects bonsai, runs sbt and writes the outputs to /out.
 # usage: build.sh <sbt command>...
 # environment: PROJECT_URL PROJECT_REF JAVA_MAJOR TIMEOUT_SECONDS BONSAI_VERSION
+# sbt runs on JAVA_MAJOR, which the build targets; the analysis runs on JDK 25.
 set -uo pipefail
 
 out=/out
@@ -14,10 +15,12 @@ version=${BONSAI_VERSION:?}
 
 export JAVA_HOME=/opt/jdk/$major
 export PATH=$JAVA_HOME/bin:$PATH
+analysis_jdk=/opt/jdk/25
 
 inject() {
   mkdir -p project
   echo "addSbtPlugin(\"net.kurobako\" % \"sbt-bonsai\" % \"$version\")" >project/bonsai-community.sbt
+  echo "ThisBuild / bonsaiAnalysisJavaHome := file(\"$analysis_jdk\")" >bonsai-community.sbt
 }
 
 now() { date +%s.%N; }
