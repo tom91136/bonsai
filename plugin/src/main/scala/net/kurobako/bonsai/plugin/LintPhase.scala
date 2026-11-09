@@ -162,10 +162,19 @@ private class LintPhase(
   }
 
   private val loopInvoked = mutable.Set.empty[Symbol]
+  private val mirrors     = java.util.IdentityHashMap[tpd.Tree, tpd.Tree]()
 
   override def prepareForUnit(tree: tpd.Tree)(using Context): Context = {
     loopInvoked.clear()
     loopInvoked ++= LintPhase.looped(tree)
+    mirrors.clear()
+    tree.foreachSubTree {
+      case tpd.Apply(operator @ tpd.Select(left: tpd.Apply, _), List(right: tpd.Apply))
+          if (operator.symbol == defn.Boolean_|| || operator.symbol == defn.Boolean_&&) && mirror(left, right) =>
+        mirrors.put(left, right): Unit
+        mirrors.put(right, left): Unit
+      case _ => ()
+    }
     ctx
   }
 
@@ -385,6 +394,7 @@ private class LintPhase(
     val parameters = Trees.parameters(tree)
     val contextual = parameters.exists(_.isOneOf(Flags.Given | Flags.Implicit))
     val repeated   = parameters.exists(_.info.isRepeatedParam)
+    val symmetric  = mirrors.containsKey(tree)
     val written    = tree.args.zip(parameters).takeWhile((argument, _) =>
       !argument.isInstanceOf[tpd.NamedArg] && argument.span.exists && !argument.span.isSynthetic &&
         !argument.symbol.name.is(DefaultGetterName) && !LintPhase.labelled(argument)
@@ -421,7 +431,7 @@ private class LintPhase(
       val byParameter = written.groupBy((_, parameter) => parameter.name)
       written.foreach { (argument, parameter) =>
         called(argument).flatMap(byParameter.get).getOrElse(Nil).find((crossed, other) =>
-          other != parameter && named(argument, other) && named(crossed, parameter) &&
+          !symmetric && other != parameter && named(argument, other) && named(crossed, parameter) &&
             argument.tpe.widen <:< other.info.widen && !deliberate(argument, crossed)
         ).foreach((_, other) =>
           positionals(Check.SwappedArguments, s"${other.name} is passed to ${parameter.name}", argument.srcPos)
@@ -466,6 +476,14 @@ private class LintPhase(
   private def deliberate(argument: tpd.Tree, crossed: tpd.Tree)(using Context): Boolean =
     List(argument, crossed).forall(_.symbol.is(Flags.Param)) &&
       argument.symbol.owner == crossed.symbol.owner && argument.symbol.owner == ctx.owner.enclosingMethod
+
+  // A boolean testing both orders of a pair, as `same(a, b) || same(b, a)`, reorders on purpose.
+  private def mirror(left: tpd.Apply, right: tpd.Apply)(using Context): Boolean = {
+    val first  = left.args.map(_.symbol)
+    val second = right.args.map(_.symbol)
+    left.fun.symbol == right.fun.symbol && first != second && first.size == second.size &&
+    first.diff(second).isEmpty && List(left, right).forall(_.args.forall(_.isInstanceOf[tpd.Ident]))
+  }
 
   private def standard(symbol: Symbol)(using Context): Boolean =
     Standard.exists(Calls.qualified(symbol).startsWith(_))

@@ -1033,6 +1033,25 @@ class LintSuite extends FunSuite {
     assertEquals(found.count(_.contains("is passed to")), 2, found.mkString("\n"))
   }
 
+  test("a crossed call mirrored in the other operand of a boolean is not reported, a lone one is") {
+    val found = warnings(
+      """object Lints {
+        |  def same(t: String, u: String): Boolean = t == u
+        |  def symmetric(pair: (String, String)): Boolean = pair match {
+        |    case (t, u) if same(t, u) || same(u, t) => true
+        |    case _                                  => false
+        |  }
+        |  def lone(pair: (String, String)): Boolean = pair match {
+        |    case (t, u) if same(u, t) => true
+        |    case _                    => false
+        |  }
+        |}""".stripMargin
+    )
+    val swapped = lines(found, "swapped-arguments")
+    assertEquals(swapped.size, 2, found.mkString("\n"))
+    assert(swapped.forall(_.contains("is passed to")), swapped)
+  }
+
   test("type tests on open hierarchies") {
     val found = warnings(
       """object Lints {
