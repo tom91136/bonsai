@@ -363,11 +363,17 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiScalafixConfig := Compat.uncached(scalafixConfiguration(
       target.value / "bonsai" / "scalafix.conf",
       (ThisBuild / baseDirectory).value / ".scalafix.conf",
-      Rules.filter(rule => !OptIn(rule) || bonsaiEnabledRules.value(rule)).filterNot(bonsaiDisabled.value)
-        .filter(supported(_, scalaVersion.value)),
+      if (bonsaiEnabled.value)
+        Rules.filter(rule => !OptIn(rule) || bonsaiEnabledRules.value(rule)).filterNot(bonsaiDisabled.value)
+          .filter(supported(_, scalaVersion.value))
+      else Seq("DisableSyntax"),
       if (bonsaiMode.value != BonsaiMode.Strict) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiWarnings.value),
       (if (bonsaiDisabled.value("DisableSyntax")) Nil else Bans).partition(!bonsaiDisabled.value(_))
     )),
+    Compile / scalafix / unmanagedSources :=
+      (if (bonsaiEnabled.value) (Compile / scalafix / unmanagedSources).value else Nil),
+    Test / scalafix / unmanagedSources :=
+      (if (bonsaiEnabled.value) (Test / scalafix / unmanagedSources).value else Nil),
     Compile / scalafix := (Compile / scalafix).dependsOn(bonsaiScalafixConfig).evaluated,
     Test / scalafix    := (Test / scalafix).dependsOn(bonsaiScalafixConfig).evaluated,
     scalafixAll        := scalafixAll.dependsOn(bonsaiScalafixConfig).evaluated,

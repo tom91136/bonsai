@@ -32,6 +32,9 @@ public class ScalafixMojo extends BonsaiMojo {
   public void execute() throws MojoExecutionException {
     Tools tools = tools();
     Configuration configuration = configuration(tools);
+    if (configuration.excluded().contains(project.getArtifactId())) {
+      return;
+    }
     File plugin = compilerPlugin(tools);
     File rules = tools.rulesJar(version);
     Versions.ScalafixVersions scalafix = scalafix(rules);

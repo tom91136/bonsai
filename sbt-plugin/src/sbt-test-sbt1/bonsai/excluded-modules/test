@@ -4,6 +4,8 @@ $ copy-file changes/excluded.conf .bonsai.conf
 > bonsaiAnalyse
 -> broken/compile
 > checkExcluded
+# scalafix leaves a listed module alone
+> scalafixAll --check
 # a listed module the build does not have fails the load
 $ copy-file changes/stranger.conf .bonsai.conf
 -> reload
