@@ -671,6 +671,7 @@ object Purity {
     private val pending    = mutable.Queue.empty[(Symbol, Int)]
     private val explored   = mutable.Set.empty[Symbol]
     private val unread     = mutable.LinkedHashSet.empty[Symbol]
+    private val lost       = mutable.LinkedHashMap.empty[String, Throwable]
     private val facts      = mutable.Map.empty[Symbol, Facts]
     private val fresh      = mutable.Set.empty[Symbol]
     private val transforms = mutable.ArrayBuffer.empty[TransformSite]
@@ -738,11 +739,25 @@ object Purity {
         s"could not read library bodies of ${symbols.map(enclosing(_)).distinct.sorted.mkString(", ")} in $origin"
       }
 
+    /** The methods that could not be inferred, with why, each of which then runs something unknown. */
+    def unanalysed: Vector[(String, Throwable)] = lost.toVector
+
+    private def unknown(method: Symbol, error: Throwable): Effect = {
+      lost.getOrElseUpdate(s"${qualified(method)} could not be inferred", error): Unit
+      plain(Kind.Unknown, "could not be inferred")
+    }
+
     /** Infers every summary, settling recursion at the least fixpoint, from which effects only grow. */
     def run(): Unit = {
-      bodies.foreach((method, definition) => facts(method) = Walker(method, method).facts(definition.rhs))
+      def walked(method: Symbol)(walk: => Facts): Facts =
+        try walk
+        catch { case NonFatal(error) => Facts(Vector(unknown(method, error)), Set.empty, Vector.empty) }
+      bodies.foreach((method, definition) =>
+        facts(method) = walked(method)(Walker(method, method).facts(definition.rhs))
+      )
       templates.foreach((cls, template) =>
-        facts(cls.primaryConstructor) = Walker(cls.primaryConstructor, cls.primaryConstructor).facts(template)
+        facts(cls.primaryConstructor) =
+          walked(cls.primaryConstructor)(Walker(cls.primaryConstructor, cls.primaryConstructor).facts(template))
       )
       // Library bodies the build reaches are read in turn, and may reach further ones.
       while (pending.nonEmpty) {
@@ -1133,8 +1148,10 @@ object Purity {
       // unknown.
       if (!scratch.resolving.add(key)) Summary(Set(plain(Kind.Unknown, "runs a function that runs itself")), Set.empty)
       else
-        try summarise()
-        finally scratch.resolving -= key
+        try
+          try summarise()
+          finally scratch.resolving -= key
+        catch { case NonFatal(error) => Summary(Set(unknown(frame.root, error)), Set.empty) }
     }
 
     private def ran(resolution: Resolution, arguments: Vector[Argument], frame: Frame): Summary = resolution match {

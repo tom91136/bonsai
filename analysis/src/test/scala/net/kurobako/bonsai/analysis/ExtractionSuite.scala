@@ -56,7 +56,7 @@ class ExtractionSuite extends AnalysisSuite {
       "Implementation-Version"   -> version
     ).foreach(manifest.getMainAttributes.putValue(_, _))
     Using.resource(JarOutputStream(Files.newOutputStream(jar), manifest)) { out =>
-      Using.resource(Files.walk(classes))(_.toList.asScala.filter(Files.isRegularFile(_)).foreach { entry =>
+      Using.resource(Files.walk(classes))(_.toList.asScala.filter(Files.isRegularFile(_)).sorted.foreach { entry =>
         out.putNextEntry(JarEntry(classes.relativize(entry).toString))
         out.write(Files.readAllBytes(entry))
         out.closeEntry()
@@ -258,6 +258,49 @@ class ExtractionSuite extends AnalysisSuite {
       )
       assertEquals(result.problems, Vector.empty)
       assert(result.notes.exists(_.contains("Use.tasty could not be analysed: dotty.tools.dotc.core.MissingType")))
+    }
+  }
+
+  test("two versions of a package object leave the affected method a problem, not a failed run") {
+    Scratch.using("bonsai-") { directory =>
+      val old = compile(
+        directory.resolve("old"),
+        Seq(
+          "Lib.scala" ->
+            """package lib
+              |trait Base[A]
+              |trait Sub[A] extends Alias[A]""".stripMargin,
+          "package.scala" -> "package object lib { type Alias[A] = Base[A] }"
+        ),
+        Vector.empty
+      )
+      val newer = compile(
+        directory.resolve("new"),
+        Seq("package.scala" -> "package object lib { val answer: Int = 1 }"),
+        Vector.empty
+      )
+      val wrapper = compile(
+        directory.resolve("wrapper"),
+        Seq("Thing.scala" ->
+          "package wrapper\nclass Thing extends lib.Sub[Int]\nobject Maker { val thing: Thing = new Thing }"),
+        Vector(old)
+      )
+      val sources = Seq(
+        "Use.scala" ->
+          """object Use {
+            |  def run(): Unit = { identity(wrapper.Maker.thing); () }
+            |}""".stripMargin,
+        "Fine.scala" -> "object Fine { def run(xs: List[Int]): Unit = { xs.map(_ + 1); () } }"
+      )
+      val output   = Output("m", Output.Scope.Main, compile(directory.resolve("use"), sources, Vector(old, wrapper)))
+      val manifest =
+        Manifest(Vector(output), Map("m" -> (wrapper +: newer +: old +: classpath)), Set.empty, jdk = targetJdk)
+      val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      assert(result.problems.exists(_.contains("Use.run could not be inferred")), result.problems.toString)
+      assertEquals(
+        Purity.findings(result.purity, result.graph.nodes).filter(_.rule == Finding.Rule.PureDiscard).map(_.node.name),
+        Vector("Fine")
+      )
     }
   }
 

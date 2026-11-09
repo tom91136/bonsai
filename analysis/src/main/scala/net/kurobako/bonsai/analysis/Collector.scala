@@ -240,6 +240,7 @@ private[analysis] class Collector(
       )
     )
     purityModel = purity(effects)
+    effects.unanalysed.foreach(failed(_, _))
     structure.finish()
     comparing.finish()
     units
