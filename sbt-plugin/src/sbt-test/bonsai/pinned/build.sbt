@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "3.9.0"
-ThisBuild / bonsaiMode   := BonsaiMode.Dev
+ThisBuild / bonsaiMode   := BonsaiMode.Relaxed
 
 // as the documentation tools of a build pin the Scala libraries to the version it compiles with
 ThisBuild / dependencyOverrides ++= Seq(

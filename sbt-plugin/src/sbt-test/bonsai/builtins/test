@@ -24,11 +24,11 @@ $ copy-file changes/Inferred.scala src/main/scala/demo/Inferred.scala
 > set ThisBuild / bonsaiDisabled += "ExplicitResultTypes"
 > scalafixAll --check
 > unlisted ExplicitResultTypes
-# in Dev the findings only warn
+# in relaxed mode the findings only warn
 > set ThisBuild / bonsaiDisabled := Set("PublicTypes")
-> set ThisBuild / bonsaiMode := BonsaiMode.Dev
+> set ThisBuild / bonsaiMode := BonsaiMode.Relaxed
 > bonsaiScalafixCheck
-> set ThisBuild / bonsaiMode := BonsaiMode.CI
+> set ThisBuild / bonsaiMode := BonsaiMode.Strict
 $ delete src/main/scala/demo/Inferred.scala
 # a build that asks the compiler for unused warnings itself keeps its own options
 > set ThisBuild / scalacOptions += "-Wunused:imports"

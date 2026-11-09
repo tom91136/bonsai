@@ -31,21 +31,21 @@ object Finding {
   object Rule {
     private val declared = mutable.ArrayBuffer.empty[Rule]
 
-    private def rule(id: String, strict: Boolean = false): Rule = {
-      val found = Rule(id, strict, declared.size)
+    private def rule(id: String, fatal: Boolean = false): Rule = {
+      val found = Rule(id, fatal, declared.size)
       declared += found
       found
     }
 
-    val Unused: Rule                  = rule("unused", strict = true)
-    val TestOnly: Rule                = rule("test-only", strict = true)
-    val UnusedMember: Rule            = rule("unused-member", strict = true)
-    val UnreadField: Rule             = rule("unread-field", strict = true)
-    val TestOnlyMember: Rule          = rule("test-only-member", strict = true)
-    val DuplicateCode: Rule           = rule("duplicate-code", strict = true)
+    val Unused: Rule                  = rule("unused", fatal = true)
+    val TestOnly: Rule                = rule("test-only", fatal = true)
+    val UnusedMember: Rule            = rule("unused-member", fatal = true)
+    val UnreadField: Rule             = rule("unread-field", fatal = true)
+    val TestOnlyMember: Rule          = rule("test-only-member", fatal = true)
+    val DuplicateCode: Rule           = rule("duplicate-code", fatal = true)
     val NearDuplicateCode: Rule       = rule("near-duplicate-code")
     val InlinedHelper: Rule           = rule("inlined-helper")
-    val InvariantViolation: Rule      = rule("invariant-violation", strict = true)
+    val InvariantViolation: Rule      = rule("invariant-violation", fatal = true)
     val InvariantSum: Rule            = rule("invariant-sum")
     val InvariantRedundant: Rule      = rule("invariant-redundant")
     val InvariantConstant: Rule       = rule("invariant-constant")
@@ -66,31 +66,31 @@ object Finding {
     val SingleImplementation: Rule    = rule("single-implementation")
     val FixedTypeParameter: Rule      = rule("fixed-type-parameter")
     val FixedDictionary: Rule         = rule("fixed-dictionary")
-    val RedundantDefault: Rule        = rule("redundant-default", strict = true)
+    val RedundantDefault: Rule        = rule("redundant-default", fatal = true)
     val UnusedDefault: Rule           = rule("unused-default")
     val FixedDefault: Rule            = rule("fixed-default")
     val FoldedNone: Rule              = rule("folded-none")
     val RepeatedPredicate: Rule       = rule("repeated-predicate")
     val ComplementCount: Rule         = rule("complement-count")
     val WeakerAccess: Rule            = rule("weaker-access")
-    val VarCouldBeVal: Rule           = rule("var-could-be-val", strict = true)
-    val UnstableEquality: Rule        = rule("unstable-equality", strict = true)
+    val VarCouldBeVal: Rule           = rule("var-could-be-val", fatal = true)
+    val UnstableEquality: Rule        = rule("unstable-equality", fatal = true)
     val RegistryDrift: Rule           = rule("registry-drift")
     val AnonymousGiven: Rule          = rule("anonymous-given")
     val CommonFactor: Rule            = rule("common-factor")
     val DuplicateShape: Rule          = rule("duplicate-shape")
     val IdenticalCases: Rule          = rule("identical-cases")
     val EnumCandidate: Rule           = rule("enum-candidate")
-    val HugeMethod: Rule              = rule("huge-method", strict = true)
-    val MethodLimit: Rule             = rule("method-limit", strict = true)
+    val HugeMethod: Rule              = rule("huge-method", fatal = true)
+    val MethodLimit: Rule             = rule("method-limit", fatal = true)
     val Complexity: Rule              = rule("complexity")
     val SpaceComplexity: Rule         = rule("space-complexity")
     val UnusedBound: Rule             = rule("unused-bound")
-    val IntermediateCollections: Rule = rule("intermediate-collections", strict = true)
+    val IntermediateCollections: Rule = rule("intermediate-collections", fatal = true)
     val MegamorphicCall: Rule         = rule("megamorphic-call")
     val PollutedCall: Rule            = rule("polluted-call")
-    val PurityRegression: Rule        = rule("purity-regression", strict = true)
-    val EffectPolicy: Rule            = rule("effect-policy", strict = true)
+    val PurityRegression: Rule        = rule("purity-regression", fatal = true)
+    val EffectPolicy: Rule            = rule("effect-policy", fatal = true)
     val ImpureContract: Rule          = rule("impure-contract")
     val SharedWrite: Rule             = rule("shared-write")
     val PureDiscard: Rule             = rule("pure-discard")
@@ -128,20 +128,20 @@ object Finding {
     // The lints the javac plugin finds in the Java code of a build, which the analysis reports as findings of their own,
     // and the laws of the chains of calls it finds there.
     LintId.values.foreach(lint => rule(lint.id))
-    LintId.chains.foreach(rule(_, strict = true))
+    LintId.chains.foreach(rule(_, fatal = true))
 
     /** Every rule, in reporting priority. */
     val values: Vector[Rule] = declared.toVector
 
     /** The rule of a finding the compiler plugin recorded, which ranks after the rules of the analysis. */
-    def compiled(id: String): Rule = Rule(id, strict = false, values.size, recorded = true)
+    def compiled(id: String): Rule = Rule(id, fatal = false, values.size, recorded = true)
   }
 
   /** A rule of the analysis. Rules are in reporting priority: evidence from references and constructions first,
-    * structural observations last. Warnings of `strict` rules fail the ci mode. A `recorded` rule is a check of the
+    * structural observations last. Warnings of `fatal` rules fail the strict mode. A `recorded` rule is a check of the
     * compiler plugin, whose findings arrive judged.
     */
-  class Rule private (val id: String, val strict: Boolean, val ordinal: Int, val recorded: Boolean = false) {
+  class Rule private (val id: String, val fatal: Boolean, val ordinal: Int, val recorded: Boolean = false) {
     def suppressedBy(ids: Set[String]): Boolean =
       ids("*") || ids(id)
 

@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>net.kurobako.bonsai.it</groupId>
-    <artifactId>scalafix-dev</artifactId>
+    <artifactId>scalafix-relaxed</artifactId>
     <version>1.0</version>
     <packaging>jar</packaging>
 

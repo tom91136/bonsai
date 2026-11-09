@@ -1,6 +1,6 @@
-# unused members are reported while developing and fail in CI
+# unused members are reported in relaxed mode and fail in strict mode
 > bonsaiAnalyse
-> set ThisBuild / bonsaiMode := BonsaiMode.CI
+> set ThisBuild / bonsaiMode := BonsaiMode.Strict
 -> bonsaiAnalyse
 # a baseline holds existing findings without failing
 > bonsaiBaselineWrite

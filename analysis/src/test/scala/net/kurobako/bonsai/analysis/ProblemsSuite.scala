@@ -63,38 +63,38 @@ class ProblemsSuite extends AnalysisSuite {
 
   test("a build with nothing wrong passes in both modes") {
     val f = Fixture(_ => Nil)
-    assertEquals(f.run("dev").status, 0)
-    assertEquals(f.run("ci", "--parallelism", "3").status, 0)
+    assertEquals(f.run("relaxed").status, 0)
+    assertEquals(f.run("strict", "--parallelism", "3").status, 0)
   }
 
-  test("the ci mode fails on a Java model that cannot be read, and the dev mode prints it and passes") {
-    val f   = unreadableModel
-    val dev = f.run("dev")
-    assertEquals(dev.status, 0)
-    assert(dev.problems.exists(_.contains("missing.tsv could not be read")), dev.err)
-    val ci = f.run("ci")
-    assertEquals(ci.status, 1)
-    assert(ci.problems.exists(_.contains("missing.tsv could not be read")), ci.err)
+  test("the strict mode fails on a Java model that cannot be read, and the relaxed mode prints it and passes") {
+    val f       = unreadableModel
+    val relaxed = f.run("relaxed")
+    assertEquals(relaxed.status, 0)
+    assert(relaxed.problems.exists(_.contains("missing.tsv could not be read")), relaxed.err)
+    val strict = f.run("strict")
+    assertEquals(strict.status, 1)
+    assert(strict.problems.exists(_.contains("missing.tsv could not be read")), strict.err)
   }
 
-  test("the ci mode fails on a class file of the build that cannot be read") {
+  test("the strict mode fails on a class file of the build that cannot be read") {
     val f = brokenClass
-    assertEquals(f.run("dev").status, 0)
-    val ci = f.run("ci")
-    assertEquals(ci.status, 1)
-    assert(ci.problems.exists(_.startsWith("problem: class file Broken could not be read")), ci.err)
+    assertEquals(f.run("relaxed").status, 0)
+    val strict = f.run("strict")
+    assertEquals(strict.status, 1)
+    assert(strict.problems.exists(_.startsWith("problem: class file Broken could not be read")), strict.err)
   }
 
-  test("a report reused for the ci mode still fails on the problems it held") {
+  test("a report reused for the strict mode still fails on the problems it held") {
     val f     = unreadableModel
-    val first = f.run("ci")
-    val again = f.run("ci")
+    val first = f.run("strict")
+    val again = f.run("strict")
     assert(again.err.linesIterator.contains(Reuse.Marker), again.err)
     assertEquals((first.status, again.status), (1, 1))
     assertEquals(again.problems, first.problems)
   }
 
-  test("notes do not fail the ci mode, and records that hold no problem are not problems") {
+  test("notes do not fail the strict mode, and records that hold no problem are not problems") {
     assert(Reuse.Record(Vector("note: could not read library bodies of a.B in c.jar"), Vector.empty).problems.isEmpty)
     assert(Reuse.Record(Vector("purity: 3 pure"), Vector.empty).problems.isEmpty)
     assertEquals(Reuse.Record(Vector("note: x", "problem: y"), Vector.empty).problems, Vector("problem: y"))

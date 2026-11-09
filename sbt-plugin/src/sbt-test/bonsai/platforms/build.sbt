@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion   := "3.9.0"
-ThisBuild / bonsaiMode := BonsaiMode.CI
+ThisBuild / bonsaiMode := BonsaiMode.Strict
 
 // A JVM project and its Native twin compile the same sources, and each a platform directory of its own.
 lazy val app = project.settings(

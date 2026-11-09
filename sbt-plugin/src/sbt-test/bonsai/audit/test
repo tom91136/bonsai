@@ -4,7 +4,7 @@
 -> bonsaiAnalyse
 > reported error:array-equality error:unused-member
 
-# a check kept a warning does not fail, as in CI, while the analysis still does
+# a check kept a warning does not fail, as in strict mode, while the analysis still does
 > set bonsaiWarnings := Set("array-equality")
 -> bonsaiAnalyse
 > reported warning:array-equality error:unused-member
@@ -34,10 +34,10 @@ $ copy-file changes/Tools.scala src/main/scala/demo/Tools.scala
 -> bonsaiAnalyse
 > reported error:array-equality error:unused-member
 
-# the other modes are as they were, CI failing the compile and Dev passing it
-> set ThisBuild / bonsaiMode := BonsaiMode.CI
+# the other modes are as they were, strict failing the compile and relaxed passing it
+> set ThisBuild / bonsaiMode := BonsaiMode.Strict
 -> compile
-> set ThisBuild / bonsaiMode := BonsaiMode.Dev
+> set ThisBuild / bonsaiMode := BonsaiMode.Relaxed
 > compile
 > set ThisBuild / bonsaiMode := BonsaiMode.Audit
 > compile

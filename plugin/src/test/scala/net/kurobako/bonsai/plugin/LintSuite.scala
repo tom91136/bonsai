@@ -1262,7 +1262,7 @@ class LintSuite extends FunSuite {
     assertEquals(compile("Lints.scala", "object Lints", "option-fold=map-get-or-else"), (Nil, Nil))
   }
 
-  test("the ci mode makes the strict checks errors, unless a check is kept a warning") {
+  test("the strict mode makes the fatal checks errors, unless a check is kept a warning") {
     val source = """object Lints {
                    |  private trait Shape
                    |  def check(left: Array[Int], right: Array[Int]) = left == right
@@ -1272,20 +1272,20 @@ class LintSuite extends FunSuite {
       case (errors, warnings) =>
         (errors.map(_.takeWhile(_ != ' ')).sorted, warnings.map(_.takeWhile(_ != ' ')).sorted)
     }
-    assertEquals(levels("mode=ci"), (List("arrays"), List("type")))
-    assertEquals(levels("mode=dev"), (Nil, List("arrays", "type")))
+    assertEquals(levels("mode=strict"), (List("arrays"), List("type")))
+    assertEquals(levels("mode=relaxed"), (Nil, List("arrays", "type")))
     assertEquals(levels(), (Nil, List("arrays", "type")))
-    assertEquals(levels("mode=ci", "warn=array-equality"), (Nil, List("arrays", "type")))
+    assertEquals(levels("mode=strict", "warn=array-equality"), (Nil, List("arrays", "type")))
     assertEquals(levels("error=*", "warn=open-type-test"), (List("arrays"), List("type")))
     assertEquals(
       compile("Lints.scala", "object Lints", "mode=release")._1,
-      List("bonsai option mode must be one of dev, ci, audit, not release")
+      List("bonsai option mode must be one of relaxed, strict, audit, not release")
     )
   }
 
-  test("the strict checks are those whose findings have been real wherever they fired, and judgement calls warn") {
+  test("the fatal checks are those whose findings have been real wherever they fired, and judgement calls warn") {
     assertEquals(
-      Check.all.filter(_.strict).map(_.id).toSet,
+      Check.all.filter(_.fatal).map(_.id).toSet,
       Set(
         "acyclic",
         "array-equality",

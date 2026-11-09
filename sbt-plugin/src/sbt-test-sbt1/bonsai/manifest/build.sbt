@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "3.10.0"
-ThisBuild / bonsaiMode   := BonsaiMode.Dev
+ThisBuild / bonsaiMode   := BonsaiMode.Relaxed
 
 lazy val checkManifest = taskKey[Unit]("Check the manifest has the shape every sbt line writes")
 

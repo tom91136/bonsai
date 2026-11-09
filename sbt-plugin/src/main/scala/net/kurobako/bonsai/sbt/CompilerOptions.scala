@@ -21,12 +21,12 @@ private[sbt] object CompilerOptions {
     if (disabled("RemoveUnused") || !ScalaVersions.removeUnused(scala) || own.exists(_.matches(Unused))) Nil
     else UnusedOptions.filterNot(own.contains)
 
-  /** The options that route the findings of the compiler plugin, whatever the build does with compiler warnings. In CI
-    * every finding fails except those of the checks in `warnings`. In Dev none does, so a build that fails on warnings
-    * gets them all demoted.
+  /** The options that route the findings of the compiler plugin, whatever the build does with compiler warnings. In the
+    * strict mode every finding fails except those of the checks in `warnings`. Outside it none does, so a build that
+    * fails on warnings gets them all demoted.
     */
-  def routed(own: Seq[String], ci: Boolean, warnings: Set[String]): Seq[String] =
-    if (ci) tagged("[a-z0-9-]+", "e") +: (warnings & BonsaiArtifacts.checks).toSeq.sorted.map(tagged(_, "i"))
+  def routed(own: Seq[String], strict: Boolean, warnings: Set[String]): Seq[String] =
+    if (strict) tagged("[a-z0-9-]+", "e") +: (warnings & BonsaiArtifacts.checks).toSeq.sorted.map(tagged(_, "i"))
     else if (fatal(own)) Seq(tagged("[a-z0-9-]+", "i"))
     else Nil
 

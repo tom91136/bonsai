@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "3.10.0"
-ThisBuild / bonsaiMode   := BonsaiMode.CI
+ThisBuild / bonsaiMode   := BonsaiMode.Strict
 
 def generate(directory: File, name: String, body: String = "def spare: Int = 2"): Seq[File] = {
   val file = directory / "demo" / s"$name.scala"

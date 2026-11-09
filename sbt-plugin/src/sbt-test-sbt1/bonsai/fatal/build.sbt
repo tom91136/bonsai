@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "3.10.0"
-ThisBuild / bonsaiMode   := BonsaiMode.Dev
+ThisBuild / bonsaiMode   := BonsaiMode.Relaxed
 
 lazy val flagged   = inputKey[Unit]("Check the compiler options hold each argument")
 lazy val testing   = inputKey[Unit]("Check the compiler options of Test hold each argument")

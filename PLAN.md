@@ -53,7 +53,7 @@ Criteria by step:
 - `ReceiverFlow` tells the receivers of a virtual call apart by the method that passes them in. It follows the receiver in the bytecode of its method to where it is made (`new`, a `MODULE$` load, a lambda) or to the parameter it is, and from there to the matching argument of each caller. A field, a call result or an array element is open, as is a value a lambda captures. It reads only the methods on the way back and runs on demand, so the call graph stays context-insensitive and costs nothing more.
 - `Dictionaries` records the given arguments of each call in production code, which TASTy writes out as trees, and follows them through the parameters that forward them. `Extraction.Result.dictionaries` lists, per method key and parameter, the instances that reach each `using` parameter and whether any caller passes a value no instance names. A method nothing in production code calls is open.
 - `Megamorphic` reports virtual calls inside loops of a build type with more than two receivers in the call graph, lambdas and library classes included. It also reports `polluted-call`, and `Dictionaries` reports `fixed-dictionary`, both at information level.
-- In `--mode ci`, a problem fails the run: an unreadable TASTy header, Java model or build class file, or a unit the analysis could not read. Notes, such as classes the classpath lacks, never do.
+- In `--mode strict`, a problem fails the run: an unreadable TASTy header, Java model or build class file, or a unit the analysis could not read. Notes, such as classes the classpath lacks, never do.
 
 ### Checking a change
 

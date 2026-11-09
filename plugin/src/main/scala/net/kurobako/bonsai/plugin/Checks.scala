@@ -96,7 +96,7 @@ private class Checks(
     }
   }
 
-  // what the ci mode makes of the finding: it fails on all but information and the checks kept as warnings
+  // what the strict mode makes of the finding: it fails on all but information and the checks kept as warnings
   private def level(check: Check, failing: Boolean, informative: Boolean): Recorded.Level =
     if (informative) Recorded.Level.Info
     else if (failing || !lenient(check)) Recorded.Level.Error

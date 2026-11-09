@@ -106,7 +106,7 @@ find "$src" -path '*/target/*' -path '*/bonsai/manifest.tsv' -print0 |
     [[ -n ${tool_cp:-} ]] || tool_cp=$(cs fetch --classpath -r ivy2Local "net.kurobako:bonsai-analysis_3:$version" 2>"$out/info/cs.err")
     [[ -n $tool_cp ]] || continue
     started=$(now)
-    "$analysis_jdk/bin/java" -Xss1g -Xmx6g -cp "$tool_cp" net.kurobako.bonsai.analysis.CLI --manifest "$file" --mode dev --info \
+    "$analysis_jdk/bin/java" -Xss1g -Xmx6g -cp "$tool_cp" net.kurobako.bonsai.analysis.CLI --manifest "$file" --mode relaxed --info \
       >"$out/info/$name.out" 2>"$out/info/$name.err" &
     pid=$!
     peak=$(sample_peak "$pid")

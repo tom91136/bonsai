@@ -9,7 +9,8 @@ import scala.util.Using
 
 object CLI {
   private val usage =
-    "usage: bonsai-analysis --manifest <file> [--generated <glob>]... [--info] [--purity] [--mode dev|ci|audit] " +
+    "usage: bonsai-analysis --manifest <file> [--generated <glob>]... [--info] [--purity] " +
+      "[--mode relaxed|strict|audit] " +
       "[--disable <rule>]... [--generated-disable <rule>|*]... [--error <rule>]... [--warn <rule>]... " +
       "[--baseline <file>] [--write-baseline <file>] " +
       "[--purity-lock <file>] [--write-purity-lock <file>] [--effects <prefix>=<kind>,...]... [--concurrent <method>]... " +
@@ -18,15 +19,15 @@ object CLI {
       "[--nesting-depth <levels>] [--nesting-damping <users>] " +
       "[--nesting] [--nesting-size <lines>] [--parallelism <threads>]"
 
-  /** The ci mode fails on the warnings of strict rules. The audit mode judges as the ci mode does, and adds the
+  /** The strict mode fails on the warnings of fatal rules. The audit mode judges as the strict mode does, and adds the
     * findings the compiler plugin recorded, which the compiler did not fail on.
     */
   enum Mode(val id: String) {
-    case Dev   extends Mode("dev")
-    case CI    extends Mode("ci")
-    case Audit extends Mode("audit")
+    case Relaxed extends Mode("relaxed")
+    case Strict  extends Mode("strict")
+    case Audit   extends Mode("audit")
 
-    def strict: Boolean = this != Dev
+    def strict: Boolean = this != Relaxed
   }
 
   // The only constructions are the defaults and a test setting every field, which reads as the flags moving together.
@@ -42,7 +43,7 @@ object CLI {
       disabled: Set[Report.Disable] = Set.empty,
       errors: Set[String] = Set.empty,
       warnings: Set[String] = Set.empty,
-      mode: Mode = Mode.Dev,
+      mode: Mode = Mode.Relaxed,
       baseline: Option[Path] = None,
       record: Option[Path] = None,
       purity: Boolean = false,
@@ -58,13 +59,13 @@ object CLI {
       parallelism: Int = 1
   ) {
 
-    /** The rules whose warnings fail: those named, every rule with `*`, and the strict rules in the ci mode, except
+    /** The rules whose warnings fail: those named, every rule with `*`, and the fatal rules in the strict mode, except
       * those kept as warnings.
       */
     def failing: Set[String] = {
-      val strict = if (mode.strict) Finding.Rule.values.view.collect { case rule if rule.strict => rule.id }.toSet
+      val fatal = if (mode.strict) Finding.Rule.values.view.collect { case rule if rule.fatal => rule.id }.toSet
       else Set.empty
-      (if (errors("*")) rules else errors) ++ strict -- warnings
+      (if (errors("*")) rules else errors) ++ fatal -- warnings
     }
   }
 

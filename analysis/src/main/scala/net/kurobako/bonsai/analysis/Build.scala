@@ -9,7 +9,8 @@ import java.security.MessageDigest
 object Build {
   private val Fatal = Set("-Werror", "-Xfatal-warnings")
 
-  /** Modules compiled without fatal warnings, which the ci mode reports. The findings of bonsai fail it either way. */
+  /** Modules compiled without fatal warnings, which the strict mode reports. The findings of bonsai fail it either way.
+    */
   def fatal(manifest: Manifest): Vector[Finding] = {
     val compiled =
       manifest.sources.view.collect { case source if source.scope == Output.Scope.Main => source.module }.toSet

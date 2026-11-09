@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "3.10.0"
-ThisBuild / bonsaiMode   := BonsaiMode.Dev
+ThisBuild / bonsaiMode   := BonsaiMode.Relaxed
 
 def declared(project: Project) = project.settings(
   licenses += ("Apache-2.0", url("https://www.apache.org/licenses/LICENSE-2.0"))

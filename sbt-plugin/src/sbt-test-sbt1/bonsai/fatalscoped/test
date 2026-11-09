@@ -1,3 +1,3 @@
-# findings only warn in Dev, whichever configuration makes warnings fatal
+# findings only warn in relaxed mode, whichever configuration makes warnings fatal
 > compile
 > Test/compile

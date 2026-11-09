@@ -8,7 +8,7 @@ import scalafix.sbt.ScalafixPlugin
 import scalafix.sbt.ScalafixPlugin.autoImport.*
 
 /** Wires bonsai's scalafix rules, compiler plugin checks and whole-build analysis into every project, with defaults
-  * that warn while developing and fail in CI.
+  * that warn in the relaxed mode and fail in the strict mode.
   *
   * `.bonsai.conf` at the root of the build sets the defaults of the keys, for the build at its top level and for a
   * project under `projects.<id>`, so a build configured there alone still loads without the plugin:
@@ -84,20 +84,21 @@ object BonsaiPlugin extends AutoPlugin {
 
   object autoImport {
     object BonsaiMode {
-      case object Dev   extends BonsaiMode
-      case object CI    extends BonsaiMode
-      case object Audit extends BonsaiMode
+      case object Relaxed extends BonsaiMode
+      case object Strict  extends BonsaiMode
+      case object Audit   extends BonsaiMode
 
-      val values: Seq[BonsaiMode] = Seq(Dev, CI, Audit)
+      val values: Seq[BonsaiMode] = Seq(Relaxed, Strict, Audit)
     }
 
     sealed trait BonsaiMode
 
     val bonsaiMode: SettingKey[BonsaiMode] = settingKey[BonsaiMode](
-      "Dev warns; CI fails on the checks, scalafix rules and strict analysis rules not in bonsaiWarnings, whether or " +
-        "not the build fails on compiler warnings. Audit compiles whatever the checks find, then reports them with " +
-        "the analysis and fails as CI would, apart from scalafix, which only warns. Defaults to BONSAI_MODE, else " +
-        "CI when CI is set. A build that fails on compiler warnings does not fail on a finding in Dev or Audit"
+      "Relaxed warns; Strict fails on the checks, scalafix rules and fatal analysis rules not in bonsaiWarnings, " +
+        "whether or not the build fails on compiler warnings. Audit compiles whatever the checks find, then reports " +
+        "them with the analysis and fails as Strict would, apart from scalafix, which only warns. Defaults to " +
+        "BONSAI_MODE, else Strict when CI is set. A build that fails on compiler warnings does not fail on a finding " +
+        "in Relaxed or Audit"
     )
     val bonsaiDisabled: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks, analysis rules and scalafix rules left out, by id")
@@ -196,7 +197,7 @@ object BonsaiPlugin extends AutoPlugin {
   private val bonsaiScalafixConfig =
     taskKey[File]("Write the scalafix configuration of the selected rules").withRank(KeyRanks.Invisible)
   private val bonsaiScalafixCheck =
-    taskKey[Unit]("Run scalafix --check, which only warns on failure outside CI mode").withRank(KeyRanks.Invisible)
+    taskKey[Unit]("Run scalafix --check, which only warns on failure outside strict mode").withRank(KeyRanks.Invisible)
   private val bonsaiValidated =
     settingKey[Unit]("Reject ids no tool knows when the build loads").withRank(KeyRanks.Invisible)
   private val bonsaiModeId =
@@ -209,14 +210,16 @@ object BonsaiPlugin extends AutoPlugin {
   /** The kinds of effects a policy may allow. */
   private val Effects = Set("reads", "writes", "input", "output", "random", "unknown")
 
+  private def modeId(mode: BonsaiMode): String = mode.toString.toLowerCase(java.util.Locale.ROOT)
+
   override def globalSettings: Seq[Setting[?]] = Seq(
     bonsaiMode :=
       (sys.env.get("BONSAI_MODE") match {
         case Some(mode) =>
           BonsaiMode.values.find(_.toString.equalsIgnoreCase(mode)).getOrElse(
-            sys.error(s"BONSAI_MODE must be one of ${BonsaiMode.values.mkString(", ")}, not $mode")
+            sys.error(s"BONSAI_MODE must be one of ${BonsaiMode.values.map(modeId(_)).mkString(", ")}, not $mode")
           )
-        case None => if (sys.env.contains("CI")) BonsaiMode.CI else BonsaiMode.Dev
+        case None => if (sys.env.contains("CI")) BonsaiMode.Strict else BonsaiMode.Relaxed
       }),
     commands += Command.command("bonsaiCheck") { state =>
       List("Test/compile", "bonsaiScalafixCheck", "bonsaiAnalyse") ::: state
@@ -299,7 +302,7 @@ object BonsaiPlugin extends AutoPlugin {
           s"bonsai: excluded-modules names modules the build does not have: ${excluded.toSeq.sorted.mkString(", ")}"
         )
     },
-    bonsaiModeId  := bonsaiMode.value.toString.toLowerCase(java.util.Locale.ROOT),
+    bonsaiModeId  := modeId(bonsaiMode.value),
     bonsaiJdk     := (Compile / javaHome).value.getOrElse(ManifestLines.defaultJdk),
     bonsaiLibrary := Compat.uncached(
       Library.detect(
@@ -362,7 +365,7 @@ object BonsaiPlugin extends AutoPlugin {
       (ThisBuild / baseDirectory).value / ".scalafix.conf",
       Rules.filter(rule => !OptIn(rule) || bonsaiEnabledRules.value(rule)).filterNot(bonsaiDisabled.value)
         .filter(supported(_, scalaVersion.value)),
-      if (bonsaiMode.value != BonsaiMode.CI) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiWarnings.value),
+      if (bonsaiMode.value != BonsaiMode.Strict) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiWarnings.value),
       (if (bonsaiDisabled.value("DisableSyntax")) Nil else Bans).partition(!bonsaiDisabled.value(_))
     )),
     Compile / scalafix := (Compile / scalafix).dependsOn(bonsaiScalafixConfig).evaluated,
@@ -375,8 +378,8 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiAnalyse / aggregate := false,
     bonsaiScalafixCheck       := Compat.uncached {
       scalafixAll.toTask(" --check").result.value.toEither match {
-        case Right(_)                                     => ()
-        case Left(_) if bonsaiMode.value != BonsaiMode.CI =>
+        case Right(_)                                         => ()
+        case Left(_) if bonsaiMode.value != BonsaiMode.Strict =>
           streams.value.log.warn(s"scalafix --check failed; continuing in ${bonsaiModeId.value} mode")
         case Left(incomplete) => throw incomplete
       }
@@ -398,7 +401,7 @@ object BonsaiPlugin extends AutoPlugin {
     val own = scalacOptions.value
     if (isMetaBuild.value || !bonsaiEnabled.value) own
     else {
-      val routed = CompilerOptions.routed(own, bonsaiModeId.value == "ci", bonsaiWarnings.value)
+      val routed = CompilerOptions.routed(own, bonsaiModeId.value == "strict", bonsaiWarnings.value)
       val unused = CompilerOptions.unused(own, bonsaiDisabled.value, scalaVersion.value)
       routed ++ own ++ unused
     }

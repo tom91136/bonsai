@@ -140,16 +140,16 @@ class ScalafixTest {
 
   @Test
   void theModeIsTheOneTheEnvironmentNames() {
-    assertEquals("ci", Mode.of(Map.of("BONSAI_MODE", "ci")));
-    assertEquals("dev", Mode.of(Map.of("BONSAI_MODE", "DEV")));
+    assertEquals("strict", Mode.of(Map.of("BONSAI_MODE", "strict")));
+    assertEquals("relaxed", Mode.of(Map.of("BONSAI_MODE", "RELAXED")));
     assertEquals("audit", Mode.of(Map.of("BONSAI_MODE", "Audit")));
     assertEquals("audit", Mode.of(Map.of("BONSAI_MODE", "audit", "CI", "true")));
-    assertEquals("ci", Mode.of(Map.of("CI", "true")));
-    assertEquals("dev", Mode.of(Map.of()));
+    assertEquals("strict", Mode.of(Map.of("CI", "true")));
+    assertEquals("relaxed", Mode.of(Map.of()));
   }
 
   @Test
   void aModeTheToolsDoNotKnowFails() {
-    assertThrows(IllegalArgumentException.class, () -> Mode.of(Map.of("BONSAI_MODE", "strict")));
+    assertThrows(IllegalArgumentException.class, () -> Mode.of(Map.of("BONSAI_MODE", "dev")));
   }
 }

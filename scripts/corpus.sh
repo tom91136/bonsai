@@ -17,7 +17,7 @@ sbt --client shutdown >/dev/null 2>&1 || true
 sbt --batch -Dsbt.ivy.home="$stage" -Divy.home="$stage" 'analysis/analysisClasspath' | grep -v '^\[' |
   tail -1 >"$stage/classpath"
 java -Xss1g -Xmx4g -cp "$(cat "$stage/classpath")" net.kurobako.bonsai.analysis.CLI --manifest "$manifest" \
-  --mode dev --info >"$stage/analysis.txt" 2>"$stage/analysis.err" || true
+  --mode relaxed --info >"$stage/analysis.txt" 2>"$stage/analysis.err" || true
 cut -f2 "$stage/analysis.txt" | sort | uniq -c | awk '{ print $2 "\t" $1 }' >"$stage/counts.tsv"
 if [[ -n "$copy" ]]; then
   sbt --batch -Dsbt.ivy.home="$stage" -Divy.home="$stage" \

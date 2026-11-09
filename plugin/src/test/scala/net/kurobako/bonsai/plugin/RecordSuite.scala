@@ -30,16 +30,16 @@ class RecordSuite extends FunSuite {
       (e.rule, e.level, e.line)
     ).toList
 
-  test("audit mode compiles what ci mode fails, with each finding a warning") {
-    val ci = compile(Seq("Lints.scala" -> source), "mode=ci")
-    assert(ci.errors.exists(_.endsWith("[bonsai:array-equality]")), ci.errors.mkString("\n"))
+  test("audit mode compiles what strict mode fails, with each finding a warning") {
+    val strict = compile(Seq("Lints.scala" -> source), "mode=strict")
+    assert(strict.errors.exists(_.endsWith("[bonsai:array-equality]")), strict.errors.mkString("\n"))
     val report = compile(Seq("Lints.scala" -> source), "mode=audit")
     assertEquals(report.errors, Nil)
     val ids = report.warnings.filter(_.contains("[bonsai:")).map(_.split("\\[bonsai:").last.stripSuffix("]")).sorted
     assertEquals(ids, List("accidental-self-call", "array-equality", "open-type-test"))
   }
 
-  test("each finding is recorded with the level ci mode gives it") {
+  test("each finding is recorded with the level strict mode gives it") {
     val report = compile(Seq("Lints.scala" -> source), "mode=audit")
     assertEquals(
       entries(report, "Lints.scala"),
@@ -79,12 +79,12 @@ class RecordSuite extends FunSuite {
   }
 
   test("the other modes record nothing") {
-    for (mode <- Seq("mode=dev", "mode=ci"))
+    for (mode <- Seq("mode=relaxed", "mode=strict"))
       assertEquals(compile(Seq("Lints.scala" -> source), mode).records, Vector.empty, mode)
   }
 
   test("the options of the mode name the modes the plugin knows") {
     val bad = compile(Seq("Clean.scala" -> clean), "mode=release")
-    assertEquals(bad.errors, List("bonsai option mode must be one of dev, ci, audit, not release"))
+    assertEquals(bad.errors, List("bonsai option mode must be one of relaxed, strict, audit, not release"))
   }
 }

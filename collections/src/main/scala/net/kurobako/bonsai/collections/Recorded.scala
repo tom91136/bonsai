@@ -19,7 +19,7 @@ object Recorded {
   /** Where the records are in an output directory. */
   val Directory = "META-INF/bonsai/findings"
 
-  /** What the ci mode would do with a finding: fail on an error, and report a warning or information. */
+  /** What the strict mode would do with a finding: fail on an error, and report a warning or information. */
   enum Level(val id: String) {
     case Error   extends Level("error")
     case Warning extends Level("warning")

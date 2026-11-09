@@ -7,7 +7,7 @@
 > compile
 # the analysis, built with the newest compiler, reads its TASTy
 > bonsaiAnalyse
-> set ThisBuild / bonsaiMode := BonsaiMode.CI
+> set ThisBuild / bonsaiMode := BonsaiMode.Strict
 -> bonsaiAnalyse
 > set bonsaiDisabled ++= Set("unused-member", "warnings-not-fatal")
 > bonsaiAnalyse

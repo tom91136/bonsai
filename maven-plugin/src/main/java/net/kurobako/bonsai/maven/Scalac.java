@@ -8,10 +8,10 @@ import java.util.regex.Pattern;
 /**
  * The options the compiler plugin reads, which the scalac of the build takes from a response file.
  *
- * <p>The findings are routed by the mode, whether or not the build compiles with fatal warnings: the dev and audit
- * modes report them without failing, and the ci mode fails on them. A check kept as a warning is reported without
- * failing in any mode. In the audit mode the compiler plugin records what the ci mode would fail on, for the analysis
- * to fail on at the end.
+ * <p>The findings are routed by the mode, whether or not the build compiles with fatal warnings: the relaxed and audit
+ * modes report them without failing, and the strict mode fails on them. A check kept as a warning is reported without
+ * failing in any mode. In the audit mode the compiler plugin records what the strict mode would fail on, for the
+ * analysis to fail on at the end.
  */
 public final class Scalac {
 
@@ -71,8 +71,8 @@ public final class Scalac {
     options.add("-P:bonsai:mode=" + mode);
     options.add("-P:bonsai:wildcards=" + configuration.wildcards());
     configuration.optionFold().ifPresent(fold -> options.add("-P:bonsai:option-fold=" + fold));
-    options.add(tagged(ANY, mode.equals("ci") ? "e" : "i"));
-    if (mode.equals("ci")) {
+    options.add(tagged(ANY, mode.equals("strict") ? "e" : "i"));
+    if (mode.equals("strict")) {
       for (String id : configuration.warnings()) {
         if (ids.checks().contains(id)) {
           options.add(tagged(id, "i"));

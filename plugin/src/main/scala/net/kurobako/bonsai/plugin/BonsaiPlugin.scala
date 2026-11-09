@@ -17,7 +17,7 @@ class BonsaiPlugin extends StandardPlugin {
   private val DefaultWildcards = 2
   // Mutation testing compiles rewritten copies of the sources from a temporary directory, which no check judges.
   private val Instrumented = List("**/stryker4s-*/**", "stryker4s-*/**")
-  private val Modes        = List("dev", "ci", "audit")
+  private val Modes        = List("relaxed", "strict", "audit")
   private val Keys         =
     Set(
       "mode",
@@ -51,7 +51,7 @@ class BonsaiPlugin extends StandardPlugin {
         DefaultWildcards
       }
     )
-    val mode = values("mode").lastOption.getOrElse("dev")
+    val mode = values("mode").lastOption.getOrElse("relaxed")
     if (!Modes.contains(mode)) problems += s"bonsai option mode must be one of ${Modes.mkString(", ")}, not $mode"
     val optionFold = values("option-fold").lastOption.fold(OptionFold.Default)(key =>
       OptionFold.named(key).getOrElse {
@@ -62,7 +62,7 @@ class BonsaiPlugin extends StandardPlugin {
     val disabled = checks("disable")
     val errors   = checks("error")
     val warnings = checks("warn")
-    val strict   = if (mode == "ci" || mode == "audit") Check.all.filter(_.strict).toSet else Set.empty
+    val fatal    = if (mode == "strict" || mode == "audit") Check.all.filter(_.fatal).toSet else Set.empty
     val records  = Option.when(mode == "audit")(Records())
     // `partial=<method>:<alternative>` and `throws=<method pattern>:<exception>|...` extend the defaults, and an empty
     // right-hand side removes one.
@@ -102,7 +102,7 @@ class BonsaiPlugin extends StandardPlugin {
     }
     problems ++= bounds.collect { case Left(problem) => problem }
     val bounded       = bounds.collect { case Right(glob) => glob }
-    val escalated     = strict ++ errors -- warnings
+    val escalated     = fatal ++ errors -- warnings
     val matchers      = Instrumented.map(Globs.matcher)
     val generated     = values("generated").map(Globs.matcher)
     val overGenerated =

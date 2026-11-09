@@ -1,7 +1,7 @@
 # the sbt-scalafix the plugin brings is also published under the name that sbt before 1.9 asks for
 > legacy
-# lints fail outside Dev, which only warns
-> set ThisBuild / bonsaiMode := BonsaiMode.CI
+# lints fail outside relaxed mode, which only warns
+> set ThisBuild / bonsaiMode := BonsaiMode.Strict
 # the rules resolve: a rule with nothing to report passes
 > set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
 > scalafixAll --check

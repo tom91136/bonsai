@@ -43,9 +43,9 @@ class ScalacTest {
       "disabled\tacyclic", "errors\tbroad-catch", "warnings\tidentity-token", "wildcards\t3",
       "hot\tdemo.kernel.**", "bounded\tdemo.Encoding.operands:4", "checked\tdemo.where");
 
-    List<String> options = Scalac.options(configuration, ids(), "dev", List.of());
+    List<String> options = Scalac.options(configuration, ids(), "relaxed", List.of());
 
-    assertTrue(options.contains("-P:bonsai:mode=dev"), options.toString());
+    assertTrue(options.contains("-P:bonsai:mode=relaxed"), options.toString());
     assertTrue(options.contains("-P:bonsai:wildcards=3"), options.toString());
     assertTrue(options.contains("-P:bonsai:disable=acyclic"), options.toString());
     assertTrue(options.contains("-P:bonsai:error=broad-catch"), options.toString());
@@ -56,7 +56,7 @@ class ScalacTest {
   }
 
   @Test
-  void theAuditModeDemotesTheFindingsAsTheDevModeDoes() throws IOException {
+  void theAuditModeDemotesTheFindingsAsTheRelaxedModeDoes() throws IOException {
     Configuration configuration = configuration("warnings\tidentity-token");
 
     List<String> report = Scalac.options(configuration, ids(), "audit", List.of());
@@ -65,8 +65,8 @@ class ScalacTest {
     assertTrue(report.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:i"), report.toString());
     assertTrue(report.stream().noneMatch(option -> option.endsWith("]:e")), report.toString());
     assertTrue(report.contains("-P:bonsai:warn=identity-token"), report.toString());
-    List<String> ci = Scalac.options(configuration, ids(), "ci", List.of());
-    assertTrue(ci.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:e"), ci.toString());
+    List<String> strict = Scalac.options(configuration, ids(), "strict", List.of());
+    assertTrue(strict.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:e"), strict.toString());
   }
 
   @Test
@@ -110,8 +110,8 @@ class ScalacTest {
 
   @Test
   void theOptionFoldIsPassedOnlyWhenTheConfigurationNamesIt() throws IOException {
-    List<String> named = Scalac.options(configuration("option-fold\tmap-get-or-else"), ids(), "dev", List.of());
-    List<String> unnamed = Scalac.options(configuration("wildcards\t3"), ids(), "dev", List.of());
+    List<String> named = Scalac.options(configuration("option-fold\tmap-get-or-else"), ids(), "relaxed", List.of());
+    List<String> unnamed = Scalac.options(configuration("wildcards\t3"), ids(), "relaxed", List.of());
 
     assertTrue(named.contains("-P:bonsai:option-fold=map-get-or-else"), named.toString());
     assertFalse(unnamed.stream().anyMatch(option -> option.contains("option-fold")), unnamed.toString());
@@ -133,7 +133,7 @@ class ScalacTest {
   void aCheckOfAnotherToolIsNotPassedToTheCompilerPlugin() throws IOException {
     Configuration configuration = configuration("disabled\tduplicate-code", "disabled\tacyclic");
 
-    List<String> options = Scalac.options(configuration, ids(), "dev", List.of());
+    List<String> options = Scalac.options(configuration, ids(), "relaxed", List.of());
 
     assertTrue(options.contains("-P:bonsai:disable=acyclic"), options.toString());
     assertTrue(!options.contains("-P:bonsai:disable=duplicate-code"), options.toString());
@@ -143,7 +143,7 @@ class ScalacTest {
   void theFindingsDoNotFailTheBuildWhileDeveloping() throws IOException {
     Configuration configuration = configuration("disabled\tacyclic");
 
-    List<String> options = Scalac.options(configuration, ids(), "dev", List.of());
+    List<String> options = Scalac.options(configuration, ids(), "relaxed", List.of());
 
     assertTrue(options.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:i"), options.toString());
   }
@@ -152,7 +152,7 @@ class ScalacTest {
   void theFindingsFailTheBuildOnACiServer() throws IOException {
     Configuration configuration = configuration("disabled\tacyclic");
 
-    List<String> options = Scalac.options(configuration, ids(), "ci", List.of());
+    List<String> options = Scalac.options(configuration, ids(), "strict", List.of());
 
     assertTrue(options.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:e"), options.toString());
   }
@@ -161,7 +161,7 @@ class ScalacTest {
   void aCheckKeptAsAWarningDoesNotFailTheBuildOnACiServer() throws IOException {
     Configuration configuration = configuration("warnings\tacyclic");
 
-    List<String> options = Scalac.options(configuration, ids(), "ci", List.of());
+    List<String> options = Scalac.options(configuration, ids(), "strict", List.of());
 
     String failing = "-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:e";
     String kept = "-Wconf:msg=\\[bonsai.acyclic\\]:i";
@@ -175,7 +175,7 @@ class ScalacTest {
     File bracketed = root.resolve("target/gen[1]").toFile();
 
     List<String> options =
-      Scalac.options(configuration("generated\t**/gen/**"), ids(), "dev", List.of(managed, bracketed));
+      Scalac.options(configuration("generated\t**/gen/**"), ids(), "relaxed", List.of(managed, bracketed));
 
     assertTrue(options.contains("-P:bonsai:generated=**/gen/**"), options.toString());
     assertTrue(options.contains("-P:bonsai:generated=" + root.toAbsolutePath() + "/target/generated-sources/**"),
@@ -187,9 +187,12 @@ class ScalacTest {
   @Test
   void theChecksSkippedOverGeneratedCodeAreTheCompilerChecksTheConfigurationNames() throws IOException {
     List<String> named = Scalac.options(
-      configuration("generated-disable\tidentity-token", "generated-disable\tduplicate-code"), ids(), "dev", List.of());
-    List<String> all = Scalac.options(configuration("generated-disable\t*"), ids(), "dev", List.of());
-    List<String> none = Scalac.options(configuration(), ids(), "dev", List.of());
+      configuration("generated-disable\tidentity-token", "generated-disable\tduplicate-code"),
+      ids(),
+      "relaxed",
+      List.of());
+    List<String> all = Scalac.options(configuration("generated-disable\t*"), ids(), "relaxed", List.of());
+    List<String> none = Scalac.options(configuration(), ids(), "relaxed", List.of());
 
     assertTrue(named.contains("-P:bonsai:generated-disable=identity-token"), named.toString());
     assertFalse(named.contains("-P:bonsai:generated-disable=duplicate-code"), named.toString());

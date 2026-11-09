@@ -1,12 +1,12 @@
 # a cycle only warns while developing
 > compile
 > bonsaiCheck
-# a pending rewrite does not stop analysis in Dev
+# a pending rewrite does not stop analysis in relaxed mode
 > set bonsaiErrors += "unused-member"
 -> bonsaiCheck
 > set bonsaiErrors -= "unused-member"
 > bonsaiCheck
-> set ThisBuild / bonsaiMode := BonsaiMode.CI
+> set ThisBuild / bonsaiMode := BonsaiMode.Strict
 -> compile
 -> bonsaiCheck
 # a project can keep a check a warning, or escalate one the mode leaves a warning
@@ -16,7 +16,7 @@
 -> compile
 > set bonsaiDisabled += "acyclic"
 > compile
-> set ThisBuild / bonsaiMode := BonsaiMode.Dev
+> set ThisBuild / bonsaiMode := BonsaiMode.Relaxed
 > set bonsaiDisabled -= "acyclic"
 > compile
 > set bonsaiErrors += "acyclic"
@@ -26,8 +26,8 @@
 -> bonsaiAnalyse
 > clean
 > bonsaiAnalyse
-# in CI a pending rewrite fails the check, even when its lint is a warning
-> set ThisBuild / bonsaiMode := BonsaiMode.CI
+# in strict mode a pending rewrite fails the check, even when its lint is a warning
+> set ThisBuild / bonsaiMode := BonsaiMode.Strict
 > set bonsaiDisabled += "acyclic"
 > set bonsaiWarnings += "RedundantCaseClassVal"
 > set bonsaiWarnings += "unused"

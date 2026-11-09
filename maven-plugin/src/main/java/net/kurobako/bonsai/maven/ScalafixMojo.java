@@ -82,7 +82,7 @@ public class ScalafixMojo extends BonsaiMojo {
     command.add(String.join(java.io.File.pathSeparator, classpath));
     // `--files` takes a single path, so repeating it would leave all but one source of the module unchecked
     command.addAll(files);
-    boolean dev = dev();
-    run("the scalafix rules", command, root.toFile(), code -> dev && (code & ~(LINTER_ERROR | TEST_ERROR)) == 0);
+    boolean relaxed = relaxed();
+    run("the scalafix rules", command, root.toFile(), code -> relaxed && (code & ~(LINTER_ERROR | TEST_ERROR)) == 0);
   }
 }

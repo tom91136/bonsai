@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "3.10.0"
-ThisBuild / bonsaiMode   := BonsaiMode.Dev
+ThisBuild / bonsaiMode   := BonsaiMode.Relaxed
 
 def jdk(version: String): File = {
   val home = IO.createTemporaryDirectory

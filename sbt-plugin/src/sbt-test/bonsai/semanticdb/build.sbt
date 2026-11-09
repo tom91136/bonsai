@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "3.9.0"
-ThisBuild / bonsaiMode   := BonsaiMode.Dev
+ThisBuild / bonsaiMode   := BonsaiMode.Relaxed
 
 lazy val danglingLink = taskKey[java.nio.file.Path]("Link a semanticdb to a cache entry that no longer exists")
 lazy val checkGone    = taskKey[Unit]("Check the dangling link is gone")

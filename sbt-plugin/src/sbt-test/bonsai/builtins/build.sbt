@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "3.9.0"
-ThisBuild / bonsaiMode   := BonsaiMode.CI
+ThisBuild / bonsaiMode   := BonsaiMode.Strict
 
 lazy val flagged   = inputKey[Unit]("Check the compiler options hold each argument")
 lazy val unflagged = inputKey[Unit]("Check the compiler options hold none of the arguments")

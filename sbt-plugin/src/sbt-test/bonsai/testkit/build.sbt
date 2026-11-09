@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion   := "3.9.0"
-ThisBuild / bonsaiMode := BonsaiMode.CI
+ThisBuild / bonsaiMode := BonsaiMode.Strict
 ThisBuild / bonsaiErrors ++= Set("test-only", "test-only-member")
 
 // A project whose main code only other projects' tests use, as test fixtures are.

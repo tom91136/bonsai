@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion := "3.9.0"
-ThisBuild / bonsaiMode   := BonsaiMode.Dev
+ThisBuild / bonsaiMode   := BonsaiMode.Relaxed
 
 lazy val analysed = inputKey[Unit]("Check the manifest holds the output of each project")
 lazy val skipped  = inputKey[Unit]("Check the manifest holds the output of none of the projects")

@@ -121,7 +121,7 @@ class BuildSuite extends FunSuite {
     )
     val message = Build.fatal(manifest).map(_.detail).mkString
     assert(message.contains("its own compiler warnings"), message)
-    assert(!message.contains("ci mode"), message)
+    assert(!message.contains("strict mode"), message)
   }
 
   withRoot("identical sources under the directories of different platforms are reported once per copy set") {

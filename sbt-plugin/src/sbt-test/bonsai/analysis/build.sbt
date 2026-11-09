@@ -1,5 +1,5 @@
 ThisBuild / scalaVersion   := "3.9.0"
-ThisBuild / bonsaiMode := BonsaiMode.Dev
+ThisBuild / bonsaiMode := BonsaiMode.Relaxed
 
 // An aggregated project with configurations but none of the JVM settings bonsai builds on, as a native toolchain
 // project has.

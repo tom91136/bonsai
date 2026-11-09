@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the whole-build analysis over a Scala CLI project on the JVM: compiles it with its tests, writes the manifest the
 # sbt plugin would, and runs the analysis with the options of its .bonsai.conf, then the remaining arguments, such as
-# --mode ci.
+# --mode strict.
 # The analysis needs JDK 17 or later and runs on BONSAI_ANALYSIS_JAVA_HOME, else on the java on the PATH, which is also
 # the JDK the manifest names as the target.
 # usage: analyse.sh <project directory> [--library] [analysis options...]

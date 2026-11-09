@@ -1,7 +1,7 @@
 # options the build assigns to scalacOptions leave bonsai's in place, for Test as well
-> flagged -P:bonsai:mode=dev -Werror
-> testing -P:bonsai:mode=dev
-# a finding that only warns in Dev does not fail a build with fatal warnings
+> flagged -P:bonsai:mode=relaxed -Werror
+> testing -P:bonsai:mode=relaxed
+# a finding that only warns in relaxed mode does not fail a build with fatal warnings
 > compile
 # a finding the build makes an error still fails it, with bonsai's setting or the compiler's own
 > set bonsaiErrors += "acyclic"
@@ -10,16 +10,16 @@
 > set scalacOptions += "-Wconf:msg=\\[bonsai.acyclic\\]:e"
 -> compile
 > set scalacOptions -= "-Wconf:msg=\\[bonsai.acyclic\\]:e"
-# in CI a strict check fails, with or without fatal warnings
-> set ThisBuild / bonsaiMode := BonsaiMode.CI
+# in strict mode a fatal check fails, with or without fatal warnings
+> set ThisBuild / bonsaiMode := BonsaiMode.Strict
 -> compile
 > set scalacOptions -= "-Werror"
 -> compile
 > set scalacOptions += "-Werror"
-# a check the build keeps a warning does not fail in CI whatever the compiler does with warnings
+# a check the build keeps a warning does not fail in strict mode whatever the compiler does with warnings
 > set bonsaiWarnings += "acyclic"
 > compile
-# a check that only warns in CI fails with fatal warnings, as the build asked of every warning
+# a check that only warns in strict mode fails with fatal warnings, as the build asked of every warning
 $ copy-file changes/Branches.scala src/main/scala/demo/Branches.scala
 -> compile
 # and without them, which only bonsaiWarnings opts out of
@@ -29,7 +29,7 @@ $ copy-file changes/Branches.scala src/main/scala/demo/Branches.scala
 > compile
 > set scalacOptions += "-Werror"
 > compile
-# in Dev a build that does not fail on warnings has nothing demoted
-> set ThisBuild / bonsaiMode := BonsaiMode.Dev
+# in relaxed mode a build that does not fail on warnings has nothing demoted
+> set ThisBuild / bonsaiMode := BonsaiMode.Relaxed
 > set scalacOptions -= "-Werror"
 > undemoted

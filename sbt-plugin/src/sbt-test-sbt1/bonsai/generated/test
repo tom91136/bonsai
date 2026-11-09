@@ -3,8 +3,8 @@
 # a source written by hand is reported all the same
 $ copy-file changes/Spare.scala src/main/scala/demo/Spare.scala
 -> bonsaiAnalyse
-# the compiler plugin skips generated code too, so the managed source compiles in ci mode
+# the compiler plugin skips generated code too, so the managed source compiles in strict mode
 > compile
-# a hand-written copy of the same code fails the compile in ci mode
+# a hand-written copy of the same code fails the compile in strict mode
 $ copy-file changes/Hand.scala src/main/scala/demo/Hand.scala
 -> compile

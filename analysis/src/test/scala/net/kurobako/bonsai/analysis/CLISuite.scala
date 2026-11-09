@@ -47,7 +47,7 @@ class CLISuite extends FunSuite {
       "--warn",
       "huge-method",
       "--mode",
-      "ci",
+      "strict",
       "--info"
     ))
     assertEquals(
@@ -59,15 +59,15 @@ class CLISuite extends FunSuite {
         disabled = Set(Report.Disable(Report.Selector.Named("weaker-access"), Report.Scope.Everywhere)),
         errors = Set("unused", "duplicate-code"),
         warnings = Set("huge-method"),
-        mode = CLI.Mode.CI,
+        mode = CLI.Mode.Strict,
         baseline = Some(Path.of("baseline.tsv")),
         record = Some(Path.of("next.tsv"))
       ))
     )
   }
 
-  test("the ci mode escalates the strict rules on top of those named") {
-    val strict = Set(
+  test("the strict mode escalates the fatal rules on top of those named") {
+    val fatal = Set(
       "unused",
       "test-only",
       "unused-member",
@@ -85,19 +85,19 @@ class CLISuite extends FunSuite {
       "unstable-equality"
     ) ++ LintId.chains
     assertEquals(
-      CLI.parse(List("--mode", "ci", "--error", "complexity")).map(_.failing),
-      Right(strict + "complexity")
+      CLI.parse(List("--mode", "strict", "--error", "complexity")).map(_.failing),
+      Right(fatal + "complexity")
     )
-    assertEquals(CLI.parse(List("--mode", "dev", "--error", "complexity")).map(_.failing), Right(Set("complexity")))
+    assertEquals(CLI.parse(List("--mode", "relaxed", "--error", "complexity")).map(_.failing), Right(Set("complexity")))
     assert(CLI.parse(List("--mode", "release")).left.exists(_.startsWith("unknown mode: release")))
     assert(CLI.parse(List("--warn", "bogus")).left.exists(_.startsWith("unknown rule: bogus")))
   }
 
-  test("the audit mode fails on what the ci mode fails on") {
+  test("the audit mode fails on what the strict mode fails on") {
     assertEquals(CLI.parse(List("--mode", "audit")).map(_.mode), Right(CLI.Mode.Audit))
     assertEquals(
       CLI.parse(List("--mode", "audit", "--error", "complexity")).map(_.failing),
-      CLI.parse(List("--mode", "ci", "--error", "complexity")).map(_.failing)
+      CLI.parse(List("--mode", "strict", "--error", "complexity")).map(_.failing)
     )
     assertEquals(
       CLI.parse(List("--mode", "audit", "--warn", "unused")).map(_.failing("unused")),
@@ -112,7 +112,7 @@ class CLISuite extends FunSuite {
       CLI.parse(List("--error", "*", "--warn", "unused-member")).map(_.failing),
       Right(every - "unused-member")
     )
-    assertEquals(CLI.parse(List("--mode", "ci", "--warn", "unused")).map(_.failing("unused")), Right(false))
+    assertEquals(CLI.parse(List("--mode", "strict", "--warn", "unused")).map(_.failing("unused")), Right(false))
   }
 
   test("purity is locked, written and held to policies, and other threads named") {

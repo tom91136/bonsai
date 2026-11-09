@@ -141,7 +141,7 @@ public abstract class BonsaiMojo extends AbstractMojo {
       return Mode.of(System.getenv());
     } catch (IllegalArgumentException error) {
       getLog().warn(error.getMessage());
-      return "dev";
+      return "relaxed";
     }
   }
 
@@ -252,9 +252,9 @@ public abstract class BonsaiMojo extends AbstractMojo {
     return Path.of(session.getExecutionRootDirectory());
   }
 
-  /** Whether the tools leave a finding of their rewriting rules unfailed, as the dev and audit modes do. */
-  protected boolean dev() {
-    return mode().equals("dev") || mode().equals("audit");
+  /** Whether the tools leave a finding of their rewriting rules unfailed, as the relaxed and audit modes do. */
+  protected boolean relaxed() {
+    return mode().equals("relaxed") || mode().equals("audit");
   }
 
   /** The directory the goals write their files to. */

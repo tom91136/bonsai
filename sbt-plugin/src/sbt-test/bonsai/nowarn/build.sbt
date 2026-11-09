@@ -1,3 +1,3 @@
 ThisBuild / scalaVersion := "3.9.0"
-ThisBuild / bonsaiMode   := BonsaiMode.Dev
+ThisBuild / bonsaiMode   := BonsaiMode.Relaxed
 ThisBuild / scalacOptions += "-Werror"
