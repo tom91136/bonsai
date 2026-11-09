@@ -229,7 +229,7 @@ lazy val rules = project.in(file("scalafix/rules"))
 lazy val fixtureSettings = Seq(
   scalaVersion   := scalafixScalaVersion,
   publish / skip := true,
-  scalacOptions ++= Seq("-deprecation", "-feature"),
+  scalacOptions ++= Seq("-deprecation", "-feature", "-release:17"),
   libraryDependencies += "org.scalameta" %% "munit" % munitVersion
 )
 

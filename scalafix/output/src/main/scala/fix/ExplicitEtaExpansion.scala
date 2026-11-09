@@ -48,5 +48,13 @@ object ExplicitEtaExpansion {
     def selectDynamic(name: String): Lookup = this
   }
   val lookup: Lookup                 = new Lookup
+  def emits[O](items: Seq[O]): Int                       = items.size
+  val nullaryOverload: Int                               = emits("12345".getBytes)
+  val nullaryOverloadList: List[Array[Byte]]             = List("12345".getBytes)
+  val overloadedArities: List[Int]                       = List(java.nio.file.Path.of("a")).map(java.nio.file.Files.readString).map(_.length)
+  // format: off
+  val javaMethod: List[Long]                             = List(java.nio.file.Path.of("a")).map(java.nio.file.Files.size(_))
+  val javaOverloaded: List[Int]                          = List(1).map(java.lang.Math.abs(_))
+  // format: on
   val dynamicSelection: List[Lookup] = List(lookup.process)
 }

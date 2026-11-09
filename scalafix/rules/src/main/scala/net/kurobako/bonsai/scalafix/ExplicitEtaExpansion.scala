@@ -65,11 +65,33 @@ class ExplicitEtaExpansion extends SemanticRule("ExplicitEtaExpansion") {
   private def mayBeMethod(symbol: Symbol): Boolean =
     symbol.isLocal || (symbol.isGlobal && symbol.value.desc.isMethod)
 
+  // the overload a Java symbol names counts declarations in the order of the class the rule reads, which differs from
+  // the one the compiler read when it compiled against an older release, so only agreement of all overloads is proof
+  private def resolved(info: SymbolInformation)(using SemanticDocument): Boolean = {
+    val alternatives = if (info.isJava) definitions.info(info.owner).map(_.signature).toList.flatMap {
+      case ClassSignature(_, _, _, declarations) => declarations.filter(_.displayName == info.displayName)
+      case _                                     => Nil
+    }
+    else Nil
+    alternatives.size < 2 ||
+    (alternatives.map(arity(_)).distinct match {
+      case List(Some(_)) => true
+      case _             => false
+    })
+  }
+
+  private def arity(info: SymbolInformation): Option[Int] = info.signature match {
+    case signature: MethodSignature =>
+      signature.parameterLists.filterNot(_.exists(parameter => parameter.isImplicit || parameter.isGiven))
+        .find(_.nonEmpty).map(_.size)
+    case _ => None
+  }
+
   private def explicitApplication(reference: Term.Ref)(using SemanticDocument): Option[String] =
     try
       reference.symbol.info.flatMap(info =>
         info.signature match {
-          case signature: MethodSignature =>
+          case signature: MethodSignature if resolved(info) =>
             val parameterLists = reference match {
               case Term.Select(qualifier: Term.Ref, _)
                   if info.owner.value.endsWith(".") && qualifier.symbol != info.owner =>
