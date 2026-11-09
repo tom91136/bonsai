@@ -96,7 +96,7 @@ class CompiledSuite extends FunSuite {
     val findings = Compiled.findings(build.manifest()).toOption.get
     val baseline = Report.Options(Set.empty, Set.empty, findings.map(_.key).toSet, info = false)
     assertEquals(Report(findings, Map.empty, baseline).map(_.level), Vector("error"))
-    assertEquals(Report.write(Report(findings, Map.empty, baseline)), "\n")
+    assertEquals(Report.merge("", Report(findings, Map.empty, baseline), Map.empty, Set.empty), "\n")
   }
 
   build("information shows only when asked for, as for the rules of the analysis") { build =>

@@ -184,6 +184,20 @@ class ReuseSuite extends AnalysisSuite {
     }
   }
 
+  test("a baseline write keeps the entries of modules the run does not cover") {
+    val f        = fixture()
+    val baseline = f.dir.resolve("written.tsv")
+    assert(!f.run("--write-baseline", baseline.toString).reused)
+    val current = Files.readString(baseline)
+    assert(current.linesIterator.exists(_.startsWith("unused-member\tTools\t")), current)
+    Files.writeString(baseline, current + "unused-member\tTools\tlong gone\nunused-member\tOther\tkept\n")
+    assert(!f.run("--write-baseline", baseline.toString).reused)
+    val written = Files.readString(baseline)
+    assert(written.linesIterator.contains("unused-member\tOther\tkept"), written)
+    assert(!written.contains("long gone"), written)
+    assertEquals(Report.keys(written) - "unused-member\tOther\tkept", Report.keys(current))
+  }
+
   test("a corrupt store is a miss, and the run rewrites it") {
     val f     = fixture()
     val first = f.run()

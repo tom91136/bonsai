@@ -113,11 +113,20 @@ object Report {
     }.toVector
   }
 
-  /** The baseline text recording `lines`, one finding key per line, less the findings of the compiler plugin, which no
-    * baseline holds back.
+  /** The baseline text after a run over `modules` writes `lines`, one finding key per line. Entries of a node in a
+    * covered module are replaced, and the rest are kept. A node the run does not reach has no module here, so its
+    * entries are kept.
     */
-  def write(lines: Vector[Line]): String =
-    lines.filterNot(_.finding.rule.recorded).map(_.finding.key).mkString("", "\n", "\n")
+  def merge(previous: String, lines: Vector[Line], nodes: Map[String, Node], modules: Set[String]): String = {
+    def owned(key: String): Boolean =
+      key.split("\t", 3).lift(1).flatMap(nodes.get).exists(node => modules(node.module))
+    val kept = previous.linesIterator.filter(key => key.nonEmpty && !owned(key)).toVector
+    (kept ++ records(lines)).distinct.mkString("", "\n", "\n")
+  }
+
+  /** The findings of the compiler plugin are left out, as no baseline holds them back. */
+  private def records(lines: Vector[Line]): Vector[String] =
+    lines.filterNot(_.finding.rule.recorded).map(_.finding.key)
 
   /** The keys a file of one key per line records, such as a baseline or a purity lock. */
   def keys(text: String): Set[String] = text.linesIterator.filter(_.nonEmpty).toSet

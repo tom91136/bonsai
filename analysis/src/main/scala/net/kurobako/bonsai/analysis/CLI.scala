@@ -170,9 +170,12 @@ object CLI {
           Report.keys(Files.readString(file))
         )
         val report = Report.Options(options.disabled, options.failing, baseline, options.info, options.warnings)
-        options.record.foreach(file =>
-          Files.writeString(file, Report.write(Report(findings, result.graph.nodes, report.copy(info = false)))): Unit
-        )
+        options.record.foreach { file =>
+          val previous = if (Files.exists(file)) Files.readString(file) else ""
+          val nodes    = findings.map(finding => finding.node.name -> finding.node).toMap ++ result.graph.nodes
+          val lines    = Report(findings, result.graph.nodes, report.copy(info = false))
+          Files.writeString(file, Report.merge(previous, lines, nodes, manifest.outputs.map(_.module).toSet)): Unit
+        }
         Reuse.Record(
           result.problems.map(problem => s"${Reuse.Problem}$problem") ++
             result.notes.map(note => s"${Reuse.Note}$note") ++

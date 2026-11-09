@@ -230,7 +230,7 @@ class ReportSuite extends AnalysisSuite {
 
   test("baselines round trip through their text form") {
     val found = lines(defaults)
-    assertEquals(Report.keys(Report.write(found)), found.map(_.finding.key).toSet)
+    assertEquals(Report.keys(Report.merge("", found, Map.empty, Set.empty)), found.map(_.finding.key).toSet)
   }
 
   test("escalating every rule fails on any warning, while information stays information") {
