@@ -1,9 +1,11 @@
 package net.kurobako.bonsai.plugin
 
 import java.nio.file.Files
+import javax.tools.ToolProvider
 import munit.FunSuite
 import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.effects.*
+import net.kurobako.bonsai.testing.*
 
 class LintSuite extends FunSuite {
   private def warnings(source: String, options: String*): List[String] = warningsAt("Lints.scala", source, options*)
@@ -1404,6 +1406,24 @@ class LintSuite extends FunSuite {
       Compilations.run(Seq("Lints.scala" -> use), Seq(s"-classpath:$classpath")) { (reporter, _) =>
         assert(!reporter.hasErrors)
       }
+    }
+  }
+
+  test("a Java method compiled without parameter names has no argument to name") {
+    Scratch.using("bonsai-java-") { directory =>
+      val source = directory.resolve("Flags.java")
+      Files.writeString(
+        source,
+        "public class Flags { public static int pick(String name, boolean eager) { return 1; } }"
+      )
+      assertEquals(
+        ToolProvider.getSystemJavaCompiler.run(null, null, null, "-d", directory.toString, source.toString),
+        0
+      )
+      val classpath        = s"${sys.props("bonsai.plugin.classpath")}:$directory"
+      val use              = "object Lints { def run: Int = Flags.pick(\"a\", true) }"
+      val (_, found, _, _) = report("Lints.scala", use, s"-classpath:$classpath")
+      assertEquals(found.map(_._1).filter(_.contains("bonsai:boolean-argument")), Nil)
     }
   }
 

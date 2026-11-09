@@ -399,7 +399,8 @@ private class LintPhase(
       !argument.isInstanceOf[tpd.NamedArg] && argument.span.exists && !argument.span.isSynthetic &&
         !argument.symbol.name.is(DefaultGetterName) && !LintPhase.labelled(argument)
     )
-    if (!contextual && !repeated && written.size > 1) {
+    val spellable = parameters.forall(!_.name.toString.contains('$'))
+    if (!contextual && !repeated && spellable && written.size > 1) {
       // A placeholder cannot be named: `f(x = _)` is a function of its own.
       val unlabelled = written.filter((argument, parameter) =>
         !named(argument, parameter) && !argument.symbol.name.is(WildcardParamName) && meaningful(parameter) &&
