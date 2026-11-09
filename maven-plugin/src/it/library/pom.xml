@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>net.kurobako.bonsai.it</groupId>
+    <artifactId>library</artifactId>
+    <version>1.0</version>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>bare</module>
+        <module>homepaged</module>
+        <module>licensed</module>
+    </modules>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>17</maven.compiler.release>
+        <!-- The version of the plugin, which the invoker names; the value here is the one it has by default. -->
+        <bonsai.version>0.1.0-SNAPSHOT</bonsai.version>
+    </properties>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <compilerArgs>
+                        <arg>-processorpath</arg>
+                        <arg>${bonsai.java.plugin}</arg>
+                        <arg>-Xplugin:bonsai ${bonsai.model}</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>net.kurobako</groupId>
+                <artifactId>bonsai-maven-plugin</artifactId>
+                <version>${bonsai.version}</version>
+                <executions>
+                    <execution>
+                        <id>java</id>
+                        <goals>
+                            <goal>java</goal>
+                            <goal>java-test</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>analyse</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>analyse</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

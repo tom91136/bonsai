@@ -40,7 +40,7 @@ class ConfigurationTest {
     assertEquals(Set.of("broad-catch"), configuration.errors());
     assertEquals(Set.of("identity-token"), configuration.warnings());
     assertEquals(3, configuration.wildcards());
-    assertTrue(configuration.library());
+    assertEquals(Optional.of(true), configuration.library());
     assertEquals(Optional.of("map-get-or-else"), configuration.optionFold());
     assertEquals(Set.of("demo.kernel.**"), configuration.hot());
     assertEquals(List.of("demo.Encoding.operands:4"), configuration.bounded());
@@ -48,6 +48,11 @@ class ConfigurationTest {
     assertEquals(
       List.of("--baseline", "/build/bonsai-baseline.tsv", "--bounded", "demo.Encoding.operands", "4", "a reason\twith a tab"),
       configuration.options());
+  }
+
+  @Test
+  void aLibraryFlagOfFalseIsKeptApartFromNone() throws IOException {
+    assertEquals(Optional.of(false), Configuration.parse(List.of("library\tfalse")).library());
   }
 
   @Test
@@ -64,7 +69,7 @@ class ConfigurationTest {
     assertTrue(configuration.disabled().isEmpty());
     assertTrue(configuration.enabled().isEmpty());
     assertEquals(2, configuration.wildcards());
-    assertFalse(configuration.library());
+    assertEquals(Optional.empty(), configuration.library());
     assertEquals(Optional.empty(), configuration.optionFold());
     assertTrue(configuration.options().isEmpty());
     assertTrue(configuration.text().isEmpty());

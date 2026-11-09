@@ -28,11 +28,12 @@ def scalaLine(version: String): String = version.split('.').take(2).mkString("."
 
 def oldestPatch(line: String): String = oldestPatches.getOrElse(line, s"$line.0")
 
-// Everything for the newest Scala version, then the compiler plugin of every other minor line, and back to the newest.
+// Everything for the newest Scala version, then the compiler plugin of every other minor line, then the configuration
+// reader and the sbt plugin of the sbt 1 line, and back to the versions the build loads with.
 addCommandAlias(
   "publishLocalAll",
-  (("publishLocal" +: scala3Versions.init.flatMap(version => Seq(s"++$version", "plugin/publishLocal"))) :+
-    s"++$scala3Version").mkString("; ")
+  (("publishLocal" +: scala3Versions.init.flatMap(version => Seq(s"++$version", "plugin/publishLocal"))) ++
+    Seq(s"++$sbt1ScalaVersion", "bonsaiConfig/publishLocal", "sbtBonsai/publishLocal", "reload")).mkString("; ")
 )
 
 // The scripted tests build with older lines too, so their compiler plugins are published first. The sbt plugin is then

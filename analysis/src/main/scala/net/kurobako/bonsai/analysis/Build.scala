@@ -3,13 +3,13 @@ package net.kurobako.bonsai.analysis
 import java.nio.file.Files
 import java.security.MessageDigest
 
-/** Findings about the build rather than its code: modules whose warnings never fail the ci mode, and sources copied
+/** Findings about the build rather than its code: modules whose compiler warnings never fail it, and sources copied
   * byte for byte between the directories of a cross-built module.
   */
 object Build {
   private val Fatal = Set("-Werror", "-Xfatal-warnings")
 
-  /** Modules compiled without fatal warnings, which matter in the ci mode only. */
+  /** Modules compiled without fatal warnings, which the ci mode reports. The findings of bonsai fail it either way. */
   def fatal(manifest: Manifest): Vector[Finding] = {
     val compiled =
       manifest.sources.view.collect { case source if source.scope == Output.Scope.Main => source.module }.toSet
@@ -18,7 +18,7 @@ object Build {
         Finding(
           Finding.Rule.WarningsNotFatal,
           node(module, module, Output.Scope.Main, "build.sbt"),
-          s"$module compiles without -Werror, so its compiler warnings never fail the ci mode; add -Werror to its " +
+          s"$module compiles without -Werror, so its own compiler warnings never fail the build; add -Werror to its " +
             "scalacOptions"
         )
     }

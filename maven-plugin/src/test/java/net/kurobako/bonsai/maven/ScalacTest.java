@@ -132,7 +132,7 @@ class ScalacTest {
 
     List<String> options = Scalac.options(configuration, ids(), "dev");
 
-    assertTrue(options.contains("-Wconf:msg=.*\\[bonsai.*\\]:i"), options.toString());
+    assertTrue(options.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:i"), options.toString());
   }
 
   @Test
@@ -141,7 +141,7 @@ class ScalacTest {
 
     List<String> options = Scalac.options(configuration, ids(), "ci");
 
-    assertTrue(options.contains("-Wconf:msg=.*\\[bonsai.*\\]:e"), options.toString());
+    assertTrue(options.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:e"), options.toString());
   }
 
   @Test
@@ -150,6 +150,9 @@ class ScalacTest {
 
     List<String> options = Scalac.options(configuration, ids(), "ci");
 
-    assertTrue(options.contains("-Wconf:msg=.*\\[bonsai[^]]*acyclic\\]:i"), options.toString());
+    String failing = "-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:e";
+    String kept = "-Wconf:msg=\\[bonsai.acyclic\\]:i";
+    assertTrue(options.contains(kept), options.toString());
+    assertTrue(options.indexOf(failing) < options.indexOf(kept), options.toString());
   }
 }

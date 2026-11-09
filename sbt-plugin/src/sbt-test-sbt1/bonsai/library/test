@@ -1,0 +1,3 @@
+# a published project that declares licences, a homepage or developers is a library, main classes or not, and one
+# without declarations is a library when it has none; a skipped project is not; the configuration overrides either way
+> check published=true plain=true program=false homepaged=true developed=true skipped=false optout=false optin=true

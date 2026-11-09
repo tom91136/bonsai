@@ -22,8 +22,14 @@
 # a check that only warns in CI fails with fatal warnings, as the build asked of every warning
 $ copy-file changes/Branches.scala src/main/scala/demo/Branches.scala
 -> compile
+# and without them, which only bonsaiWarnings opts out of
+> set scalacOptions -= "-Werror"
+-> compile
 > set bonsaiWarnings += "identical-branches"
 > compile
-# without fatal warnings nothing is demoted
+> set scalacOptions += "-Werror"
+> compile
+# in Dev a build that does not fail on warnings has nothing demoted
+> set ThisBuild / bonsaiMode := BonsaiMode.Dev
 > set scalacOptions -= "-Werror"
 > undemoted

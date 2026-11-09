@@ -100,6 +100,19 @@ class BuildSuite extends FunSuite {
     assertEquals(Build.fatal(manifest).map(_.node.name), Vector("api"))
   }
 
+  test("the finding about fatal warnings speaks of the compiler's own warnings, which the findings of bonsai are not") {
+    val manifest = Manifest(
+      Vector.empty,
+      Map.empty,
+      Set.empty,
+      options = Map("api" -> Vector("-deprecation")),
+      sources = Vector(Output("api", Output.Scope.Main, Path.of("api.scala")))
+    )
+    val message = Build.fatal(manifest).map(_.detail).mkString
+    assert(message.contains("its own compiler warnings"), message)
+    assert(!message.contains("ci mode"), message)
+  }
+
   withRoot("identical sources under the directories of different platforms are reported once per copy set") {
     root =>
       val jvm      = write(root, "api/src/main/scalajvm/Digest.scala", "object Digest")

@@ -21,16 +21,17 @@ private[sbt] object CompilerOptions {
     if (disabled("RemoveUnused") || !ScalaVersions.removeUnused(scala) || own.exists(_.matches(Unused))) Nil
     else UnusedOptions.filterNot(own.contains)
 
-  /** The options that keep the findings of the compiler plugin from failing a build that fails on warnings, unless the
-    * mode asks for it: no finding fails it in Dev, and in CI the findings the build keeps as warnings do not either.
+  /** The options that route the findings of the compiler plugin, whatever the build does with compiler warnings. In CI
+    * every finding fails except those of the checks in `warnings`. In Dev none does, so a build that fails on warnings
+    * gets them all demoted.
     */
-  def demoted(own: Seq[String], ci: Boolean, warnings: Set[String]): Seq[String] =
-    if (!fatal(own)) Nil
-    else if (ci) (warnings & BonsaiArtifacts.checks).toSeq.sorted.map(id => demote(id))
-    else Seq(demote("[a-z0-9-]+"))
+  def routed(own: Seq[String], ci: Boolean, warnings: Set[String]): Seq[String] =
+    if (ci) tagged("[a-z0-9-]+", "e") +: (warnings & BonsaiArtifacts.checks).toSeq.sorted.map(tagged(_, "i"))
+    else if (fatal(own)) Seq(tagged("[a-z0-9-]+", "i"))
+    else Nil
 
   // The compiler lets the last -Wconf that matches decide, so these go before the options of the build, whose own
   // -Wconf can then override them. A regex of the option cannot hold a colon, which the compiler splits it on, so the
   // tag matches any character beside the id.
-  private def demote(id: String): String = s"-Wconf:msg=\\[bonsai.$id\\]:i"
+  private def tagged(id: String, action: String): String = s"-Wconf:msg=\\[bonsai.$id\\]:$action"
 }

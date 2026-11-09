@@ -25,7 +25,7 @@ public final class Configuration {
   private final List<String> options = new ArrayList<>();
   private final List<String> text = new ArrayList<>();
   private int wildcards = 2;
-  private boolean library;
+  private Boolean library;
   private String optionFold;
 
   private Configuration() {
@@ -76,9 +76,9 @@ public final class Configuration {
     return checked;
   }
 
-  /** Whether other builds use this module's public API, so that the analysis counts it as used. */
-  public boolean library() {
-    return library;
+  /** Whether other builds use this module's public API, so that the analysis counts it as used, when it says. */
+  public Optional<Boolean> library() {
+    return Optional.ofNullable(library);
   }
 
   /** The options the analysis runs with, apart from its mode and the file it records the baseline in. */

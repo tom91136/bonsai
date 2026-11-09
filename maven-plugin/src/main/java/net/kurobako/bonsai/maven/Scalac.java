@@ -8,14 +8,14 @@ import java.util.regex.Pattern;
 /**
  * The options the compiler plugin reads, which the scalac of the build takes from a response file.
  *
- * <p>The build may compile with fatal warnings, which would make every finding of the plugin fail it, so the findings
- * are routed by the mode instead: the dev mode reports them without failing, and the ci mode fails on them. A check
- * kept as a warning is reported without failing in either mode.
+ * <p>The findings are routed by the mode, whether or not the build compiles with fatal warnings: the dev mode reports
+ * them without failing, and the ci mode fails on them. A check kept as a warning is reported without failing in either
+ * mode.
  */
 public final class Scalac {
 
-  /** The message every finding of the plugin ends with, which the filters match. */
-  private static final String FINDING = ".*\\[bonsai.*\\]";
+  /** The ids of the checks, as the tag every finding of the plugin ends with spells them. */
+  private static final String ANY = "[a-z0-9-]+";
 
   /** The options with which a build asks the compiler for unused warnings itself. */
   private static final Pattern UNUSED = Pattern.compile("-(Wunused|Ywarn-unused|Wall).*");
@@ -54,19 +54,23 @@ public final class Scalac {
     return given.stream().filter(option -> option != null && UNUSED.matcher(option).matches()).toList();
   }
 
+  /** The option that gives the findings of a check the action. The tag holds any character beside the id, as the compiler
+   * splits the option on a colon. */
+  private static String tagged(String id, String action) {
+    return "-Wconf:msg=\\[bonsai." + id + "\\]:" + action;
+  }
+
   /** The options the compiler plugin reads, for the mode. */
   public static List<String> options(Configuration configuration, Ids ids, String mode) {
     List<String> options = new ArrayList<>();
     options.add("-P:bonsai:mode=" + mode);
     options.add("-P:bonsai:wildcards=" + configuration.wildcards());
     configuration.optionFold().ifPresent(fold -> options.add("-P:bonsai:option-fold=" + fold));
-    options.add("-Wconf:msg=" + FINDING + ":" + (mode.equals("ci") ? "e" : "i"));
+    options.add(tagged(ANY, mode.equals("ci") ? "e" : "i"));
     if (mode.equals("ci")) {
       for (String id : configuration.warnings()) {
         if (ids.checks().contains(id)) {
-          // The filter holds no colon, because the compiler splits the option on them, and the check's name is
-          // anchored to the end of the tag so that one check's name does not match another's.
-          options.add("-Wconf:msg=.*\\[bonsai[^]]*" + id + "\\]:i");
+          options.add(tagged(id, "i"));
         }
       }
     }

@@ -2,7 +2,8 @@ package net.kurobako.bonsai.sbt
 
 class CompilerOptionsSuite extends munit.FunSuite {
 
-  private val newest = BonsaiArtifacts.analysisScala
+  private val newest  = BonsaiArtifacts.analysisScala
+  private val failing = "-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:e"
 
   test("the compiler fails on warnings with either of its two options") {
     assert(CompilerOptions.fatal(Seq("-feature", "-Werror")))
@@ -33,23 +34,31 @@ class CompilerOptionsSuite extends munit.FunSuite {
     assertEquals(CompilerOptions.unused(Nil, Set.empty, "2.13.16"), Nil)
   }
 
-  test("a build that does not fail on warnings has none demoted") {
-    assertEquals(CompilerOptions.demoted(Seq("-feature"), ci = false, Set("acyclic")), Nil)
-    assertEquals(CompilerOptions.demoted(Seq("-feature"), ci = true, Set("acyclic")), Nil)
+  test("in Dev a build that does not fail on warnings has none demoted") {
+    assertEquals(CompilerOptions.routed(Seq("-feature"), ci = false, Set("acyclic")), Nil)
   }
 
   test("in Dev no finding of the compiler plugin fails a build that fails on warnings") {
     assertEquals(
-      CompilerOptions.demoted(Seq("-Werror"), ci = false, Set("acyclic")),
+      CompilerOptions.routed(Seq("-Werror"), ci = false, Set("acyclic")),
       Seq("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:i")
     )
   }
 
-  test("in CI only the checks the build keeps as warnings are demoted") {
-    assertEquals(CompilerOptions.demoted(Seq("-Xfatal-warnings"), ci = true, Set.empty), Nil)
+  test("in CI every finding fails the build, whether or not it fails on warnings") {
+    assertEquals(CompilerOptions.routed(Seq("-feature"), ci = true, Set.empty), Seq(failing))
+    assertEquals(CompilerOptions.routed(Seq("-Xfatal-warnings"), ci = true, Set.empty), Seq(failing))
+  }
+
+  test("in CI only the checks the build keeps as warnings are demoted from failing") {
+    val expected = Seq(failing, "-Wconf:msg=\\[bonsai.acyclic\\]:i", "-Wconf:msg=\\[bonsai.same-type-arguments\\]:i")
     assertEquals(
-      CompilerOptions.demoted(Seq("-Werror"), ci = true, Set("same-type-arguments", "acyclic", "RemoveUnused")),
-      Seq("-Wconf:msg=\\[bonsai.acyclic\\]:i", "-Wconf:msg=\\[bonsai.same-type-arguments\\]:i")
+      CompilerOptions.routed(Seq("-Werror"), ci = true, Set("same-type-arguments", "acyclic", "RemoveUnused")),
+      expected
+    )
+    assertEquals(
+      CompilerOptions.routed(Seq("-feature"), ci = true, Set("same-type-arguments", "acyclic", "RemoveUnused")),
+      expected
     )
   }
 }

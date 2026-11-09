@@ -87,8 +87,9 @@ object BonsaiPlugin extends AutoPlugin {
     sealed trait BonsaiMode
 
     val bonsaiMode: SettingKey[BonsaiMode] = settingKey[BonsaiMode](
-      "Dev warns; CI fails on the strict checks and rules. Defaults to BONSAI_MODE, else CI when CI is set. A build " +
-        "that fails on compiler warnings does not fail on a finding in Dev, nor in CI on one in bonsaiWarnings"
+      "Dev warns; CI fails on the checks, scalafix rules and strict analysis rules not in bonsaiWarnings, whether or " +
+        "not the build fails on compiler warnings. Defaults to BONSAI_MODE, else CI when CI is set. A build that " +
+        "fails on compiler warnings does not fail on a finding in Dev"
     )
     val bonsaiDisabled: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks, analysis rules and scalafix rules left out, by id")
@@ -106,7 +107,7 @@ object BonsaiPlugin extends AutoPlugin {
     val bonsaiBaseline: SettingKey[File] = settingKey[File]("Analysis findings recorded here report without failing")
     val bonsaiLibrary: TaskKey[Boolean]  = taskKey[Boolean](
       "Whether other builds use this project's public API, so the analysis counts it as used. " +
-        "Defaults to whether the project is published and has no main class"
+        "Defaults to whether the project is published and declares licences, developers or a homepage, or has no main class"
     )
     val bonsaiPurity: SettingKey[File] =
       settingKey[File]("Methods recorded here as pure fail the analysis once they are not")
@@ -287,8 +288,14 @@ object BonsaiPlugin extends AutoPlugin {
     },
     bonsaiModeId  := bonsaiMode.value.toString.toLowerCase(java.util.Locale.ROOT),
     bonsaiJdk     := (Compile / javaHome).value.getOrElse(ManifestLines.defaultJdk),
-    bonsaiLibrary := Compat.uncached(bonsaiConfiguration.value.library(thisProject.value.id)
-      .getOrElse(!(publish / skip).value && (Compile / discoveredMainClasses).value.isEmpty)),
+    bonsaiLibrary := Compat.uncached(
+      Library.detect(
+        bonsaiConfiguration.value.library(thisProject.value.id),
+        (publish / skip).value,
+        licenses.value.nonEmpty || developers.value.nonEmpty || homepage.value.isDefined,
+        (Compile / discoveredMainClasses).value
+      )
+    ),
     libraryDependencies ++= {
       if (isMetaBuild.value) Nil
       else
@@ -318,9 +325,9 @@ object BonsaiPlugin extends AutoPlugin {
               bonsaiHot.value.toSeq.sorted.map(glob => s"-P:bonsai:hot=$glob") ++
               bonsaiBounded.value.map { case (member, max, _) => s"-P:bonsai:bounded=$member:$max" } ++
               bonsaiChecked.value.toSeq.sorted.map(tpe => s"-P:bonsai:checked=$tpe")
-        val unused  = CompilerOptions.unused(own, bonsaiDisabled.value, scalaVersion.value)
-        val demoted = CompilerOptions.demoted(own, bonsaiModeId.value == "ci", bonsaiWarnings.value)
-        demoted ++ own ++ plugin ++ unused
+        val unused = CompilerOptions.unused(own, bonsaiDisabled.value, scalaVersion.value)
+        val routed = CompilerOptions.routed(own, bonsaiModeId.value == "ci", bonsaiWarnings.value)
+        routed ++ own ++ plugin ++ unused
       }
     },
     semanticdbEnabled := !isMetaBuild.value,
