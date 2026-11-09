@@ -169,7 +169,7 @@ private[analysis] class Collector(
     usage ++= users.toVector.groupMapReduce((symbol, _) => memberName(symbol))((_, nodes) => nodes.toSet)(_ ++ _)
     memberList ++= members.collect {
       case (symbol, definition) if !(definition.field && derivations.derived(symbol.owner)) =>
-        val bases = symbol.allOverriddenSymbols.toVector
+        val bases = (symbol.allOverriddenSymbols ++ dispatching.overridden(symbol)).toVector
         Members.Member(
           definition.name,
           definition.node,
@@ -942,6 +942,9 @@ private[analysis] class Collector(
         }
       )
     }
+    dispatching.classes.foreach(cls =>
+      if (exported(cls)) cls.asClass.baseClasses.drop(1).foreach(base => symbols.expose(base))
+    )
     members.filterInPlace((symbol, _) => !exported(symbol)): Unit
   }
 

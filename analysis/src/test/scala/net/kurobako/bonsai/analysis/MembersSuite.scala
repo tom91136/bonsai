@@ -645,6 +645,70 @@ class MembersSuite extends AnalysisSuite {
     )
   }
 
+  test("members a qualified-private trait gives an exported type are its API, and a hidden type's are not") {
+    val result = extract(
+      Seq("Client.scala" ->
+        """package lib
+          |private[lib] trait Shared { def shared: Int = 1 }
+          |private[lib] trait Inner { def inner: Int = 2 }
+          |class Client extends Shared
+          |private[lib] class Hidden extends Inner
+          |object Main { def main(args: Array[String]): Unit = println(Hidden()) }""".stripMargin),
+      libraries = Set("m")
+    )
+    val found = Members.findings(result.members, result.graph.nodes, result.reach)
+    assertEquals(found.map(_.detail).sorted, Vector("Inner.inner is never referenced"))
+  }
+
+  test("a self-typed trait's override is used with the base it overrides, and an unused one still fires") {
+    val found = findings(
+      Seq(
+        entry("val base: Base = new Host; println(base.value)"),
+        "Mixins.scala" ->
+          """trait Base { def value: Int = 1 }
+            |trait Shaped { self: Base => override def value: Int = 2 }
+            |trait Lone { self: Base => def spare: Int = 3 }
+            |class Host extends Base with Shaped with Lone""".stripMargin
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail },
+      Vector("Lone.spare is never referenced")
+    )
+  }
+
+  test("a mixin's implementation of an abstract member is used when calls reach the abstract member") {
+    val found = findings(
+      Seq(
+        entry("val source: Source = new Host; println(source.next)"),
+        "Mixins.scala" ->
+          """trait Source { def next: Int }
+            |trait Counting { def next: Int = 1 }
+            |trait Lone { def spare: Int = 2 }
+            |class Host extends Source with Counting with Lone""".stripMargin
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail },
+      Vector("Lone.spare is never referenced")
+    )
+  }
+
+  test("a subclass's override does not use the member it replaces") {
+    val found = findings(
+      Seq(
+        entry("val host = new Host; println(host.next)"),
+        "Mixins.scala" ->
+          """trait Counting { def next: Int = 1 }
+            |class Host extends Counting { override def next: Int = 2 }""".stripMargin
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail },
+      Vector("Counting.next is never referenced")
+    )
+  }
+
   test("types named only in strings, and what they declare, are used when the build declares them reflective") {
     val sources = Seq(
       entry("""println(Class.forName("app.Warp"))"""),

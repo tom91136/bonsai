@@ -32,7 +32,9 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
 
   val classes: collection.Set[Symbol] = declared
 
-  def declare(cls: Symbol): Unit = declared += cls: Unit
+  def declare(cls: Symbol)(using Context): Unit =
+    if (declared.add(cls) && !cls.isOneOf(Flags.Trait | Flags.Abstract))
+      cls.asClass.baseClasses.foreach(base => subclasses.getOrElseUpdate(base, mutable.ArrayBuffer.empty) += cls)
 
   def implemented(abstraction: Symbol): Boolean = implements.contains(abstraction)
 
@@ -76,8 +78,7 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
     }
 
   /** Resolves the calls recorded to the keys class files name them by, once every class is declared. */
-  def resolve()(using Context): Unit = {
-    indexSubclasses()
+  def resolve()(using Context): Unit =
     sites ++= dispatches.toVector.flatMap { case ((caller, callee), (node, receiver, settled)) =>
       // Test doubles never reach a call in main code at run time.
       val test    = nodes.get(node).exists(_.test)
@@ -100,22 +101,18 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
         )
       )
     }
-  }
-
-  // The concrete classes deriving from each class, in definition order; every class is defined by the time calls are
-  // resolved.
-  private def indexSubclasses()(using Context): Unit = {
-    subclasses.clear()
-    declared.foreach(cls =>
-      if (!cls.isOneOf(Flags.Trait | Flags.Abstract))
-        cls.asClass.baseClasses.foreach(base => subclasses.getOrElseUpdate(base, mutable.ArrayBuffer.empty) += cls)
-    )
-  }
 
   private def concreteSubclasses(owner: Symbol): collection.Seq[Symbol] = subclasses.getOrElse(owner, Vector.empty)
 
   private def concreteMember(method: Symbol, cls: Symbol)(using Context): Option[Symbol] =
     Some(method.denot.matchingMember(cls.thisType)).filter(found => found.exists && !found.is(Flags.Deferred))
+
+  def overridden(member: Symbol)(using Context): collection.View[Symbol] =
+    concreteSubclasses(member.owner).view.flatMap(cls =>
+      cls.asClass.baseClasses.view
+        .filterNot(base => base.derivesFrom(member.owner) || member.owner.derivesFrom(base))
+        .map(member.matchingDecl(_, cls.thisType))
+    ).filter(_.exists)
 
   /** The bodies a call of `method` can run: its own, or every override in the build's main classes, which test doubles
     * never reach at run time; nothing when one of them lies outside the build.
