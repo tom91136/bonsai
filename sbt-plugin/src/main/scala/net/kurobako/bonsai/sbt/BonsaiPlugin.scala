@@ -255,7 +255,7 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiAnalysisJavaHome := ManifestLines.defaultJdk
   )
 
-  override def projectSettings: Seq[Setting[?]] = Seq(
+  override def projectSettings: Seq[Setting[?]] = Seq(Compile, Test).flatMap(inConfig(_)(Seq(compiled))) ++ Seq(
     bonsaiEnabled      := !bonsaiConfiguration.value.excludedModules.contains(thisProject.value.id),
     bonsaiDisabled     := ownOr(bonsaiDisabled)(_.disabled).value,
     bonsaiEnabledRules := ownOr(bonsaiEnabledRules)(_.enabled).value,
@@ -347,9 +347,7 @@ object BonsaiPlugin extends AutoPlugin {
               bonsaiGenerated.value.toSeq.sorted.map(glob => s"-P:bonsai:generated=$glob") ++
               managedDirectories.map(dir => s"-P:bonsai:generated=${escape(dir.toString)}/**") ++
               skipped(bonsaiGeneratedDisabled.value)
-        val unused = CompilerOptions.unused(own, bonsaiDisabled.value, scalaVersion.value)
-        val routed = CompilerOptions.routed(own, bonsaiModeId.value == "ci", bonsaiWarnings.value)
-        routed ++ own ++ plugin ++ unused
+        own ++ plugin
       }
     },
     semanticdbEnabled := !isMetaBuild.value,
@@ -392,6 +390,17 @@ object BonsaiPlugin extends AutoPlugin {
     },
     bonsaiPurityWrite / aggregate := false
   )
+
+  // judged on the options the compile itself gets, to which the build can still add after these settings
+  private def compiled: Setting[?] = compile / scalacOptions := {
+    val own = scalacOptions.value
+    if (isMetaBuild.value || !bonsaiEnabled.value) own
+    else {
+      val routed = CompilerOptions.routed(own, bonsaiModeId.value == "ci", bonsaiWarnings.value)
+      val unused = CompilerOptions.unused(own, bonsaiDisabled.value, scalaVersion.value)
+      routed ++ own ++ unused
+    }
+  }
 
   private def supported(rule: String, scala: String): Boolean = rule match {
     case "RemoveUnused"        => ScalaVersions.removeUnused(scala)
@@ -548,7 +557,7 @@ object BonsaiPlugin extends AutoPlugin {
       val platform        = platforms.toSeq.sorted.map(id => s"platform\t$id")
       val compilerOptions = Def.task {
         val id    = thisProject.value.id
-        val flags = scalacOptions.value
+        val flags = (compile / scalacOptions).value
         if (fixtures(id)) Nil else ManifestLines.options(id, flags)
       }.all(ScopeFilter(inProjects((if (jvm.nonEmpty) jvm else enabled)*), inConfigurations(Compile))).value.flatten
       // Every platform's sources, so copies between the directories of a cross-built project show.

@@ -1,0 +1,3 @@
+# findings only warn in Dev, whichever configuration makes warnings fatal
+> compile
+> Test/compile

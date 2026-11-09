@@ -18,7 +18,7 @@ lazy val root = project.in(file(".")).settings(
     assert(wanted.forall(options.contains), options.mkString(" "))
   },
   undemoted := {
-    val options = (Compile / scalacOptions).value
+    val options = (Compile / compile / scalacOptions).value
     assert(!options.exists(_.startsWith("-Wconf:msg=\\[bonsai")), options.mkString(" "))
   }
 )

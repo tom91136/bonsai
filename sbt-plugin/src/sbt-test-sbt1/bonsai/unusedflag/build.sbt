@@ -6,7 +6,7 @@ lazy val once = inputKey[Unit]("Check the compiler options hold each argument on
 lazy val root = project.in(file(".")).settings(
   scalacOptions += "-Wunused:all",
   once := {
-    val options = (Compile / scalacOptions).value
+    val options = (Compile / compile / scalacOptions).value
     val wanted  = Def.spaceDelimited().parsed
     assert(wanted.forall(argument => options.count(_ == argument) == 1), options.mkString(" "))
   }
