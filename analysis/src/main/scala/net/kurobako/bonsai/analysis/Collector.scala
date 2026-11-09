@@ -527,8 +527,11 @@ private[analysis] class Collector(
       )
     }
 
+  private def commandLine(method: Symbol)(using Context): Boolean =
+    method.annotations.exists(_.symbol.fullName.toString == "mainargs.main")
+
   private def entry(method: Symbol)(using Context): Vector[String] =
-    if (!method.annotations.exists(_.symbol.fullName.toString == "mainargs.main")) Vector.empty
+    if (!commandLine(method)) Vector.empty
     else {
       val shapes = Shapes.clauses(method).flatten.map(field => field.name -> field.shape).toMap
       Calls.termClauses(method).flatten.toVector.flatMap { parameter =>
@@ -830,7 +833,7 @@ private[analysis] class Collector(
       !symbol.isOneOf(aliases) &&
       !symbol.isConstructor && !symbol.isSetter && !symbol.name.is(DefaultGetterName) &&
       !symbol.isAllOf(Flags.EnumValue) &&
-      !ctx.platform.isMainMethod(symbol) && !exported(symbol)
+      !ctx.platform.isMainMethod(symbol) && !commandLine(symbol) && !exported(symbol)
     )
       nodeOf(symbol).foreach { info =>
         val public = !field && !symbol.is(Flags.Protected) && !symbol.privateWithin.exists

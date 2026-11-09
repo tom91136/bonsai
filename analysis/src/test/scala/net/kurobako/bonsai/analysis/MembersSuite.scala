@@ -12,6 +12,20 @@ class MembersSuite extends AnalysisSuite {
 
   private def entry(body: String) = "Main.scala" -> s"object Main { def main(args: Array[String]): Unit = { $body } }"
 
+  test("a method annotated as a command line entry point is not reported as unreferenced") {
+    val found = findings(
+      Seq(
+        entry("println(Tool.used)"),
+        "Annotation.scala" -> "package mainargs\nclass main extends scala.annotation.StaticAnnotation",
+        "Tool.scala"       -> "object Tool { @mainargs.main def run(): Unit = (); def used = 1; def unrelated = 2 }"
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail },
+      Vector("Tool.unrelated is never referenced")
+    )
+  }
+
   test("public members nothing references are unused") {
     val found =
       findings(Seq(entry("println(Tools.used)"), "Tools.scala" -> "object Tools { def used = 1; def spare = 2 }"))
