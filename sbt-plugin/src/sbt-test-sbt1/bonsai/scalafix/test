@@ -5,6 +5,10 @@
 # the rules resolve: a rule with nothing to report passes
 > set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
 > scalafixAll --check
+# the rules run on the older sbt-scalafix this line of sbt brings
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "QualifiedCollectionNamespaces"
+> scalafixAll --check
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
 # rules listed in .scalafix.conf run alongside bonsai's
 $ copy-file changes/Counter.scala src/main/scala/demo/Counter.scala
 -> scalafixAll --check

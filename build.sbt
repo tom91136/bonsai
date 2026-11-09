@@ -211,8 +211,7 @@ lazy val rules = project.in(file("scalafix/rules"))
     // The rules lint themselves from their own classes, which a project dependency on itself cannot express.
     ScalafixConfig / products := (Compile / products).value,
     libraryDependencies +=
-      ("ch.epfl.scala" %% "scalafix-core" % _root_.scalafix.sbt.BuildInfo.scalafixVersion)
-        .cross(CrossVersion.for3Use2_13),
+      ("ch.epfl.scala" %% "scalafix-core" % Versions.scalafixSbt1).cross(CrossVersion.for3Use2_13),
     idResource("rules", ruleSource -> BonsaiIds.Rules),
     Compile / resourceGenerators += Def.task {
       val file = (Compile / resourceManaged).value / "META-INF/bonsai/versions.properties"

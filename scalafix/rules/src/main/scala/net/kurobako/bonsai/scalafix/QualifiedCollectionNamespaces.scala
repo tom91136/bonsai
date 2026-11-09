@@ -127,8 +127,13 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
   // stand for packages, which no namespace owns.
   private def reference(name: Name): Boolean = name match {
     case _: Term.Name | _: Type.Name =>
-      !name.isDefinition && ancestry.outsideImports(name)
+      !definition(name) && ancestry.outsideImports(name)
     case _ => false
+  }
+
+  private def definition(name: Name): Boolean = name.parent match {
+    case Some(parent: Member) => parent.name == name
+    case _                    => false
   }
 
   // The tree to replace: the name, or the qualified reference it ends.
