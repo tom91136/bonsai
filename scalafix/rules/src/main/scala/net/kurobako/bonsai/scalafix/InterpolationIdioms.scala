@@ -8,13 +8,16 @@ import scalafix.v1.*
   *
   * `s"${name}.size()"` and `s"$name.size()"` are the same string, while `s"${name}_suffix"` needs the braces because
   * `$name_suffix` would name one identifier.
+  *
+  * An `s` without arguments is redundant. Removing it unescapes `$$`, and leaves a triple-quoted literal that holds a
+  * backslash alone, since only the interpolator reads its escapes.
   */
 class InterpolationIdioms extends SyntacticRule("InterpolationIdioms") {
   private val Interpolators = Set("s", "raw")
 
   override def fix(using document: SyntacticDocument): Patch = document.tree.collect {
     case interpolation: Term.Interpolate if Interpolators(interpolation.prefix.value) =>
-      interpolation.args.flatMap {
+      redundantInterpolator(interpolation) + interpolation.args.flatMap {
         case block @ Term.Block(List(name: Term.Name))
             if !name.value.startsWith("`") && safe(document.input.text, name) =>
           val open = interpolation.tokens.collectFirst {
@@ -31,6 +34,28 @@ class InterpolationIdioms extends SyntacticRule("InterpolationIdioms") {
         case _ => None
       }.asPatch
   }.asPatch
+
+  private def redundantInterpolator(interpolation: Term.Interpolate): Patch = {
+    val tokens  = interpolation.tokens
+    val parts   = tokens.collect { case part: Token.Interpolation.Part => part }
+    val tripled =
+      tokens.exists { case start: Token.Interpolation.Start => start.syntax.endsWith("\"\"\""); case _ => false }
+    val literal =
+      parts.forall(part => !part.pos.text.replace("$$", "").contains('$') && !(tripled && part.pos.text.contains('\\')))
+    val prefix = tokens.collectFirst { case id: Token.Interpolation.Id => id }
+    prefix.filter(_ => interpolation.prefix.value == "s" && interpolation.args.isEmpty && literal).fold(Patch.empty) {
+      id =>
+        lint(
+          "redundant-interpolator",
+          "the interpolator of a literal without arguments is redundant",
+          interpolation.pos
+        ) +
+          Patch.removeToken(id) +
+          parts.filter(_.pos.text.contains("$$")).map(part =>
+            Patch.replaceToken(part, part.pos.text.replace("$$", "$"))
+          ).asPatch
+    }
+  }
 
   /** Whether the text after the closing brace cannot be read as part of the interpolated name. */
   private def safe(text: String, name: Term.Name): Boolean = {
