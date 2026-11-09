@@ -1,0 +1,2 @@
+# the analysis runs on its own libraries, whatever the build pins
+> bonsaiAnalyse

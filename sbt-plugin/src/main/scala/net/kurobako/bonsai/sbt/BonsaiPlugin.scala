@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.sbt
 
+import lmcoursier.CoursierDependencyResolution
 import sbt.*
 import sbt.Keys.*
 import sbt.librarymanagement.DependencyResolution
@@ -528,8 +529,12 @@ object BonsaiPlugin extends AutoPlugin {
         (id, kept, kept.collect { case Javalib(version) => version })
       }
       val log = streams.value.log
-      // A Scala 2.12 project excludes the Scala 3 library, which the analysis needs, from what it resolves.
-      val resolution = Def.task(dependencyResolution.value).all(analysed).value.head
+      // a Scala 2 project excludes the Scala 3 library, which the analysis needs, and the pins, exclusions and conflict
+      // rules of any project would change the libraries it runs on
+      val resolution = CoursierDependencyResolution(
+        Def.task(csrConfiguration.value).all(analysed).value.head.withForceVersions(Vector.empty)
+          .withExcludeDependencies(Vector.empty).withReconciliation(Vector.empty)
+      )
       val directory  = target.value
       val interfaces = libraries.flatMap(_._3).distinct.map { version =>
         version -> javalibInterface(version, resolution, directory, log)

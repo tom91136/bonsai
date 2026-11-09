@@ -411,6 +411,8 @@ lazy val sbtBonsai = linted(project.in(file("sbt-plugin")))
         case _      => sbtVersion.value
       }),
     libraryDependencies += "org.scalameta" %% "munit" % munitVersion % Test,
+    // scaladoc reads the TASTy of lm-coursier, whose annotation library is not on the classpath
+    Compile / doc / sources := Nil,
     addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % Versions.scalafix),
     Compile / sourceGenerators += Def.task {
       val file = (Compile / sourceManaged).value / "BonsaiArtifacts.scala"
