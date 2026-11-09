@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
  * The options the compiler plugin reads, which the scalac of the build takes from a response file.
  *
  * <p>The findings are routed by the mode, whether or not the build compiles with fatal warnings: the relaxed and audit
- * modes report them without failing, and the strict mode fails on them. A check kept as a warning is reported without
+ * modes report them without failing, and the strict mode fails on them. A nonfatal check is reported without
  * failing in any mode. In the audit mode the compiler plugin records what the strict mode would fail on, for the
  * analysis to fail on at the end.
  */
@@ -73,7 +73,7 @@ public final class Scalac {
     configuration.optionFold().ifPresent(fold -> options.add("-P:bonsai:option-fold=" + fold));
     options.add(tagged(ANY, mode.equals("strict") ? "e" : "i"));
     if (mode.equals("strict")) {
-      for (String id : configuration.warnings()) {
+      for (String id : configuration.nonfatal()) {
         if (ids.checks().contains(id)) {
           options.add(tagged(id, "i"));
         }
@@ -89,7 +89,7 @@ public final class Scalac {
         options.add("-P:bonsai:error=" + id);
       }
     }
-    for (String id : configuration.warnings()) {
+    for (String id : configuration.nonfatal()) {
       if (ids.checks().contains(id)) {
         options.add("-P:bonsai:warn=" + id);
       }

@@ -54,7 +54,7 @@ public class PrepareMojo extends BonsaiMojo {
     File rules = tools.rulesJar(version);
     Ids ids = ids(tools, plugin, rules);
     try {
-      ids.validate(configuration.disabled(), configuration.enabled(), configuration.errors(), configuration.warnings());
+      ids.validate(configuration.disabled(), configuration.enabled(), configuration.errors(), configuration.nonfatal());
     } catch (java.io.IOException error) {
       throw new MojoExecutionException("bonsai: cannot read the ids the tools accept", error);
     }

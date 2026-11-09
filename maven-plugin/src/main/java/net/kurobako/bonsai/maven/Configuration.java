@@ -19,7 +19,7 @@ public final class Configuration {
   private final Set<String> excluded = new TreeSet<>();
   private final Set<String> enabled = new TreeSet<>();
   private final Set<String> errors = new TreeSet<>();
-  private final Set<String> warnings = new TreeSet<>();
+  private final Set<String> nonfatal = new TreeSet<>();
   private final Set<String> hot = new TreeSet<>();
   private final List<String> bounded = new ArrayList<>();
   private final Set<String> checked = new TreeSet<>();
@@ -55,8 +55,8 @@ public final class Configuration {
   }
 
   /** The ids the tools report without failing. */
-  public Set<String> warnings() {
-    return warnings;
+  public Set<String> nonfatal() {
+    return nonfatal;
   }
 
   /** The positional wildcards a case class pattern may carry. */
@@ -120,7 +120,7 @@ public final class Configuration {
         case "excluded" -> configuration.excluded.add(value);
         case "enabled" -> configuration.enabled.add(value);
         case "errors" -> configuration.errors.add(value);
-        case "warnings" -> configuration.warnings.add(value);
+        case "nonfatal" -> configuration.nonfatal.add(value);
         case "hot" -> configuration.hot.add(value);
         case "bounded" -> configuration.bounded.add(value);
         case "checked" -> configuration.checked.add(value);

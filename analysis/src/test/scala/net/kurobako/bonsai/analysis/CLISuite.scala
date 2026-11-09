@@ -58,7 +58,7 @@ class CLISuite extends FunSuite {
         info = true,
         disabled = Set(Report.Disable(Report.Selector.Named("weaker-access"), Report.Scope.Everywhere)),
         errors = Set("unused", "duplicate-code"),
-        warnings = Set("huge-method"),
+        nonfatal = Set("huge-method"),
         mode = CLI.Mode.Strict,
         baseline = Some(Path.of("baseline.tsv")),
         record = Some(Path.of("next.tsv"))
@@ -105,7 +105,7 @@ class CLISuite extends FunSuite {
     )
   }
 
-  test("every rule is escalated at once with *, except those kept as warnings") {
+  test("every rule is escalated at once with *, except the nonfatal ones") {
     val every = Finding.Rule.values.map(_.id).toSet
     assertEquals(CLI.parse(List("--error", "*")).map(_.failing), Right(every))
     assertEquals(

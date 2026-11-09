@@ -1,6 +1,6 @@
 ThisBuild / scalaVersion   := "3.9.0"
 ThisBuild / bonsaiMode := BonsaiMode.Strict
-ThisBuild / bonsaiWarnings += "test-only-member"
+ThisBuild / bonsaiNonfatal += "test-only-member"
 
 lazy val IT     = config("it").extend(Test)
 lazy val Deep   = config("deep").extend(IT)

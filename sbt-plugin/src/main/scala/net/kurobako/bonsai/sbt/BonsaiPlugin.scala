@@ -15,7 +15,7 @@ import scalafix.sbt.ScalafixPlugin.autoImport.*
   * {{{
   * disabled   = [PackageNaming]
   * errors     = [local-throw]
-  * warnings   = []
+  * nonfatal   = []
   * wildcards  = 2
   * option-fold = fold
   * baseline  = bonsai-baseline.tsv
@@ -94,7 +94,7 @@ object BonsaiPlugin extends AutoPlugin {
     sealed trait BonsaiMode
 
     val bonsaiMode: SettingKey[BonsaiMode] = settingKey[BonsaiMode](
-      "Relaxed warns; Strict fails on the checks, scalafix rules and fatal analysis rules not in bonsaiWarnings, " +
+      "Relaxed warns; Strict fails on the checks, scalafix rules and fatal analysis rules not in bonsaiNonfatal, " +
         "whether or not the build fails on compiler warnings. Audit compiles whatever the checks find, then reports " +
         "them with the analysis and fails as Strict would, apart from scalafix, which only warns. Defaults to " +
         "BONSAI_MODE, else Strict when CI is set. A build that fails on compiler warnings does not fail on a finding " +
@@ -106,7 +106,7 @@ object BonsaiPlugin extends AutoPlugin {
       settingKey[Set[String]]("Opt-in scalafix rules run, by id; disabling a rule wins over enabling it")
     val bonsaiErrors: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks and analysis rules that fail in every mode, by id")
-    val bonsaiWarnings: SettingKey[Set[String]] =
+    val bonsaiNonfatal: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks, analysis rules and scalafix rules that never fail, by id")
     val bonsaiWildcards: SettingKey[Int]     = settingKey[Int]("Positional wildcards a case class pattern may carry")
     val bonsaiOptionFold: SettingKey[String] = settingKey[String](
@@ -232,7 +232,7 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiDisabled      := bonsaiConfiguration.value.build.disabled.getOrElse(Set.empty),
     bonsaiEnabledRules  := bonsaiConfiguration.value.build.enabled.getOrElse(Set.empty),
     bonsaiErrors        := bonsaiConfiguration.value.build.errors.getOrElse(Set.empty),
-    bonsaiWarnings      := bonsaiConfiguration.value.build.warnings.getOrElse(Set.empty),
+    bonsaiNonfatal      := bonsaiConfiguration.value.build.nonfatal.getOrElse(Set.empty),
     bonsaiWildcards     := bonsaiConfiguration.value.build.wildcards.getOrElse(2),
     bonsaiOptionFold    := bonsaiConfiguration.value.build.optionFold.getOrElse(BonsaiConfiguration.OptionFolds.head),
     bonsaiBaseline      :=
@@ -265,11 +265,11 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiDisabled     := ownOr(bonsaiDisabled)(_.disabled).value,
     bonsaiEnabledRules := ownOr(bonsaiEnabledRules)(_.enabled).value,
     bonsaiErrors       := ownOr(bonsaiErrors)(_.errors).value,
-    bonsaiWarnings     := ownOr(bonsaiWarnings)(_.warnings).value,
+    bonsaiNonfatal     := ownOr(bonsaiNonfatal)(_.nonfatal).value,
     bonsaiWildcards    := ownOr(bonsaiWildcards)(_.wildcards).value,
     bonsaiOptionFold   := ownOr(bonsaiOptionFold)(_.optionFold).value,
     bonsaiValidated    := {
-      val unknown = (bonsaiDisabled.value ++ bonsaiEnabledRules.value ++ bonsaiErrors.value ++ bonsaiWarnings.value) --
+      val unknown = (bonsaiDisabled.value ++ bonsaiEnabledRules.value ++ bonsaiErrors.value ++ bonsaiNonfatal.value) --
         (Checks ++ Findings ++ Rules ++ Bans)
       if (unknown.nonEmpty)
         Compat.fail(
@@ -344,7 +344,7 @@ object BonsaiPlugin extends AutoPlugin {
           else
             (s"-P:bonsai:mode=${bonsaiModeId.value}" +:
               (option("disable", bonsaiDisabled.value) ++ option("error", bonsaiErrors.value) ++
-                option("warn", bonsaiWarnings.value) :+ s"-P:bonsai:wildcards=${bonsaiWildcards.value}")) ++
+                option("warn", bonsaiNonfatal.value) :+ s"-P:bonsai:wildcards=${bonsaiWildcards.value}")) ++
               Seq(s"-P:bonsai:option-fold=${bonsaiOptionFold.value}") ++
               bonsaiHot.value.toSeq.sorted.map(glob => s"-P:bonsai:hot=$glob") ++
               bonsaiBounded.value.map { case (member, max, _) => s"-P:bonsai:bounded=$member:$max" } ++
@@ -367,7 +367,7 @@ object BonsaiPlugin extends AutoPlugin {
         Rules.filter(rule => !OptIn(rule) || bonsaiEnabledRules.value(rule)).filterNot(bonsaiDisabled.value)
           .filter(supported(_, scalaVersion.value))
       else Seq("DisableSyntax"),
-      if (bonsaiMode.value != BonsaiMode.Strict) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiWarnings.value),
+      if (bonsaiMode.value != BonsaiMode.Strict) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiNonfatal.value),
       (if (bonsaiDisabled.value("DisableSyntax")) Nil else Bans).partition(!bonsaiDisabled.value(_))
     )),
     Compile / scalafix / unmanagedSources :=
@@ -407,7 +407,7 @@ object BonsaiPlugin extends AutoPlugin {
     val own = scalacOptions.value
     if (isMetaBuild.value || !bonsaiEnabled.value) own
     else {
-      val routed = CompilerOptions.routed(own, bonsaiModeId.value == "strict", bonsaiWarnings.value, scalaVersion.value)
+      val routed = CompilerOptions.routed(own, bonsaiModeId.value == "strict", bonsaiNonfatal.value, scalaVersion.value)
       val unused = CompilerOptions.unused(own, bonsaiDisabled.value, scalaVersion.value)
       routed ++ own ++ unused
     }
@@ -470,7 +470,7 @@ object BonsaiPlugin extends AutoPlugin {
       file: File,
       user: File,
       rules: Seq[String],
-      warnings: Seq[String],
+      nonfatal: Seq[String],
       bans: (Seq[String], Seq[String])
   ): File = {
     val include = if (user.exists) "include file(\"" + user.getAbsolutePath + "\")\n" else ""
@@ -481,7 +481,7 @@ object BonsaiPlugin extends AutoPlugin {
       file,
       (enabled.map(ban => s"$ban = true") ++ Settings).map(_ + "\n").mkString + include +
         disabled.map(ban => s"$ban = false\n").mkString +
-        list("rules", rules) + list("lint.warning", warnings)
+        list("rules", rules) + list("lint.warning", nonfatal)
     )
     file
   }
@@ -600,7 +600,7 @@ object BonsaiPlugin extends AutoPlugin {
         BonsaiConfiguration.Analysis(
           bonsaiDisabled.value,
           bonsaiErrors.value,
-          bonsaiWarnings.value,
+          bonsaiNonfatal.value,
           bonsaiEffects.value,
           bonsaiConcurrent.value,
           bonsaiGenerated.value,

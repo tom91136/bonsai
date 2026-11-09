@@ -10,9 +10,9 @@
 -> compile
 -> bonsaiCheck
 # a project can keep a check a warning, or escalate one the mode leaves a warning
-> set bonsaiWarnings += "acyclic"
+> set bonsaiNonfatal += "acyclic"
 > compile
-> set bonsaiWarnings -= "acyclic"
+> set bonsaiNonfatal -= "acyclic"
 -> compile
 > set bonsaiDisabled += "acyclic"
 > compile
@@ -29,8 +29,8 @@
 # in strict mode a pending rewrite fails the check, even when its lint is a warning
 > set ThisBuild / bonsaiMode := BonsaiMode.Strict
 > set bonsaiDisabled += "acyclic"
-> set bonsaiWarnings += "RedundantCaseClassVal"
-> set bonsaiWarnings += "unused"
-> set bonsaiWarnings += "unused-member"
-> set bonsaiWarnings += "unread-field"
+> set bonsaiNonfatal += "RedundantCaseClassVal"
+> set bonsaiNonfatal += "unused"
+> set bonsaiNonfatal += "unused-member"
+> set bonsaiNonfatal += "unread-field"
 -> bonsaiCheck

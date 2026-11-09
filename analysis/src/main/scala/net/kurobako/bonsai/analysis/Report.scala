@@ -25,7 +25,7 @@ object Report {
       selector.covers(finding.rule.id) && (scope == Scope.Everywhere || finding.node.generated)
   }
 
-  /** The warnings of `failing` rules fail, as do errors except those of `lenient` rules, and in either case except
+  /** The warnings of `failing` rules fail, as do errors except those of `nonfatal` rules, and in either case except
     * findings whose keys are in `baseline`. `disabled` names the findings dropped, by rule and scope.
     */
   case class Options(
@@ -33,7 +33,7 @@ object Report {
       failing: Set[String],
       baseline: Set[String],
       info: Boolean,
-      lenient: Set[String] = Set.empty
+      nonfatal: Set[String] = Set.empty
   )
 
   /** A reported finding with its level: `error`, `warning` or `info`; `repeat` counts the findings before it with the
@@ -104,7 +104,7 @@ object Report {
           if (finding.rule.recorded) finding.level == Finding.Level.Error
           else
             (finding.level match {
-              case Finding.Level.Error   => !options.lenient(id)
+              case Finding.Level.Error   => !options.nonfatal(id)
               case Finding.Level.Warning => options.failing(id)
               case Finding.Level.Info    => false
             }) && !baselined(Finding.positionless(finding.key))

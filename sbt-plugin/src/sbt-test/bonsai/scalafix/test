@@ -12,9 +12,9 @@ $ delete src/main/scala/demo/Counter.scala
 > set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "ForbiddenAPIs"
 -> scalafixAll --check
 # a rule kept a warning reports without failing
-> set ThisBuild / bonsaiWarnings += "ForbiddenAPIs"
+> set ThisBuild / bonsaiNonfatal += "ForbiddenAPIs"
 > scalafixAll --check
-> set ThisBuild / bonsaiWarnings := Set.empty
+> set ThisBuild / bonsaiNonfatal := Set.empty
 > set ThisBuild / bonsaiDisabled := Set.empty
 -> scalafixAll --check
 # a project setting overrides the build-wide one

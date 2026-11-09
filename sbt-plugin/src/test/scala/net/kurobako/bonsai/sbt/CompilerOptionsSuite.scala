@@ -55,7 +55,7 @@ class CompilerOptionsSuite extends munit.FunSuite {
     assertEquals(CompilerOptions.routed(Seq("-Xfatal-warnings"), strict = true, Set.empty, newest), Seq(failing))
   }
 
-  test("in the strict mode only the checks the build keeps as warnings are demoted from failing") {
+  test("in the strict mode only the nonfatal checks are demoted from failing") {
     val expected = Seq(failing, "-Wconf:msg=\\[bonsai.acyclic\\]:i", "-Wconf:msg=\\[bonsai.same-type-arguments\\]:i")
     assertEquals(
       CompilerOptions.routed(

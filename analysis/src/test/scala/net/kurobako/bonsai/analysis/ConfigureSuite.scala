@@ -49,7 +49,7 @@ class ConfigureSuite extends FunSuite {
         |bounded = [{ member = "demo.Encoding.operands", max = 4, reason = "at most four operands" }]
         |intended = ["demo.A=demo.B"]
         |generated-disabled = ["*"]
-        |projects.demo { warnings = [huge-method], library = true }
+        |projects.demo { nonfatal = [huge-method], library = true }
         |""".stripMargin
     )
     assertEquals(
@@ -58,7 +58,7 @@ class ConfigureSuite extends FunSuite {
         "disabled\tacyclic",
         "disabled\tduplicate-code",
         "errors\tunused-member",
-        "warnings\thuge-method",
+        "nonfatal\thuge-method",
         "wildcards\t3",
         "library\ttrue",
         "hot\tdemo.kernel.**",

@@ -22,12 +22,12 @@ private[sbt] object CompilerOptions {
     else UnusedOptions.filterNot(own.contains)
 
   /** The options that route the findings of the compiler plugin, whatever the build does with compiler warnings. In the
-    * strict mode every finding fails except those of the checks in `warnings`. Outside it none does, so a build that
+    * strict mode every finding fails except those of the checks in `nonfatal`. Outside it none does, so a build that
     * fails on warnings gets them all demoted.
     */
-  def routed(own: Seq[String], strict: Boolean, warnings: Set[String], scala: String): Seq[String] =
+  def routed(own: Seq[String], strict: Boolean, nonfatal: Set[String], scala: String): Seq[String] =
     if (ScalaVersions.plugin(scala).isEmpty) Nil
-    else if (strict) tagged("[a-z0-9-]+", "e") +: (warnings & BonsaiArtifacts.checks).toSeq.sorted.map(tagged(_, "i"))
+    else if (strict) tagged("[a-z0-9-]+", "e") +: (nonfatal & BonsaiArtifacts.checks).toSeq.sorted.map(tagged(_, "i"))
     else if (fatal(own)) Seq(tagged("[a-z0-9-]+", "i"))
     else Nil
 

@@ -13,9 +13,9 @@ $ delete bonsai-baseline.tsv
 # a rule the mode makes fail can be kept a warning
 > set bonsaiDisabled -= "unused-member"
 -> bonsaiAnalyse
-> set bonsaiWarnings += "unused-member"
+> set bonsaiNonfatal += "unused-member"
 > bonsaiAnalyse
-> set bonsaiWarnings -= "unused-member"
+> set bonsaiNonfatal -= "unused-member"
 -> bonsaiAnalyse
 # a type the build names only in strings, and its members, are used once declared reflective
 > set ThisBuild / bonsaiReflective += "demo.Tools"

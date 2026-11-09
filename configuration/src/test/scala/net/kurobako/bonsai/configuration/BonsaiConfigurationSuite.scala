@@ -51,7 +51,7 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
       """disabled = [acyclic, local-throw]
         |enabled = [ExplicitResultTypes]
         |errors = [broad-catch]
-        |warnings = [identity-token]
+        |nonfatal = [identity-token]
         |wildcards = 3
         |baseline = "findings.tsv"
         |purity = "pure.tsv"
@@ -67,7 +67,7 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
     assertEquals(configured.build.disabled, Some(Set("acyclic", "local-throw")))
     assertEquals(configured.build.enabled, Some(Set("ExplicitResultTypes")))
     assertEquals(configured.build.errors, Some(Set("broad-catch")))
-    assertEquals(configured.build.warnings, Some(Set("identity-token")))
+    assertEquals(configured.build.nonfatal, Some(Set("identity-token")))
     assertEquals(configured.build.wildcards, Some(3))
     assertEquals(configured.baseline, Some("findings.tsv"))
     assertEquals(configured.purity, Some("pure.tsv"))

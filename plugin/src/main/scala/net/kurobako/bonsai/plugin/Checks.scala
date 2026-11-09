@@ -23,7 +23,7 @@ import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
-/** Reports each check at its severity unless it is disabled, escalated to an error, kept as a warning by `lenient`, or
+/** Reports each check at its severity unless it is disabled, escalated to an error, kept as a warning by `nonfatal`, or
   * found in a mutation-testing copy of a source. The checks `overGenerated` holds skip generated code, which
   * `Generated` marks or a `generated` glob names. `@SuppressWarnings(Array("bonsai:<id>"))`, or `"bonsai"` for every
   * check, on an enclosing definition, as for the analysis, or ascribed to an expression, as
@@ -35,7 +35,7 @@ import scala.collection.mutable
 private class Checks(
     disabled: Set[Check],
     errors: Set[Check],
-    lenient: Set[Check],
+    nonfatal: Set[Check],
     instrumented: Path => Boolean,
     generatedPath: Path => Boolean,
     overGenerated: Set[Check],
@@ -53,7 +53,7 @@ private class Checks(
     Checks(
       disabled,
       errors,
-      lenient,
+      nonfatal,
       instrumented,
       generatedPath,
       overGenerated,
@@ -81,8 +81,8 @@ private class Checks(
     ) {
       val tagged      = s"$message [bonsai:${check.id}]"
       val shown       = start(position)
-      val failing     = escalate || errors(check) || check.severity == Check.Severity.Error && !lenient(check)
-      val informative = !failing && check.severity == Check.Severity.Info && !lenient(check)
+      val failing     = escalate || errors(check) || check.severity == Check.Severity.Error && !nonfatal(check)
+      val informative = !failing && check.severity == Check.Severity.Info && !nonfatal(check)
       records.foreach(
         _.add(shown.source, Recorded.Entry(check.id, level(check, failing, informative), shown.line + 1, message))
       )
@@ -96,10 +96,10 @@ private class Checks(
     }
   }
 
-  // what the strict mode makes of the finding: it fails on all but information and the checks kept as warnings
+  // what the strict mode makes of the finding: it fails on all but information and the nonfatal checks
   private def level(check: Check, failing: Boolean, informative: Boolean): Recorded.Level =
     if (informative) Recorded.Level.Info
-    else if (failing || !lenient(check)) Recorded.Level.Error
+    else if (failing || !nonfatal(check)) Recorded.Level.Error
     else Recorded.Level.Warning
 
   // Patches that overlap make the compiler fail, so the fix of the check that reports second is left out.

@@ -18,7 +18,7 @@ object BonsaiConfiguration {
       disabled: Option[Set[String]],
       enabled: Option[Set[String]],
       errors: Option[Set[String]],
-      warnings: Option[Set[String]],
+      nonfatal: Option[Set[String]],
       wildcards: Option[Int],
       library: Option[Boolean],
       optionFold: Option[String]
@@ -54,7 +54,7 @@ object BonsaiConfiguration {
         own.disabled.orElse(build.disabled),
         own.enabled.orElse(build.enabled),
         own.errors.orElse(build.errors),
-        own.warnings.orElse(build.warnings),
+        own.nonfatal.orElse(build.nonfatal),
         own.wildcards.orElse(build.wildcards),
         own.library.orElse(build.library),
         own.optionFold.orElse(build.optionFold)
@@ -64,7 +64,7 @@ object BonsaiConfiguration {
     def analysis(settings: Settings): Analysis = Analysis(
       disabled = settings.disabled.getOrElse(Set.empty),
       errors = settings.errors.getOrElse(Set.empty),
-      warnings = settings.warnings.getOrElse(Set.empty),
+      nonfatal = settings.nonfatal.getOrElse(Set.empty),
       effects = effects.getOrElse(Map.empty),
       concurrent = concurrent.getOrElse(Set.empty),
       generated = generated.getOrElse(Set.empty),
@@ -87,7 +87,7 @@ object BonsaiConfiguration {
   case class Analysis(
       disabled: Set[String],
       errors: Set[String],
-      warnings: Set[String],
+      nonfatal: Set[String],
       effects: Map[String, Set[String]],
       concurrent: Set[String],
       generated: Set[String],
@@ -104,7 +104,7 @@ object BonsaiConfiguration {
       */
     def options(findings: Set[String], baseline: File, purity: File): Seq[String] =
       flags("--disable", disabled & findings) ++ flags("--error", errors & findings) ++
-        flags("--warn", warnings & findings) ++
+        flags("--warn", nonfatal & findings) ++
         Seq("--baseline", baseline.getAbsolutePath, "--purity-lock", purity.getAbsolutePath) ++
         effects.toSeq.sortBy(_._1).flatMap { case (prefix, kinds) =>
           Seq("--effects", s"$prefix=${kinds.toSeq.sorted.mkString(",")}")
@@ -249,14 +249,14 @@ object BonsaiConfiguration {
   }
 
   private def settings(config: Config, where: String, others: Set[String]): Settings = {
-    val keys    = Set("disabled", "enabled", "errors", "warnings", "wildcards", "library", "option-fold")
+    val keys    = Set("disabled", "enabled", "errors", "nonfatal", "wildcards", "library", "option-fold")
     val unknown = names(config).toSet -- keys -- others
     rejectUnknown(unknown, where, (keys ++ others).toSeq.sorted)
     Settings(
       stringSet(config, "disabled"),
       stringSet(config, "enabled"),
       stringSet(config, "errors"),
-      stringSet(config, "warnings"),
+      stringSet(config, "nonfatal"),
       present(config, "wildcards")(config.getInt("wildcards")),
       present(config, "library")(config.getBoolean("library")),
       optionalString(config, "option-fold").map { value =>

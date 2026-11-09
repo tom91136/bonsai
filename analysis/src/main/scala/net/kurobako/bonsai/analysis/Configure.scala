@@ -6,7 +6,7 @@ import net.kurobako.bonsai.configuration.*
 import net.kurobako.bonsai.configuration.BonsaiConfiguration.*
 
 /** Reads `.bonsai.conf` for a module and writes what a build that does not read it itself needs to a file, one
-  * tab-separated entry a line: the module's `disabled`, `enabled`, `errors`, `warnings`, `wildcards`, `library` and
+  * tab-separated entry a line: the module's `disabled`, `enabled`, `errors`, `nonfatal`, `wildcards`, `library` and
   * `option-fold` settings, the build's `excluded-modules`, `hot`, `bounded`, `checked`, and `generated` lists, the
   * checks skipped over generated code, the `option`s the analysis runs with, and the manifest lines of the text rules
   * as they are.
@@ -33,7 +33,7 @@ object Configure {
     )
     def entries(key: String, values: Set[String]) = values.toVector.sorted.map(value => s"$key\t$value")
     entries("disabled", analysis.disabled) ++ entries("enabled", settings.enabled.getOrElse(Set.empty)) ++
-      entries("errors", analysis.errors) ++ entries("warnings", analysis.warnings) ++
+      entries("errors", analysis.errors) ++ entries("nonfatal", analysis.nonfatal) ++
       settings.wildcards.map(value => s"wildcards\t$value") ++ settings.library.map(value => s"library\t$value") ++
       settings.optionFold.map(value => s"option-fold\t$value") ++
       entries("excluded", configured.excludedModules) ++

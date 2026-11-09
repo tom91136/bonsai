@@ -123,12 +123,12 @@ public final class Ids {
   }
 
   /** Fails on an id no tool knows, which catches a typo, and on an enabled id that is not an opt-in rule. */
-  public void validate(Set<String> disabled, Set<String> enabled, Set<String> errors, Set<String> warnings)
+  public void validate(Set<String> disabled, Set<String> enabled, Set<String> errors, Set<String> nonfatal)
       throws IOException {
     Set<String> unknown = new TreeSet<>();
     unknown.addAll(disabled);
     unknown.addAll(errors);
-    unknown.addAll(warnings);
+    unknown.addAll(nonfatal);
     unknown.removeAll(checks);
     unknown.removeAll(findings);
     unknown.removeAll(rules);

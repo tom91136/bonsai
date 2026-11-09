@@ -42,7 +42,7 @@ object CLI {
       info: Boolean = false,
       disabled: Set[Report.Disable] = Set.empty,
       errors: Set[String] = Set.empty,
-      warnings: Set[String] = Set.empty,
+      nonfatal: Set[String] = Set.empty,
       mode: Mode = Mode.Relaxed,
       baseline: Option[Path] = None,
       record: Option[Path] = None,
@@ -60,12 +60,12 @@ object CLI {
   ) {
 
     /** The rules whose warnings fail: those named, every rule with `*`, and the fatal rules in the strict mode, except
-      * those kept as warnings.
+      * those that are nonfatal.
       */
     def failing: Set[String] = {
       val fatal = if (mode.strict) Finding.Rule.values.view.collect { case rule if rule.fatal => rule.id }.toSet
       else Set.empty
-      (if (errors("*")) rules else errors) ++ fatal -- warnings
+      (if (errors("*")) rules else errors) ++ fatal -- nonfatal
     }
   }
 
@@ -169,7 +169,7 @@ object CLI {
         val baseline = options.baseline.filter(Files.exists(_)).fold(Set.empty[String])(file =>
           Report.keys(Files.readString(file))
         )
-        val report = Report.Options(options.disabled, options.failing, baseline, options.info, options.warnings)
+        val report = Report.Options(options.disabled, options.failing, baseline, options.info, options.nonfatal)
         options.record.foreach { file =>
           val previous = if (Files.exists(file)) Files.readString(file) else ""
           val nodes    = findings.map(finding => finding.node.name -> finding.node).toMap ++ result.graph.nodes
@@ -304,7 +304,7 @@ object CLI {
       Right(rest -> options.copy(disabled = options.disabled + disable(rule, Report.Scope.Everywhere)))
     case "--generated-disable" :: rule :: rest =>
       Right(rest -> options.copy(disabled = options.disabled + disable(rule, Report.Scope.Generated)))
-    case "--warn" :: rule :: rest  => Right(rest -> options.copy(warnings = options.warnings + rule))
+    case "--warn" :: rule :: rest  => Right(rest -> options.copy(nonfatal = options.nonfatal + rule))
     case "--error" :: rule :: rest => Right(rest -> options.copy(errors = options.errors + rule))
   }
 

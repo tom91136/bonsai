@@ -61,7 +61,7 @@ class BonsaiPlugin extends StandardPlugin {
     )
     val disabled = checks("disable")
     val errors   = checks("error")
-    val warnings = checks("warn")
+    val nonfatal = checks("warn")
     val fatal    = if (mode == "strict" || mode == "audit") Check.all.filter(_.fatal).toSet else Set.empty
     val records  = Option.when(mode == "audit")(Records())
     // `partial=<method>:<alternative>` and `throws=<method pattern>:<exception>|...` extend the defaults, and an empty
@@ -102,7 +102,7 @@ class BonsaiPlugin extends StandardPlugin {
     }
     problems ++= bounds.collect { case Left(problem) => problem }
     val bounded       = bounds.collect { case Right(glob) => glob }
-    val escalated     = fatal ++ errors -- warnings
+    val escalated     = fatal ++ errors -- nonfatal
     val matchers      = Instrumented.map(Globs.matcher)
     val generated     = values("generated").map(Globs.matcher)
     val overGenerated =
@@ -111,7 +111,7 @@ class BonsaiPlugin extends StandardPlugin {
     val phaseChecks = Checks(
       disabled,
       escalated,
-      warnings,
+      nonfatal,
       path => matchers.exists(_.matches(path)),
       path => generated.exists(_.matches(path)),
       overGenerated,

@@ -175,7 +175,7 @@ class TextsSuite extends FunSuite {
     }
   }
 
-  test("the files git sees are checked against the globs of each rule, and errors fail unless kept as warnings") {
+  test("the files git sees are checked against the globs of each rule, and errors fail unless they are nonfatal") {
     Scratch.using("bonsai-texts-") { root =>
       def write(path: String, text: String) = {
         val file = root.resolve(path)
@@ -195,7 +195,7 @@ class TextsSuite extends FunSuite {
       val options = Report.Options(Set.empty, Set.empty, Set.empty, info = false)
       assertEquals(Report(found, Map.empty, options).map(_.level), Vector("error"))
       assertEquals(
-        Report(found, Map.empty, options.copy(lenient = Set("forbidden-term"))).map(_.level),
+        Report(found, Map.empty, options.copy(nonfatal = Set("forbidden-term"))).map(_.level),
         Vector("warning")
       )
       assertEquals(

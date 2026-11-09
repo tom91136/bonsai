@@ -103,7 +103,7 @@ Set `BONSAI_MODE`:
 
 ```hocon
 disabled = ["unused-member"]        # off
-warnings = ["same-type-arguments"]  # reports without failing
+nonfatal = ["same-type-arguments"]  # reports without failing
 errors = ["acyclic"]                # fails in every mode
 baseline = "bonsai-baseline.tsv"    # recorded analysis findings report without failing
 excluded-modules = ["generated"]    # left out of the analysis

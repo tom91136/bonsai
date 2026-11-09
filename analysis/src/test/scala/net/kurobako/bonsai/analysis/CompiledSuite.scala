@@ -83,9 +83,9 @@ class CompiledSuite extends FunSuite {
       lines.map(line => line.level -> line.finding.rule.id).toSet,
       Set("error" -> "a-check", "warning" -> "b-check")
     )
-    val lenient = Report(findings, Map.empty, options.copy(lenient = Set("a-check"), failing = Set("b-check")))
+    val nonfatal = Report(findings, Map.empty, options.copy(nonfatal = Set("a-check"), failing = Set("b-check")))
     assertEquals(
-      lenient.map(line => line.level -> line.finding.rule.id).toSet,
+      nonfatal.map(line => line.level -> line.finding.rule.id).toSet,
       Set("error" -> "a-check", "warning" -> "b-check")
     )
   }

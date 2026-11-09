@@ -40,7 +40,7 @@ class ScalacTest {
   @Test
   void writesTheOptionsTheCompilerPluginReads() throws IOException {
     Configuration configuration = configuration(
-      "disabled\tacyclic", "errors\tbroad-catch", "warnings\tidentity-token", "wildcards\t3",
+      "disabled\tacyclic", "errors\tbroad-catch", "nonfatal\tidentity-token", "wildcards\t3",
       "hot\tdemo.kernel.**", "bounded\tdemo.Encoding.operands:4", "checked\tdemo.where");
 
     List<String> options = Scalac.options(configuration, ids(), "relaxed", List.of());
@@ -57,7 +57,7 @@ class ScalacTest {
 
   @Test
   void theAuditModeDemotesTheFindingsAsTheRelaxedModeDoes() throws IOException {
-    Configuration configuration = configuration("warnings\tidentity-token");
+    Configuration configuration = configuration("nonfatal\tidentity-token");
 
     List<String> report = Scalac.options(configuration, ids(), "audit", List.of());
 
@@ -158,8 +158,8 @@ class ScalacTest {
   }
 
   @Test
-  void aCheckKeptAsAWarningDoesNotFailTheBuildOnACiServer() throws IOException {
-    Configuration configuration = configuration("warnings\tacyclic");
+  void aNonfatalCheckDoesNotFailTheBuildOnACiServer() throws IOException {
+    Configuration configuration = configuration("nonfatal\tacyclic");
 
     List<String> options = Scalac.options(configuration, ids(), "strict", List.of());
 

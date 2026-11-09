@@ -5,20 +5,20 @@
 > reported error:array-equality error:unused-member
 
 # a check kept a warning does not fail, as in strict mode, while the analysis still does
-> set bonsaiWarnings := Set("array-equality")
+> set bonsaiNonfatal := Set("array-equality")
 -> bonsaiAnalyse
 > reported warning:array-equality error:unused-member
 
 # and the run passes once every finding is one
-> set bonsaiWarnings := Set("array-equality", "unused-member")
+> set bonsaiNonfatal := Set("array-equality", "unused-member")
 > bonsaiAnalyse
 > reported warning:array-equality warning:unused-member
 
 # a compile finding alone fails the run
-> set bonsaiWarnings := Set("unused-member")
+> set bonsaiNonfatal := Set("unused-member")
 -> bonsaiAnalyse
 > reported error:array-equality warning:unused-member
-> set bonsaiWarnings := Set()
+> set bonsaiNonfatal := Set()
 
 # a later run reports the finding of a source that was not compiled again
 > stamp

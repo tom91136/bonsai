@@ -16,16 +16,16 @@
 > set scalacOptions -= "-Werror"
 -> compile
 > set scalacOptions += "-Werror"
-# a check the build keeps a warning does not fail in strict mode whatever the compiler does with warnings
-> set bonsaiWarnings += "acyclic"
+# a check the build marks nonfatal does not fail in strict mode whatever the compiler does with warnings
+> set bonsaiNonfatal += "acyclic"
 > compile
 # a check that only warns in strict mode fails with fatal warnings, as the build asked of every warning
 $ copy-file changes/Branches.scala src/main/scala/demo/Branches.scala
 -> compile
-# and without them, which only bonsaiWarnings opts out of
+# and without them, which only bonsaiNonfatal opts out of
 > set scalacOptions -= "-Werror"
 -> compile
-> set bonsaiWarnings += "identical-branches"
+> set bonsaiNonfatal += "identical-branches"
 > compile
 > set scalacOptions += "-Werror"
 > compile

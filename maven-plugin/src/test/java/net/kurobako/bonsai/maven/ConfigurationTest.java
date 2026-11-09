@@ -21,7 +21,7 @@ class ConfigurationTest {
       "disabled\tacyclic",
       "enabled\tExplicitResultTypes",
       "errors\tbroad-catch",
-      "warnings\tidentity-token",
+      "nonfatal\tidentity-token",
       "wildcards\t3",
       "library\ttrue",
       "option-fold\tmap-get-or-else",
@@ -38,7 +38,7 @@ class ConfigurationTest {
     assertEquals(Set.of("acyclic", "local-throw"), configuration.disabled());
     assertEquals(Set.of("ExplicitResultTypes"), configuration.enabled());
     assertEquals(Set.of("broad-catch"), configuration.errors());
-    assertEquals(Set.of("identity-token"), configuration.warnings());
+    assertEquals(Set.of("identity-token"), configuration.nonfatal());
     assertEquals(3, configuration.wildcards());
     assertEquals(Optional.of(true), configuration.library());
     assertEquals(Optional.of("map-get-or-else"), configuration.optionFold());
