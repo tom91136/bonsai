@@ -21,8 +21,9 @@ class ExplicitEtaExpansion extends SemanticRule("ExplicitEtaExpansion") {
             !reference.symbol.value.startsWith("scala/Predef.identity") &&
             !dynamic(reference) &&
             mayBeMethod(reference.symbol) =>
-        explicitApplication(reference).map { application =>
-          Patch.replaceTree(reference, if (bareInfixOperand(reference)) s"($application)" else application) + lint(
+        placeholders(reference).map { arguments =>
+          val (open, close) = if (bareInfixOperand(reference)) ("(", ")") else ("", "")
+          Patch.addLeft(reference, open) + Patch.addRight(reference, arguments + close) + lint(
             "method-value",
             "write an explicit lambda or placeholder application so the method value's arity is visible",
             reference.pos
@@ -87,7 +88,7 @@ class ExplicitEtaExpansion extends SemanticRule("ExplicitEtaExpansion") {
     case _ => None
   }
 
-  private def explicitApplication(reference: Term.Ref)(using SemanticDocument): Option[String] =
+  private def placeholders(reference: Term.Ref)(using SemanticDocument): Option[String] =
     try
       reference.symbol.info.flatMap(info =>
         info.signature match {
@@ -104,8 +105,7 @@ class ExplicitEtaExpansion extends SemanticRule("ExplicitEtaExpansion") {
             // Contextual parameters are supplied at the reference, so they complete the call rather than await arguments.
             parameterLists.filterNot(_.exists(parameter => parameter.isImplicit || parameter.isGiven))
               .find(_.nonEmpty).map { parameters =>
-                val placeholders = List.fill(parameters.size)("_").mkString(", ")
-                s"${reference.syntax}($placeholders)"
+                List.fill(parameters.size)("_").mkString("(", ", ", ")")
               }
           case _ => None
         }
