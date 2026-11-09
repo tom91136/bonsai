@@ -153,7 +153,12 @@ private[analysis] class References(components: Components, fragments: Fragments)
           callSites.instantiate(generic.fun.symbol, generic.args.map(_.tpe), clause(generic.fun), owner)
         case closure: tpd.Closure if !closure.tpt.isEmpty =>
           owner.flatMap(symbols.described(_)).foreach(node =>
-            dispatching.implement(closure.tpt.tpe.classSymbol, s"a lambda in ${node.name}", node.module)
+            dispatching.implement(
+              closure.tpt.tpe.classSymbol,
+              closure.meth.symbol,
+              s"a lambda in ${node.name}",
+              node.module
+            )
           )
         // An inline body runs as the code of each expansion, where its receivers have their own types.
         case select: tpd.Select if looping.top && !synthetic.top && !methods.exists(_.is(Flags.Inline)) =>

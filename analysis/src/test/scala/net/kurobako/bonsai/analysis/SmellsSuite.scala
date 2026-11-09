@@ -981,6 +981,55 @@ class SmellsSuite extends AnalysisSuite {
     assertNoFinding(found)(_.detail.contains("Operands"))
   }
 
+  test("two anonymous implementations in one method are not a single implementation") {
+    val found = findings(
+      "Stores.scala" ->
+        """trait Store { def get(key: String): Option[String] }
+          |object Stores {
+          |  def pair: List[Store] = List(
+          |    new Store { def get(key: String) = None },
+          |    new Store { def get(key: String) = Some(key) }
+          |  )
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.SingleImplementation)
+  }
+
+  test("a shared abstraction whose one implementation lies in a platform's sources is not speculative") {
+    val found = findings(
+      "shared/src/main/scala/Store.scala"    -> "trait Store { def get: Int }",
+      "jvm/src/main/scala/MemoryStore.scala" -> "class MemoryStore extends Store { def get = 1 }",
+      "shared/src/main/scala/Use.scala"      -> "object Use { def run(store: Store): Int = store.get }"
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.SingleImplementation)
+  }
+
+  test("a single implementation within one platform's sources is still speculative") {
+    val found = findings(
+      "jvm/src/main/scala/Store.scala"       -> "trait Store { def get: Int }",
+      "jvm/src/main/scala/MemoryStore.scala" -> "class MemoryStore extends Store { def get = 1 }"
+    )
+    assertFinding(found, "single-implementation", "Store has a single implementation, MemoryStore")
+  }
+
+  test("an abstract class declaring implicits for an object to extend is not speculative") {
+    val found = findings(
+      "Routing.scala" ->
+        """abstract class LowerPriority { implicit val fallback: Int = 0 }
+          |object Routing extends LowerPriority { def run(implicit n: Int): Int = n }""".stripMargin
+    )
+    assertNoFinding(found)(_.rule == Finding.Rule.SingleImplementation)
+  }
+
+  test("an abstract class with implicits that a class extends is speculative") {
+    val found = findings(
+      "Routing.scala" ->
+        """abstract class LowerPriority { implicit val fallback: Int = 0 }
+          |class Routing extends LowerPriority { def run(implicit n: Int): Int = n }""".stripMargin
+    )
+    assertFinding(found, "single-implementation", "LowerPriority has a single implementation, Routing")
+  }
+
   test("a trait only lambdas implement stands in for a function type, and is not speculative") {
     val found = findings(
       "Kernels.scala" ->

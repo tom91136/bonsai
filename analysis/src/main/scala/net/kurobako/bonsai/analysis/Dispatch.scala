@@ -20,13 +20,15 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
   private val subclasses = mutable.Map.empty[Symbol, mutable.ArrayBuffer[Symbol]]
   private val dispatches = mutable.Map.empty[(Symbol, Symbol), (String, Type, Boolean)]
   private val abstracts  = mutable.Map.empty[Symbol, (String, String, String)]
-  private val implements = mutable.Map.empty[Symbol, mutable.Set[(String, String)]]
+  private val implements = mutable.Map.empty[Symbol, mutable.Map[Symbol, (String, String)]]
   private val mixins     = mutable.Set.empty[Symbol]
   private val asTypes    = mutable.Set.empty[Symbol]
   // Abstractions some class implements, beside those only lambdas implement.
-  private val subclassed  = mutable.Set.empty[Symbol]
-  private val specialised = mutable.Set.empty[Symbol]
-  private val sites       = mutable.ArrayBuffer.empty[Megamorphic.Site]
+  private val subclassed    = mutable.Set.empty[Symbol]
+  private val specialised   = mutable.Set.empty[Symbol]
+  private val prioritised   = mutable.Set.empty[Symbol]
+  private val objectParents = mutable.Set.empty[Symbol]
+  private val sites         = mutable.ArrayBuffer.empty[Megamorphic.Site]
 
   val classes: collection.Set[Symbol] = declared
 
@@ -38,8 +40,8 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
 
   def asType(symbol: Symbol): Unit = asTypes += symbol: Unit
 
-  def implement(abstraction: Symbol, name: String, module: String): Unit =
-    implements.getOrElseUpdate(abstraction, mutable.Set.empty) += (name -> module): Unit
+  def implement(abstraction: Symbol, implementation: Symbol, name: String, module: String): Unit =
+    implements.getOrElseUpdate(abstraction, mutable.Map.empty) += (implementation -> (name -> module)): Unit
 
   /** Records the abstraction a trait or abstract class `cls` is, or the abstractions a concrete class implements. */
   def classify(cls: Symbol, name: String, key: String, info: Node)(using Context): Unit =
@@ -48,11 +50,13 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
       if (!cls.is(Flags.Enum) && !info.test && !Symbols.facade(cls) && (cls.is(Flags.Sealed) || !exported(cls))) {
         abstracts(cls) = (name, key, info.module)
         if (cls.is(Flags.Trait) && !cls.info.decls.exists(_.is(Flags.Deferred))) mixins += cls
+        if (cls.info.decls.exists(_.isOneOf(Flags.Implicit | Flags.Given))) prioritised += cls
       }
     } else
       cls.asClass.baseClasses.drop(1).foreach { parent =>
         subclassed += parent
-        implement(parent, name, info.module)
+        implement(parent, cls, name, info.module)
+        if (cls.is(Flags.ModuleClass)) objectParents += parent
         if (cls.typeRef.baseType(parent).argInfos.exists(_.widenDealias.typeSymbol.isPrimitiveValueClass))
           specialised += parent
       }
@@ -64,9 +68,10 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
           name,
           node,
           module,
-          implements.get(symbol).fold(Vector.empty)(_.toVector.sorted),
+          implements.get(symbol).fold(Vector.empty)(_.values.toVector.sorted),
           functional = implements.contains(symbol) && !subclassed(symbol),
-          specialised = specialised(symbol)
+          specialised = specialised(symbol),
+          prioritised = prioritised(symbol) && objectParents(symbol)
         )
     }
 

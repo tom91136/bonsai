@@ -50,8 +50,9 @@ object Smells {
   )
 
   /** A trait or abstract class with the concrete classes, objects and lambdas that implement it; `functional` when only
-    * lambdas do, as for a trait standing in for a function type that would box its primitives, and `specialised` when
-    * an implementation fixes one of its type parameters to a primitive, whose code the generic one would box.
+    * lambdas do, as for a trait standing in for a function type that would box its primitives, `specialised` when an
+    * implementation fixes one of its type parameters to a primitive, whose code the generic one would box, and
+    * `prioritised` when it declares implicits or givens that an object extends to rank them below its own.
     */
   case class Abstraction(
       name: String,
@@ -59,7 +60,8 @@ object Smells {
       module: String,
       implementations: Vector[(String, String)],
       functional: Boolean = false,
-      specialised: Boolean = false
+      specialised: Boolean = false,
+      prioritised: Boolean = false
   )
 
   /** The type arguments given for one type parameter at every call or construction. */
@@ -214,7 +216,8 @@ object Smells {
     val implementations =
       model.abstractions.view.filter(abstraction =>
         abstraction.implementations.size == 1 && abstraction.implementations.head._2 == abstraction.module &&
-          !abstraction.functional && !abstraction.specialised &&
+          !abstraction.functional && !abstraction.specialised && !abstraction.prioritised &&
+          !platformSeam(abstraction, abstraction.implementations.head._1, nodes) &&
           !closesCycle(abstraction, abstraction.implementations.head._1, nodes, referrers, files)
       ).flatMap { abstraction =>
         Finding.at(
@@ -284,6 +287,15 @@ object Smells {
     val bare = Finding.simple(method.name.takeWhile(_ != '(')).replaceFirst("^(is|has|does|can|should)(?=[A-Z])", "")
     bare.nonEmpty && Negations(s"${bare.head.toLower}${bare.tail.takeWhile(!_.isUpper)}")
   }
+
+  private val platformRoot = "(?:^|/)(jvm-native|jvm|js|native)/src/(?:main|test)/".r
+
+  // a cross build compiles each platform alone, so one implementation can sit in another platform's sources
+  private def platformSeam(abstraction: Abstraction, implementation: String, nodes: Map[String, Node]): Boolean =
+    nodes.get(abstraction.node).map(_.source).flatMap(platform(_)) !=
+      nodes.get(implementation).map(_.source).flatMap(platform(_))
+
+  private def platform(source: String): Option[String] = platformRoot.findFirstMatchIn(source).map(_.group(1))
 
   // Naming the implementation in a file that uses the abstraction adds a file edge back, which closes a cycle when the
   // implementation's file already reaches that file.
