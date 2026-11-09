@@ -3,6 +3,12 @@
 # the rules resolve: a rule with nothing to report passes
 > set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
 > scalafixAll --check
+# an escaped dollar keeps its interpolator, which RedundantSyntax would drop and so change the string
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "RedundantSyntax"
+$ copy-file changes/Dollar.scala src/main/scala/demo/Dollar.scala
+> scalafixAll --check
+$ delete src/main/scala/demo/Dollar.scala
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
 # rules listed in .scalafix.conf run alongside bonsai's
 $ copy-file changes/Counter.scala src/main/scala/demo/Counter.scala
 -> scalafixAll --check

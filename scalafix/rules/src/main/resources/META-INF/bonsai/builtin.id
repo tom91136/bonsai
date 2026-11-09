@@ -10,6 +10,7 @@ DisableSyntax.noIsInstanceOf
 DisableSyntax.noXml
 DisableSyntax.noFinalize
 ExplicitResultTypes.fetchScala3CompilerArtifactsOnVersionMismatch = true
+RedundantSyntax.stringInterpolator = false
 -Wunused:all
 -Wconf:id=E198:i
 -Wconf:msg=^(unused|unset)\s.*:i
