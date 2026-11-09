@@ -85,6 +85,17 @@ class ProblemsSuite extends AnalysisSuite {
     assert(strict.problems.exists(_.startsWith("problem: class file Broken could not be read")), strict.err)
   }
 
+  test("the run names its mode and the analysis rules it applies") {
+    val f       = Fixture(_ => Nil)
+    val rules   = Finding.Rule.values.size
+    val default = s"bonsai: strict mode, ${rules - 1} of $rules analysis rules active"
+    val plain   = f.run("strict")
+    assert(plain.err.linesIterator.contains(default), plain.err)
+    val nesting = s"bonsai: relaxed mode, ${rules - 1} of $rules analysis rules active"
+    val opted   = f.run("relaxed", "--nesting", "--disable", "unused-member")
+    assert(opted.err.linesIterator.contains(nesting), opted.err)
+  }
+
   test("a report reused for the strict mode still fails on the problems it held") {
     val f     = unreadableModel
     val first = f.run("strict")

@@ -76,6 +76,14 @@ object CLI {
   private def disable(rule: String, scope: Report.Scope): Report.Disable =
     Report.Disable(if (rule == "*") Report.Selector.All else Report.Selector.Named(rule), scope)
 
+  private def banner(options: Options): String = {
+    val active = Finding.Rule.values.count { rule =>
+      (rule != Finding.Rule.Nesting || options.nesting.enabled) &&
+      !options.disabled.exists(disable => disable.scope == Report.Scope.Everywhere && disable.selector.covers(rule.id))
+    }
+    s"bonsai: ${options.mode.id} mode, $active of ${Finding.Rule.values.size} analysis rules active"
+  }
+
   def main(args: Array[String]): Unit = {
     val status = run(args.toList)
     if (status != 0) sys.exit(status)
@@ -83,9 +91,10 @@ object CLI {
 
   /** Runs the analysis, printing the report to the console, and returns the exit status. */
   def run(args: List[String]): Int = {
-    val result = parse(args).flatMap(options =>
+    val result = parse(args).flatMap { options =>
+      Console.err.println(banner(options))
       Using.resource(Parallel(options.parallelism))(parallel => analyse(args, options, parallel)).map(options.mode -> _)
-    )
+    }
     result match {
       case Left(error) =>
         Console.err.println(error)
