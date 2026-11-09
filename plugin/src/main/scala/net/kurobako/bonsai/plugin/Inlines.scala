@@ -8,6 +8,7 @@ import dotty.tools.dotc.core.StdNames.nme
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.Type
+import java.nio.file.Files
 import net.kurobako.bonsai.lifting.*
 
 /** Parameters of inline methods. A by-value parameter is bound once at each expansion, so a function it receives is
@@ -43,12 +44,12 @@ private class Inlines(checks: Checks)(using Context) {
           )
       }
 
-  /** Arguments an inline method's expansion evaluates more than once, or whose effects run only on some paths. A macro
-    * reads its arguments rather than running them.
+  /** Arguments the expansion of an inline method of the build evaluates more than once, or whose effects run only on
+    * some paths. A macro reads its arguments rather than running them, and a caller cannot change a library's method.
     */
   def call(application: tpd.Apply): Unit = {
     val method = application.fun.symbol
-    if (!reading(method)) body(method).foreach { body =>
+    if (inBuild(method) && !reading(method)) body(method).foreach { body =>
       bound(application).foreach { (parameter, argument) =>
         if (parameter.is(Flags.Inline) && !cheap(argument)) {
           val evaluations = Evaluations(parameter, Set(method -> parameter)).apply(Count.Zero, body)
@@ -87,6 +88,8 @@ private class Inlines(checks: Checks)(using Context) {
 
   private def body(method: Symbol): Option[tpd.Tree] =
     method.getAnnotation(defn.BodyAnnot).map(_.tree).filterNot(Calls.peelInlined(_).isEmpty)
+
+  private def inBuild(method: Symbol): Boolean = Option(method.source.file.jpath).exists(Files.exists(_))
 
   // Macros and compile-time operations take the tree of their argument at expansion, not its value.
   private def reading(method: Symbol): Boolean =

@@ -1389,6 +1389,24 @@ class LintSuite extends FunSuite {
   private def tagged(found: List[String], check: String): List[String] =
     found.view.filter(_.endsWith(s"[bonsai:$check]")).map(_.takeWhile(_ != ';')).toList.sorted
 
+  test("argument reuse is reported only for inline methods whose source the build holds") {
+    val library = "package lib\nobject Ops { inline def twice(inline value: Int): Int = value + value }"
+    val use     = """object Lints {
+                    |  def side(): Int = { println("x"); 1 }
+                    |  def run: Int    = lib.Ops.twice(side())
+                    |}""".stripMargin
+    Compilations.run(Seq("Ops.scala" -> library), Nil) { (compiled, directory) =>
+      assert(!compiled.hasErrors)
+      val classpath = s"${sys.props("bonsai.plugin.classpath")}:${directory.resolve("classes")}"
+      def reported  = Compilations.run(Seq("Lints.scala" -> use), Seq(s"-classpath:$classpath")) { (reporter, _) =>
+        reporter.allWarnings.map(_.message).filter(_.endsWith("[bonsai:inline-parameter-reuse]")).toList
+      }
+      assertEquals(reported.size, 1)
+      Files.delete(directory.resolve("Ops.scala"))
+      assertEquals(reported, Nil)
+    }
+  }
+
   test("an inline method from another compilation that calls a polymorphic function value has no callee to read") {
     val library =
       """package lib
