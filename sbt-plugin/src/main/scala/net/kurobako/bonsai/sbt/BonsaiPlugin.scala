@@ -27,8 +27,13 @@ import scalafix.sbt.ScalafixPlugin.autoImport.*
   * checked    = [demo.constraint.where]
   * bounded    = [{ member = "demo.Encoding.operands", max = 4, reason = "an instruction has at most four operands" }]
   * nesting    { depth = 2, damping = 1, size = 200 }
+  * excluded-modules = [docs]
   * projects.api { library = true }
   * }}}
+  *
+  * `excluded-modules` lists the ids of modules bonsai leaves out, such as a module that does not compile. A listed
+  * module gets no compiler plugin and is not analysed, while the other modules are analysed as before. An id the build
+  * does not have fails the load.
   *
   * `bounded` lists members, by qualified name glob as for `hot`, whose collections hold at most `max` elements, so the
   * complexity rules count their loops as constant; a `reason` is required, and an entry that matches no collection is
@@ -250,7 +255,7 @@ object BonsaiPlugin extends AutoPlugin {
   )
 
   override def projectSettings: Seq[Setting[?]] = Seq(
-    bonsaiEnabled      := true,
+    bonsaiEnabled      := !bonsaiConfiguration.value.excludedModules.contains(thisProject.value.id),
     bonsaiDisabled     := ownOr(bonsaiDisabled)(_.disabled).value,
     bonsaiEnabledRules := ownOr(bonsaiEnabledRules)(_.enabled).value,
     bonsaiErrors       := ownOr(bonsaiErrors)(_.errors).value,
@@ -285,6 +290,11 @@ object BonsaiPlugin extends AutoPlugin {
           s"bonsai: .bonsai.conf configures projects ${strangers.toSeq.sorted.mkString(", ")}, which the " +
             "build does not have"
         )
+      val excluded = bonsaiConfiguration.value.excludedModules -- loadedBuild.value.allProjectRefs.map(_._1.project)
+      if (excluded.nonEmpty)
+        Compat.fail(
+          s"bonsai: excluded-modules names modules the build does not have: ${excluded.toSeq.sorted.mkString(", ")}"
+        )
     },
     bonsaiModeId  := bonsaiMode.value.toString.toLowerCase(java.util.Locale.ROOT),
     bonsaiJdk     := (Compile / javaHome).value.getOrElse(ManifestLines.defaultJdk),
@@ -297,7 +307,7 @@ object BonsaiPlugin extends AutoPlugin {
       )
     ),
     libraryDependencies ++= {
-      if (isMetaBuild.value) Nil
+      if (isMetaBuild.value || !bonsaiEnabled.value) Nil
       else
         ScalaVersions.plugin(scalaVersion.value) match {
           case Some(line) =>
@@ -321,7 +331,7 @@ object BonsaiPlugin extends AutoPlugin {
       def escape(path: String) = path.replaceAll("""([*?\[\]{}\\])""", """\\$1""")
       val own                  = (Compile / scalacOptions).value
       val managedDirectories   = (Compile / managedSourceDirectories).value
-      if (isMetaBuild.value) own
+      if (isMetaBuild.value || !bonsaiEnabled.value) own
       else {
         val plugin =
           if (ScalaVersions.plugin(scalaVersion.value).isEmpty) Nil

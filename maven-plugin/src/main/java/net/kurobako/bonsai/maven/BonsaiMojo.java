@@ -88,7 +88,7 @@ public abstract class BonsaiMojo extends AbstractMojo {
     try {
       Path entries = Files.createTempFile("bonsai-configuration", ".tsv");
       try {
-        return read(
+        Configuration configuration = read(
           List.of(
             javaExecutable(),
             "-cp",
@@ -101,6 +101,13 @@ public abstract class BonsaiMojo extends AbstractMojo {
             "--out",
             entries.toString()),
           entries);
+        List<String> strangers = configuration.excluded().stream()
+          .filter(id -> session.getAllProjects().stream().noneMatch(other -> other.getArtifactId().equals(id)))
+          .toList();
+        if (!strangers.isEmpty()) {
+          throw new IOException("bonsai: excluded-modules names modules the build does not have: " + strangers);
+        }
+        return configuration;
       } finally {
         Files.deleteIfExists(entries);
       }

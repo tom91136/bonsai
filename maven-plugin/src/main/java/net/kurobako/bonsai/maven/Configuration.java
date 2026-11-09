@@ -16,6 +16,7 @@ import java.util.TreeSet;
 public final class Configuration {
 
   private final Set<String> disabled = new TreeSet<>();
+  private final Set<String> excluded = new TreeSet<>();
   private final Set<String> enabled = new TreeSet<>();
   private final Set<String> errors = new TreeSet<>();
   private final Set<String> warnings = new TreeSet<>();
@@ -36,6 +37,11 @@ public final class Configuration {
   /** The ids the tools leave out. */
   public Set<String> disabled() {
     return disabled;
+  }
+
+  /** The ids of the modules the tools leave out of the build. */
+  public Set<String> excluded() {
+    return excluded;
   }
 
   /** The opt-in rules the tools run. */
@@ -111,6 +117,7 @@ public final class Configuration {
       String value = entry.length > 1 ? entry[1] : "";
       switch (entry[0]) {
         case "disabled" -> configuration.disabled.add(value);
+        case "excluded" -> configuration.excluded.add(value);
         case "enabled" -> configuration.enabled.add(value);
         case "errors" -> configuration.errors.add(value);
         case "warnings" -> configuration.warnings.add(value);

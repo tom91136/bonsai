@@ -99,6 +99,13 @@ class ConfigureSuite extends FunSuite {
     assertEquals(lines("wildcards = 2\n").map(_.filter(_.startsWith("option-fold"))), Right(Vector.empty[String]))
   }
 
+  test("the modules left out are printed whichever module is asked for") {
+    val conf = "excluded-modules = [docs, broken]\n"
+    val left = Vector("excluded\tbroken", "excluded\tdocs")
+    assertEquals(lines(conf).map(_.filter(_.startsWith("excluded\t"))), Right(left))
+    assertEquals(lines(conf, "other").map(_.filter(_.startsWith("excluded\t"))), Right(left))
+  }
+
   test("the spellings the configuration accepts are those the laws know") {
     assertEquals(BonsaiConfiguration.OptionFolds, OptionFold.values.toSeq.map(_.key))
     assertEquals(OptionFold.Default.key, BonsaiConfiguration.OptionFolds.head)

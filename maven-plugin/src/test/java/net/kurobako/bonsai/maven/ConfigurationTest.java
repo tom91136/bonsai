@@ -51,6 +51,11 @@ class ConfigurationTest {
   }
 
   @Test
+  void readsTheModulesLeftOut() throws IOException {
+    assertEquals(Set.of("broken", "docs"), Configuration.parse(List.of("excluded\tbroken", "excluded\tdocs")).excluded());
+  }
+
+  @Test
   void aLibraryFlagOfFalseIsKeptApartFromNone() throws IOException {
     assertEquals(Optional.of(false), Configuration.parse(List.of("library\tfalse")).library());
   }

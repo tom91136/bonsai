@@ -14,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Runs the analysis, which reads the compiled output of the build and reports what it finds in it.
@@ -44,6 +45,9 @@ public class AnalyseMojo extends BonsaiMojo {
   public void execute() throws MojoExecutionException {
     Tools tools = tools();
     Configuration configuration = configuration(tools);
+    if (configuration.excluded().contains(project.getArtifactId())) {
+      return;
+    }
     String mode = mode();
 
     Path work = work();
@@ -77,7 +81,7 @@ public class AnalyseMojo extends BonsaiMojo {
     write(file, fragment);
     getLog().info("bonsai: the analysis reads the fragment of " + project.getArtifactId());
 
-    List<String> modules = modules();
+    List<String> modules = modules(configuration.excluded());
     if (!Roster.of(repositorySystemSession).record(project.getId(), modules.size())) {
       return;
     }
@@ -129,12 +133,14 @@ public class AnalyseMojo extends BonsaiMojo {
 
   /**
    * The modules of this build that analyse it, which are the ones whose fragments the analysis reads: every module when
-   * the goal is named on the command line, which runs it in each of them, else the modules that bind it.
+   * the goal is named on the command line, which runs it in each of them, else the modules that bind it, less the
+   * modules the configuration leaves out.
    */
-  private List<String> modules() {
+  private List<String> modules(Set<String> excluded) {
     boolean named = mojoExecution.getSource() == MojoExecution.Source.CLI;
     return session.getProjects().stream()
       .filter(other -> named || analyses(other))
+      .filter(other -> !excluded.contains(other.getArtifactId()))
       .map(MavenProject::getArtifactId)
       .toList();
   }

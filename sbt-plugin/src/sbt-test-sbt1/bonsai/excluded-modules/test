@@ -1,0 +1,9 @@
+# a listed module is left out: the analysis runs over the others, and one that does not compile is never compiled by it
+$ copy-file changes/excluded.conf .bonsai.conf
+> reload
+> bonsaiAnalyse
+-> broken/compile
+> checkExcluded
+# a listed module the build does not have fails the load
+$ copy-file changes/stranger.conf .bonsai.conf
+-> reload

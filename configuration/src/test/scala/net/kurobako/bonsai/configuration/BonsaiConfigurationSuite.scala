@@ -80,6 +80,12 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
     assertEquals(configured.checked, Some(Set("demo.where")))
   }
 
+  directory.test("the modules left out are read by id at the build level only") { path =>
+    assertEquals(read(path, "excluded-modules = [broken, docs]\n").excludedModules, Set("broken", "docs"))
+    assertEquals(read(path, "").excludedModules, Set.empty[String])
+    assert(failure(path, "projects.demo.excluded-modules = [broken]\n").contains("projects.demo.excluded-modules"))
+  }
+
   directory.test("the rules disabled over generated code are read by id, or all of them with *") { path =>
     assertEquals(
       read(path, "generated-disabled = [duplicate-code, \"*\"]\n").generatedDisabled,

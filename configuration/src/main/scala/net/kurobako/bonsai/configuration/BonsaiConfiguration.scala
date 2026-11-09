@@ -39,7 +39,8 @@ object BonsaiConfiguration {
       bounded: Vector[(String, Int, String)],
       nesting: Map[String, Int],
       text: Vector[String],
-      projects: Map[String, Settings]
+      projects: Map[String, Settings],
+      excludedModules: Set[String]
   ) {
 
     def library(id: String): Option[Boolean] = resolve(id).library
@@ -143,7 +144,8 @@ object BonsaiConfiguration {
             "bounded",
             "nesting",
             "text",
-            "projects"
+            "projects",
+            "excluded-modules"
           )
         ),
         optionalString(config, "baseline"),
@@ -165,7 +167,8 @@ object BonsaiConfiguration {
         ),
         nesting(config),
         present(config, "text")(config.getConfig("text")).fold(Vector.empty[String])(texts(_)),
-        projects
+        projects,
+        stringSet(config, "excluded-modules").getOrElse(Set.empty)
       )
     } catch {
       case error: ConfigException => throw ConfigurationError(s"bonsai: $file: ${error.getMessage}")
