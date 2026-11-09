@@ -70,7 +70,7 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
         Option.when(!symbol.isNone)(symbol.owner.value).flatMap(namespace(_)).filterNot(written(name, _)).map {
           space =>
             val replaced = qualified(name)
-            lint.replace(
+            space -> lint.replace(
               replaced,
               s"${space.prefix}.${symbol.displayName}",
               "unqualified",
@@ -78,8 +78,9 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
             )
         }
     }.flatten
-    val needed    = prefixed.nonEmpty || members.nonEmpty
-    val missing   = namespaces.filter(space => space.prefix != space.pkg && needed && !importsPackage(space))
+    val used    = prefixed.map(_._1) ++ members.map(_._2)
+    val missing =
+      namespaces.filter(space => space.prefix != space.pkg && used.contains(space) && !importsPackage(space))
     val replacing = missing.flatMap(space =>
       members.collectFirst {
         case (importer, owner) if owner == space && importer.importees.forall(memberImportee(_)) => (importer, space)
@@ -100,7 +101,7 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
       }
     }
     val rewritten = replacing.map((importer, space) => Patch.replaceTree(importer, space.pkg))
-    (imported ++ prefixed ++ rewritten ++ references.placements(added.map(importing(_)))).asPatch
+    (imported ++ prefixed.map(_._2) ++ rewritten ++ references.placements(added.map(importing(_)))).asPatch
   }
 
   // The package and name an import of the namespace is split into.
