@@ -936,4 +936,25 @@ class PuritySuite extends AnalysisSuite {
     )
     assertEquals(chained.purity.verdicts("Chain.quiet"), Purity.Verdict.Pure)
   }
+
+  test("objects of a class read from a class file that two calls build alike are one value") {
+    val depth   = 30
+    val methods = (1 to depth).map(n =>
+      s"  private def m$n(c: AtomicLong, b: Boolean): Int => Int = " +
+        s"if (b) m${n - 1}(new AtomicLong(1), b) else m${n - 1}(new AtomicLong(2), b)"
+    )
+    val chained = extract(
+      Seq(
+        "Main.scala"  -> "object Main { def main(args: Array[String]): Unit = println(Fresh) }",
+        "Fresh.scala" ->
+          s"""import java.util.concurrent.atomic.AtomicLong
+             |object Fresh {
+             |  private def m0(c: AtomicLong, b: Boolean): Int => Int = x => x + c.intValue
+             |${methods.mkString("\n")}
+             |  def total(b: Boolean): Int = m$depth(new AtomicLong(0), b)(1)
+             |}""".stripMargin
+      )
+    )
+    assert(chained.purity.returns <= depth, chained.purity.returns)
+  }
 }

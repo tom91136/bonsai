@@ -141,7 +141,9 @@ object Purity {
     val empty: Model = Model(Vector.empty, Vector.empty, Vector.empty, Map.empty, library = 0)
   }
 
-  /** `methods` holds the authored methods of the build by qualified name; `library` counts the library bodies read. */
+  /** `methods` holds the authored methods of the build by qualified name; `library` counts the library bodies read and
+    * `returns` the call results evaluated, one for each distinct receiver and arguments.
+    */
   case class Model(
       discards: Vector[Discard],
       transforms: Vector[Transform],
@@ -149,7 +151,8 @@ object Purity {
       methods: Map[String, Method],
       library: Int,
       ordered: Vector[Ordered] = Vector.empty,
-      invariant: Vector[Invariant] = Vector.empty
+      invariant: Vector[Invariant] = Vector.empty,
+      returns: Int = 0
   ) {
     def verdicts: Map[String, Verdict] = methods.view.mapValues(_.verdict).toMap
   }
@@ -162,8 +165,9 @@ object Purity {
     val impure   = effects.size - unknown.size
     val tally    = s"purity: ${verdicts.count(_ == Verdict.Pure)} pure, $impure impure, ${unknown.size} unknown of " +
       s"${verdicts.size} methods, reading ${model.library} library methods"
-    tally +: unknown.groupMapReduce(identity)(_ => 1)(_ + _).toVector.sortBy((cause, count) => (-count, cause))
-      .take(Shown).map((cause, count) => s"purity: unknown $count: $cause")
+    Vector(tally, s"purity: ${model.returns} call results evaluated") ++
+      unknown.groupMapReduce(identity)(_ => 1)(_ + _).toVector.sortBy((cause, count) => (-count, cause))
+        .take(Shown).map((cause, count) => s"purity: unknown $count: $cause")
   }
 
   private val Shown = 25
@@ -714,6 +718,8 @@ object Purity {
 
     /** How many library bodies the inference read. */
     def library: Int = explored.size
+
+    def returns: Int = returning.size
 
     /** The library bodies that could not be read, one line per classpath entry. */
     def unreadable(using Context): Vector[String] =
@@ -1470,7 +1476,7 @@ object Purity {
         Value.Object(
           cls,
           frame.bindings ++ cls.info.decls.toList.filter(_.is(Flags.ParamAccessor)).zip(passed) ++
-            method.paramSymss.flatten.filter(_.isTerm).zip(passed)
+            terms(method).zip(passed)
         )
       } else if (
         method.name.toString == "apply" && receiver.exists(_ != Value.Opaque) &&

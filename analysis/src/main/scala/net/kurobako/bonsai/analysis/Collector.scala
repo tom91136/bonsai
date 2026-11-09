@@ -359,7 +359,8 @@ private[analysis] class Collector(
         site(method, call).map((node, location, line) =>
           Purity.Invariant(short(method), operation, shown(call), node, location, line, suppressions(method))
         )
-      )
+      ),
+      effects.returns
     )
   }
 
