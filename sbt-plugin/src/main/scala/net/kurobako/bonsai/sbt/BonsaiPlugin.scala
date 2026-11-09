@@ -414,7 +414,7 @@ object BonsaiPlugin extends AutoPlugin {
   }
 
   private def supported(rule: String, scala: String): Boolean = rule match {
-    case "RemoveUnused"        => ScalaVersions.removeUnused(scala)
+    case "RemoveUnused"        => ScalaVersions.removeUnusedRule(scala, _root_.scalafix.sbt.BuildInfo.scalafixVersion)
     case "ExplicitResultTypes" => ScalaVersions.explicitResultTypes(scala)
     case _                     => true
   }

@@ -73,4 +73,12 @@ class ScalaVersionsSuite extends munit.FunSuite {
     assert(note.startsWith("note: "), note)
     assert(note.endsWith("both (Scala 2.12.21), legacy (Scala 2.13.16)"), note)
   }
+
+  test("RemoveUnused of a Scalafix that takes 3.10 for 3.1 is left out from that Scala on") {
+    assert(!ScalaVersions.removeUnusedRule("3.10.0", "0.14.3"))
+    assert(!ScalaVersions.removeUnusedRule("3.10.0", "0.14.7"))
+    assert(ScalaVersions.removeUnusedRule("3.10.0", "0.14.8"))
+    assert(ScalaVersions.removeUnusedRule("3.9.0", "0.14.3"))
+    assert(!ScalaVersions.removeUnusedRule("3.3.3", "0.14.9"))
+  }
 }

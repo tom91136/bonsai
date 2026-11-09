@@ -21,6 +21,8 @@ private[sbt] object ScalaVersions {
     Some(line).filter(_ => BonsaiArtifacts.lines.contains(line) && patch >= oldest)
   }
 
+  private val Scalafix = """(\d+)\.(\d+)\.(\d+).*""".r
+
   private def numbers(version: String): Option[(Int, Int)] = version match {
     case Prefixed(minor, patch) => Some((minor.toInt, patch.toInt))
     case _                      => None
@@ -31,6 +33,15 @@ private[sbt] object ScalaVersions {
   def removeUnused(version: String): Boolean = numbers(version).exists(release =>
     parse(BonsaiArtifacts.removeUnusedFrom).exists(from => Ordering[(Int, Int)].gteq(release, from))
   )
+
+  /** Whether RemoveUnused of the Scalafix release accepts the Scala release. Before 0.14.8 it takes 3.10 for 3.1. */
+  def removeUnusedRule(scala: String, scalafix: String): Boolean = removeUnused(scala) &&
+    (scalafix match {
+      case Scalafix(major, minor, patch) =>
+        Ordering[(Int, Int, Int)].gteq((major.toInt, minor.toInt, patch.toInt), (0, 14, 8)) ||
+        numbers(scala).exists { case (scalaMinor, _) => scalaMinor < 10 }
+      case _ => true
+    })
 
   /** Whether scalafix can load the presentation compiler of the release, which ExplicitResultTypes types with. */
   def explicitResultTypes(version: String): Boolean =
