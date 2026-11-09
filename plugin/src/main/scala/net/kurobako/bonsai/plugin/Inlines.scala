@@ -90,10 +90,11 @@ private class Inlines(checks: Checks)(using Context) {
 
   // Macros and compile-time operations take the tree of their argument at expansion, not its value.
   private def reading(method: Symbol): Boolean =
-    method.is(Flags.Inline) && body(method).exists(_.existsSubTree {
-      case tpd.Splice(_) => true
-      case _             => false
-    }) || method.owner.fullName.toString.startsWith("scala.compiletime")
+    method.exists &&
+      (method.is(Flags.Inline) && body(method).exists(_.existsSubTree {
+        case tpd.Splice(_) => true
+        case _             => false
+      }) || method.owner.fullName.toString.startsWith("scala.compiletime"))
 
   private object Count {
     val Zero: Count = Count(0, 0)

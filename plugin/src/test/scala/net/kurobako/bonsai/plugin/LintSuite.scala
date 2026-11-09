@@ -1346,6 +1346,28 @@ class LintSuite extends FunSuite {
   private def tagged(found: List[String], check: String): List[String] =
     found.view.filter(_.endsWith(s"[bonsai:$check]")).map(_.takeWhile(_ != ';')).toList.sorted
 
+  test("an inline method from another compilation that calls a polymorphic function value has no callee to read") {
+    val library =
+      """package lib
+        |type Callback[A]   = Either[Throwable, A] => Unit
+        |type Suspend[F[_]] = [A] => (Callback[A] => Unit) => F[A]
+        |trait Ops[F[_]](suspend: Suspend[F]) {
+        |  inline def task[A](inline f: => A): F[A] = suspend { cb => cb(Right(f)) }
+        |}""".stripMargin
+    val use =
+      """object Lints {
+        |  def side(): Int = { println("x"); 1 }
+        |  def run(ops: lib.Ops[Option]): Option[Int] = ops.task[Int](side())
+        |}""".stripMargin
+    Compilations.run(Seq("Ops.scala" -> library), Nil) { (compiled, directory) =>
+      assert(!compiled.hasErrors)
+      val classpath = s"${sys.props("bonsai.plugin.classpath")}:${directory.resolve("classes")}"
+      Compilations.run(Seq("Lints.scala" -> use), Seq(s"-classpath:$classpath")) { (reporter, _) =>
+        assert(!reporter.hasErrors)
+      }
+    }
+  }
+
   test("linear operations inside loops are reported, while the same calls outside a loop are not") {
     val found = warnings(
       """object Lints {
