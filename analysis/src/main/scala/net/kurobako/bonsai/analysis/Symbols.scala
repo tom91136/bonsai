@@ -22,7 +22,7 @@ private[analysis] object Symbols {
 
   /** The references a registry recorded, without the symbols they came from. */
   object Recorded {
-    val empty: Recorded = Recorded(Map.empty, Map.empty, Map.empty, Map.empty, Map.empty)
+    val empty: Recorded = Recorded(Map.empty, Map.empty, Map.empty, Map.empty, Map.empty, Map.empty)
   }
 
   case class Recorded(
@@ -30,7 +30,8 @@ private[analysis] object Symbols {
       bodies: Map[Use, Set[String]],
       incoming: Map[String, Vector[String]],
       inlines: Map[String, Set[Use]],
-      splices: Map[String, Set[Use]]
+      splices: Map[String, Set[Use]],
+      arguments: Map[String, Set[(Use, String)]]
   ) {
     @targetName("merge")
     def ++(other: Recorded): Recorded = Recorded(
@@ -38,7 +39,8 @@ private[analysis] object Symbols {
       Maps.join(bodies, other.bodies)(_ ++ _),
       Maps.join(incoming, other.incoming)(_ ++ _),
       Maps.join(inlines, other.inlines)(_ ++ _),
-      Maps.join(splices, other.splices)(_ ++ _)
+      Maps.join(splices, other.splices)(_ ++ _),
+      Maps.join(arguments, other.arguments)(_ ++ _)
     )
   }
 
@@ -68,6 +70,7 @@ private[analysis] class Symbols(
   private val bodies     = mutable.Map.empty[Use, mutable.Set[String]]
   private val inlines    = mutable.Map.empty[String, mutable.Set[Use]]
   private val splices    = mutable.Map.empty[String, mutable.Set[Use]]
+  private val arguments  = mutable.Map.empty[String, mutable.Set[(Use, String)]]
   private val mainRoots  = mutable.Set.empty[String]
   private val registered = mutable.Map.empty[Symbol, Option[String]]
   private val keys       = java.util.HashMap[Symbol, Option[String]]()
@@ -91,7 +94,8 @@ private[analysis] class Symbols(
       },
       bodies.view.mapValues(_.toSet).toMap,
       inlines.view.mapValues(_.toSet).toMap,
-      splices.view.mapValues(_.toSet).toMap
+      splices.view.mapValues(_.toSet).toMap,
+      arguments.view.mapValues(_.toSet).toMap
     )
 
   /** The nodes with an edge to each node. */
@@ -104,7 +108,8 @@ private[analysis] class Symbols(
     bodies.view.mapValues(_.toSet).toMap,
     incoming,
     inlines.view.mapValues(_.toSet).toMap,
-    splices.view.mapValues(_.toSet).toMap
+    splices.view.mapValues(_.toSet).toMap,
+    arguments.view.mapValues(_.toSet).toMap
   )
 
   /** Adds the edges another registry recorded. */
@@ -113,6 +118,7 @@ private[analysis] class Symbols(
     other.bodies.foreach((use, targets) => bodies.getOrElseUpdate(use, mutable.Set.empty) ++= targets)
     other.inlines.foreach((key, callers) => inlines.getOrElseUpdate(key, mutable.Set.empty) ++= callers)
     other.splices.foreach((key, targets) => splices.getOrElseUpdate(key, mutable.Set.empty) ++= targets)
+    other.arguments.foreach((key, named) => arguments.getOrElseUpdate(key, mutable.Set.empty) ++= named)
   }
 
   /** Marks the node `prefix` names, and the nodes inside it, as reached by name from strings and as exported. */
@@ -149,6 +155,9 @@ private[analysis] class Symbols(
   def expanded(key: String, caller: Use): Unit = inlines.getOrElseUpdate(key, mutable.Set.empty) += caller: Unit
 
   def spliced(key: String, target: Use): Unit = splices.getOrElseUpdate(key, mutable.Set.empty) += target: Unit
+
+  def argued(key: String, caller: Use, node: String): Unit =
+    arguments.getOrElseUpdate(key, mutable.Set.empty) += caller -> node: Unit
 
   // Edges arrive in runs from one source, so its set is kept to skip the lookup.
   // scalafix:off DisableSyntax.var, DisableSyntax.null

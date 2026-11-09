@@ -67,8 +67,8 @@ object Reach {
     def settle(mains: Set[Reference], testing: Set[Reference]): CallGraph = {
       val calls = CallGraph.build(world, mains, build = classes.contains, tests = testing)
       val state = survey(world, calls, classes, bodied, entered, graph)
-      val more  = CallGraph.named(splicesOf(graph, state.main, state.dead ++ state.tested), world)
-      val extra = CallGraph.named(splicesOf(graph, state.every, state.dead), world)
+      val more  = reading(graph, Expansion(graph, state.main, state.dead ++ state.tested), world)
+      val extra = reading(graph, Expansion(graph, state.every, state.dead), world)
       if (more.subsetOf(mains) && extra.subsetOf(testing)) calls else settle(mains ++ more, testing ++ extra)
     }
     val callGraph = settle(roots, testRoots)
@@ -92,7 +92,8 @@ object Reach {
       case (name, error) if classes.contains(name) =>
         s"class file ${name.replace('/', '.')} could not be read: $error"
     }
-    val reach = Reach(graph.nodes.keySet -- state.every, state.every -- state.main, state.dead, state.tested)
+    val reflected = Expansion(graph, state.every, state.dead).reflected
+    val reach = Reach(graph.nodes.keySet -- state.every, state.every -- state.main, state.dead, state.tested, reflected)
     Reached(reach, unread.toVector.sorted)
   }
 
@@ -143,6 +144,10 @@ object Reach {
     Survey(dead, tested, every, main)
   }
 
+  private def reading(graph: Graph, expansion: Expansion, world: ClassWorld): Set[Reference] =
+    CallGraph.named(expansion.splices, world) ++
+      CallGraph.roots(graph.copy(roots = expansion.reflected.map(Root(_, Root.Kind.Reflective))), world)
+
   private def twinned(graph: Graph, platforms: Set[String], scope: Output.Scope): Set[Root] =
     for {
       node   <- graph.nodes.values.toSet if platforms(node.module) && node.scope == scope
@@ -172,21 +177,27 @@ object Reach {
     visited.toSet
   }
 
-  private def expanded(graph: Graph, reached: Set[String], blocked: Set[String]): Set[String] = {
-    def inside(caller: Use, live: Set[String]): Boolean =
+  private class Expansion(graph: Graph, reached: Set[String], blocked: Set[String]) {
+    private def inside(caller: Use, live: Set[String]): Boolean =
       reached(caller.node) && caller.method.forall { method =>
         if (graph.inlines.contains(method)) live(method) else !blocked(method)
       }
+
     @annotation.tailrec
-    def settle(live: Set[String]): Set[String] = {
+    private def settle(live: Set[String]): Set[String] = {
       val next = graph.inlines.collect { case (key, callers) if callers.exists(inside(_, live)) => key }.toSet
       if (next == live) live else settle(next)
     }
-    settle(Set.empty)
-  }
 
-  private def splicesOf(graph: Graph, reached: Set[String], blocked: Set[String]): Set[Use] =
-    expanded(graph, reached, blocked).flatMap(graph.splices.getOrElse(_, Set.empty))
+    private val live = settle(Set.empty)
+
+    val splices: Set[Use] = live.flatMap(graph.splices.getOrElse(_, Set.empty))
+
+    val reflected: Set[String] = for {
+      key            <- live.intersect(graph.macros)
+      (caller, node) <- graph.arguments.getOrElse(key, Set.empty) if inside(caller, live)
+    } yield node
+  }
 
   private class Naming(nodes: Map[String, Node]) {
 
@@ -218,12 +229,16 @@ object Reach {
   * method that no class file of the build keys alike, as the code of a platform twin or an inline method, is too.
   *
   * Methods are named by `Keys`, so the uses the sources record meet the methods the bytecode runs.
+  *
+  * `reflected` holds the types the live expansions of macros name in their type arguments, which the macros read member
+  * by member, so that every member of each is entered.
   */
 case class Reach(
     dead: Set[String],
     tested: Set[String],
     deadMethods: Set[String],
-    testedMethods: Set[String]
+    testedMethods: Set[String],
+    reflected: Set[String] = Set.empty
 ) {
 
   /** Whether any root, the tests included, reaches the node. */

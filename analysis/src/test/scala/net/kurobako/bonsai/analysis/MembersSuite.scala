@@ -1361,4 +1361,99 @@ class MembersSuite extends AnalysisSuite {
     val result = extract(Seq(entry("println(probe.Names.note)"), names))
     assertEquals(Liveness.findings(result.graph, result.reach).map(_.node.name), Vector("probe.Frames"))
   }
+
+  private val reading = "Reading.scala" ->
+    """import scala.quoted.*
+      |object Reading {
+      |  def impl[T: Type](using Quotes): Expr[String] = {
+      |    import quotes.reflect.*
+      |    Expr(TypeRepr.of[T].typeSymbol.methodMembers.map(_.name).mkString(","))
+      |  }
+      |}""".stripMargin
+
+  private val mirror = "Mirror.scala" ->
+    """object Mirror {
+      |  inline def reads[T]: String = ${ Reading.impl[T] }
+      |  inline def through[T]: String = reads[T]
+      |  inline def plain[T]: String = "plain"
+      |}""".stripMargin
+
+  private def unusedMembers(found: Vector[Finding]): Set[String] =
+    found.collect { case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail }.toSet
+
+  test("a member of a class a live macro receives as a type argument is used") {
+    val found = findings(
+      Seq(
+        entry("println(Mirror.reads[Target])"),
+        reading,
+        mirror,
+        "Target.scala" -> "class Target { def foo: Int = 1 }"
+      )
+    )
+    assertEquals(unusedMembers(found), Set.empty[String])
+  }
+
+  test("a member of a class nested in a type argument of a macro reached through an inline method is used") {
+    val found = findings(
+      Seq(
+        entry("println(Mirror.through[Option[List[Target]]])"),
+        reading,
+        mirror,
+        "Target.scala" -> "class Target { def foo: Int = 1 }"
+      )
+    )
+    assertEquals(unusedMembers(found), Set.empty[String])
+  }
+
+  test("what a member a live macro reads calls is reachable") {
+    val result = extract(
+      Seq(
+        entry("println(Mirror.reads[Target]); println(new Target)"),
+        reading,
+        mirror,
+        "Target.scala" -> "class Target { def foo: Int = Helper.bar }",
+        "Helper.scala" -> "object Helper { def bar: Int = 1 }"
+      )
+    )
+    assertEquals(Liveness.findings(result.graph, result.reach), Vector.empty)
+    assertEquals(unusedMembers(Members.findings(result.members, result.graph.nodes, result.reach)), Set.empty[String])
+  }
+
+  test("a member of a class an unreachable macro call receives is unused") {
+    val found = findings(
+      Seq(
+        entry("println(new Target); println(Spare.live)"),
+        reading,
+        mirror,
+        "Spare.scala"  -> "object Spare { def live = 1; def stray = Mirror.reads[Target] }",
+        "Target.scala" -> "class Target { def foo: Int = 1 }"
+      )
+    )
+    assertEquals(unusedMembers(found), Set("Spare.stray is never referenced", "Target.foo is never referenced"))
+  }
+
+  test("a member of a class a live macro does not receive is unused") {
+    val found = findings(
+      Seq(
+        entry("println(Mirror.reads[Target]); println(new Other)"),
+        reading,
+        mirror,
+        "Target.scala" -> "class Target { def foo: Int = 1 }",
+        "Other.scala"  -> "class Other { def spare: Int = 1 }"
+      )
+    )
+    assertEquals(unusedMembers(found), Set("Other.spare is never referenced"))
+  }
+
+  test("a member of a class given to an inline method without a macro is unused") {
+    val found = findings(
+      Seq(
+        entry("println(Mirror.plain[Target]); println(new Target)"),
+        reading,
+        mirror,
+        "Target.scala" -> "class Target { def foo: Int = 1 }"
+      )
+    )
+    assertEquals(unusedMembers(found), Set("Target.foo is never referenced"))
+  }
 }

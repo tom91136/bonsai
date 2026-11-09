@@ -63,10 +63,18 @@ private[analysis] class References(components: Components, fragments: Fragments)
 
   private def innermostInline(using Context): Option[String] = methods.find(_.is(Flags.Inline)).flatMap(inlineKey(_))
 
+  private def expander(using Context): Option[Use] =
+    innermostInline.fold(user)(enclosing => owner.map(Use(_, Some(enclosing))))
+
   private def expansion(symbol: Symbol)(using Context): Unit =
-    inlineKey(symbol).foreach { key =>
-      val from = innermostInline.fold(user)(enclosing => owner.map(Use(_, Some(enclosing))))
-      from.foreach(symbols.expanded(key, _))
+    inlineKey(symbol).foreach(key => expander.foreach(symbols.expanded(key, _)))
+
+  private def arguing(generic: tpd.TypeApply)(using Context): Unit =
+    inlineKey(generic.fun.symbol).foreach { key =>
+      expander.foreach { caller =>
+        generic.args.flatMap(argument => ClassesNamed.of(argument.tpe)).flatMap(symbols.key(_)).distinct
+          .foreach(symbols.argued(key, caller, _))
+      }
     }
 
   // the callees run at compile time, so no bytecode reaches them
@@ -202,6 +210,10 @@ private[analysis] class References(components: Components, fragments: Fragments)
       }
       symbols.refer(user, tree.symbol)
       expansion(tree.symbol)
+      tree match {
+        case generic: tpd.TypeApply => arguing(generic)
+        case _                      => ()
+      }
       read(tree.symbol)
       recorder.mention(tree)
       derivations.observe(tree)

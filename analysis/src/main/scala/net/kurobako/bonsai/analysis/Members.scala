@@ -102,7 +102,7 @@ object Members {
 
   /** Members of live nodes; members of unreachable types are covered by the type-level liveness findings. A member is
     * used when a use that `reach` runs references it. Generated members are where their generator puts them, whatever
-    * uses them.
+    * uses them. The members of a type a live macro reads by reflection are used.
     */
   def findings(
       model: Model,
@@ -111,7 +111,10 @@ object Members {
       support: Set[String] = Set.empty
   ): Vector[Finding] = {
     val written = model.members.filterNot(member => nodes.get(member.node).exists(_.generated)).map(member =>
-      member.copy(users = member.users ++ member.key.flatMap(model.calls.get).getOrElse(Set.empty))
+      member.copy(
+        users = member.users ++ member.key.flatMap(model.calls.get).getOrElse(Set.empty),
+        inherited = member.inherited || reach.reflected(member.node)
+      )
     )
     val live = reach.live(_)
     anonymous(model.givens, nodes, live) ++ hidden(model.nested, nodes, live) ++
