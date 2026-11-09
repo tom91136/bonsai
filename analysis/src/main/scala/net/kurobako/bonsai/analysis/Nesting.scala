@@ -260,7 +260,7 @@ object Nesting {
       private val kids: Map[String, Vector[String]] =
         names.flatMap(name => placed(name).owner.map(_ -> name)).groupMap(_._1)(_._2)
 
-      private def owner(name: String): Option[String] = placed(name).owner
+      private def owner(name: String): Option[String] = placed.get(name).flatMap(_.owner)
 
       private val chains = mutable.Map.empty[String, Vector[String]]
 

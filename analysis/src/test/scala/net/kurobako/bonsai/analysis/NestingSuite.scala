@@ -37,6 +37,20 @@ class NestingSuite extends AnalysisSuite {
     assertEquals(moves(after, if (moved.isEmpty) test else moved, config), Vector.empty[String])
   }
 
+  test("the members of an object local to a method are planned without it as an owner") {
+    val found = moves(Seq(file(
+      "Local",
+      """object Local {
+        |  def make(): Int = {
+        |    sealed trait State
+        |    object State { case object Done extends State }
+        |    (State.Done: State).hashCode
+        |  }
+        |}"""
+    )))
+    assertEquals(found, Vector.empty)
+  }
+
   test("a type alias sharing its name with an object leaves the object's members planned") {
     val found = moves(Seq(file(
       "Holder",
