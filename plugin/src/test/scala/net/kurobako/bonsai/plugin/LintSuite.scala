@@ -1,5 +1,7 @@
 package net.kurobako.bonsai.plugin
 
+import java.io.InputStream
+import java.io.OutputStream
 import java.nio.file.Files
 import javax.tools.ToolProvider
 import munit.FunSuite
@@ -1417,7 +1419,14 @@ class LintSuite extends FunSuite {
         "public class Flags { public static int pick(String name, boolean eager) { return 1; } }"
       )
       assertEquals(
-        ToolProvider.getSystemJavaCompiler.run(null, null, null, "-d", directory.toString, source.toString),
+        ToolProvider.getSystemJavaCompiler.run(
+          InputStream.nullInputStream,
+          OutputStream.nullOutputStream,
+          OutputStream.nullOutputStream,
+          "-d",
+          directory.toString,
+          source.toString
+        ),
         0
       )
       val classpath        = s"${sys.props("bonsai.plugin.classpath")}:$directory"
