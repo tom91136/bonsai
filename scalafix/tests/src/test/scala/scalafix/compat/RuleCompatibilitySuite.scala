@@ -191,8 +191,15 @@ object RuleCompatibilitySuite {
       "qualified-collection-namespaces",
       "FullyQualifiedReferenceSubpackages",
       "FullyQualifiedReference.fully-qualified-reference"
+    ) -> followsConfig,
+    configured(
+      "qualified-collection-namespaces",
+      "QualifiedCollectionNamespacesJavaOnly",
+      "FullyQualifiedReference.fully-qualified-reference"
     )                                                                                               -> followsConfig,
     configured("namespace-imports", "FullyQualifiedReference", "NamespaceImports.namespace-import") -> reconfigured,
+    configured("namespace-imports", "QualifiedCollectionNamespacesJavaOnly", "NamespaceImports.qualified-reference") ->
+      reconfigured,
     configured("namespace-imports", "FullyQualifiedReferenceClash", "NamespaceImports.namespace-import") ->
       reconfigured,
     configured("namespace-imports", "FullyQualifiedReferenceConfigured", "NamespaceImports.namespace-import") ->

@@ -3,6 +3,8 @@ rule = ExplicitEtaExpansion
  */
 package fix
 
+import java.nio.file.Files
+import java.nio.file.Path
 import scala.language.dynamics
 
 object ExplicitEtaExpansion {
@@ -54,9 +56,9 @@ object ExplicitEtaExpansion {
   def emits[O](items: Seq[O]): Int                       = items.size
   val nullaryOverload: Int                               = emits("12345".getBytes)
   val nullaryOverloadList: List[Array[Byte]]             = List("12345".getBytes)
-  val overloadedArities: List[Int]                       = List(java.nio.file.Path.of("a")).map(java.nio.file.Files.readString).map(_.length)
+  val overloadedArities: List[Int]                       = List(Path.of("a")).map(Files.readString).map(_.length)
   // format: off
-  val javaMethod: List[Long]                             = List(java.nio.file.Path.of("a")).map(java.nio.file.Files.size)// assert: ExplicitEtaExpansion.method-value
+  val javaMethod: List[Long]                             = List(Path.of("a")).map(Files.size)// assert: ExplicitEtaExpansion.method-value
   val javaOverloaded: List[Int]                          = List(1).map(java.lang.Math.abs)// assert: ExplicitEtaExpansion.method-value
   // format: on
   val dynamicSelection: List[Lookup] = List(lookup.process)
