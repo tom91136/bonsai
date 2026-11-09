@@ -1,0 +1,18 @@
+# the sbt-scalafix the plugin brings is also published under the name that sbt before 1.9 asks for
+> legacy
+# lints fail outside Dev, which only warns
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
+# the rules resolve: a rule with nothing to report passes
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
+> scalafixAll --check
+# rules listed in .scalafix.conf run alongside bonsai's
+$ copy-file changes/Counter.scala src/main/scala/demo/Counter.scala
+-> scalafixAll --check
+$ delete src/main/scala/demo/Counter.scala
+> scalafixAll --check
+# ForbiddenAPIs has no symbols of its own, so this fails only through the settings in .scalafix.conf
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "ForbiddenAPIs"
+-> scalafixAll --check
+# a rule kept a warning reports without failing
+> set ThisBuild / bonsaiWarnings += "ForbiddenAPIs"
+> scalafixAll --check

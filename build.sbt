@@ -413,7 +413,17 @@ lazy val sbtBonsai = linted(project.in(file("sbt-plugin")))
     libraryDependencies += "org.scalameta" %% "munit" % munitVersion % Test,
     // scaladoc reads the TASTy of lm-coursier, whose annotation library is not on the classpath
     Compile / doc / sources := Nil,
-    addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % Versions.scalafix),
+    libraryDependencies += {
+      val version = scalaBinaryVersion.value match {
+        case "2.12" => Versions.scalafixSbt1
+        case _      => Versions.scalafix
+      }
+      Defaults.sbtPluginExtra(
+        "ch.epfl.scala" % "sbt-scalafix" % version,
+        (pluginCrossBuild / sbtBinaryVersion).value,
+        (update / scalaBinaryVersion).value
+      )
+    },
     Compile / sourceGenerators += Def.task {
       val file = (Compile / sourceManaged).value / "BonsaiArtifacts.scala"
       val base = (ThisBuild / baseDirectory).value
@@ -462,6 +472,7 @@ lazy val sbtBonsai = linted(project.in(file("sbt-plugin")))
       "-Xmx4g",
       s"-Dbonsai.shared=${sourceDirectory.value / "sbt-test-shared"}",
       s"-Dplugin.version=${version.value}",
+      s"-Dbonsai.scalafix.sbt1=${Versions.scalafixSbt1}",
       s"-Dbonsai.oldest=${scala3Versions.map(scalaLine).map(line => s"$line:${oldestPatch(line)}").mkString(",")}",
       s"-Dbonsai.fixtures=${(ThisBuild / baseDirectory).value}"
     ) ++ Seq("sbt.ivy.home", "ivy.home").flatMap(key => sys.props.get(key).map(home => s"-D$key=$home")),
