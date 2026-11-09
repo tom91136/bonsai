@@ -57,14 +57,22 @@ object Reach {
       (name, scope) <- classes.toVector if scope == Output.Scope.Test
       method        <- bodied(name) if !method.isAbstract
     } yield Reference(name, method.name, method.descriptor)
-    val calls = CallGraph.build(
-      world,
-      CallGraph.roots(graph.copy(roots = entered ++ twinned(graph, manifest.platforms, Output.Scope.Main)), world),
-      build = classes.contains,
-      tests = tests.toSet ++
-        CallGraph.roots(graph.copy(roots = twinned(graph, manifest.platforms, Output.Scope.Test)), world)
+    val roots = CallGraph.roots(
+      graph.copy(roots = entered ++ twinned(graph, manifest.platforms, Output.Scope.Main)),
+      world
     )
-    Calls(world, calls, BytecodeEffects.summarise(world, calls), classes, bodied, entered)
+    val testRoots = tests.toSet ++
+      CallGraph.roots(graph.copy(roots = twinned(graph, manifest.platforms, Output.Scope.Test)), world)
+    @annotation.tailrec
+    def settle(mains: Set[Reference], testing: Set[Reference]): CallGraph = {
+      val calls = CallGraph.build(world, mains, build = classes.contains, tests = testing)
+      val state = survey(world, calls, classes, bodied, entered, graph)
+      val more  = CallGraph.named(splicesOf(graph, state.main, state.dead ++ state.tested), world)
+      val extra = CallGraph.named(splicesOf(graph, state.every, state.dead), world)
+      if (more.subsetOf(mains) && extra.subsetOf(testing)) calls else settle(mains ++ more, testing ++ extra)
+    }
+    val callGraph = settle(roots, testRoots)
+    Calls(world, callGraph, BytecodeEffects.summarise(world, callGraph), classes, bodied, entered)
   }
 
   private def classesOf(outputs: Vector[Output]): Map[String, Output.Scope] =
@@ -79,10 +87,29 @@ object Reach {
   /** The reach of the build `graph` describes, from the calls its classes make. */
   def of(linked: Calls, graph: Graph): Reached = {
     val Calls(world, calls, _, classes, bodied, entered) = linked
-    val naming                                           = Naming(graph.nodes)
-    val methods                                          = mutable.Map.empty[String, Status]
-    val reached                                          = mutable.Set.empty[String]
-    val ran                                              = mutable.Set.empty[String]
+    val state                                            = survey(world, calls, classes, bodied, entered, graph)
+    val unread                                           = world.unreadable.collect {
+      case (name, error) if classes.contains(name) =>
+        s"class file ${name.replace('/', '.')} could not be read: $error"
+    }
+    val reach = Reach(graph.nodes.keySet -- state.every, state.every -- state.main, state.dead, state.tested)
+    Reached(reach, unread.toVector.sorted)
+  }
+
+  private case class Survey(dead: Set[String], tested: Set[String], every: Set[String], main: Set[String])
+
+  private def survey(
+      world: ClassWorld,
+      calls: CallGraph,
+      classes: Map[String, Output.Scope],
+      bodied: Map[String, Vector[Method]],
+      entered: Set[Root],
+      graph: Graph
+  ): Survey = {
+    val naming  = Naming(graph.nodes)
+    val methods = mutable.Map.empty[String, Status]
+    val reached = mutable.Set.empty[String]
+    val ran     = mutable.Set.empty[String]
     classes.keys.foreach { name =>
       val states = bodied(name).map { method =>
         val reference = Reference(name, method.name, method.descriptor)
@@ -113,11 +140,7 @@ object Reach {
     val checks = graph.nodes.values.collect { case node if node.test => node.name }
     val every  = closure(reached ++ rooted ++ checks, graph, use => use.method.forall(!dead(_)))
     val main   = closure(ran ++ rooted, graph, use => use.method.forall(key => !dead(key) && !tested(key)))
-    val unread = world.unreadable.collect {
-      case (name, error) if classes.contains(name) =>
-        s"class file ${name.replace('/', '.')} could not be read: $error"
-    }
-    Reached(Reach(graph.nodes.keySet -- every, every -- main, dead, tested), unread.toVector.sorted)
+    Survey(dead, tested, every, main)
   }
 
   private def twinned(graph: Graph, platforms: Set[String], scope: Output.Scope): Set[Root] =
@@ -148,6 +171,22 @@ object Reach {
     }
     visited.toSet
   }
+
+  private def expanded(graph: Graph, reached: Set[String], blocked: Set[String]): Set[String] = {
+    def inside(caller: Use, live: Set[String]): Boolean =
+      reached(caller.node) && caller.method.forall { method =>
+        if (graph.inlines.contains(method)) live(method) else !blocked(method)
+      }
+    @annotation.tailrec
+    def settle(live: Set[String]): Set[String] = {
+      val next = graph.inlines.collect { case (key, callers) if callers.exists(inside(_, live)) => key }.toSet
+      if (next == live) live else settle(next)
+    }
+    settle(Set.empty)
+  }
+
+  private def splicesOf(graph: Graph, reached: Set[String], blocked: Set[String]): Set[Use] =
+    expanded(graph, reached, blocked).flatMap(graph.splices.getOrElse(_, Set.empty))
 
   private class Naming(nodes: Map[String, Node]) {
 

@@ -120,6 +120,38 @@ class LivenessSuite extends AnalysisSuite {
     )
   }
 
+  test("a type only the macro implementation of a reachable inline method names is live") {
+    assertEquals(
+      findings(
+        Seq(
+          entry,
+          "src/main/scala/Used.scala" ->
+            "object Used { inline def text: String = ${ Expansion.text }; def run(): Unit = println(text) }",
+          "src/main/scala/Expansion.scala" ->
+            "import scala.quoted.*\nobject Expansion { def text(using Quotes): Expr[String] = Expr(Layers.describe) }",
+          "src/main/scala/Layers.scala" -> "object Layers { def describe: String = \"layers\" }"
+        )
+      ),
+      Set.empty
+    )
+  }
+
+  test("a type only the macro implementation of an unreachable inline method names is unused") {
+    assertEquals(
+      findings(
+        Seq(
+          entry,
+          "src/main/scala/Used.scala" ->
+            "object Used { inline def text: String = ${ Expansion.text }; def run(): Unit = () }",
+          "src/main/scala/Expansion.scala" ->
+            "import scala.quoted.*\nobject Expansion { def text(using Quotes): Expr[String] = Expr(Layers.describe) }",
+          "src/main/scala/Layers.scala" -> "object Layers { def describe: String = \"layers\" }"
+        )
+      ),
+      Set("unused" -> "Layers")
+    )
+  }
+
   private def node(name: String, module: String, test: Boolean = false): (String, Node) = name ->
     Node(
       name,

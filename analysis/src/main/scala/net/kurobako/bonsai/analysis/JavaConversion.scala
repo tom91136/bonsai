@@ -437,11 +437,11 @@ private[analysis] object JavaConversion {
 
   /** The graph of the build, which holds the nodes of the Scala code and of the Java code alike. */
   def merge(graph: Graph, collected: Collected): Graph =
-    Graph(
-      graph.nodes ++ collected.nodes,
-      Graph.union(graph.declared, collected.edges),
-      graph.roots ++ collected.roots,
-      Graph.union(graph.bodies, collected.bodies)
+    graph.copy(
+      nodes = graph.nodes ++ collected.nodes,
+      declared = Graph.union(graph.declared, collected.edges),
+      roots = graph.roots ++ collected.roots,
+      bodies = Graph.union(graph.bodies, collected.bodies)
     )
 
 }

@@ -40,6 +40,15 @@ private[analysis] object CallGraph {
   def roots(graph: Graph, world: ClassWorld): Set[Reference] =
     graph.roots.flatMap(root => classes(root.name, world).flatMap(entered(_, root.kind, world)))
 
+  /** The methods the uses name: those of the class each use names whose key is the method the use names. */
+  def named(uses: Set[Use], world: ClassWorld): Set[Reference] = for {
+    use    <- uses
+    file   <- classes(use.node, world)
+    method <- file.methods
+    reference = Reference(file.name, method.name, method.descriptor)
+    if use.method.contains(world.key(reference))
+  } yield reference
+
   private def classes(name: String, world: ClassWorld): Vector[ClassFile] = {
     val parts = name.split('.').toVector
     parts.indices.view.map { nested =>

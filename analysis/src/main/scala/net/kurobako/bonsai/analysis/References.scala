@@ -56,6 +56,29 @@ private[analysis] class References(components: Components, fragments: Fragments)
     else if (symbol.is(Flags.Method) && symbol.owner.isClass) methodKeys.getOrElseUpdate(symbol, Keys.of(symbol))
     else user.flatMap(_.method)
 
+  private def inlineKey(symbol: Symbol)(using Context): Option[String] =
+    if (symbol.isAllOf(Flags.Inline | Flags.Method) && symbol.owner.isClass)
+      methodKeys.getOrElseUpdate(symbol, Keys.of(symbol))
+    else None
+
+  private def innermostInline(using Context): Option[String] = methods.find(_.is(Flags.Inline)).flatMap(inlineKey(_))
+
+  private def expansion(symbol: Symbol)(using Context): Unit =
+    inlineKey(symbol).foreach { key =>
+      val from = innermostInline.fold(user)(enclosing => owner.map(Use(_, Some(enclosing))))
+      from.foreach(symbols.expanded(key, _))
+    }
+
+  // the callees run at compile time, so no bytecode reaches them
+  private def splicing(splice: tpd.Splice)(using Context): Unit =
+    innermostInline.foreach { key =>
+      splice.expr.filterSubTrees(_.symbol.is(Flags.Method)).map(_.symbol).filter(_.owner.isClass).foreach { callee =>
+        methodKeys.getOrElseUpdate(callee, Keys.of(callee)).foreach { method =>
+          symbols.spliced(key, Use(Calls.qualified(callee.owner), Some(method)))
+        }
+      }
+    }
+
   private lazy val tryClass = requiredClass("scala.util.Try")
 
   def traverse(tree: tpd.Tree)(using Context): Unit = tree match {
@@ -95,6 +118,7 @@ private[analysis] class References(components: Components, fragments: Fragments)
           recorder.design(symbol, method.rhs)
           structure.group(symbol, method)
           recorder.member(symbol)
+          inlineKey(symbol).foreach(symbols.inlined)
           if (symbol.owner.isClass) body(symbol, method.rhs, node)
         case value: tpd.ValDef if symbol.owner.isClass && !symbol.is(Flags.Synthetic) =>
           body(symbol, value.rhs, node)
@@ -169,13 +193,15 @@ private[analysis] class References(components: Components, fragments: Fragments)
             select.qualifier.tpe,
             settled(select.qualifier)
           )
-        case _ => ()
+        case splice: tpd.Splice => splicing(splice)
+        case _                  => ()
       }
       tree match {
         case tpd.Ident(_) | tpd.Select(_, _) if !synthetic.top => callSites.invoke(tree, owner)
         case _                                                 => ()
       }
       symbols.refer(user, tree.symbol)
+      expansion(tree.symbol)
       read(tree.symbol)
       recorder.mention(tree)
       derivations.observe(tree)
