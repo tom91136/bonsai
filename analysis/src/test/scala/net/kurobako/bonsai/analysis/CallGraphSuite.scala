@@ -106,6 +106,19 @@ public class Hosting {
   public static int fromMain() { return Mark.circle() + Mark.square() + new Circle().area(); }
   public static int fromTest() { return Mark.square() + Mark.hello(); }
   public static Object testing() { return new Hosted(); }
+  public static Lock latch() { return new Latch(); }
+}
+
+interface Lock {
+  int open();
+}
+
+class Latch implements Lock {
+  public int open() { return Mark.work(); }
+}
+
+class Unlatched implements Lock {
+  public int open() { return Mark.ranDead(); }
 }
 """
 
@@ -858,6 +871,14 @@ public class Cross {
       assertMisses(bare, ref("Hosted", "compareTo", "(Lfixture/Hosted;)I"), ref("Mark", "hook"))
       val unbuilt = CallGraph.build(world, Set(ref("Hosting", "fromMain")), build = inBuild)
       assertMisses(unbuilt, ref("Hosted", "compareTo", "(Lfixture/Hosted;)I"))
+    }
+  }
+
+  test("an interface method that a root enters dispatches to the overrides of the classes the program instantiates") {
+    withWorld() { world =>
+      val found = CallGraph.build(world, Set(ref("Hosting", "latch", "()Lfixture/Lock;"), ref("Lock", "open")))
+      assertReaches(found, ref("Latch", "open"), ref("Mark", "work"))
+      assertMisses(found, ref("Unlatched", "open"), ref("Mark", "ranDead"))
     }
   }
 

@@ -130,6 +130,8 @@ private[analysis] object CallGraph {
         if (target.method.isStatic) initialise(target.owner)
         else if (world.get(target.owner).exists(file => !file.isAbstract && !file.isInterface))
           instantiate(target.owner)
+        // code outside the build calls a root virtually, so the overrides of the instantiated classes run too
+        if (target.method.overridable && target.method.name != "<init>") site(root)
       }
 
     private def reference(target: ClassWorld.Target): Reference =

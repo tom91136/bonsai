@@ -211,6 +211,32 @@ class MembersSuite extends AnalysisSuite {
     )
   }
 
+  test("a member only an override of a library's public method uses is not test-only") {
+    val result = extract(
+      Seq(
+        "Gate.scala" ->
+          """package lib
+            |trait Gate { def wrap(n: Int): Gate }
+            |object Gate {
+            |  def apply: Gate = new Plain
+            |  private final class Plain extends Gate {
+            |    def limit: Int = 2
+            |    def wrap(n: Int): Gate = if (n > limit) new Wrapped else this
+            |  }
+            |  private final class Wrapped extends Gate { def wrap(n: Int): Gate = this }
+            |}""".stripMargin
+      ),
+      Seq("GateCheck.scala" -> "class GateCheck { def run(gate: lib.Gate): lib.Gate = gate.wrap(1) }"),
+      libraries = Set("m")
+    )
+    assertEquals(
+      Members.findings(result.members, result.graph.nodes, result.reach).collect {
+        case finding if finding.rule == Finding.Rule.TestOnlyMember => finding.detail
+      },
+      Vector.empty[String]
+    )
+  }
+
   test("a class and its object that declare one signature share a key, so reaching either keeps what the other calls") {
     def unused(objectMethod: String, call: String) = findings(
       Seq(

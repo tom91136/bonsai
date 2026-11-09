@@ -348,6 +348,25 @@ class LivenessSuite extends AnalysisSuite {
     assertEquals(found.sorted, Vector("unused lib.Hidden", "unused lib.Internal", "unused lib.Outer.Inner"))
   }
 
+  test("the overrides of a library's public abstract method run when the program instantiates them") {
+    val result = extract(
+      Seq(
+        "Gate.scala" ->
+          """package lib
+            |trait Gate { def wrap(n: Int): Gate }
+            |object Gate {
+            |  def apply: Gate = new Plain
+            |  private final class Plain extends Gate { def wrap(n: Int): Gate = new Wrapped }
+            |  private final class Wrapped extends Gate { def wrap(n: Int): Gate = this }
+            |}""".stripMargin
+      ),
+      Seq("GateCheck.scala" -> "class GateCheck { def run(gate: lib.Gate): lib.Gate = gate.wrap(1) }"),
+      libraries = Set("m")
+    )
+    val found = Liveness.findings(result.graph, result.reach).map(finding => s"${finding.rule.id} ${finding.node.name}")
+    assertEquals(found.sorted, Vector.empty[String])
+  }
+
   test("generated sources are categorised by path") {
     val graph =
       extract(
