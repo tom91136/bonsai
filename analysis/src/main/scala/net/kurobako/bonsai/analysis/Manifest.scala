@@ -3,6 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.PathMatcher
+import net.kurobako.bonsai.collections.*
 import scala.collection.concurrent.TrieMap
 import scala.jdk.CollectionConverters.*
 
@@ -105,7 +106,7 @@ case class Manifest(
     val marked = TrieMap.empty[Path, Boolean]
     source => {
       val absolute = root.fold(source)(_.resolve(source))
-      isGenerated(source) || marked.getOrElseUpdate(absolute, Outputs.generated(absolute))
+      isGenerated(source) || marked.getOrElseUpdate(absolute, Generated.file(absolute))
     }
   }
 

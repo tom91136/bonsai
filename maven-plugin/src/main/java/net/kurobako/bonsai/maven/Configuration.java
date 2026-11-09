@@ -22,6 +22,8 @@ public final class Configuration {
   private final Set<String> hot = new TreeSet<>();
   private final List<String> bounded = new ArrayList<>();
   private final Set<String> checked = new TreeSet<>();
+  private final Set<String> generated = new TreeSet<>();
+  private final Set<String> generatedDisable = new TreeSet<>();
   private final List<String> options = new ArrayList<>();
   private final List<String> text = new ArrayList<>();
   private int wildcards = 2;
@@ -76,6 +78,16 @@ public final class Configuration {
     return checked;
   }
 
+  /** The globs of the files the build generates, whose code the checks skip. */
+  public Set<String> generated() {
+    return generated;
+  }
+
+  /** The checks skipped over generated code, by id, or every check with {@code *}. */
+  public Set<String> generatedDisable() {
+    return generatedDisable;
+  }
+
   /** Whether other builds use this module's public API, so that the analysis counts it as used, when it says. */
   public Optional<Boolean> library() {
     return Optional.ofNullable(library);
@@ -105,6 +117,8 @@ public final class Configuration {
         case "hot" -> configuration.hot.add(value);
         case "bounded" -> configuration.bounded.add(value);
         case "checked" -> configuration.checked.add(value);
+        case "generated" -> configuration.generated.add(value);
+        case "generated-disable" -> configuration.generatedDisable.add(value);
         case "option" -> configuration.options.add(value);
         case "wildcards" -> configuration.wildcards = Integer.parseInt(value);
         case "library" -> configuration.library = Boolean.parseBoolean(value);

@@ -60,8 +60,12 @@ public final class Scalac {
     return "-Wconf:msg=\\[bonsai." + id + "\\]:" + action;
   }
 
-  /** The options the compiler plugin reads, for the mode. */
-  public static List<String> options(Configuration configuration, Ids ids, String mode) {
+  private static String escape(String path) {
+    return path.replaceAll("([*?\\[\\]{}\\\\])", "\\\\$1");
+  }
+
+  /** The options the compiler plugin reads, for the mode and the directories the build generates sources into. */
+  public static List<String> options(Configuration configuration, Ids ids, String mode, List<File> managed) {
     List<String> options = new ArrayList<>();
     options.add("-P:bonsai:mode=" + mode);
     options.add("-P:bonsai:wildcards=" + configuration.wildcards());
@@ -97,6 +101,22 @@ public final class Scalac {
     }
     for (String type : configuration.checked()) {
       options.add("-P:bonsai:checked=" + type);
+    }
+    for (String glob : configuration.generated()) {
+      options.add("-P:bonsai:generated=" + glob);
+    }
+    for (File directory : managed) {
+      options.add("-P:bonsai:generated=" + escape(directory.getAbsolutePath()) + "/**");
+    }
+    List<String> skipped = configuration.generatedDisable().contains("*")
+      ? List.of("*")
+      : configuration.generatedDisable().stream().filter(ids.checks()::contains).toList();
+    if (skipped.isEmpty()) {
+      // the plugin skips every check over generated code when the option is absent
+      options.add("-P:bonsai:generated-disable=");
+    }
+    for (String id : skipped) {
+      options.add("-P:bonsai:generated-disable=" + id);
     }
     return options;
   }

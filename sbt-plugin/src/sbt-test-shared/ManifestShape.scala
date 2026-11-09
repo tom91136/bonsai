@@ -1,7 +1,7 @@
 import java.io.File
 
 object ManifestShape {
-  private val Directories = """(^|[:\t])(\$\{[A-Z_]+\}|/)[^:]*/""".r
+  private val Directories = """(^|[:\t=])(\$\{[A-Z_]+\}|/)[^:]*/""".r
 
   private def last(path: String): String = path.substring(path.lastIndexOf('/') + 1)
 

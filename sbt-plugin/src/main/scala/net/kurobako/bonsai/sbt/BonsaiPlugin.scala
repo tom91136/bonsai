@@ -312,7 +312,15 @@ object BonsaiPlugin extends AutoPlugin {
     },
     Compile / scalacOptions := {
       def option(name: String, ids: Set[String]) = (ids & Checks).toSeq.sorted.map(id => s"-P:bonsai:$name=$id")
-      val own                                    = (Compile / scalacOptions).value
+      def skipped(ids: Set[String])              = {
+        val named = if (ids.contains("*")) Seq("*") else (ids & Checks).toSeq.sorted
+        // an absent option skips every check over generated code
+        if (named.isEmpty) Seq("-P:bonsai:generated-disable=")
+        else named.map(id => s"-P:bonsai:generated-disable=$id")
+      }
+      def escape(path: String) = path.replaceAll("""([*?\[\]{}\\])""", """\\$1""")
+      val own                  = (Compile / scalacOptions).value
+      val managedDirectories   = (Compile / managedSourceDirectories).value
       if (isMetaBuild.value) own
       else {
         val plugin =
@@ -324,7 +332,10 @@ object BonsaiPlugin extends AutoPlugin {
               Seq(s"-P:bonsai:option-fold=${bonsaiOptionFold.value}") ++
               bonsaiHot.value.toSeq.sorted.map(glob => s"-P:bonsai:hot=$glob") ++
               bonsaiBounded.value.map { case (member, max, _) => s"-P:bonsai:bounded=$member:$max" } ++
-              bonsaiChecked.value.toSeq.sorted.map(tpe => s"-P:bonsai:checked=$tpe")
+              bonsaiChecked.value.toSeq.sorted.map(tpe => s"-P:bonsai:checked=$tpe") ++
+              bonsaiGenerated.value.toSeq.sorted.map(glob => s"-P:bonsai:generated=$glob") ++
+              managedDirectories.map(dir => s"-P:bonsai:generated=${escape(dir.toString)}/**") ++
+              skipped(bonsaiGeneratedDisabled.value)
         val unused = CompilerOptions.unused(own, bonsaiDisabled.value, scalaVersion.value)
         val routed = CompilerOptions.routed(own, bonsaiModeId.value == "ci", bonsaiWarnings.value)
         routed ++ own ++ plugin ++ unused

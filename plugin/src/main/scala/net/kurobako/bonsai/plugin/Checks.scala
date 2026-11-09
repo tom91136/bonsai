@@ -19,11 +19,13 @@ import dotty.tools.dotc.util.Spans.Span
 import dotty.tools.dotc.util.SrcPos
 import java.nio.file.Path
 import java.nio.file.Paths
+import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
 
 /** Reports each check at its severity unless it is disabled, escalated to an error, kept as a warning by `lenient`, or
-  * found in a mutation-testing copy of a source. `@SuppressWarnings(Array("bonsai:<id>"))`, or `"bonsai"` for every
+  * found in a mutation-testing copy of a source. The checks `overGenerated` holds skip generated code, which
+  * `Generated` marks or a `generated` glob names. `@SuppressWarnings(Array("bonsai:<id>"))`, or `"bonsai"` for every
   * check, on an enclosing definition, as for the analysis, or ascribed to an expression, as
   * `expr: @SuppressWarnings(...)`, suppresses its warnings, errors and information. `@nowarn("msg=bonsai:<id>")`
   * suppresses a check's warnings too, but a build without bonsai reports it as unused. A report that `escalate`s is an
@@ -35,8 +37,11 @@ private class Checks(
     errors: Set[Check],
     lenient: Set[Check],
     instrumented: Path => Boolean,
+    generatedPath: Path => Boolean,
+    overGenerated: Set[Check],
     suppressions: mutable.Map[SourceFile, List[(Span, Set[String])]],
     patched: mutable.Map[SourceFile, List[Span]] = mutable.Map.empty,
+    generatedSpans: mutable.Map[SourceFile, List[Span]] = mutable.Map.empty,
     reported: Option[Set[Check]] = None
 ) {
 
@@ -44,7 +49,18 @@ private class Checks(
     * skipped. Reporting any other check through it fails, so the set cannot drift from the code.
     */
   def owning(owned: Iterable[Check]): Checks =
-    Checks(disabled, errors, lenient, instrumented, suppressions, patched, Some(owned.toSet))
+    Checks(
+      disabled,
+      errors,
+      lenient,
+      instrumented,
+      generatedPath,
+      overGenerated,
+      suppressions,
+      patched,
+      generatedSpans,
+      Some(owned.toSet)
+    )
 
   /** Whether some check this view owns is enabled. */
   def active: Boolean = reported.forall(_.exists(!disabled(_)))
@@ -59,7 +75,7 @@ private class Checks(
     require(reported.forall(_(check)), s"${check.id} is not among the checks this pass reports")
     if (
       !disabled(check) && !instrumented(Paths.get(position.sourcePos.source.path)) &&
-      !suppressed(check, position)
+      !suppressed(check, position) && !generated(check, position)
     ) {
       val tagged = s"$message [bonsai:${check.id}]"
       val shown  = start(position)
@@ -102,6 +118,31 @@ private class Checks(
     val spans  = suppressions.get(source).orElse(ctx.run.nn.units.find(_.source == source).map(remember(_)))
     spans.getOrElse(Nil).exists((span, ids) => span.contains(position.span) && (ids("*") || ids(check.id)))
   }
+
+  private def generated(check: Check, position: SrcPos)(using Context): Boolean = {
+    val source = position.sourcePos.source
+    val spans  = generatedSpans.get(source).orElse(ctx.run.nn.units.find(_.source == source).map(generatedBy(_)))
+    overGenerated(check) && spans.getOrElse(Nil).exists(_.contains(position.span))
+  }
+
+  private def generatedBy(unit: CompilationUnit)(using Context): List[Span] = {
+    val content = unit.source.content
+    val spans   =
+      if (generatedPath(Paths.get(unit.source.path)) || Generated.marked(String(content)))
+        List(Span(0, content.length))
+      else annotatedGenerated(unit.tpdTree)
+    generatedSpans.update(unit.source, spans)
+    spans
+  }
+
+  private def annotatedGenerated(tree: tpd.Tree)(using Context): List[Span] =
+    tree.filterSubTrees {
+      case definition: tpd.MemberDef =>
+        definition.symbol.exists && definition.symbol.annotations.exists(annotation =>
+          Generated.Annotations(annotation.symbol.fullName.toString)
+        )
+      case _ => false
+    }.map(_.span)
 
   private def annotated(tree: tpd.Tree)(using Context): List[(Span, Set[String])] = {
     val Suppress = Classes.required("java.lang.SuppressWarnings")

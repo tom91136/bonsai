@@ -59,9 +59,11 @@ public class PrepareMojo extends BonsaiMojo {
       throw new MojoExecutionException("bonsai: cannot read the ids the tools accept", error);
     }
 
+    File output = new File(project.getBuild().getDirectory());
     List<String> options = new ArrayList<>();
     options.add("-Xplugin:" + plugin.getAbsolutePath());
-    options.addAll(Scalac.options(configuration, ids, mode));
+    options.addAll(Scalac.options(configuration, ids, mode,
+      List.of(new File(output, "generated-sources"), new File(output, "generated-test-sources"))));
     options.addAll(Scalac.sourceroot(root().toFile()));
     if (semanticdb) {
       // The rules read the SemanticDB the compiler writes, which the build keeps out of its published artifacts.

@@ -14,9 +14,21 @@ class ConfigureSuite extends FunSuite {
       Configure.lines(directory.resolve(".bonsai.conf"), module).map(_.map(_.replace(directory.toString, "<root>")))
     }
 
-  test("a missing file names no settings") {
+  test("a missing file names only the default checks skipped over generated code") {
     val missing = Scratch.using("configure")(directory => Configure.lines(directory.resolve("absent.conf"), "demo"))
-    assertEquals(missing.map(_.filterNot(_.startsWith("option\t"))), Right(Vector.empty[String]))
+    assertEquals(missing.map(_.filterNot(_.startsWith("option\t"))), Right(Vector("generated-disable\t*")))
+  }
+
+  test("the generated globs and the checks skipped over generated code are printed") {
+    assertEquals(
+      lines("generated = [\"**/gen/**\"]\ngenerated-disabled = [identity-token]\n")
+        .map(_.filter(_.startsWith("generated"))),
+      Right(Vector("generated\t**/gen/**", "generated-disable\tidentity-token"))
+    )
+    assertEquals(
+      lines("generated-disabled = []\n").map(_.filter(_.startsWith("generated-disable"))),
+      Right(Vector.empty[String])
+    )
   }
 
   test("the enabled rules are written after the disabled ones") {
@@ -52,6 +64,7 @@ class ConfigureSuite extends FunSuite {
         "hot\tdemo.kernel.**",
         "bounded\tdemo.Encoding.operands:4",
         "checked\tdemo.where",
+        "generated-disable\t*",
         "option\t--disable",
         "option\tduplicate-code",
         "option\t--error",

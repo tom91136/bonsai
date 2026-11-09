@@ -6,6 +6,7 @@ import com.sun.source.util.TreePathScanner
 import com.sun.source.util.Trees
 import javax.lang.model.`type`.DeclaredType
 import javax.lang.model.element.*
+import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.java.Javac.*
 import scala.annotation.tailrec
 import scala.collection.mutable
@@ -188,15 +189,12 @@ object Collector {
       }
     }
 
-  val generatedAnnotations: Set[String] =
-    Set("javax.annotation.Generated", "javax.annotation.processing.Generated", "jakarta.annotation.Generated")
-
   private def annotated(element: Element, names: Set[String]): Boolean =
     element.getAnnotationMirrors.asScala.exists(annotation => names(annotation.getAnnotationType.toString))
 
   /** Whether a tool generated the type, or the type that holds it, which the annotation says. */
   private[java] def generated(element: Element): Boolean =
-    annotated(element, generatedAnnotations) || element.enclosing.exists(generated(_))
+    annotated(element, Generated.Annotations) || element.enclosing.exists(generated(_))
 
   /** Whether the build enters the code through the element, which is the case of a native method and of a main method.
     */

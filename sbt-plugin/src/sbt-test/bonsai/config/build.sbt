@@ -14,6 +14,8 @@ lazy val app = project.in(file(".")).settings(
   checkGeneratedDisabled := Def.uncached {
     val disabled = bonsaiGeneratedDisabled.value
     assert(disabled == Set("duplicate-code", "*"), disabled.toString)
+    val options = (Compile / scalacOptions).value
+    assert(options.contains("-P:bonsai:generated-disable=*"), options.mkString(" "))
   },
   checkChecked := Def.uncached {
     val options = (Compile / scalacOptions).value

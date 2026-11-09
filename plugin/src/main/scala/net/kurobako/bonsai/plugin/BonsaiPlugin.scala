@@ -30,7 +30,9 @@ class BonsaiPlugin extends StandardPlugin {
       "hot",
       "bounded",
       "checked",
-      "option-fold"
+      "option-fold",
+      "generated",
+      "generated-disable"
     )
 
   // The compilers before 3.5 give no context to initialise a plugin with, so the problems with the options wait for the
@@ -98,11 +100,22 @@ class BonsaiPlugin extends StandardPlugin {
       case option => Left(s"bonsai option bounded must be <member>:<max>, not $option")
     }
     problems ++= bounds.collect { case Left(problem) => problem }
-    val bounded     = bounds.collect { case Right(glob) => glob }
-    val escalated   = strict ++ errors -- warnings
-    val matchers    = Instrumented.map(Globs.matcher)
-    val phaseChecks =
-      Checks(disabled, escalated, warnings, path => matchers.exists(_.matches(path)), analysis.suppressions)
+    val bounded       = bounds.collect { case Right(glob) => glob }
+    val escalated     = strict ++ errors -- warnings
+    val matchers      = Instrumented.map(Globs.matcher)
+    val generated     = values("generated").map(Globs.matcher)
+    val overGenerated =
+      if (values("generated-disable").isEmpty) Check.all.toSet
+      else values("generated-disable").filter(_.nonEmpty).flatMap(named(_, problems)).toSet
+    val phaseChecks = Checks(
+      disabled,
+      escalated,
+      warnings,
+      path => matchers.exists(_.matches(path)),
+      path => generated.exists(_.matches(path)),
+      overGenerated,
+      analysis.suppressions
+    )
     List(
       // A cycle through a mutation-testing copy still ties together the sources on it.
       AcyclicPhase(analysis, phaseChecks, problems.toList),

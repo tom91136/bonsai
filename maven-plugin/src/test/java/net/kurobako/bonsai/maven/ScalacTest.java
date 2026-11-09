@@ -43,14 +43,13 @@ class ScalacTest {
       "disabled\tacyclic", "errors\tbroad-catch", "warnings\tidentity-token", "wildcards\t3",
       "hot\tdemo.kernel.**", "bounded\tdemo.Encoding.operands:4", "checked\tdemo.where");
 
-    List<String> options = Scalac.options(configuration, ids(), "dev");
+    List<String> options = Scalac.options(configuration, ids(), "dev", List.of());
 
     assertTrue(options.contains("-P:bonsai:mode=dev"), options.toString());
     assertTrue(options.contains("-P:bonsai:wildcards=3"), options.toString());
     assertTrue(options.contains("-P:bonsai:disable=acyclic"), options.toString());
     assertTrue(options.contains("-P:bonsai:error=broad-catch"), options.toString());
     assertTrue(options.contains("-P:bonsai:warn=identity-token"), options.toString());
-    assertFalse(options.stream().anyMatch(option -> option.contains("generated")), options.toString());
     assertTrue(options.contains("-P:bonsai:hot=demo.kernel.**"), options.toString());
     assertTrue(options.contains("-P:bonsai:bounded=demo.Encoding.operands:4"), options.toString());
     assertTrue(options.contains("-P:bonsai:checked=demo.where"), options.toString());
@@ -97,8 +96,8 @@ class ScalacTest {
 
   @Test
   void theOptionFoldIsPassedOnlyWhenTheConfigurationNamesIt() throws IOException {
-    List<String> named = Scalac.options(configuration("option-fold\tmap-get-or-else"), ids(), "dev");
-    List<String> unnamed = Scalac.options(configuration("wildcards\t3"), ids(), "dev");
+    List<String> named = Scalac.options(configuration("option-fold\tmap-get-or-else"), ids(), "dev", List.of());
+    List<String> unnamed = Scalac.options(configuration("wildcards\t3"), ids(), "dev", List.of());
 
     assertTrue(named.contains("-P:bonsai:option-fold=map-get-or-else"), named.toString());
     assertFalse(unnamed.stream().anyMatch(option -> option.contains("option-fold")), unnamed.toString());
@@ -120,7 +119,7 @@ class ScalacTest {
   void aCheckOfAnotherToolIsNotPassedToTheCompilerPlugin() throws IOException {
     Configuration configuration = configuration("disabled\tduplicate-code", "disabled\tacyclic");
 
-    List<String> options = Scalac.options(configuration, ids(), "dev");
+    List<String> options = Scalac.options(configuration, ids(), "dev", List.of());
 
     assertTrue(options.contains("-P:bonsai:disable=acyclic"), options.toString());
     assertTrue(!options.contains("-P:bonsai:disable=duplicate-code"), options.toString());
@@ -130,7 +129,7 @@ class ScalacTest {
   void theFindingsDoNotFailTheBuildWhileDeveloping() throws IOException {
     Configuration configuration = configuration("disabled\tacyclic");
 
-    List<String> options = Scalac.options(configuration, ids(), "dev");
+    List<String> options = Scalac.options(configuration, ids(), "dev", List.of());
 
     assertTrue(options.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:i"), options.toString());
   }
@@ -139,7 +138,7 @@ class ScalacTest {
   void theFindingsFailTheBuildOnACiServer() throws IOException {
     Configuration configuration = configuration("disabled\tacyclic");
 
-    List<String> options = Scalac.options(configuration, ids(), "ci");
+    List<String> options = Scalac.options(configuration, ids(), "ci", List.of());
 
     assertTrue(options.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:e"), options.toString());
   }
@@ -148,11 +147,39 @@ class ScalacTest {
   void aCheckKeptAsAWarningDoesNotFailTheBuildOnACiServer() throws IOException {
     Configuration configuration = configuration("warnings\tacyclic");
 
-    List<String> options = Scalac.options(configuration, ids(), "ci");
+    List<String> options = Scalac.options(configuration, ids(), "ci", List.of());
 
     String failing = "-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:e";
     String kept = "-Wconf:msg=\\[bonsai.acyclic\\]:i";
     assertTrue(options.contains(kept), options.toString());
     assertTrue(options.indexOf(failing) < options.indexOf(kept), options.toString());
+  }
+
+  @Test
+  void generatedCodeIsSkippedUnderTheGlobsAndTheEscapedManagedDirectories() throws IOException {
+    File managed = root.resolve("target/generated-sources").toFile();
+    File bracketed = root.resolve("target/gen[1]").toFile();
+
+    List<String> options =
+      Scalac.options(configuration("generated\t**/gen/**"), ids(), "dev", List.of(managed, bracketed));
+
+    assertTrue(options.contains("-P:bonsai:generated=**/gen/**"), options.toString());
+    assertTrue(options.contains("-P:bonsai:generated=" + root.toAbsolutePath() + "/target/generated-sources/**"),
+      options.toString());
+    assertTrue(options.contains("-P:bonsai:generated=" + root.toAbsolutePath() + "/target/gen\\[1\\]/**"),
+      options.toString());
+  }
+
+  @Test
+  void theChecksSkippedOverGeneratedCodeAreTheCompilerChecksTheConfigurationNames() throws IOException {
+    List<String> named = Scalac.options(
+      configuration("generated-disable\tidentity-token", "generated-disable\tduplicate-code"), ids(), "dev", List.of());
+    List<String> all = Scalac.options(configuration("generated-disable\t*"), ids(), "dev", List.of());
+    List<String> none = Scalac.options(configuration(), ids(), "dev", List.of());
+
+    assertTrue(named.contains("-P:bonsai:generated-disable=identity-token"), named.toString());
+    assertFalse(named.contains("-P:bonsai:generated-disable=duplicate-code"), named.toString());
+    assertTrue(all.contains("-P:bonsai:generated-disable=*"), all.toString());
+    assertTrue(none.contains("-P:bonsai:generated-disable="), none.toString());
   }
 }

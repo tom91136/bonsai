@@ -11,7 +11,7 @@ $ copy-file changes/project.conf .bonsai.conf
 $ copy-file changes/checked.conf .bonsai.conf
 > reload
 > checkChecked
-# the rules it disables over generated code reach the analysis
+# the rules it disables over generated code reach the analysis and the compiler plugin
 $ copy-file changes/generated-disabled.conf .bonsai.conf
 > reload
 > checkGeneratedDisabled

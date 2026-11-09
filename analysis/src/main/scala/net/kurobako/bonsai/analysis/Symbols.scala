@@ -11,6 +11,7 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.io.AbstractFile
 import java.nio.file.Path
 import java.nio.file.PathMatcher
+import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.lifting.*
 import scala.annotation.targetName
@@ -239,7 +240,7 @@ private[analysis] class Symbols(
             outer.forall(nodes.get(_).exists(_.exported))
           val isGenerated = Outputs.isGenerated(generated, source) ||
             symbol.annotations.exists(annotation =>
-              Collector.generatedAnnotations(annotation.symbol.fullName.toString)
+              Generated.Annotations(annotation.symbol.fullName.toString)
             ) ||
             outer.exists(nodes.get(_).exists(_.generated))
           val entry =

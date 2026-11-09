@@ -7,8 +7,8 @@ import net.kurobako.bonsai.configuration.BonsaiConfiguration.*
 
 /** Reads `.bonsai.conf` for a module and writes what a build that does not read it itself needs to a file, one
   * tab-separated entry a line: the module's `disabled`, `enabled`, `errors`, `warnings`, `wildcards`, `library` and
-  * `option-fold` settings, the build's `hot`, `bounded`, and `checked` lists, the `option`s the analysis runs with, and
-  * the manifest lines of the text rules as they are.
+  * `option-fold` settings, the build's `hot`, `bounded`, `checked`, and `generated` lists, the checks skipped over
+  * generated code, the `option`s the analysis runs with, and the manifest lines of the text rules as they are.
   */
 object Configure {
   private val usage = "usage: bonsai-configure --config <file> --module <id> --out <file>"
@@ -36,8 +36,9 @@ object Configure {
       settings.wildcards.map(value => s"wildcards\t$value") ++ settings.library.map(value => s"library\t$value") ++
       settings.optionFold.map(value => s"option-fold\t$value") ++
       entries("hot", analysis.hot) ++ analysis.bounded.map((member, max, _) => s"bounded\t$member:$max") ++
-      entries("checked", configured.checked.getOrElse(Set.empty)) ++ options.map(option => s"option\t$option") ++
-      configured.text
+      entries("checked", configured.checked.getOrElse(Set.empty)) ++
+      entries("generated", analysis.generated) ++ entries("generated-disable", analysis.generatedDisabled) ++
+      options.map(option => s"option\t$option") ++ configured.text
   }
 
   def main(args: Array[String]): Unit = {

@@ -127,8 +127,9 @@ lazy val commonSettings = Seq(
   scalafmtDetailedError := true
 )
 
-/** The algebra of collection chains: the laws and costs the compiler plugin and the analysis share. The plugin builds
-  * on it, so it does not lint it; the whole-build analysis does.
+/** The algebra of collection chains, and the marks of generated code: the laws, costs and generated markers the
+  * compiler plugins and the analysis share. The plugin builds on it, so it does not lint it; the whole-build analysis
+  * does.
   */
 lazy val collections = linted(project.in(file("collections")))
   .settings(

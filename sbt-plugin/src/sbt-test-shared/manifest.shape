@@ -10,6 +10,8 @@ option	root	meta
 option	root	-P:bonsai:mode=dev
 option	root	-P:bonsai:wildcards=2
 option	root	-P:bonsai:option-fold=fold
+option	root	-P:bonsai:generated=**
+option	root	-P:bonsai:generated-disable=*
 option	root	-Wunused:all
 option	root	-Wconf:msg=^unused\s.*:i
 option	root	-Wconf:msg=^@nowarn\sannotation\s.*:i
