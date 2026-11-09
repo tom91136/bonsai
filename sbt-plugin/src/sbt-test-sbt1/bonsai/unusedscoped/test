@@ -1,0 +1,11 @@
+# the unused warnings bonsai asks for do not fail a build with fatal warnings, whatever they say
+$ copy-file changes/Unused.scala src/main/scala/demo/Unused.scala
+> compile
+# nor do those of the oldest compiler that takes them, which words them without a code
+> set ThisBuild / scalaVersion := "3.3.4"
+> compile
+# a build that asks for them in a configuration gets them once
+> set ThisBuild / scalaVersion := "3.3.9"
+$ delete src/main/scala/demo/Unused.scala
+> set Compile / scalacOptions += "-Wunused:all"
+> compile

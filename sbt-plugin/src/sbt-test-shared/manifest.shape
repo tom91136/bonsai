@@ -13,7 +13,8 @@ option	root	-P:bonsai:option-fold=fold
 option	root	-P:bonsai:generated=**
 option	root	-P:bonsai:generated-disable=*
 option	root	-Wunused:all
-option	root	-Wconf:msg=^unused\s.*:i
+option	root	-Wconf:id=E198:i
+option	root	-Wconf:msg=^(unused|unset)\s.*:i
 option	root	-Wconf:msg=^@nowarn\sannotation\s.*:i
 source	root	main	src/main/scala/demo/Main.scala
 root

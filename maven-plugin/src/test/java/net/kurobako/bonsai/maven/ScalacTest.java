@@ -60,7 +60,7 @@ class ScalacTest {
     List<String> options = Scalac.unused(configuration(), ids(), SUPPORT, "3.9.0", List.of("-Werror"));
 
     assertTrue(options.contains("-Wunused:all"), options.toString());
-    assertTrue(options.stream().anyMatch(option -> option.startsWith("-Wconf:msg=^unused")), options.toString());
+    assertTrue(options.contains("-Wconf:id=E198:i"), options.toString());
   }
 
   @Test
