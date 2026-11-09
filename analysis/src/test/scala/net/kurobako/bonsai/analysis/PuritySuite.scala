@@ -173,6 +173,42 @@ class PuritySuite extends AnalysisSuite {
     )
   }
 
+  test("dropping a partial function that throws is not reported") {
+    val throwing = analysed(
+      "Throwing",
+      """object Throwing {
+        |  def run(xs: List[Int]): Unit = {
+        |    xs.collectFirst { case x if x > 2 => throw IllegalStateException("big") }
+        |    ()
+        |  }
+        |}""".stripMargin,
+      Seq.empty
+    )
+    assertEquals(
+      Purity.findings(throwing.purity, throwing.graph.nodes).filter(_.rule == Finding.Rule.PureDiscard),
+      Vector.empty
+    )
+  }
+
+  test("dropping a partial function that is pure is reported at the line of the call") {
+    val pure = analysed(
+      "PurePartial",
+      """object PurePartial {
+        |  def run(xs: List[Int]): Unit = {
+        |    xs.collectFirst { case x if x > 2 => x + 1 }
+        |    ()
+        |  }
+        |}""".stripMargin,
+      Seq.empty
+    )
+    assertEquals(
+      Purity.findings(pure.purity, pure.graph.nodes).collect {
+        case finding if finding.rule == Finding.Rule.PureDiscard => finding.node.line
+      },
+      Vector(3)
+    )
+  }
+
   test("a discard written as val _ is not reported") {
     val discards = analysed(
       "Discards",

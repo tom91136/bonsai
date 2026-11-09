@@ -1971,7 +1971,8 @@ object Purity {
         Summary(modelled.effects.toSet, modelled.invokes)
       }
 
-      private def callable(tpe: Type): Boolean = tpe.isInstanceOf[ExprType] || defn.isFunctionType(tpe.widen)
+      private def callable(tpe: Type): Boolean =
+        tpe.isInstanceOf[ExprType] || defn.isFunctionType(tpe.widen) || tpe.widen.derivesFrom(defn.PartialFunctionClass)
 
       // Collections and iterators; for comprehensions over options and results sequence effects by design.
       private def viewed(qualifier: Option[tpd.Tree]): Boolean =
