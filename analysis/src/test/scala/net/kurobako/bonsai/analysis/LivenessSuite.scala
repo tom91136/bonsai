@@ -120,6 +120,44 @@ class LivenessSuite extends AnalysisSuite {
     )
   }
 
+  private def node(name: String, module: String, test: Boolean = false): (String, Node) = name ->
+    Node(
+      name,
+      module,
+      if (test) Output.Scope.Test else Output.Scope.Main,
+      s"$name.scala",
+      1,
+      generated = false,
+      exported = false,
+      None
+    )
+
+  private def testOnly(nodes: Map[String, Node], declared: Map[String, Set[String]], tested: Set[String]): Set[String] =
+    Liveness.findings(Graph(nodes, declared, Set.empty), Reach(Set.empty, tested, Set.empty, Set.empty))
+      .collect { case finding if finding.rule == Finding.Rule.TestOnly => finding.node.name }.toSet
+
+  private val kit = Map(node("kit.Fake", "kit"), node("app.Main", "app"), node("app.Spec", "app", test = true))
+
+  test("a module only other modules' tests use serves tests, so what they reach in it is not test-only") {
+    assertEquals(testOnly(kit, Map("app.Spec" -> Set("kit.Fake")), Set("kit.Fake")), Set.empty[String])
+  }
+
+  test("a module no root but a test reaches serves tests, so what they reach in it is not test-only") {
+    val fixtures = Map(node("tests.Fixture", "tests"), node("tests.Spec", "tests", test = true))
+    assertEquals(testOnly(fixtures, Map("tests.Spec" -> Set("tests.Fixture")), Set("tests.Fixture")), Set.empty[String])
+  }
+
+  test("a module another module's main code uses is not test support, so test-only code in it is reported") {
+    val used  = kit + node("kit.Used", "kit")
+    val edges = Map("app.Spec" -> Set("kit.Fake"), "app.Main" -> Set("kit.Used"))
+    assertEquals(testOnly(used, edges, Set("kit.Fake")), Set("kit.Fake"))
+  }
+
+  test("a single module with its own entry point is not test support, so test-only code in it is reported") {
+    val single = Map(node("m.Main", "m"), node("m.Staged", "m"), node("m.Spec", "m", test = true))
+    assertEquals(testOnly(single, Map("m.Spec" -> Set("m.Staged")), Set("m.Staged")), Set("m.Staged"))
+  }
+
   test("a type only a method reached from tests alone refers to is test-only") {
     assertEquals(
       findings(

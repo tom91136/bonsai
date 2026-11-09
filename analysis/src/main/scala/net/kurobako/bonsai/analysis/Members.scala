@@ -65,13 +65,19 @@ object Members {
     * used when a use that `reach` runs references it. Generated members are where their generator puts them, whatever
     * uses them.
     */
-  def findings(model: Model, nodes: Map[String, Node], reach: Reach): Vector[Finding] = {
+  def findings(
+      model: Model,
+      nodes: Map[String, Node],
+      reach: Reach,
+      support: Set[String] = Set.empty
+  ): Vector[Finding] = {
     val written = model.members.filterNot(member => nodes.get(member.node).exists(_.generated)).map(member =>
       member.copy(users = member.users ++ member.key.flatMap(model.calls.get).getOrElse(Set.empty))
     )
     val live = reach.live(_)
     anonymous(model.givens, nodes, live) ++ hidden(model.nested, nodes, live) ++
-      grouped(visibility(written, nodes, reach)) ++ misplaced(written, nodes, live) ++ drifted(written, nodes, live)
+      grouped(visibility(written, nodes, reach, support)) ++ misplaced(written, nodes, live) ++
+      drifted(written, nodes, live)
   }
 
   private val Shown = 6
@@ -113,7 +119,12 @@ object Members {
     }
   }
 
-  private def visibility(members: Vector[Member], nodes: Map[String, Node], reach: Reach): Vector[Finding] = {
+  private def visibility(
+      members: Vector[Member],
+      nodes: Map[String, Node],
+      reach: Reach,
+      support: Set[String]
+  ): Vector[Finding] = {
     val values          = members.collect { case member if !member.alias => (member.node, member.name) -> member }.toMap
     def tests(use: Use) = nodes.get(use.node).exists(_.test) || !reach.mainUse(use)
     members.view.filter(member => !member.test && reach.live(member.node)).flatMap {
@@ -130,6 +141,7 @@ object Members {
             )
           else if (!member.inherited && running.forall(tests(_)))
             at(nodes, member, Finding.Rule.TestOnlyMember, s"${member.short} is referenced only from tests")
+              .filterNot(found => support(found.node.module))
           else
             Option.when(
               member.public && !member.overriding && !member.deferred && !member.inherited &&

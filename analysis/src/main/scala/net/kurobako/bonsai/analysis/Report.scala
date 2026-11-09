@@ -71,7 +71,7 @@ object Report {
       () => Structures.findings(result.structures, result.graph),
       () => Equality.findings(result.equality, nodes),
       () => Clones.findings(result.clones, nodes, intended, result.graph.edges),
-      () => Members.findings(result.members, nodes, result.reach),
+      () => Members.findings(result.members, nodes, result.reach, Liveness.testSupport(result.graph, result.reach)),
       () => Bytecode.findings(result.bytecode, nodes, result.hot),
       () => Complexity.findings(result.complexities, nodes, result.hot),
       () => Pipelines.findings(result.pipelines, nodes),

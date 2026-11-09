@@ -197,6 +197,19 @@ class MembersSuite extends AnalysisSuite {
     )
   }
 
+  test("a member of a module that serves tests is not test-only") {
+    val result = extract(
+      Seq(
+        entry("println(Tools.used)"),
+        "Tools.scala" -> "object Tools { def used = 1; def staged = 2 }"
+      ),
+      Seq("Check.scala" -> "object Check { def check = Tools.staged }")
+    )
+    val testOnly = Members.findings(result.members, result.graph.nodes, result.reach, support = Set("m"))
+      .filter(_.rule == Finding.Rule.TestOnlyMember)
+    assertEquals(testOnly, Vector.empty)
+  }
+
   test("a method only a method reached from tests alone calls is test-only with the method that calls it") {
     val found = findings(
       Seq(
