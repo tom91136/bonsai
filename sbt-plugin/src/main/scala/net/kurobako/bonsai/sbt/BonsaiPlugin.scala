@@ -401,7 +401,7 @@ object BonsaiPlugin extends AutoPlugin {
     val own = scalacOptions.value
     if (isMetaBuild.value || !bonsaiEnabled.value) own
     else {
-      val routed = CompilerOptions.routed(own, bonsaiModeId.value == "strict", bonsaiWarnings.value)
+      val routed = CompilerOptions.routed(own, bonsaiModeId.value == "strict", bonsaiWarnings.value, scalaVersion.value)
       val unused = CompilerOptions.unused(own, bonsaiDisabled.value, scalaVersion.value)
       routed ++ own ++ unused
     }

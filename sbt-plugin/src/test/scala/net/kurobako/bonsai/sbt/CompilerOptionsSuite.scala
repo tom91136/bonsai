@@ -35,29 +35,44 @@ class CompilerOptionsSuite extends munit.FunSuite {
   }
 
   test("outside the strict mode a build that does not fail on warnings has none demoted") {
-    assertEquals(CompilerOptions.routed(Seq("-feature"), strict = false, Set("acyclic")), Nil)
+    assertEquals(CompilerOptions.routed(Seq("-feature"), strict = false, Set("acyclic"), newest), Nil)
   }
 
   test("outside the strict mode no finding of the compiler plugin fails a build that fails on warnings") {
     assertEquals(
-      CompilerOptions.routed(Seq("-Werror"), strict = false, Set("acyclic")),
+      CompilerOptions.routed(Seq("-Werror"), strict = false, Set("acyclic"), newest),
       Seq("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:i")
     )
   }
 
+  test("a Scala release the compiler plugin cannot run in gets no routing options") {
+    assertEquals(CompilerOptions.routed(Seq("-Werror"), strict = false, Set.empty, "3.0.2"), Nil)
+    assertEquals(CompilerOptions.routed(Seq("-feature"), strict = true, Set("acyclic"), "3.0.2"), Nil)
+  }
+
   test("in the strict mode every finding fails the build, whether or not it fails on warnings") {
-    assertEquals(CompilerOptions.routed(Seq("-feature"), strict = true, Set.empty), Seq(failing))
-    assertEquals(CompilerOptions.routed(Seq("-Xfatal-warnings"), strict = true, Set.empty), Seq(failing))
+    assertEquals(CompilerOptions.routed(Seq("-feature"), strict = true, Set.empty, newest), Seq(failing))
+    assertEquals(CompilerOptions.routed(Seq("-Xfatal-warnings"), strict = true, Set.empty, newest), Seq(failing))
   }
 
   test("in the strict mode only the checks the build keeps as warnings are demoted from failing") {
     val expected = Seq(failing, "-Wconf:msg=\\[bonsai.acyclic\\]:i", "-Wconf:msg=\\[bonsai.same-type-arguments\\]:i")
     assertEquals(
-      CompilerOptions.routed(Seq("-Werror"), strict = true, Set("same-type-arguments", "acyclic", "RemoveUnused")),
+      CompilerOptions.routed(
+        Seq("-Werror"),
+        strict = true,
+        Set("same-type-arguments", "acyclic", "RemoveUnused"),
+        newest
+      ),
       expected
     )
     assertEquals(
-      CompilerOptions.routed(Seq("-feature"), strict = true, Set("same-type-arguments", "acyclic", "RemoveUnused")),
+      CompilerOptions.routed(
+        Seq("-feature"),
+        strict = true,
+        Set("same-type-arguments", "acyclic", "RemoveUnused"),
+        newest
+      ),
       expected
     )
   }

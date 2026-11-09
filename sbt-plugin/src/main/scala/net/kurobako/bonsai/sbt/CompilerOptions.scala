@@ -25,8 +25,9 @@ private[sbt] object CompilerOptions {
     * strict mode every finding fails except those of the checks in `warnings`. Outside it none does, so a build that
     * fails on warnings gets them all demoted.
     */
-  def routed(own: Seq[String], strict: Boolean, warnings: Set[String]): Seq[String] =
-    if (strict) tagged("[a-z0-9-]+", "e") +: (warnings & BonsaiArtifacts.checks).toSeq.sorted.map(tagged(_, "i"))
+  def routed(own: Seq[String], strict: Boolean, warnings: Set[String], scala: String): Seq[String] =
+    if (ScalaVersions.plugin(scala).isEmpty) Nil
+    else if (strict) tagged("[a-z0-9-]+", "e") +: (warnings & BonsaiArtifacts.checks).toSeq.sorted.map(tagged(_, "i"))
     else if (fatal(own)) Seq(tagged("[a-z0-9-]+", "i"))
     else Nil
 
