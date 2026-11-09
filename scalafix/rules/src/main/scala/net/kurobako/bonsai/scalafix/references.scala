@@ -11,6 +11,8 @@ private object references {
     case _                            => true
   }
 
+  def render(name: String): String = Term.Name(name).syntax
+
   def imported(pkg: String, name: String)(using document: SemanticDocument): Boolean =
     document.tree.collect {
       case Importer(reference, importees) if reference.syntax == pkg =>

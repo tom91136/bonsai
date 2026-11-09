@@ -33,11 +33,13 @@ class FullyQualifiedReference(namespaces: List[QualifiedCollectionNamespaces.Nam
       case (pkg, name) => references.imported(pkg, name)
     }
     (rewritable.map(c =>
-      lint.replace(c.tree, c.name, "fully-qualified-reference", s"write ${c.name} by its simple name")
-    ) ++ references.placements(needed)).asPatch
+      lint.replace(c.tree, c.written, "fully-qualified-reference", s"write ${c.name} by its simple name")
+    ) ++ references.placements(needed.map((pkg, name) => (pkg, references.render(name))))).asPatch
   }
 
-  private case class Candidate(tree: Tree, pkg: String, name: String, entity: String)
+  private case class Candidate(tree: Tree, pkg: String, name: String, entity: String) {
+    def written: String = references.render(name)
+  }
 
   private def candidate(tree: Tree)(using SemanticDocument): Option[Candidate] = selection(tree).flatMap {
     case (qualifier, name) =>
@@ -50,7 +52,7 @@ class FullyQualifiedReference(namespaces: List[QualifiedCollectionNamespaces.Nam
               case clause: Pkg => clause.ref eq tree
               case _           => false
             }
-        )(Candidate(tree, path.mkString("."), name.value, entity(symbol)))
+        )(Candidate(tree, path.map(references.render).mkString("."), name.value, entity(symbol)))
       }
   }
 
