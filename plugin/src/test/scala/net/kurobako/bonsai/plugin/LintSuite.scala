@@ -1482,6 +1482,18 @@ class LintSuite extends FunSuite {
     )
   }
 
+  test("appending to a list that is not an accumulator is advised a remedy that applies") {
+    val found = warnings(
+      """object Lints {
+        |  def extended(values: Vector[List[Int]], path: List[Int]): Vector[List[Int]] = values.map(leaf => path ++ leaf)
+        |}""".stripMargin
+    )
+    assertEquals(
+      found.filter(_.endsWith("[bonsai:linear-in-loop]")).map(_.dropWhile(_ != ';').takeWhile(_ != '[').trim),
+      List("; prepend and reverse, use a builder, or hold a Vector")
+    )
+  }
+
   test("existence tests for equality inside loops are reported as contains is") {
     val found = warnings(
       """object Lints {

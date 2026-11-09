@@ -433,7 +433,7 @@ private class Loops(
       else if (receiver.derivesFrom(ImmutableLinear) && Methods.Appends(name))
         checks(
           Check.LinearInLoop,
-          s"$name on $kind copies it on every iteration; prepend and reverse, or use a builder",
+          s"$name on $kind copies it on every iteration; prepend and reverse, use a builder, or hold a Vector",
           select.srcPos
         )
       else if (name == "contains" && scanned(receiver))
