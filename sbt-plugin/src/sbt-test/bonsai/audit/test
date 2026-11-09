@@ -1,0 +1,52 @@
+# a finding of the compiler plugin does not fail the compile, though the build has its own -Werror
+> compile
+# the report holds it with the finding of the analysis, and the run fails at the end
+-> bonsaiAnalyse
+> reported error:array-equality error:unused-member
+
+# a check kept a warning does not fail, as in CI, while the analysis still does
+> set bonsaiWarnings := Set("array-equality")
+-> bonsaiAnalyse
+> reported warning:array-equality error:unused-member
+
+# and the run passes once every finding is one
+> set bonsaiWarnings := Set("array-equality", "unused-member")
+> bonsaiAnalyse
+> reported warning:array-equality warning:unused-member
+
+# a compile finding alone fails the run
+> set bonsaiWarnings := Set("unused-member")
+-> bonsaiAnalyse
+> reported error:array-equality warning:unused-member
+> set bonsaiWarnings := Set()
+
+# a later run reports the finding of a source that was not compiled again
+> stamp
+$ copy-file changes/Tools.scala src/main/scala/demo/Tools.scala
+> compile
+> kept Compare.scala Main.scala
+-> bonsaiAnalyse
+> reported error:array-equality error:unused-member
+
+# the findings come back with a compile restored from sbt's cache
+> clean
+> compile
+-> bonsaiAnalyse
+> reported error:array-equality error:unused-member
+
+# the other modes are as they were, CI failing the compile and Dev passing it
+> set ThisBuild / bonsaiMode := BonsaiMode.CI
+-> compile
+> set ThisBuild / bonsaiMode := BonsaiMode.Dev
+> compile
+> set ThisBuild / bonsaiMode := BonsaiMode.Audit
+> compile
+-> bonsaiAnalyse
+> reported error:array-equality error:unused-member
+
+# a source that is gone has no finding, though its record may remain
+$ copy-file changes/Main.scala src/main/scala/demo/Main.scala
+$ delete src/main/scala/demo/Compare.scala
+> compile
+-> bonsaiAnalyse
+> reported !error:array-equality error:unused-member

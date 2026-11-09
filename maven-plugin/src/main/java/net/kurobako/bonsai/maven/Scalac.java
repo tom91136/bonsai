@@ -8,9 +8,10 @@ import java.util.regex.Pattern;
 /**
  * The options the compiler plugin reads, which the scalac of the build takes from a response file.
  *
- * <p>The findings are routed by the mode, whether or not the build compiles with fatal warnings: the dev mode reports
- * them without failing, and the ci mode fails on them. A check kept as a warning is reported without failing in either
- * mode.
+ * <p>The findings are routed by the mode, whether or not the build compiles with fatal warnings: the dev and audit
+ * modes report them without failing, and the ci mode fails on them. A check kept as a warning is reported without
+ * failing in any mode. In the audit mode the compiler plugin records what the ci mode would fail on, for the analysis
+ * to fail on at the end.
  */
 public final class Scalac {
 

@@ -132,12 +132,16 @@ object Finding {
 
     /** Every rule, in reporting priority. */
     val values: Vector[Rule] = declared.toVector
+
+    /** The rule of a finding the compiler plugin recorded, which ranks after the rules of the analysis. */
+    def compiled(id: String): Rule = Rule(id, strict = false, values.size, recorded = true)
   }
 
   /** A rule of the analysis. Rules are in reporting priority: evidence from references and constructions first,
-    * structural observations last. Warnings of `strict` rules fail the ci mode.
+    * structural observations last. Warnings of `strict` rules fail the ci mode. A `recorded` rule is a check of the
+    * compiler plugin, whose findings arrive judged.
     */
-  class Rule private (val id: String, val strict: Boolean, val ordinal: Int) {
+  class Rule private (val id: String, val strict: Boolean, val ordinal: Int, val recorded: Boolean = false) {
     def suppressedBy(ids: Set[String]): Boolean =
       ids("*") || ids(id)
 

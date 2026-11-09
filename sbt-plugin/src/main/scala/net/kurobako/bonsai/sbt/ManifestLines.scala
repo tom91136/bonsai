@@ -31,6 +31,11 @@ object ManifestLines {
   def classpath(project: String, entries: Seq[String]): Seq[String] =
     entries.map(entry => s"classpath\t$project\t$entry")
 
+  /** The line naming a module the compiler plugin compiled in the audit mode, which keeps its findings beside the
+    * classes.
+    */
+  def recorded(project: String, compiled: Boolean): Seq[String] = if (compiled) Seq(s"recorded\t$project") else Nil
+
   def options(project: String, flags: Seq[String]): Seq[String] = flags.map(flag => s"option\t$project\t$flag")
 
   def defaultJdk: File = file(sys.props("java.home"))

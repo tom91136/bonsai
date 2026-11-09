@@ -9,7 +9,7 @@ import scala.util.Using
 
 object CLI {
   private val usage =
-    "usage: bonsai-analysis --manifest <file> [--generated <glob>]... [--info] [--purity] [--mode dev|ci] " +
+    "usage: bonsai-analysis --manifest <file> [--generated <glob>]... [--info] [--purity] [--mode dev|ci|audit] " +
       "[--disable <rule>]... [--generated-disable <rule>|*]... [--error <rule>]... [--warn <rule>]... " +
       "[--baseline <file>] [--write-baseline <file>] " +
       "[--purity-lock <file>] [--write-purity-lock <file>] [--effects <prefix>=<kind>,...]... [--concurrent <method>]... " +
@@ -18,10 +18,15 @@ object CLI {
       "[--nesting-depth <levels>] [--nesting-damping <users>] " +
       "[--nesting] [--nesting-size <lines>] [--parallelism <threads>]"
 
-  /** The ci mode fails on the warnings of strict rules. */
+  /** The ci mode fails on the warnings of strict rules. The audit mode judges as the ci mode does, and adds the
+    * findings the compiler plugin recorded, which the compiler did not fail on.
+    */
   enum Mode(val id: String) {
-    case Dev extends Mode("dev")
-    case CI  extends Mode("ci")
+    case Dev   extends Mode("dev")
+    case CI    extends Mode("ci")
+    case Audit extends Mode("audit")
+
+    def strict: Boolean = this != Dev
   }
 
   // The only constructions are the defaults and a test setting every field, which reads as the flags moving together.
@@ -57,7 +62,7 @@ object CLI {
       * those kept as warnings.
       */
     def failing: Set[String] = {
-      val strict = if (mode == Mode.CI) Finding.Rule.values.view.collect { case rule if rule.strict => rule.id }.toSet
+      val strict = if (mode.strict) Finding.Rule.values.view.collect { case rule if rule.strict => rule.id }.toSet
       else Set.empty
       (if (errors("*")) rules else errors) ++ strict -- warnings
     }
@@ -89,7 +94,7 @@ object CLI {
         outcome.scanProblem.foreach(problem => Console.err.println(s"${Reuse.Problem}$problem"))
         outcome.record.report.foreach(shown => println(shown.text))
         if (outcome.reused) Console.err.println(Reuse.Marker)
-        if (outcome.record.report.exists(_.failing) || mode == Mode.CI && outcome.problematic) 1 else 0
+        if (outcome.record.report.exists(_.failing) || mode.strict && outcome.problematic) 1 else 0
     }
   }
 
@@ -135,34 +140,39 @@ object CLI {
       options.hot,
       options.bounded,
       parallel
-    ).left.map(_.mkString("\n")).map { result =>
-      val locked = options.lock.filter(Files.exists(_)).fold(Set.empty[String])(file =>
-        Report.keys(Files.readString(file))
-      )
-      val (scannedTexts, excluded) = scanned()
-      val texts                    = scannedTexts.getOrElse(Vector.empty)
-      val findings                 = Report.findings(result, Intended(options.intended), options.nesting, parallel) ++
-        Build.duplicates(manifest) ++
-        Build.unused(result.unusedBounds) ++ texts ++
-        excluded ++
-        (if (options.mode == Mode.CI) Build.fatal(manifest) else Vector.empty) ++
-        Purity.regressions(result.purity, result.graph.nodes, locked) ++
-        Purity.violations(result.purity, result.graph.nodes, options.policies)
-      options.relock.foreach(file => Files.writeString(file, Purity.lock(result.purity, result.graph.nodes)): Unit)
-      val baseline = options.baseline.filter(Files.exists(_)).fold(Set.empty[String])(file =>
-        Report.keys(Files.readString(file))
-      )
-      val report = Report.Options(options.disabled, options.failing, baseline, options.info, options.warnings)
-      options.record.foreach(file =>
-        Files.writeString(file, Report.write(Report(findings, result.graph.nodes, report.copy(info = false)))): Unit
-      )
-      Reuse.Record(
-        result.problems.map(problem => s"${Reuse.Problem}$problem") ++
-          result.notes.map(note => s"${Reuse.Note}$note") ++
-          (if (options.purity) Purity.summary(result.purity) else Vector.empty),
-        Report(findings, result.graph.nodes, report).map(line => Reuse.Shown(line.failing, line.show))
-      )
+    ).left.map(_.mkString("\n")).flatMap(result => recorded(manifest, options).map(result -> _)).map {
+      (result, compiled) =>
+        val locked = options.lock.filter(Files.exists(_)).fold(Set.empty[String])(file =>
+          Report.keys(Files.readString(file))
+        )
+        val (scannedTexts, excluded) = scanned()
+        val texts                    = scannedTexts.getOrElse(Vector.empty)
+        val findings                 = Report.findings(result, Intended(options.intended), options.nesting, parallel) ++
+          compiled ++
+          Build.duplicates(manifest) ++
+          Build.unused(result.unusedBounds) ++ texts ++
+          excluded ++
+          (if (options.mode.strict) Build.fatal(manifest) else Vector.empty) ++
+          Purity.regressions(result.purity, result.graph.nodes, locked) ++
+          Purity.violations(result.purity, result.graph.nodes, options.policies)
+        options.relock.foreach(file => Files.writeString(file, Purity.lock(result.purity, result.graph.nodes)): Unit)
+        val baseline = options.baseline.filter(Files.exists(_)).fold(Set.empty[String])(file =>
+          Report.keys(Files.readString(file))
+        )
+        val report = Report.Options(options.disabled, options.failing, baseline, options.info, options.warnings)
+        options.record.foreach(file =>
+          Files.writeString(file, Report.write(Report(findings, result.graph.nodes, report.copy(info = false)))): Unit
+        )
+        Reuse.Record(
+          result.problems.map(problem => s"${Reuse.Problem}$problem") ++
+            result.notes.map(note => s"${Reuse.Note}$note") ++
+            (if (options.purity) Purity.summary(result.purity) else Vector.empty),
+          Report(findings, result.graph.nodes, report).map(line => Reuse.Shown(line.failing, line.show))
+        )
     }
+
+  private def recorded(manifest: Manifest, options: Options): Either[String, Vector[Finding]] =
+    if (options.mode == Mode.Audit) Compiled.findings(manifest).left.map(_.mkString("\n")) else Right(Vector.empty)
 
   // The sources are read apart from the build's classes, so the scan runs while those are hashed or extracted.
   private def scanning(manifest: Manifest): Scan =

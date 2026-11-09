@@ -13,9 +13,9 @@ object Manifest {
     Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope")
 
   /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <module> <entry>`, `library <module>`,
-    * `platform <module>`, `option <module> <compiler option>`, `source <module> <scope> <file>`, `model <module>
-    * <scope> <file>`, `generated <path>`, `jdk <home>`, `root <directory>`, `text-exclude <glob>` and `text <rule
-    * index> <field> <value>` lines.
+    * `platform <module>`, `recorded <module>`, `option <module> <compiler option>`, `source <module> <scope> <file>`,
+    * `model <module> <scope> <file>`, `generated <path>`, `jdk <home>`, `root <directory>`, `text-exclude <glob>` and
+    * `text <rule index> <field> <value>` lines.
     */
   def read(path: Path): Either[String, Manifest] =
     Files.readAllLines(path).asScala.toVector.zipWithIndex.filter(_._1.nonEmpty)
@@ -36,6 +36,7 @@ object Manifest {
                 ))
               case List("library", module)        => Right(current.copy(libraries = current.libraries + module))
               case List("platform", module)       => Right(current.copy(platforms = current.platforms + module))
+              case List("recorded", module)       => Right(current.copy(recorded = current.recorded + module))
               case List("option", module, option) =>
                 Right(current.copy(options =
                   current.options.updated(module, current.options.getOrElse(module, Vector.empty) :+ option)
@@ -76,8 +77,9 @@ object Manifest {
   * relative to. `platforms` are the Scala.js and Scala Native twins of JVM modules, which compile the shared sources
   * again. `texts` holds the fields of each repository text rule by its index, and `textExclusions` the files no text
   * rule reads. `models` holds the files the javac plugin collected the model of the Java code of each module in,
-  * `generated` the directories and files the build generates sources in, and `jdk` the home of the JDK the build
-  * targets, whose classes are read before the outputs.
+  * `generated` the directories and files the build generates sources in, `jdk` the home of the JDK the build targets,
+  * whose classes are read before the outputs, and `recorded` the modules the compiler plugin compiled in the audit
+  * mode, whose findings it kept beside their classes.
   */
 case class Manifest(
     outputs: Vector[Output],
@@ -91,7 +93,8 @@ case class Manifest(
     textExclusions: Vector[String] = Vector.empty,
     models: Vector[Output] = Vector.empty,
     jdk: Option[Path] = None,
-    generated: Vector[Path] = Vector.empty
+    generated: Vector[Path] = Vector.empty,
+    recorded: Set[String] = Set.empty
 ) {
 
   /** Whether a source lies in, or is, one of the directories and files the build generates, named by its path or

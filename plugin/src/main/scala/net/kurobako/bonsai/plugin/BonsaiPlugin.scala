@@ -17,7 +17,7 @@ class BonsaiPlugin extends StandardPlugin {
   private val DefaultWildcards = 2
   // Mutation testing compiles rewritten copies of the sources from a temporary directory, which no check judges.
   private val Instrumented = List("**/stryker4s-*/**", "stryker4s-*/**")
-  private val Modes        = List("dev", "ci")
+  private val Modes        = List("dev", "ci", "audit")
   private val Keys         =
     Set(
       "mode",
@@ -62,7 +62,8 @@ class BonsaiPlugin extends StandardPlugin {
     val disabled = checks("disable")
     val errors   = checks("error")
     val warnings = checks("warn")
-    val strict   = if (mode == "ci") Check.all.filter(_.strict).toSet else Set.empty
+    val strict   = if (mode == "ci" || mode == "audit") Check.all.filter(_.strict).toSet else Set.empty
+    val records  = Option.when(mode == "audit")(Records())
     // `partial=<method>:<alternative>` and `throws=<method pattern>:<exception>|...` extend the defaults, and an empty
     // right-hand side removes one.
     val partials = values("partial").foldLeft(Partials.Alternatives) {
@@ -114,7 +115,8 @@ class BonsaiPlugin extends StandardPlugin {
       path => matchers.exists(_.matches(path)),
       path => generated.exists(_.matches(path)),
       overGenerated,
-      analysis.suppressions
+      analysis.suppressions,
+      records = records
     )
     List(
       // A cycle through a mutation-testing copy still ties together the sources on it.
@@ -131,7 +133,7 @@ class BonsaiPlugin extends StandardPlugin {
         values("checked").toSet,
         optionFold
       )
-    )
+    ) ++ records.map(RecordPhase(_))
   }
 
   /** The checks an option names: one by its id, or every check with `*`. */

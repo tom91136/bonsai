@@ -142,6 +142,8 @@ class ScalafixTest {
   void theModeIsTheOneTheEnvironmentNames() {
     assertEquals("ci", Mode.of(Map.of("BONSAI_MODE", "ci")));
     assertEquals("dev", Mode.of(Map.of("BONSAI_MODE", "DEV")));
+    assertEquals("audit", Mode.of(Map.of("BONSAI_MODE", "Audit")));
+    assertEquals("audit", Mode.of(Map.of("BONSAI_MODE", "audit", "CI", "true")));
     assertEquals("ci", Mode.of(Map.of("CI", "true")));
     assertEquals("dev", Mode.of(Map.of()));
   }

@@ -71,7 +71,8 @@ public class AnalyseMojo extends BonsaiMojo {
       Libraries.detect(
         configuration.library(),
         Libraries.skipped(project, session.getUserProperties()),
-        Libraries.declares(project.getModel())));
+        Libraries.declares(project.getModel())),
+      mode.equals("audit"));
 
     Path root = root();
     List<String> fragment = Analysis.manifest(root, jdk.toPath(), List.of(module), configuration.text());

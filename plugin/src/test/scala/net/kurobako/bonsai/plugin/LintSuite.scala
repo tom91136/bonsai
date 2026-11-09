@@ -1279,7 +1279,7 @@ class LintSuite extends FunSuite {
     assertEquals(levels("error=*", "warn=open-type-test"), (List("arrays"), List("type")))
     assertEquals(
       compile("Lints.scala", "object Lints", "mode=release")._1,
-      List("bonsai option mode must be one of dev, ci, not release")
+      List("bonsai option mode must be one of dev, ci, audit, not release")
     )
   }
 

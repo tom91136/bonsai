@@ -101,18 +101,23 @@ object Report {
             (options.info || finding.level != Finding.Level.Info) =>
         val id        = finding.rule.id
         val escalated =
-          (finding.level match {
-            case Finding.Level.Error   => !options.lenient(id)
-            case Finding.Level.Warning => options.failing(id)
-            case Finding.Level.Info    => false
-          }) && !baselined(Finding.positionless(finding.key))
+          if (finding.rule.recorded) finding.level == Finding.Level.Error
+          else
+            (finding.level match {
+              case Finding.Level.Error   => !options.lenient(id)
+              case Finding.Level.Warning => options.failing(id)
+              case Finding.Level.Info    => false
+            }) && !baselined(Finding.positionless(finding.key))
         val level = if (finding.level == Finding.Level.Info) "info" else "warning"
         Line(if (escalated) "error" else level, finding, repeat)
     }.toVector
   }
 
-  /** The baseline text recording `lines`, one finding key per line. */
-  def write(lines: Vector[Line]): String = lines.map(_.finding.key).mkString("", "\n", "\n")
+  /** The baseline text recording `lines`, one finding key per line, less the findings of the compiler plugin, which no
+    * baseline holds back.
+    */
+  def write(lines: Vector[Line]): String =
+    lines.filterNot(_.finding.rule.recorded).map(_.finding.key).mkString("", "\n", "\n")
 
   /** The keys a file of one key per line records, such as a baseline or a purity lock. */
   def keys(text: String): Set[String] = text.linesIterator.filter(_.nonEmpty).toSet

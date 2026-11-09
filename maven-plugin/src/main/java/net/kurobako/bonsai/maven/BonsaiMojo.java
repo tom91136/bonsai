@@ -252,9 +252,9 @@ public abstract class BonsaiMojo extends AbstractMojo {
     return Path.of(session.getExecutionRootDirectory());
   }
 
-  /** Whether the tools run in the dev mode. */
+  /** Whether the tools leave a finding of their rewriting rules unfailed, as the dev and audit modes do. */
   protected boolean dev() {
-    return mode().equals("dev");
+    return mode().equals("dev") || mode().equals("audit");
   }
 
   /** The directory the goals write their files to. */

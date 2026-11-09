@@ -48,6 +48,9 @@ public final class Analysis {
       if (module.library()) {
         manifest.add("library\t" + module.id());
       }
+      if (module.recorded()) {
+        manifest.add("recorded\t" + module.id());
+      }
       for (Path source : module.mainSources()) {
         manifest.add("source\t" + module.id() + "\tmain\t" + source);
       }

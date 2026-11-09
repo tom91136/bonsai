@@ -56,6 +56,20 @@ class ScalacTest {
   }
 
   @Test
+  void theAuditModeDemotesTheFindingsAsTheDevModeDoes() throws IOException {
+    Configuration configuration = configuration("warnings\tidentity-token");
+
+    List<String> report = Scalac.options(configuration, ids(), "audit", List.of());
+
+    assertTrue(report.contains("-P:bonsai:mode=audit"), report.toString());
+    assertTrue(report.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:i"), report.toString());
+    assertTrue(report.stream().noneMatch(option -> option.endsWith("]:e")), report.toString());
+    assertTrue(report.contains("-P:bonsai:warn=identity-token"), report.toString());
+    List<String> ci = Scalac.options(configuration, ids(), "ci", List.of());
+    assertTrue(ci.contains("-Wconf:msg=\\[bonsai.[a-z0-9-]+\\]:e"), ci.toString());
+  }
+
+  @Test
   void theCompilerIsAskedForTheUnusedWarningsTheRuleReads() throws IOException {
     List<String> options = Scalac.unused(configuration(), ids(), SUPPORT, "3.9.0", List.of("-Werror"));
 

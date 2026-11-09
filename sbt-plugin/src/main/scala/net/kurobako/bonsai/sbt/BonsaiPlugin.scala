@@ -84,18 +84,20 @@ object BonsaiPlugin extends AutoPlugin {
 
   object autoImport {
     object BonsaiMode {
-      case object Dev extends BonsaiMode
-      case object CI  extends BonsaiMode
+      case object Dev   extends BonsaiMode
+      case object CI    extends BonsaiMode
+      case object Audit extends BonsaiMode
 
-      val values: Seq[BonsaiMode] = Seq(Dev, CI)
+      val values: Seq[BonsaiMode] = Seq(Dev, CI, Audit)
     }
 
     sealed trait BonsaiMode
 
     val bonsaiMode: SettingKey[BonsaiMode] = settingKey[BonsaiMode](
       "Dev warns; CI fails on the checks, scalafix rules and strict analysis rules not in bonsaiWarnings, whether or " +
-        "not the build fails on compiler warnings. Defaults to BONSAI_MODE, else CI when CI is set. A build that " +
-        "fails on compiler warnings does not fail on a finding in Dev"
+        "not the build fails on compiler warnings. Audit compiles whatever the checks find, then reports them with " +
+        "the analysis and fails as CI would, apart from scalafix, which only warns. Defaults to BONSAI_MODE, else " +
+        "CI when CI is set. A build that fails on compiler warnings does not fail on a finding in Dev or Audit"
     )
     val bonsaiDisabled: SettingKey[Set[String]] =
       settingKey[Set[String]]("Compiler plugin checks, analysis rules and scalafix rules left out, by id")
@@ -194,7 +196,7 @@ object BonsaiPlugin extends AutoPlugin {
   private val bonsaiScalafixConfig =
     taskKey[File]("Write the scalafix configuration of the selected rules").withRank(KeyRanks.Invisible)
   private val bonsaiScalafixCheck =
-    taskKey[Unit]("Run scalafix --check, which only warns on failure in Dev mode").withRank(KeyRanks.Invisible)
+    taskKey[Unit]("Run scalafix --check, which only warns on failure outside CI mode").withRank(KeyRanks.Invisible)
   private val bonsaiValidated =
     settingKey[Unit]("Reject ids no tool knows when the build loads").withRank(KeyRanks.Invisible)
   private val bonsaiModeId =
@@ -360,7 +362,7 @@ object BonsaiPlugin extends AutoPlugin {
       (ThisBuild / baseDirectory).value / ".scalafix.conf",
       Rules.filter(rule => !OptIn(rule) || bonsaiEnabledRules.value(rule)).filterNot(bonsaiDisabled.value)
         .filter(supported(_, scalaVersion.value)),
-      if (bonsaiMode.value == BonsaiMode.Dev) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiWarnings.value),
+      if (bonsaiMode.value != BonsaiMode.CI) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiWarnings.value),
       (if (bonsaiDisabled.value("DisableSyntax")) Nil else Bans).partition(!bonsaiDisabled.value(_))
     )),
     Compile / scalafix := (Compile / scalafix).dependsOn(bonsaiScalafixConfig).evaluated,
@@ -373,9 +375,9 @@ object BonsaiPlugin extends AutoPlugin {
     bonsaiAnalyse / aggregate := false,
     bonsaiScalafixCheck       := Compat.uncached {
       scalafixAll.toTask(" --check").result.value.toEither match {
-        case Right(_)                                      => ()
-        case Left(_) if bonsaiMode.value == BonsaiMode.Dev =>
-          streams.value.log.warn("scalafix --check failed; continuing in Dev mode")
+        case Right(_)                                     => ()
+        case Left(_) if bonsaiMode.value != BonsaiMode.CI =>
+          streams.value.log.warn(s"scalafix --check failed; continuing in ${bonsaiModeId.value} mode")
         case Left(incomplete) => throw incomplete
       }
     },
@@ -558,7 +560,13 @@ object BonsaiPlugin extends AutoPlugin {
       val compilerOptions = Def.task {
         val id    = thisProject.value.id
         val flags = (compile / scalacOptions).value
-        if (fixtures(id)) Nil else ManifestLines.options(id, flags)
+        if (fixtures(id)) Nil
+        else
+          ManifestLines.options(id, flags) ++
+            ManifestLines.recorded(
+              id,
+              bonsaiModeId.value == "audit" && ScalaVersions.plugin(scalaVersion.value).isDefined
+            )
       }.all(ScopeFilter(inProjects((if (jvm.nonEmpty) jvm else enabled)*), inConfigurations(Compile))).value.flatten
       // Every platform's sources, so copies between the directories of a cross-built project show.
       val sources   = kept.flatMap(entry => ManifestLines.sources(entry.project, entry.scope, entry.sources))

@@ -93,6 +93,18 @@ class CLISuite extends FunSuite {
     assert(CLI.parse(List("--warn", "bogus")).left.exists(_.startsWith("unknown rule: bogus")))
   }
 
+  test("the audit mode fails on what the ci mode fails on") {
+    assertEquals(CLI.parse(List("--mode", "audit")).map(_.mode), Right(CLI.Mode.Audit))
+    assertEquals(
+      CLI.parse(List("--mode", "audit", "--error", "complexity")).map(_.failing),
+      CLI.parse(List("--mode", "ci", "--error", "complexity")).map(_.failing)
+    )
+    assertEquals(
+      CLI.parse(List("--mode", "audit", "--warn", "unused")).map(_.failing("unused")),
+      Right(false)
+    )
+  }
+
   test("every rule is escalated at once with *, except those kept as warnings") {
     val every = Finding.Rule.values.map(_.id).toSet
     assertEquals(CLI.parse(List("--error", "*")).map(_.failing), Right(every))

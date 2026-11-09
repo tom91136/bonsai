@@ -42,7 +42,8 @@ private class Checks(
     suppressions: mutable.Map[SourceFile, List[(Span, Set[String])]],
     patched: mutable.Map[SourceFile, List[Span]] = mutable.Map.empty,
     generatedSpans: mutable.Map[SourceFile, List[Span]] = mutable.Map.empty,
-    reported: Option[Set[Check]] = None
+    reported: Option[Set[Check]] = None,
+    records: Option[Records] = None
 ) {
 
   /** A view that reports only `owned`, and says whether any of them is enabled so that the code reporting them can be
@@ -59,7 +60,8 @@ private class Checks(
       suppressions,
       patched,
       generatedSpans,
-      Some(owned.toSet)
+      Some(owned.toSet),
+      records
     )
 
   /** Whether some check this view owns is enabled. */
@@ -77,11 +79,15 @@ private class Checks(
       !disabled(check) && !instrumented(Paths.get(position.sourcePos.source.path)) &&
       !suppressed(check, position) && !generated(check, position)
     ) {
-      val tagged = s"$message [bonsai:${check.id}]"
-      val shown  = start(position)
-      if (escalate || errors(check) || check.severity == Check.Severity.Error && !lenient(check))
-        report.error(tagged, shown)
-      else if (check.severity == Check.Severity.Info && !lenient(check)) report.echo(tagged, shown)
+      val tagged      = s"$message [bonsai:${check.id}]"
+      val shown       = start(position)
+      val failing     = escalate || errors(check) || check.severity == Check.Severity.Error && !lenient(check)
+      val informative = !failing && check.severity == Check.Severity.Info && !lenient(check)
+      records.foreach(
+        _.add(shown.source, Recorded.Entry(check.id, level(check, failing, informative), shown.line + 1, message))
+      )
+      if (failing && records.isEmpty) report.error(tagged, shown)
+      else if (informative) report.echo(tagged, shown)
       else {
         val actions = Option.when(fix.nonEmpty && disjoint(fix))(CodeAction(s"fix ${check.id}", None, fix)).toList
         actions.foreach(Rewrites.applyAction)
@@ -89,6 +95,12 @@ private class Checks(
       }
     }
   }
+
+  // what the ci mode makes of the finding: it fails on all but information and the checks kept as warnings
+  private def level(check: Check, failing: Boolean, informative: Boolean): Recorded.Level =
+    if (informative) Recorded.Level.Info
+    else if (failing || !lenient(check)) Recorded.Level.Error
+    else Recorded.Level.Warning
 
   // Patches that overlap make the compiler fail, so the fix of the check that reports second is left out.
   private def disjoint(fix: List[ActionPatch]): Boolean = {

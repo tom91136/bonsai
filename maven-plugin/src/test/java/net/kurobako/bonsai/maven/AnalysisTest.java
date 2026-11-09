@@ -36,7 +36,7 @@ class AnalysisTest {
       root,
       jdk,
       List.of(new Module("demo", classes, testClasses, model, testModel, List.of(source), List.of(testSource),
-        List.of("/repo/library.jar"), List.of("-Werror"), true)),
+        List.of("/repo/library.jar"), List.of("-Werror"), true, true)),
       List.of());
 
     assertTrue(manifest.contains("root\t" + root), manifest.toString());
@@ -46,6 +46,7 @@ class AnalysisTest {
     assertTrue(manifest.contains("model\tdemo\tmain\t" + model), manifest.toString());
     assertTrue(manifest.contains("model\tdemo\ttest\t" + testModel), manifest.toString());
     assertTrue(manifest.contains("library\tdemo"), manifest.toString());
+    assertTrue(manifest.contains("recorded\tdemo"), manifest.toString());
     assertTrue(manifest.contains("source\tdemo\tmain\t" + source), manifest.toString());
     assertTrue(manifest.contains("source\tdemo\ttest\t" + testSource), manifest.toString());
     assertTrue(manifest.contains("option\tdemo\t-Werror"), manifest.toString());
@@ -58,10 +59,22 @@ class AnalysisTest {
       root,
       root.resolve("jdk-25"),
       List.of(new Module("demo", root.resolve("classes"), root.resolve("test-classes"),
-        null, null, List.of(), List.of(), List.of(), List.of(), false)),
+        null, null, List.of(), List.of(), List.of(), List.of(), false, false)),
       List.of());
 
     assertTrue(!manifest.contains("library\tdemo"), manifest.toString());
+  }
+
+  @Test
+  void aModuleThePluginDidNotRecordHasNoRecordedLine() throws IOException {
+    List<String> manifest = Analysis.manifest(
+      root,
+      root.resolve("jdk-25"),
+      List.of(new Module("demo", root.resolve("classes"), null, null, null,
+        List.of(), List.of(), List.of(), List.of(), false, false)),
+      List.of());
+
+    assertTrue(manifest.stream().noneMatch(line -> line.startsWith("recorded\t")), manifest.toString());
   }
 
   @Test
@@ -70,7 +83,7 @@ class AnalysisTest {
       root,
       root.resolve("jdk-25"),
       List.of(new Module("demo", root.resolve("classes"), null, null, null,
-        List.of(), List.of(), List.of(), List.of(), false)),
+        List.of(), List.of(), List.of(), List.of(), false, false)),
       List.of());
 
     assertTrue(!manifest.contains("model\tdemo\tmain\t" + root.resolve("classes")), manifest.toString());
