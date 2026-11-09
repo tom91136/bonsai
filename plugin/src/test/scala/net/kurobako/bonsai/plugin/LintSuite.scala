@@ -2216,10 +2216,34 @@ class LintSuite extends FunSuite {
       found,
       List(
         "error: no Lints.Form is a Lints.Other",
-        "error: no Lints.Load is a Lints.Marked",
         "error: no Lints.Load is a Lints.Move"
       )
     )
+  }
+
+  test("a type test on the value an option or either yields is against that value, not the fields of a product") {
+    val found = diagnostics(
+      """object Lints {
+        |  class Coding; case class Chunked(codings: Coding); case class Addr(name: Coding, port: Int)
+        |  def chunked(found: Option[Chunked]): Int = found match { case Some(chunked: Chunked) => 1; case _ => 0 }
+        |  def routed(found: Either[String, Addr]): Int = found match { case Right(addr: Addr) => addr.port; case _ => 0 }
+        |  def coded(found: Option[Chunked]): Int = found match { case Some(_: Coding) => 1; case _ => 0 }
+        |}""".stripMargin
+    ).filter(_.endsWith("[bonsai:unrelated-type-test]")).map(_.takeWhile(_ != ',')).sorted
+    assertEquals(found, List("error: no Lints.Chunked is a Lints.Coding"))
+  }
+
+  test("a case class is only closed when final, since a class can extend it and mix a trait in") {
+    val found = diagnostics(
+      """object Lints {
+        |  trait Marked
+        |  case class Load(from: Int); final case class Pinned(from: Int)
+        |  class Mixed extends Load(0) with Marked
+        |  def loaded(load: Load): Int = load match { case _: Marked => 1; case _ => 0 }
+        |  def pinned(pin: Pinned): Int = pin match { case _: Marked => 1; case _ => 0 }
+        |}""".stripMargin
+    ).filter(_.endsWith("[bonsai:unrelated-type-test]")).map(_.takeWhile(_ != ',')).sorted
+    assertEquals(found, List("error: no Lints.Pinned is a Lints.Marked"))
   }
 
   test("tests against constants written in place are reported for the concept they leave unnamed") {

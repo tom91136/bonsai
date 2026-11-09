@@ -295,13 +295,15 @@ private class LintPhase(
     case _                             => ()
   }
 
-  /** The static types of the values an extractor's argument patterns match. */
+  /** The static types of the values an extractor's argument patterns match. An option-typed extractor with one argument
+    * pattern matches the element whole; several patterns match its fields.
+    */
   private def selectorTypes(unapply: tpd.UnApply)(using Context): List[Type] = {
     val result   = unapply.fun.tpe.widen.finalResultType
     val optional = result.derivesFrom(defn.OptionClass)
     val product  = if (optional) result.baseType(defn.OptionClass).argInfos.headOption.getOrElse(result) else result
     val selected = Applications.productSelectorTypes(product, NoSourcePosition)
-    if (optional && selected.isEmpty) List(product) else selected
+    if (optional && (unapply.patterns.size == 1 || selected.isEmpty)) List(product) else selected
   }
 
   override def transformValDef(tree: tpd.ValDef)(using Context): tpd.Tree = {
@@ -512,7 +514,7 @@ private class LintPhase(
       case other => Some(other.classSymbol).filter(symbol => symbol.isClass && !symbol.is(Flags.JavaDefined))
     }
     def closed(symbol: Symbol) =
-      symbol.isOneOf(Flags.Final | Flags.Case | Flags.Module) || symbol.is(Flags.Sealed) && symbol.children.isEmpty
+      symbol.isOneOf(Flags.Final | Flags.Module) || symbol.is(Flags.Sealed) && symbol.children.isEmpty
     for {
       tested <- cls(tpe)
       value  <- cls(scrutinee) if !tested.derivesFrom(value) && !value.derivesFrom(tested) && !standard(value)
