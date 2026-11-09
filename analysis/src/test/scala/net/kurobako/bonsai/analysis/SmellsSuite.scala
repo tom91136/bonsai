@@ -1012,6 +1012,15 @@ class SmellsSuite extends AnalysisSuite {
     assertFinding(found, "single-implementation", "Store has a single implementation, MemoryStore")
   }
 
+  test("an anonymous implementation within one platform's sources is still speculative") {
+    val found = findings(
+      "jvm/src/main/scala/Store.scala" -> "trait Store { def get: Int; def put: Int }",
+      "jvm/src/main/scala/Stores.scala" ->
+        "object Stores { val memory: Store = new Store { def get = 1; def put = 2 } }"
+    )
+    assertFinding(found, "single-implementation", "Store has a single implementation")
+  }
+
   test("an abstract class declaring implicits for an object to extend is not speculative") {
     val found = findings(
       "Routing.scala" ->

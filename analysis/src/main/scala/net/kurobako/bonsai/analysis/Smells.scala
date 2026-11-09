@@ -292,8 +292,9 @@ object Smells {
 
   // a cross build compiles each platform alone, so one implementation can sit in another platform's sources
   private def platformSeam(abstraction: Abstraction, implementation: String, nodes: Map[String, Node]): Boolean =
-    nodes.get(abstraction.node).map(_.source).flatMap(platform(_)) !=
-      nodes.get(implementation).map(_.source).flatMap(platform(_))
+    nodes.get(implementation.stripSuffix(".$anon")).exists(node =>
+      platform(node.source) != nodes.get(abstraction.node).flatMap(owner => platform(owner.source))
+    )
 
   private def platform(source: String): Option[String] = platformRoot.findFirstMatchIn(source).map(_.group(1))
 
