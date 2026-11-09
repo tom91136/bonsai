@@ -33,9 +33,13 @@ if (( ${#artifacts[@]} == 0 )); then
   exit 1
 fi
 
+plugin=org.apache.maven.plugins:maven-install-plugin:3.1.4
+# The installs below run offline, so the plugin itself has to be fetched first.
+"$maven" -B -q "$plugin:help" >/dev/null
+
 for artifact in "${artifacts[@]}"; do
   source="$ivy/$artifact/$version"
-  "$maven" -q -o org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
+  "$maven" -q -o "$plugin:install-file" \
     -Dfile="$source/jars/$artifact.jar" \
     -DpomFile="$source/poms/$artifact.pom"
   echo "installed $artifact $version"

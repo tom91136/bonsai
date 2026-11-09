@@ -3,6 +3,8 @@
 # rest, analysis included, for the newest, and the sbt plugin for both sbt lines. Each module's version directory is
 # built aside and exchanged with the published one in a single rename, so a build resolving it meanwhile sees the old
 # module or the new one, never a half-written one.
+# Maven builds resolve the same tools from ~/.m2, so where Maven is installed they and the Maven plugin are refreshed
+# too.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # An exchange is a rename, which stays within one file system.
@@ -13,3 +15,7 @@ sbt --client shutdown >/dev/null 2>&1 || true
 sbt --batch -Dsbt.ivy.home="$stage" -Divy.home="$stage" \
   publishLocalAll
 scripts/exchange-local.sh "$stage/local" "$HOME/.ivy2/local"
+if command -v "${MAVEN_COMMAND:-mvn}" >/dev/null; then
+  scripts/publish-maven-local.sh
+  (cd maven-plugin && "${MAVEN_COMMAND:-mvn}" -B -q -DskipTests -Dinvoker.skip=true install)
+fi

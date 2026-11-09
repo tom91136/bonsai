@@ -119,14 +119,10 @@ jobs:
           echo "$(curl -fsSL "$url.sha512")  $RUNNER_TEMP/maven.tar.gz" | sha512sum -c -
           tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/apache-maven-$version/bin" >> "$GITHUB_PATH"
-      - name: publish sbt artifacts to ivy local
+      - name: publish to ivy local and maven local
         run: |
           mkdir -p "$HOME/.ivy2"
           scripts/publish-local.sh
-      - name: fetch the maven install plugin for the offline install
-        run: mvn -B -q org.apache.maven.plugins:maven-install-plugin:3.1.4:help > /dev/null
-      - name: install into maven local
-        run: scripts/publish-maven-local.sh
       - name: verify maven plugin
         working-directory: maven-plugin
         run: mvn -B verify
