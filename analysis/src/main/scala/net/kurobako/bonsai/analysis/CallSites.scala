@@ -489,7 +489,7 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
           case None if ident.symbol.isOneOf(Flags.Method | Flags.Module) => Some(name.toString)
           case None                                                      => None
         }
-      case select @ tpd.Select(qualifier, name) if !readsWorld(select.symbol) =>
+      case select @ tpd.Select(qualifier, name) if select.symbol.exists && !readsWorld(select.symbol) =>
         text(qualifier).map(inner => s"$inner.$name")
       case tpd.TypeApply(function, _)   => text(function)
       case tpd.Apply(function, applied) =>

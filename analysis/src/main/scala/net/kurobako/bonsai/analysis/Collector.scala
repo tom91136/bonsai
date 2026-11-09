@@ -220,9 +220,15 @@ private[analysis] class Collector(
       bytecode
     )
     complexityList ++= costed.flatMap(method =>
-      costs.summary(method).flatMap(bounds =>
-        key(method).map(Complexity.Summary(qualifiedName(method), _, bounds, suppressions(method)))
-      )
+      try
+        costs.summary(method).flatMap(bounds =>
+          key(method).map(Complexity.Summary(qualifiedName(method), _, bounds, suppressions(method)))
+        )
+      catch {
+        case NonFatal(error) =>
+          failed(s"${qualifiedName(method)} could not be costed", error)
+          None
+      }
     )
     complexityList ++= costs.javaSummaries
     unusedList ++= declared.unmatched

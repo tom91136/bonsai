@@ -297,6 +297,38 @@ class AlgebraSuite extends AnalysisSuite {
     assertNoFinding(found)(finding => finding.rule.id == "constant-field" && finding.detail.contains("Decoded"))
   }
 
+  test("a field computed by calling a polymorphic function value is not derived from the other fields") {
+    val found = findings(
+      "Pair.scala" -> "case class Pair(n: Int, value: Int)",
+      "Main.scala" ->
+        """object Main {
+          |  def make(f: [A] => A => A, n: Int): Pair = {
+          |    val value = f[Int](n)
+          |    Pair(n, value)
+          |  }
+          |  val pair = make([A] => (a: A) => a, 1)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(finding => finding.rule.id == "derived-field" && finding.detail.contains("Pair.value"))
+  }
+
+  test("a field computed from another field by a method is derived from it") {
+    val found = findings(
+      "Pair.scala" -> "case class Pair(n: Int, text: String)",
+      "Main.scala" ->
+        """object Main {
+          |  def make(n: Int): Pair = {
+          |    val text = n.toString
+          |    Pair(n, text)
+          |  }
+          |  val pair = make(1)
+          |}""".stripMargin
+    )
+    assertFinding(found, "derived-field", "Pair.text is always n.toString", "across 1 construction")(using
+      Finding.Level.Info
+    )
+  }
+
   test("constructions inside lambdas count") {
     val found = findings(
       "Instruction.scala" -> "enum Instruction { case Load(bytes: Int, signed: Boolean, coherent: Boolean = false) }",

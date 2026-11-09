@@ -605,6 +605,21 @@ class LoopsSuite extends FunSuite {
     )
   }
 
+  test("work matching wildcards in a pattern over the elements of a field is derived from the field") {
+    val found = warnings(
+      """case class Named(symbol: String, tpe: Any, origin: Int)
+        |case class Arg(named: Named, pos: Option[Int] = None, boundary: Option[Int] = None)
+        |class Namespaces(declarations: Vector[Vector[Arg]]) {
+        |  def symbols: Vector[String] =
+        |    declarations.map(args => args.collect { case Arg(Named(symbol, _: Int, _), _, _) => symbol }.mkString)
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "invariant-in-loop"),
+      List("collect(...) depends only on the elements of declarations")
+    )
+  }
+
   test("work that reads a parameter or a variable, or a collection that is not a field, is not derived from a field") {
     val found = warnings(
       """class Namespaces(packages: Vector[Vector[String]]) {

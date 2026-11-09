@@ -1352,7 +1352,7 @@ private class Loops(
     Calls.selected(tree).exists(select => Derivations(select.name.toString)) && complete(tree) &&
       (tree.isInstanceOf[tpd.Apply] || tree.isInstanceOf[tpd.TypeApply]) && unchanging(tree) && {
         val defined    = tree.filterSubTrees(_.isInstanceOf[tpd.DefTree]).map(_.symbol).toSet
-        val references = tree.filterSubTrees(_.isInstanceOf[tpd.Ident]).map(_.symbol)
+        val references = tree.filterSubTrees(_.isInstanceOf[tpd.Ident]).map(_.symbol).filter(_.exists)
         references.exists(parameters) && references.forall(symbol =>
           parameters(symbol) || defined(symbol) ||
             !symbol.is(Flags.Method) && !symbol.is(Flags.Mutable) && (symbol.owner.isClass || symbol.is(Flags.Module))
