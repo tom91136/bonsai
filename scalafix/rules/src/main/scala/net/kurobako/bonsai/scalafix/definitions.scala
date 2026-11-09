@@ -53,6 +53,30 @@ private object definitions {
       case NonFatal(_) => None
     }
 
+  /** The symbols with their supertypes, transitively. */
+  def lineage(roots: List[Symbol])(using SemanticDocument): Set[Symbol] = {
+    @annotation.tailrec
+    def visit(frontier: List[Symbol], seen: Set[Symbol]): Set[Symbol] = frontier match {
+      case Nil                            => seen
+      case symbol :: rest if seen(symbol) => visit(rest, seen)
+      case symbol :: rest                 =>
+        val supertypes = info(symbol).map(_.signature).collect { case ClassSignature(_, parents, _, _) =>
+          parents.collect { case TypeRef(_, parent, _) => parent }
+        }
+        visit(supertypes.getOrElse(Nil) ::: rest, seen + symbol)
+    }
+    visit(roots, Set.empty)
+  }
+
+  /** Whether a class or object, or any supertype of it, declares a member called `name`. */
+  def declares(owner: Symbol, name: String)(using SemanticDocument): Boolean =
+    lineage(List(owner)).exists(symbol =>
+      info(symbol).map(_.signature).exists {
+        case ClassSignature(_, _, _, declarations) => declarations.exists(_.displayName == name)
+        case _                                     => false
+      }
+    )
+
   /** Whether the term names a method that takes arguments, which the compiler eta expands where a function is wanted.
     */
   def methodReference(term: Term)(using SemanticDocument): Boolean = term match {

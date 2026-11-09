@@ -1,7 +1,9 @@
 package net.kurobako.bonsai.scalafix
 
 import scala.meta.*
+import scala.meta.internal.semanticdb.Scala.*
 import scala.meta.tokens.Token
+import scala.util.control.NonFatal
 import scalafix.v1.*
 
 /** Collection rewrites with bounded arithmetic and unchanged evaluation of user expressions. */
@@ -137,40 +139,6 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
     symbol.startsWith("scala/Predef.print") || symbol.startsWith("scala/Console.print")
   }
 
-  private val companions = Set(
-    "Array",
-    "ArrayBuffer",
-    "ArrayDeque",
-    "ArraySeq",
-    "BitSet",
-    "Buffer",
-    "HashMap",
-    "HashSet",
-    "IndexedSeq",
-    "Iterable",
-    "Iterator",
-    "LazyList",
-    "LinearSeq",
-    "LinkedHashMap",
-    "LinkedHashSet",
-    "List",
-    "ListBuffer",
-    "ListMap",
-    "ListSet",
-    "Map",
-    "Queue",
-    "Seq",
-    "SeqMap",
-    "Set",
-    "SortedMap",
-    "SortedSet",
-    "Stack",
-    "TreeMap",
-    "TreeSet",
-    "Vector",
-    "VectorMap"
-  )
-
   // An extractor pattern such as `case Seq() =>` is not an application, so only constructions are rewritten.
   private def emptyCollection(call: Term.Apply)(using SemanticDocument): Patch =
     if (call.argClause.values.nonEmpty) Patch.empty
@@ -180,12 +148,43 @@ class CollectionIdioms extends SemanticRule("CollectionIdioms") {
         case other                       => other
       }
       companion match {
-        case reference: (Term.Name | Term.Select)
-            if reference.symbol.value.startsWith("scala/") && reference.symbol.isGlobal &&
-              reference.symbol.value.endsWith(".") && companions(reference.symbol.displayName) =>
+        case reference: (Term.Name | Term.Select) if hasEmpty(reference.symbol) =>
           lint("empty-collection", "use empty for an empty collection", call.pos) +
             Patch.addLeft(call.tokens(companion.tokens.length), ".empty") + Patch.removeTokens(call.argClause.tokens)
         case _ => Patch.empty
       }
+    }
+
+  // the symbol table has no information on Scala classes of the classpath, so those the rules run on stand in for them
+  private def hasEmpty(companion: Symbol)(using SemanticDocument): Boolean =
+    companion.isGlobal && companion.value.endsWith(".") &&
+      (if (definitions.info(companion).isDefined) objectOf(companion).exists(definitions.declares(_, "empty"))
+       else runtimeObject(companion.value).exists(_.getMethods.exists(_.getName == "empty")))
+
+  // a companion reached through a value such as `val Vector = scala.collection.immutable.Vector` is its object
+  @scala.annotation.tailrec
+  private def objectOf(symbol: Symbol)(using SemanticDocument): Option[Symbol] =
+    definitions.info(symbol).map(_.signature) match {
+      case Some(_: ClassSignature)                => Some(symbol)
+      case Some(ValueSignature(SingleType(_, s))) => objectOf(s)
+      case _                                      => None
+    }
+
+  private def runtimeObject(symbol: String): Option[Class[?]] =
+    load(binaryName(symbol) + "$").orElse(
+      Option.when(!symbol.owner.isPackage)(symbol.owner).flatMap(owner => load(binaryName(owner) + "$")).flatMap(
+        _.getMethods.find(method => method.getName == symbol.desc.value && method.getParameterCount == 0)
+          .map(_.getReturnType)
+      )
+    )
+
+  private def binaryName(symbol: String): String =
+    if (symbol.owner.isPackage) symbol.owner.stripSuffix("/").replace('/', '.') + "." + symbol.desc.value
+    else binaryName(symbol.owner) + "$" + symbol.desc.value
+
+  private def load(name: String): Option[Class[?]] =
+    try Some(Class.forName(name, false, getClass.getClassLoader))
+    catch {
+      case NonFatal(_) | _: LinkageError => None
     }
 }

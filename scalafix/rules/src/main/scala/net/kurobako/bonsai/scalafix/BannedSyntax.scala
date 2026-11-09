@@ -26,27 +26,8 @@ class BannedSyntax extends SemanticRule("BannedSyntax") {
 
   private def ban(id: String, position: Position): Patch = lint(id, messages(id), position)
 
-  private def lineage(roots: List[Symbol])(using SemanticDocument): Set[Symbol] = {
-    @annotation.tailrec
-    def visit(frontier: List[Symbol], seen: Set[Symbol]): Set[Symbol] = frontier match {
-      case Nil                            => seen
-      case symbol :: rest if seen(symbol) => visit(rest, seen)
-      case symbol :: rest                 =>
-        val supertypes = definitions.info(symbol).map(_.signature).collect { case ClassSignature(_, parents, _, _) =>
-          parents.collect { case TypeRef(_, parent, _) => parent }
-        }
-        visit(supertypes.getOrElse(Nil) ::: rest, seen + symbol)
-    }
-    visit(roots, Set.empty)
-  }
-
   private def definesApply(companion: Symbol)(using SemanticDocument): Boolean =
-    lineage(List(companion)).exists(symbol =>
-      definitions.info(symbol).map(_.signature).exists {
-        case ClassSignature(_, _, _, declarations) => declarations.exists(_.displayName == "apply")
-        case _                                     => false
-      }
-    )
+    definitions.declares(companion, "apply")
 
   // SemanticDB records no occurrence for the type after new when its type argument is inferred.
   private def constructed(term: Term.New)(using SemanticDocument): Symbol = {
@@ -72,7 +53,8 @@ class BannedSyntax extends SemanticRule("BannedSyntax") {
   }
 
   private def scalaJsAny(term: Term.NewAnonymous)(using SemanticDocument): Boolean =
-    lineage(term.templ.inits.map(init => definitions.symbol(init.tpe))).exists(_.value == "scala/scalajs/js/Any#")
+    definitions.lineage(term.templ.inits.map(init => definitions.symbol(init.tpe))).exists(_.value ==
+      "scala/scalajs/js/Any#")
 
   private def arrayAllocation(term: Term.New): Boolean = term.init.tpe match {
     case Type.Apply.After_4_6_0(Type.Name("Array"), _) => true
