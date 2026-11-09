@@ -129,7 +129,16 @@ object Axioms {
     "java.awt.SystemTray"
   )
   // Classes of java.net that build and take apart values, and touch no network.
-  private val Values  = Set("java.net.URLDecoder", "java.net.URLEncoder", "java.net.URI")
+  private val Values = Set(
+    "java.net.URLDecoder",
+    "java.net.URLEncoder",
+    "java.net.URI",
+    "java.net.http.HttpHeaders",
+    "java.net.http.HttpRequest",
+    "java.net.http.HttpRequest.BodyPublishers",
+    "java.net.http.HttpResponse",
+    "java.net.http.HttpResponse.BodyHandlers"
+  )
   private val Logging = Vector("org.slf4j.", "java.util.logging.", "scala.Console")
   private val Reading = Vector("java.io.", "java.nio.", "scala.io.")
   // Classes of Reading that reach the file system, the network or the console, where the rest hold bytes in memory.
@@ -187,8 +196,9 @@ object Axioms {
   private val Naming =
     Set("getName", "getPath", "getParent", "getParentFile", "toPath", "toString", "compareTo", "equals", "hashCode")
   private val Printing = Set("println", "print", "printf")
+  private val Lookups  = Vector("get", "is")
   // Calls that only ask about a thread or process, beside those that act on it.
-  private val Queries = Vector("get", "is", "has", "current", "exitValue", "pid", "info", "available")
+  private val Queries = Lookups ++ Vector("has", "current", "exitValue", "pid", "info", "available")
   private val Actions = Vector(
     "submit",
     "execute",
@@ -213,7 +223,7 @@ object Axioms {
   private val Variables = Set("getenv", "getProperty", "getProperties")
   // JNI registration that the JVM runs when a class initialises, and which no program can observe.
   private val Registrations = Set("registerNatives", "initIDs")
-  // Methods of Throwable and Class that only ask.
+  // JDK methods that only ask about their receiver, unlike user overrides.
   private val Asking = Set("toString", "desiredAssertionStatus")
   // Methods of immutable values that write into an array or buffer they are given.
   private val Filling = Set("copyToArray", "copyToBuffer")
@@ -316,7 +326,9 @@ object Axioms {
     val none                             = Set.empty[Effect[Nothing]]
     if (call.constructor) if (Opening(owner)) effect(Kind.Input) else none
     else if (Registrations(name)) none
+    else if (Asking(name) && owner.startsWith("java.")) none
     else if (Clocks(full) || derives(Randoms) || owner == "scala.util.Random") effect(Kind.Random)
+    else if (Logging.exists(owner.startsWith(_)) && Lookups.exists(name.startsWith(_))) none
     else if (derives(Outputs) || Logging.exists(owner.startsWith(_)) || owner == "scala.Predef" && Printing(name))
       effect(Kind.Output)
     else if (Values(owner)) none
@@ -352,7 +364,7 @@ object Axioms {
       else if (partial) effect(Kind.Throws)
       else none
     } else if (owner == "java.lang.Throwable" || owner == "java.lang.Class")
-      if (Queries.exists(name.startsWith(_)) || Asking(name)) none
+      if (Queries.exists(name.startsWith(_))) none
       else if (name == "printStackTrace") effect(Kind.Output)
       else stateful(Kind.Writes)
     else if (owner.startsWith("munit."))

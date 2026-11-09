@@ -2651,6 +2651,99 @@ class LintSuite extends FunSuite {
     )
   }
 
+  test("queries of a fresh buffer and lookups of loggers are no side effects, while printing and logging are") {
+    val found = warnings(
+      """import java.io.ByteArrayOutputStream
+        |import java.io.PrintStream
+        |trait Console[F[_]] { def error(message: String): F[Unit] }
+        |trait Monad[F[_]] { def unit[A](value: A): F[A] }
+        |object Reports {
+        |  def render[F[_]](console: Console[F])(throwable: Throwable): F[Unit] = {
+        |    val buffer = new ByteArrayOutputStream()
+        |    val stream = new PrintStream(buffer)
+        |    throwable.printStackTrace(stream)
+        |    console.error(buffer.toString)
+        |  }
+        |  def level[F[_]](monad: Monad[F]): F[String] = monad.unit(java.util.logging.Logger.getLogger("x").getLevel.getName)
+        |  def announce[F[_]](monad: Monad[F], logger: java.util.logging.Logger): F[Unit] = { logger.info("x"); monad.unit(()) }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "eager-effect"),
+      List(
+        "announce returns F but calls info when called, not when the F runs",
+        "render returns F but calls printStackTrace when called, not when the F runs"
+      ).sorted
+    )
+  }
+
+  test("java.net.http values are read, while the requests they send are side effects") {
+    val found = warnings(
+      """import java.net.http.HttpClient
+        |import java.net.http.HttpRequest
+        |import java.net.http.HttpResponse
+        |trait Monad[F[_]] { def unit[A](value: A): F[A] }
+        |object Exchanges {
+        |  def status[F[_]](monad: Monad[F], response: HttpResponse[String]): F[Int] = monad.unit(response.statusCode())
+        |  def headers[F[_]](monad: Monad[F], response: HttpResponse[String]): F[Int] = monad.unit(response.headers().map().size())
+        |  def publisher[F[_]](monad: Monad[F]): F[HttpRequest.BodyPublisher] = monad.unit(HttpRequest.BodyPublishers.noBody())
+        |  def send[F[_]](monad: Monad[F], client: HttpClient, request: HttpRequest): F[Int] =
+        |    monad.unit(client.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "eager-effect"),
+      List("send returns F but calls send when called, not when the F runs").sorted
+    )
+  }
+
+  test("a type constructor bounded by a collection is a container rather than an effect") {
+    val found = warnings(
+      """import scala.collection.mutable.Builder
+        |trait Monad[F[_]] { def unit[A](value: A): F[A] }
+        |object Collecting {
+        |  def build[A, T[X] <: Iterable[X]](builder: Builder[A, T[A]], value: A): T[A] = { builder += value; builder.result() }
+        |  def gather[F[_]](monad: Monad[F], builder: Builder[Int, List[Int]]): F[List[Int]] = { builder += 1; monad.unit(builder.result()) }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "eager-effect"),
+      List("gather returns F but calls += when called, not when the F runs").sorted
+    )
+  }
+
+  test("by-value arguments of a call run when the call is made, while by-name ones run with the effect") {
+    val found = warnings(
+      """import java.io.InputStream
+        |import java.net.http.HttpRequest
+        |import scala.util.Try
+        |trait MonadError[F[_]] {
+        |  def fromTry[T](value: Try[T]): F[T]
+        |  def defer[T](value: => T): F[T]
+        |}
+        |object Bodies {
+        |  def read[F[_]](monad: MonadError[F], stream: InputStream): F[Array[Byte]] =
+        |    monad.fromTry {
+        |      val body = Try(stream.readAllBytes())
+        |      stream.close()
+        |      body
+        |    }
+        |  def tag[F[_]](monad: MonadError[F], builder: HttpRequest.Builder): F[Unit] = {
+        |    builder.header("a", "b")
+        |    monad.defer(())
+        |  }
+        |  def later[F[_]](monad: MonadError[F], stream: InputStream): F[Unit] = monad.defer(stream.close())
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "eager-effect"),
+      List(
+        "read returns F but calls close when called, not when the F runs",
+        "tag returns F but calls header when called, not when the F runs"
+      ).sorted
+    )
+  }
+
   test("blocking work on shared pools, unbounded waits, orphan threads and hand-written joins") {
     val found = warnings(
       """import java.util.concurrent.CompletableFuture

@@ -8,6 +8,7 @@ import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.MethodicType
+import dotty.tools.dotc.core.Types.TypeBounds
 import net.kurobako.bonsai.effects.*
 import net.kurobako.bonsai.lifting.*
 import scala.collection.mutable
@@ -18,10 +19,11 @@ private object Effects {
 
 /** Reports side effects a method returning an effect performs when it is called rather than when the effect runs, so
   * running the effect again, or discarding it, neither repeats nor skips them. An effect is a value of an abstract type
-  * constructor, as in tagless final code, or of a known effect type; an opaque type is abstract only outside its scope.
-  * The effects of calls are those the analysis infers, from the same axioms; calls returning `Unit` that nothing
-  * describes as pure are side effects by definition, and methods of the unit that perform side effects pass them on to
-  * their callers.
+  * constructor, as in tagless final code, or of a known effect type; an opaque type is abstract only outside its scope,
+  * and a type constructor bounded by a collection, as in `T[X] <: Iterable[X]`, holds values rather than effects. The
+  * effects of calls are those the analysis infers, from the same axioms; calls returning `Unit` that nothing describes
+  * as pure are side effects by definition, and methods of the unit that perform side effects pass them on to their
+  * callers.
   */
 private class Effects(checks: Checks)(using Context) {
   // A side effect, described, or a call to a method of the unit that may perform some.
@@ -75,10 +77,15 @@ private class Effects(checks: Checks)(using Context) {
 
   private def effect(definition: tpd.DefDef): Option[String] = definition.tpt.tpe.dealias match {
     case AppliedType(constructor, _)
-        if constructor.typeSymbol.isAbstractOrParamType && !constructor.typeSymbol.is(Flags.Opaque) ||
-          Known(constructor.typeSymbol.fullName.toString) =>
+        if constructor.typeSymbol.isAbstractOrParamType && !constructor.typeSymbol.is(Flags.Opaque) &&
+          !container(constructor.typeSymbol) || Known(constructor.typeSymbol.fullName.toString) =>
       Some(constructor.typeSymbol.name.toString)
     case _ => None
+  }
+
+  private def container(symbol: Symbol): Boolean = symbol.info match {
+    case bounds: TypeBounds => Classes.derives(bounds.hi.finalResultType, "scala.collection.IterableOnce")
+    case _                  => false
   }
 
   /** The side effects and calls to methods of the unit that run when a definition is called: not those in nested
