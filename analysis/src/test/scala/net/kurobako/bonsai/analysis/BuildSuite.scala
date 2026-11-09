@@ -34,6 +34,11 @@ class BuildSuite extends FunSuite {
     assertEquals(read.map(_.root), Right(Some(root)))
   }
 
+  withRoot("a compiler option with an empty value is kept") { root =>
+    val manifest = write(root, "manifest.tsv", "option\tcore\t-deprecation\noption\tcore\t\nroot\t/x\n")
+    assertEquals(Manifest.read(manifest).map(_.options), Right(Map("core" -> Vector("-deprecation", ""))))
+  }
+
   withRoot("the manifest reads classpath and library lines, and names malformed lines with their position") {
     root =>
       val complete = write(

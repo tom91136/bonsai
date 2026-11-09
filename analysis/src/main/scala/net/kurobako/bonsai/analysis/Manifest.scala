@@ -22,7 +22,7 @@ object Manifest {
       .foldLeft[Either[String, Manifest]](Right(Manifest(Vector.empty, Map.empty, Set.empty))) {
         case (manifest, (line, index)) =>
           manifest.flatMap { current =>
-            line.split('\t').toList match {
+            line.split("\t", -1).toList match {
               case List("output", module, scope, location) =>
                 scopeOf(path, index, scope).map {
                   parsed => current.copy(outputs = current.outputs :+ Output(module, parsed, Path.of(location)))
