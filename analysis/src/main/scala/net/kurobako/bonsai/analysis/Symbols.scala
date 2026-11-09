@@ -234,6 +234,11 @@ private[analysis] class Symbols(
             (symbol :: Option.when(symbol.is(Flags.ModuleClass))(symbol.sourceModule).toList)
               .forall(part => !part.is(Flags.Private) && !part.privateWithin.exists) &&
             outer.forall(nodes.get(_).exists(_.exported))
+          val isGenerated = Outputs.isGenerated(generated, source) ||
+            symbol.annotations.exists(annotation =>
+              Collector.generatedAnnotations(annotation.symbol.fullName.toString)
+            ) ||
+            outer.exists(nodes.get(_).exists(_.generated))
           val entry =
             Node(
               name,
@@ -241,7 +246,7 @@ private[analysis] class Symbols(
               output.scope,
               source,
               line,
-              Outputs.isGenerated(generated, source),
+              isGenerated,
               exported,
               outer,
               suppressions(symbol)
