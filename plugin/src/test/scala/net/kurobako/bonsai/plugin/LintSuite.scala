@@ -324,6 +324,26 @@ class LintSuite extends FunSuite {
     assert(partial.exists(_.startsWith("head, last throw for missing")), partial)
   }
 
+  test("a partial function of an Either or Option does not cover its receiver, one in a later argument list does") {
+    val found = warnings(
+      """object Lints {
+        |  implicit class Recovering[A, B](private val either: Either[A, B]) {
+        |    def recoverWith(pf: PartialFunction[A, Either[A, B]]): Either[A, B] = either match {
+        |      case Left(error) if pf.isDefinedAt(error) => pf(error)
+        |      case _                                   => either
+        |    }
+        |  }
+        |  def attempt[A](body: => A)(handler: PartialFunction[Throwable, A]): A = try body catch handler
+        |  def value(xs: List[String]): Either[Throwable, String] = Right(xs.head).recoverWith { case _ => Right("b") }
+        |  def first(xs: List[String]): Option[String] = Some(xs.head).collect { case _ => "b" }
+        |  def later(xs: List[String]): String = attempt(xs.head)({ case _ => "b" })
+        |}""".stripMargin
+    )
+    val partial = lines(found, "partial-in-try")
+    assertEquals(partial.size, 1, found.mkString("\n"))
+    assert(partial.head.startsWith("head throws for missing"), partial)
+  }
+
   test("error handlers of cats that drop the error for a unit are reported") {
     val found = warnings(
       """package cats.effect {

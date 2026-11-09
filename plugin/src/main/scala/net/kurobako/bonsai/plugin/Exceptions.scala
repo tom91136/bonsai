@@ -101,10 +101,10 @@ private class Exceptions(
       val handler = Handler(Nil, tried = true)
       region(handler)(traverse(argument))
       finish(handler, application)
-    case application @ tpd.Apply(function, arguments) if arguments.exists(handling(_).isDefined) =>
+    case application @ tpd.Apply(function, arguments) if arguments.exists(handling(application, _).isDefined) =>
       swallowed(application)
-      val (lambda, rest) = arguments.partition(handling(_).isDefined)
-      val handler        = Handler(lambda.flatMap(handling(_)).flatten, tried = false)
+      val (lambda, rest) = arguments.partition(handling(application, _).isDefined)
+      val handler        = Handler(lambda.flatMap(handling(application, _)).flatten, tried = false)
       // The earlier argument lists hold what the handler protects, even when they take it by name.
       region(handler) {
         function match {
@@ -163,9 +163,13 @@ private class Exceptions(
     finally handlers.pop(): Unit
   }
 
+  // A value receiver is evaluated before the call, so a handler passed to the call does not cover it.
+  private def valueReceiver(application: tpd.Apply)(using Context): Boolean =
+    Calls.selected(application.fun).exists(select => Trees.optional(Calls.unconverted(select.qualifier).tpe.widen))
+
   // A handler argument: a function of a Throwable, written as cases.
-  private def handling(argument: tpd.Tree)(using Context): Option[List[tpd.CaseDef]] =
-    Calls.lambda(argument).filter(definition =>
+  private def handling(application: tpd.Apply, argument: tpd.Tree)(using Context): Option[List[tpd.CaseDef]] =
+    Option.unless(valueReceiver(application))(argument).flatMap(Calls.lambda(_)).filter(definition =>
       argument.tpe.widen.derivesFrom(PartialClass) ||
         definition.termParamss.flatten.headOption.exists(_.tpt.tpe.widen =:= defn.ThrowableType)
     ).flatMap(_.rhs match {
