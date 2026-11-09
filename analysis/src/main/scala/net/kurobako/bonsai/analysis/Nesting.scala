@@ -140,10 +140,12 @@ object Nesting {
   }
 
   private class Planner(model: Model, config: Config) {
-    private val declarations: Map[String, Declaration] = model.declarations.map(d => d.name -> d).toMap
-    private val names: Vector[String]                  = declarations.keys.toVector.sorted
-    private val units: Vector[String]                  = names.filter(declarations(_).unit)
-    private val members: Vector[String]                = names.filterNot(declarations(_).unit)
+    // an object and a type alias can share a name; the object is the one that holds members
+    private val declarations: Map[String, Declaration] =
+      model.declarations.sortBy(_.unit).map(d => d.name -> d).toMap
+    private val names: Vector[String]   = declarations.keys.toVector.sorted
+    private val units: Vector[String]   = names.filter(declarations(_).unit)
+    private val members: Vector[String] = names.filterNot(declarations(_).unit)
 
     private val children: Map[String, Vector[String]] = names.groupBy(outer(_).getOrElse(""))
 

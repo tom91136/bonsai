@@ -37,6 +37,19 @@ class NestingSuite extends AnalysisSuite {
     assertEquals(moves(after, if (moved.isEmpty) test else moved, config), Vector.empty[String])
   }
 
+  test("a type alias sharing its name with an object leaves the object's members planned") {
+    val found = moves(Seq(file(
+      "Holder",
+      """object Holder {
+        |  type Alias = Int
+        |  object Alias { val zero: Int = 0 }
+        |  def origin: Alias = Alias.zero
+        |}
+        |class User { def run: Int = Holder.origin + Holder.Alias.zero }"""
+    )))
+    assertEquals(found, Vector.empty)
+  }
+
   test("a constant only a nested class reads moves into that class") {
     steady(
       Seq(file(
