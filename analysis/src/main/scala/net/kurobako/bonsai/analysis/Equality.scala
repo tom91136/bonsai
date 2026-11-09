@@ -30,7 +30,9 @@ object Equality {
     val empty: Model = Model(Vector.empty, Vector.empty)
   }
 
-  case class Model(cases: Vector[Case], comparisons: Vector[Comparison])
+  case class Model(cases: Vector[Case], comparisons: Vector[Comparison]) {
+    def joined(other: Model): Model = Model(cases ++ other.cases, comparisons ++ other.comparisons)
+  }
 
   private case class Reach(comparison: Comparison, holder: Option[String])
 

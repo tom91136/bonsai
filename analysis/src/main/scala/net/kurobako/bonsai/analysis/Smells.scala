@@ -106,7 +106,29 @@ object Smells {
       defaults: Vector[Default],
       moduleUses: Vector[Modules.Use] = Vector.empty,
       spares: Vector[Spare] = Vector.empty
-  )
+  ) {
+
+    /** The model without what it records of the types `named`, which another declaration of the name stands for. */
+    def excluding(named: String => Boolean): Model = copy(
+      methods = methods.filterNot(found => named(found.node)),
+      usages = usages.filterNot(found => named(found.method.node)),
+      abstractions = abstractions.filterNot(found => named(found.node)),
+      instantiations = instantiations.filterNot(found => named(found.node)),
+      defaults = defaults.filterNot(found => named(found.node)),
+      spares = spares.filterNot(found => named(found.node))
+    )
+
+    def joined(other: Model): Model = Model(
+      methods ++ other.methods,
+      Maps.join(sites, other.sites)(_ ++ _),
+      usages ++ other.usages,
+      abstractions ++ other.abstractions,
+      instantiations ++ other.instantiations,
+      defaults ++ other.defaults,
+      moduleUses ++ other.moduleUses,
+      spares ++ other.spares
+    )
+  }
 
   private val MinimumCalls          = 2
   private val MinimumInverted       = 4

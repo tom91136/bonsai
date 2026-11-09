@@ -1066,6 +1066,21 @@ class SmellsSuite extends AnalysisSuite {
     assertNoFinding(found)(_.detail.startsWith("Box:"))
   }
 
+  test("calls in a platform twin's own sources do not fix the type parameters of the JVM modules' version of a type") {
+    val result = extract(
+      Seq(
+        "Main.scala"    -> "object Main { def main(args: Array[String]): Unit = println(Wrapper.size) }",
+        "Wrapper.scala" -> "object Wrapper { def size = 1 }"
+      ),
+      twins = Seq(Seq(
+        "Wrapper.scala"  -> "object Wrapper { def size = 1; def wrap[A](value: A): List[A] = List(value) }",
+        "Explorer.scala" -> "object Explorer { def go = (Wrapper.wrap(1), Wrapper.wrap(2)) }"
+      ))
+    )
+    val found = Smells.findings(result.smells, result.algebra.products, result.graph.nodes)
+    assertNoFinding(found)(_.rule == Finding.Rule.FixedTypeParameter)
+  }
+
   test("fixed type parameters of the definitions of one type are one finding that names them") {
     val found = findings(
       "Machines.scala" ->

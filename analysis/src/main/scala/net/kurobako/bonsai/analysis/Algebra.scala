@@ -133,7 +133,16 @@ object Algebra {
       preconditions: Map[String, Product],
       enumerations: Vector[Enumeration],
       expanded: Map[String, Vector[Site]]
-  )
+  ) {
+    def joined(other: Model): Model = Model(
+      products ++ other.products,
+      sums ++ other.sums,
+      Maps.join(sites, other.sites)(_ ++ _),
+      preconditions ++ other.preconditions,
+      enumerations ++ other.enumerations,
+      Maps.join(expanded, other.expanded)(_ ++ _)
+    )
+  }
 
   /** Frequent itemsets, as shared field groups among sum cases or parameter groups among methods. */
   object Itemsets {

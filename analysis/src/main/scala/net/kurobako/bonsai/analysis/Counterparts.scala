@@ -16,7 +16,9 @@ object Counterparts {
     val empty: Model = Model(Vector.empty, Vector.empty)
   }
 
-  case class Model(mirrors: Vector[Mirror], families: Vector[Family])
+  case class Model(mirrors: Vector[Mirror], families: Vector[Family]) {
+    def joined(other: Model): Model = Model(mirrors ++ other.mirrors, families ++ other.families)
+  }
 
   private val MinimumTypes  = 3
   private val MinimumMirror = 2

@@ -49,7 +49,7 @@ private class Placements(resolver: Symbols, lines: Lines)(using Context) extends
   private val atoms   = mutable.Stack[Option[String]](None)
   private val classes = mutable.Stack.empty[(Symbol, Option[String])]
 
-  private val referred = TypeReferences()
+  private val referred = Referencing()
 
   private def current: Option[String] = atoms.top
 
@@ -279,7 +279,7 @@ private class Placements(resolver: Symbols, lines: Lines)(using Context) extends
     Nesting.Model(declarations, edges.view.mapValues(_.toSet).toMap)
   }
 
-  private class TypeReferences(using Context) extends TypeTraverser {
+  private class Referencing(using Context) extends TypeTraverser {
     def traverse(tpe: Type): Unit = tpe match {
       case named: NamedType =>
         reference(named.symbol)

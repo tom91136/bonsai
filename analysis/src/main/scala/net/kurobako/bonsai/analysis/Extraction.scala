@@ -135,22 +135,28 @@ object Extraction {
     val shared = listed.collect {
       case (output, files) if !manifest.platforms(output.module) => files.map(output.path.relativize(_))
     }.flatten.toSet
-    val (copies, kept) = listed.flatMap((output, files) =>
-      files.collect { case file if file.toString.endsWith(".tasty") => output -> file }
-    ).partition((output, file) => manifest.platforms(output.module) && shared(output.path.relativize(file)))
-    val files        = kept.map(_._2)
-    val checked      = files.zip(parallel.map(files)(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess))
-    val tasty        = checked.collect { case (file, true) => file }
-    val unreadable   = checked.collect { case (file, false) => file }
-    val replacements = Twins.replacing(manifest, copies)
-    val skipped      =
+    val classes        = listed.flatMap((output, files) => files.filter(_.toString.endsWith(".tasty")).map(output -> _))
+    val (copies, kept) =
+      classes.partition((output, file) => manifest.platforms(output.module) && shared(output.path.relativize(file)))
+    val (own, jvm) = kept.partition((output, _) => manifest.platforms(output.module))
+    val files      = kept.map(_._2)
+    val checked    = files.zip(parallel.map(files)(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess))
+    val readable   = checked.collect { case (file, true) => file }.toSet
+    val tasty      = jvm.collect { case (_, file) if readable(file) => file }
+    val unreadable = checked.collect { case (file, false) => file }
+    val skipped    =
       unreadable.map(file => s"class file ${file.getFileName.toString.stripSuffix(".tasty")} could not be read")
     val roots           = manifest.outputs.flatMap(output => Outputs.entryPoints(output.path)).toSet
     val matchers        = Texts.matchers(generated) :+ manifest.generatedMatcher
     val reflectiveGlobs = reflective.map(Globs.qualifiedNames)
     val java            = JavaConversion.collected(manifest, matchers, parallel, reflectiveGlobs)
-    val moduleUses      = Modules.uses(manifest, java.nodes, java.reflections)
-    val javaCosts       = JavaCosts(java.costs, Complexity.Declared(bounded))
+    val replacements    = Twins.reading(
+      classes.filterNot((output, _) => manifest.platforms(output.module)),
+      copies ++ own.filter((_, file) => readable(file)),
+      shared
+    )
+    val moduleUses = Modules.uses(manifest, java.nodes, java.reflections)
+    val javaCosts  = JavaCosts(java.costs, Complexity.Declared(bounded))
     if (uncompiled.nonEmpty) Left(uncompiled)
     else if (tasty.isEmpty && (skipped ++ java.problems).nonEmpty) Left(skipped ++ java.problems)
     else if (tasty.isEmpty) {
@@ -218,24 +224,29 @@ object Extraction {
       // modules' first, and a class several platforms' copies of a library hold resolves to the first copy.
       val modules = (primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted
       val merged  = Classpath.evicted(manifest.classpathOf(modules))
-      val phase   = collector(
-        java.costs,
-        roots,
-        Some(graph => Reach.link(manifest, JavaConversion.merge(graph, java), world))
-      )
-      // The replaced copies resolve against their own twin first, and the rest of the build behind it.
+      val linking = Some((graph: Graph) => Reach.link(manifest, JavaConversion.merge(graph, java), world))
+      val phase   = collector(java.costs, roots, linking)
+      // A twin's classes resolve against its own and its peers' first, and the rest of the build behind them. The
+      // copies are read for what they reference only, and the classes of its own sources are analysed as the JVM
+      // modules' are.
       val behind   = primary.map(_.path) ++ merged
       val outputs  = manifest.outputs.groupMap(_.module)(_.path)
-      val absorbed = replacements.map { (module, files) =>
-        val twin  = collector(Vector.empty, Set.empty, None)
-        val own   = outputs.getOrElse(module, Vector.empty)
-        val found = reading(twin, files, own ++ manifest.classpathOf(Seq(module)) ++ behind)
-        phase.absorb(twin)
-        (twin.problems, found ++ twin.notes)
+      val jvm      = primary.map(_.module).toSet
+      val absorbed = replacements.map { twin =>
+        val ahead = (twin.module +: Twins.peers(manifest, jvm, twin.module)).flatMap(outputs.getOrElse(_, Vector.empty))
+        val classpath = ahead ++ manifest.classpathOf(Seq(twin.module)) ++ behind
+        val copies    = collector(Vector.empty, Set.empty, None)
+        val own       = collector(Vector.empty, Set.empty, linking)
+        val found     = reading(copies, twin.replaced, classpath) ++ reading(own, twin.own, classpath)
+        phase.absorb(copies)
+        phase.absorb(own)
+        (own, copies, copies.problems ++ own.problems, found ++ copies.notes ++ own.notes)
       }
+      val owned    = absorbed.map(_._1)
+      val readers  = phase +: absorbed.flatMap((own, copies, _, _) => Vector(own, copies))
       val errors   = reading(phase, tasty, merged)
-      val problems = skipped ++ java.problems ++ phase.problems ++ absorbed.flatMap(_._1)
-      val notes    = phase.notes ++ errors ++ absorbed.flatMap(_._2)
+      val problems = skipped ++ java.problems ++ phase.problems ++ absorbed.flatMap(_._3)
+      val notes    = phase.notes ++ errors ++ absorbed.flatMap(_._4)
       val graph    = JavaConversion.merge(phase.graph, java)
       // A platform twin replaces some sources with its own of the same name, so the types in them cannot move.
       val twinned = manifest.sources.filter(source => manifest.platforms(source.module)).groupMap(_.module)(_.path)
@@ -246,26 +257,51 @@ object Extraction {
               twinned.exists((paths, names) => !paths(source.path) && names(source.path.getFileName)) =>
           source.path
       }
-      val structures = phase.structures.copy(extents =
-        phase.structures.extents.filter((key, _) =>
-          graph.nodes.get(key).forall(node => !replaced.exists(_.endsWith(node.source)))
-        )
+      // The classes of each twin's own sources are analysed apart from the JVM modules', and their models join.
+      def joined[A](base: A, part: Collector => A, join: (A, A) => A): A =
+        owned.foldLeft(base)((all, twin) => join(all, part(twin)))
+      val whole      = joined(phase.structures, _.structures, _.joined(_))
+      val structures = whole.copy(extents =
+        whole.extents.filter((key, _) => graph.nodes.get(key).forall(node => !replaced.exists(_.endsWith(node.source))))
       )
       // The model of the Java code joins the model of the Scala code, so that the rules read both alike.
-      val algebra = phase.algebra.copy(
-        products = phase.algebra.products ++ java.products,
-        sums = phase.algebra.sums ++ java.sums,
-        sites = phase.algebra.sites ++ java.guarded,
-        preconditions = phase.algebra.preconditions ++ java.preconditions
+      val scala   = joined(phase.algebra, _.algebra, _.joined(_))
+      val algebra = scala.copy(
+        products = scala.products ++ java.products,
+        sums = scala.sums ++ java.sums,
+        sites = scala.sites ++ java.guarded,
+        preconditions = scala.preconditions ++ java.preconditions
       )
-      val smells = phase.smells.copy(
-        methods = phase.smells.methods ++ java.methods,
-        sites = phase.smells.sites ++ java.sites.map { case (name, sites) =>
-          name -> (phase.smells.sites.getOrElse(name, Vector.empty) ++ sites)
+      // A twin declares some of the types of the JVM modules again, and what its own sources record of them is theirs.
+      val declared                      = replacements.flatMap(_.declared).toSet
+      def stands(name: String): Boolean =
+        declared(name) || name.indices.exists(index => name(index) == '.' && declared(name.take(index)))
+      // A source that a twin holds in a form of its own keeps its declarations where they stand, as the twin's cannot move along.
+      val jvmPaths = manifest.sources.collect { case source if !manifest.platforms(source.module) => source.path }.toSet
+      val seams    = manifest.sources.collect {
+        case source if manifest.platforms(source.module) && !jvmPaths(source.path) => sourceSet(source.path.toString)
+      }.toSet & jvmPaths.map(path => sourceSet(path.toString))
+      def replacedAt(node: Node): Boolean = node.source.nonEmpty && seams(sourceSet(node.source))
+      val analysed                        = joined(phase.smells, _.smells.excluding(stands(_)), _.joined(_))
+      val smells                          = analysed.copy(
+        methods = analysed.methods ++ java.methods,
+        sites = analysed.sites ++ java.sites.map { case (name, sites) =>
+          name -> (analysed.sites.getOrElse(name, Vector.empty) ++ sites)
         },
-        usages = phase.smells.usages ++ java.usages,
+        usages = analysed.usages ++ java.usages,
         moduleUses = moduleUses
       )
+      // A run of part of the build misses the uses and assignments in the rest of it, which the others record by name.
+      def observed(part: Collector) = {
+        val others = readers.filterNot(_ eq part)
+        part.memberships.observed(
+          others.foldLeft(Map.empty[String, Set[Use]])((all, other) => Maps.join(all, other.usages)(_ ++ _)),
+          others.flatMap(_.assignments).toSet,
+          phase.referrers
+        )
+      }
+      val members = owned.foldLeft(observed(phase))((all, twin) => all.joined(observed(twin).excluding(stands(_))))
+        .pinned(name => graph.nodes.get(name).exists(replacedAt(_)))
       val isHot = Globs.heat(hot)
       if (graph.nodes.isEmpty && problems.nonEmpty) Left(problems ++ notes)
       else {
@@ -284,28 +320,36 @@ object Extraction {
           graph,
           algebra,
           smells,
-          phase.designs,
+          joined(phase.designs, _.designs, _.joined(_)),
           structures,
-          phase.equality,
-          phase.memberships.copy(calls = java.callers),
-          phase.duplicates ++ java.clones,
+          joined(phase.equality, _.equality, _.joined(_)),
+          members.copy(calls = java.callers),
+          owned.foldLeft(phase.duplicates)(_ ++ _.duplicates) ++ java.clones,
           bytecode(),
-          phase.complexities,
-          phase.unusedBounds,
-          phase.pipelines,
+          owned.foldLeft(phase.complexities)(_ ++ _.complexities),
+          owned.foldLeft(phase.unusedBounds)(_ ++ _.unusedBounds),
+          owned.foldLeft(phase.pipelines)(_ ++ _.pipelines),
           resolved.filterNot(_.site.settled),
           Megamorphic.shared(resolved, graph.nodes, linked.graph, world),
           Option.when(hot.nonEmpty)(graph.nodes.keySet.filter(isHot)),
-          phase.purity,
+          joined(phase.purity, _.purity, _.joined(_)),
           java.lints,
           problems ++ unread,
-          phase.nesting(graph.rooted),
+          joined(phase.nesting(graph.rooted), _.nesting(graph.rooted), _.joined(_)).pinned(replacedAt(_)),
           reach,
           notes,
-          phase.dictionaries
+          owned.foldLeft(phase.dictionaries)(_ ++ _.dictionaries)
         ))
       }
     }
+  }
+
+  // The path of a source below its source root, or its file name where it stands in none, which a platform's sources
+  // share with the JVM's when they stand for them.
+  private def sourceSet(path: String): String = {
+    val parts = path.split('/')
+    val root  = parts.indexWhere(part => part == "scala" || part.startsWith("scala-"))
+    parts.drop(if (root < 0) parts.length - 1 else root + 1).mkString("/")
   }
 
   // TASTy names sources relative to the build root, which the reader resolves against the working directory.

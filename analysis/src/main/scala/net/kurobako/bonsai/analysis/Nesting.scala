@@ -54,7 +54,15 @@ object Nesting {
     val empty: Model = Model(Vector.empty, Map.empty)
   }
 
-  case class Model(declarations: Vector[Declaration], edges: Map[String, Set[String]])
+  case class Model(declarations: Vector[Declaration], edges: Map[String, Set[String]]) {
+
+    /** The model with the declarations of the sources `seam` holds kept where they stand. */
+    def pinned(seam: Node => Boolean): Model =
+      copy(declarations = declarations.map(found => if (seam(found.node)) found.copy(movable = false) else found))
+
+    def joined(other: Model): Model =
+      Model(declarations ++ other.declarations, Maps.join(edges, other.edges)(_ ++ _))
+  }
 
   case class Move(declaration: Declaration, to: Place) {
     def from: Place = declaration.place

@@ -37,7 +37,9 @@ object Designs {
     val empty: Model = Model(Vector.empty, Vector.empty)
   }
 
-  case class Model(methods: Vector[Method], aliases: Vector[Alias])
+  case class Model(methods: Vector[Method], aliases: Vector[Alias]) {
+    def joined(other: Model): Model = Model(methods ++ other.methods, aliases ++ other.aliases)
+  }
 
   // Fewer methods are a coincidence of naming rather than a design.
   private val MinimumFamily = 3

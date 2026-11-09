@@ -30,12 +30,12 @@ private[analysis] object Collector {
 
   /** What a twin's collector leaves for the collector it joins. */
   object Absorbed {
-    val empty: Absorbed = Absorbed(Symbols.Recorded.empty, Map.empty)
+    val empty: Absorbed = Absorbed(Symbols.Recorded.empty, Map.empty, Set.empty)
   }
 
-  case class Absorbed(symbols: Symbols.Recorded, usage: Map[String, Set[Use]]) {
+  case class Absorbed(symbols: Symbols.Recorded, nodes: Map[String, Node], roots: Set[Root]) {
     @targetName("merge")
-    def ++(other: Absorbed): Absorbed = Absorbed(symbols ++ other.symbols, Symbols.join(usage, other.usage)(_ ++ _))
+    def ++(other: Absorbed): Absorbed = Absorbed(symbols ++ other.symbols, other.nodes ++ nodes, roots ++ other.roots)
   }
 
   // A hierarchy of one case is a single implementation, which another rule reports.
@@ -97,6 +97,7 @@ private[analysis] class Collector(
   private val users          = mutable.Map.empty[Symbol, mutable.Set[Use]]
   private val usage          = mutable.Map.empty[String, Set[Use]]
   private val assigned       = mutable.Set.empty[Symbol]
+  private val assignedNames  = mutable.Set.empty[String]
   private val memberList     = mutable.ArrayBuffer.empty[Members.Member]
   private val givens         = mutable.Map.empty[Symbol, (String, Node)]
   private val named          = mutable.Set.empty[Symbol]
@@ -167,6 +168,7 @@ private[analysis] class Collector(
     )
     callSites.align(callees)
     usage ++= users.toVector.groupMapReduce((symbol, _) => memberName(symbol))((_, nodes) => nodes.toSet)(_ ++ _)
+    assignedNames ++= assigned.map(memberName(_))
     memberList ++= members.collect {
       case (symbol, definition) if !(definition.field && derivations.derived(symbol.owner)) =>
         val bases = (symbol.allOverriddenSymbols ++ dispatching.overridden(symbol)).toVector
@@ -187,7 +189,8 @@ private[analysis] class Collector(
           unlisted(symbol),
           definition.alias,
           definition.key,
-          definition.line
+          definition.line,
+          bases.map(memberName(_))
         )
     }
     val overridden = givens.keySet.flatMap(_.allOverriddenSymbols)
@@ -202,7 +205,6 @@ private[analysis] class Collector(
       )
     )
     clones ++= fragments.groups()
-    absorbUsers(twinned)
     dispatching.resolve()
     dictionaryList ++= dictionary.parameters()
     linked = link.map(_(graph))
@@ -237,21 +239,20 @@ private[analysis] class Collector(
     units
   }
 
-  /** Adds what a twin's copies of replaced classes reference, which the copies of the JVM modules the node records
-    * stand in for: the edges, the users of members and of nested types. A twin is read before this collector, which
-    * joins it as it finishes.
+  /** Adds what a twin's classes reference, which the copies of the JVM modules the node records stand in for: the edges
+    * and the nodes. A twin is read before this collector, which joins it as it finishes.
     */
   def absorb(other: Collector): Unit =
-    twinned = twinned ++ Collector.Absorbed(other.symbols.recorded, other.usage.toMap)
+    twinned = twinned ++ Collector.Absorbed(other.symbols.recorded, other.graph.nodes, other.graph.roots)
 
-  private def absorbUsers(other: Collector.Absorbed): Unit = {
-    memberList.mapInPlace(member =>
-      member.copy(users = member.users ++ other.usage.getOrElse(member.name, Set.empty))
-    )
-    nestedList.mapInPlace(inner =>
-      inner.copy(users = inner.users ++ other.symbols.incoming.getOrElse(inner.node, Vector.empty))
-    )
-  }
+  /** The nodes with an edge to each node, with those of the twins this collector absorbed. */
+  def referrers: Map[String, Vector[String]] = symbols.incoming
+
+  /** The uses of members by name. */
+  def usages: Map[String, Set[Use]] = usage.toMap
+
+  /** The names of the variables assigned after their initialisation. */
+  def assignments: Set[String] = assignedNames.toSet
 
   def problem(message: String): Unit = failures += message
 
@@ -269,7 +270,10 @@ private[analysis] class Collector(
 
   def notes: Vector[String] = remarks.toVector
 
-  def graph: Graph = symbols.graph(entryPoints)
+  def graph: Graph = {
+    val own = symbols.graph(entryPoints)
+    own.copy(nodes = twinned.nodes ++ own.nodes, roots = own.roots ++ twinned.roots)
+  }
 
   /** What linking the build to its class files gave, when the collector linked them. */
   def calls: Option[Reach.Calls] = linked

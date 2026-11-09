@@ -155,6 +155,17 @@ object Purity {
       returns: Int = 0
   ) {
     def verdicts: Map[String, Verdict] = methods.view.mapValues(_.verdict).toMap
+
+    def joined(other: Model): Model = Model(
+      discards ++ other.discards,
+      transforms ++ other.transforms,
+      writes ++ other.writes,
+      methods ++ other.methods,
+      library + other.library,
+      ordered ++ other.ordered,
+      invariant ++ other.invariant,
+      returns + other.returns
+    )
   }
 
   /** How many authored methods are pure, impure and unknown, and what most often leaves a method unknown. */

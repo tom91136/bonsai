@@ -68,7 +68,20 @@ object Structures {
       counterparts: Counterparts.Model,
       bypasses: Vector[Wrappers.Bypass],
       signatures: Vector[Signature]
-  )
+  ) {
+    def joined(other: Model): Model = Model(
+      stutters ++ other.stutters,
+      mentions ++ other.mentions,
+      applied ++ other.applied,
+      concretes ++ other.concretes,
+      members ++ other.members,
+      dispatches ++ other.dispatches,
+      extents ++ other.extents,
+      counterparts.joined(other.counterparts),
+      bypasses ++ other.bypasses,
+      signatures ++ other.signatures
+    )
+  }
 
   private val MinimumFamily = 3
   private val MinimumSide   = 3

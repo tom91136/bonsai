@@ -32,16 +32,11 @@ private[analysis] object Symbols {
   ) {
     @targetName("merge")
     def ++(other: Recorded): Recorded = Recorded(
-      join(edges, other.edges)(_ ++ _),
-      join(bodies, other.bodies)(_ ++ _),
-      join(incoming, other.incoming)(_ ++ _)
+      Maps.join(edges, other.edges)(_ ++ _),
+      Maps.join(bodies, other.bodies)(_ ++ _),
+      Maps.join(incoming, other.incoming)(_ ++ _)
     )
   }
-
-  def join[K, V](left: Map[K, V], right: Map[K, V])(combine: (V, V) => V): Map[K, V] =
-    right.foldLeft(left)((joined, entry) =>
-      joined.updated(entry._1, joined.get(entry._1).fold(entry._2)(combine(_, entry._2)))
-    )
 
   // A Scala.js facade describes a JavaScript API, which Scala does not implement; the library may be off the classpath.
   def facade(cls: Symbol)(using Context): Boolean = {

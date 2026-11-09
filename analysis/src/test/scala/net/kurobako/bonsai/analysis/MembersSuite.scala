@@ -788,6 +788,61 @@ class MembersSuite extends AnalysisSuite {
     )
   }
 
+  test("a platform twin's own types are read against the twin's replacements of the shared ones") {
+    val result = extract(
+      Seq(
+        entry("println(Chunk.size)"),
+        "Chunk.scala"         -> "object Chunk extends ChunkPlatform { def size = 1 }",
+        "ChunkPlatform.scala" -> "trait ChunkPlatform"
+      ),
+      twins = Seq(Seq(
+        "ChunkPlatform.scala" -> "trait ChunkPlatform { def buffer: Int = 1 }",
+        "Explorer.scala"      -> "object Explorer { def main(args: Array[String]): Unit = println(Bridge.convert) }",
+        "Bridge.scala"        -> "object Bridge { def convert = Chunk.buffer + Mirror.width; def spare = 2 }",
+        "Mirror.scala"        -> "object Mirror { def width = 3 }"
+      ))
+    )
+    val found =
+      (Liveness.findings(result.graph, result.reach) ++
+        Members.findings(result.members, result.graph.nodes, result.reach))
+        .filterNot(_.rule == Finding.Rule.MisplacedMember)
+    assertEquals(
+      found.map(finding => finding.rule.id -> finding.detail.takeWhile(_ != ' ')),
+      Vector("unused-member" -> "Bridge.spare")
+    )
+  }
+
+  test("members of the JVM modules used only from a platform twin's own sources or replacements are used") {
+    val result = extract(
+      Seq(
+        entry("println(Platform.name)"),
+        "Platform.scala" -> "object Platform { def name = 1 }",
+        "Model.scala"    -> "object Model { def viaOwn = 1; def viaReplacement = 2; def nowhere = 3 }"
+      ),
+      twins = Seq(Seq(
+        "Platform.scala" -> "object Platform { def name = Model.viaReplacement }",
+        "Explorer.scala" -> "object Explorer { def main(args: Array[String]): Unit = println(Model.viaOwn) }"
+      ))
+    )
+    val found = Members.findings(result.members, result.graph.nodes, result.reach)
+      .filterNot(_.rule == Finding.Rule.MisplacedMember)
+    assertEquals(found.map(_.detail), Vector("Model.nowhere is never referenced"))
+  }
+
+  test("members of a source a platform twin replaces stay where they stand") {
+    val sources = Seq(
+      entry("println(Worker().run)"),
+      "Tools.scala"  -> "object Tools { def helper: Int = 1 }",
+      "Worker.scala" -> "class Worker { def run: Int = Tools.helper }"
+    )
+    def rules(twins: Seq[Seq[(String, String)]]) = {
+      val result = extract(sources, twins = twins)
+      Members.findings(result.members, result.graph.nodes, result.reach).map(_.rule)
+    }
+    assertEquals(rules(Nil), Vector(Finding.Rule.MisplacedMember))
+    assertEquals(rules(Seq(Seq("Tools.scala" -> "object Tools { def helper: Int = 2 }"))), Vector.empty)
+  }
+
   test("dynamic dispatch reaches implementations, and an unused declaration is reported once") {
     val found = findings(Seq(
       entry("val shape: Figure = Square(); println(shape.area)"),

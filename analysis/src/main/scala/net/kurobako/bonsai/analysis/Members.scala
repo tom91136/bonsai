@@ -10,7 +10,8 @@ object Members {
     * when it is a `var` nothing assigns after initialisation; `detachable` when it is a member of an object that names
     * nothing else of the object; `field` when it is a parameter of a case class; `unlisted` when it is of the kind a
     * collection of its siblings registers and no such collection lists it; `alias` when it is a type alias, `key` is
-    * the key `Keys` gives the method that stands for it, and `line` is where it is declared, or 0 when unknown.
+    * the key `Keys` gives the method that stands for it, and `line` is where it is declared, or 0 when unknown; `bases`
+    * are the members it overrides.
     */
   case class Member(
       name: String,
@@ -29,7 +30,8 @@ object Members {
       unlisted: Boolean = false,
       alias: Boolean = false,
       key: Option[String] = None,
-      line: Int = 0
+      line: Int = 0,
+      bases: Vector[String] = Vector.empty
   ) {
     def short: String = Finding.short(name)
   }
@@ -59,7 +61,44 @@ object Members {
       givens: Vector[Given],
       nested: Vector[Nested],
       calls: Map[String, Set[Use]] = Map.empty
-  )
+  ) {
+
+    /** The model without the members of the types `named`, which another declaration of the name stands for. */
+    def excluding(named: String => Boolean): Model = copy(
+      members = members.filterNot(found => named(found.node)),
+      givens = givens.filterNot(found => named(found.node)),
+      nested = nested.filterNot(found => named(found.node))
+    )
+
+    /** The model with the members of the types `named` kept where they stand. */
+    def pinned(named: String => Boolean): Model =
+      copy(members = members.map(found => if (named(found.node)) found.copy(detachable = false) else found))
+
+    def joined(other: Model): Model = Model(
+      members ++ other.members,
+      givens ++ other.givens,
+      nested ++ other.nested,
+      Maps.join(calls, other.calls)(_ ++ _)
+    )
+
+    /** The model with the uses and assignments of the whole build, which a run of part of it cannot see, and the nodes
+      * that reference each node.
+      */
+    def observed(
+        usage: Map[String, Set[Use]],
+        assigned: Set[String],
+        incoming: Map[String, Vector[String]]
+    ): Model = copy(
+      members = members.map(member =>
+        member.copy(
+          users = member.users ++ usage.getOrElse(member.name, Set.empty),
+          inherited = member.inherited || member.bases.exists(base => usage.get(base).exists(_.nonEmpty)),
+          constant = member.constant && !assigned(member.name)
+        )
+      ),
+      nested = nested.map(inner => inner.copy(users = inner.users ++ incoming.getOrElse(inner.node, Vector.empty)))
+    )
+  }
 
   /** Members of live nodes; members of unreachable types are covered by the type-level liveness findings. A member is
     * used when a use that `reach` runs references it. Generated members are where their generator puts them, whatever

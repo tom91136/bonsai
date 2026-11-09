@@ -94,6 +94,25 @@ class NestingSuite extends AnalysisSuite {
     )
   }
 
+  test("declarations of a source a platform twin replaces with its own stay where they stand") {
+    val source = file(
+      "Metadata",
+      """object CodeObjectMetadata {
+        |  private val MetadataNoteType = 32
+        |  private val MaximumDepth = 64
+        |  def read(bytes: Array[Byte]): Int = MetadataNoteType + new Reader(bytes).skip()
+        |  private class Reader(bytes: Array[Byte]) {
+        |    def skip(): Int = bytes.length + MaximumDepth
+        |  }
+        |}"""
+    )
+    def planned(twins: Seq[Seq[(String, String)]]) =
+      Nesting.plan(extract(Seq(source), libraries = Set("m"), twins = twins).nesting, Nesting.Config()).reported
+        .map(describe(_))
+    assertEquals(planned(Nil), Vector("CodeObjectMetadata.MaximumDepth -> CodeObjectMetadata.Reader"))
+    assertEquals(planned(Seq(Seq(source))), Vector.empty[String])
+  }
+
   test("a nested class that needs no instance of its class moves to the companion") {
     steady(
       Seq(file(
