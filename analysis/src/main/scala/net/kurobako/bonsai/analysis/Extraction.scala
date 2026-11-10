@@ -182,14 +182,9 @@ object Extraction {
     val matchers        = Texts.matchers(generated) :+ manifest.generatedMatcher
     val reflectiveGlobs = reflective.map(Globs.qualifiedNames)
     val java            = JavaConversion.collected(manifest, matchers, parallel, reflectiveGlobs)
-    val replacements    = Twins.reading(
-      classes.filterNot((output, _) => manifest.platforms(output.module) || separate(output)),
-      copies ++ own.filter((_, file) => readable(file)),
-      shared
-    )
-    val moduleUses = Modules.uses(manifest, java.nodes, java.reflections)
-    val javaCosts  = JavaCosts(java.costs, Complexity.Declared(bounded))
-    val clashes    = division.left.getOrElse(Vector.empty)
+    val moduleUses      = Modules.uses(manifest, java.nodes, java.reflections)
+    val javaCosts       = JavaCosts(java.costs, Complexity.Declared(bounded))
+    val clashes         = division.left.getOrElse(Vector.empty)
     if (uncompiled.nonEmpty) Left(uncompiled)
     else if (clashes.nonEmpty) Left(clashes)
     else if (tasty.isEmpty && (skipped ++ java.problems).nonEmpty) Left(skipped ++ java.problems)
@@ -264,59 +259,66 @@ object Extraction {
       ).allErrors.map(_.message).distinct
       // The compiler resolves a class once per run, so the run reads the classpaths of the modules in turn, the JVM
       // modules' first, and a class several platforms' copies of a library hold resolves to the first copy.
-      val held         = manifest.outputs.filterNot(separate).map(_.module).toSet
-      val apartModules = separate.map(_.module)
-      val modules      = ((primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted).filter(
-        module => held(module) || !apartModules(module)
-      )
-      val merged     = Classpath.evicted(manifest.classpathOf(modules))
+      val outputModules = manifest.outputs.map(_.module).toSet
+      val ordered       = (primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted
+      def behindOf(run: Set[Output], unbuilt: Set[String]) = {
+        val members = run.map(_.module) ++ unbuilt
+        primary.filter(run).map(_.path) ++ Classpath.evicted(manifest.classpathOf(ordered.filter(members)))
+      }
       val linking    = Some((graph: Graph) => Reach.link(manifest, JavaConversion.merge(graph, java), world))
       val everything = manifest.outputs.toSet
       val phase      = collector(java.costs, roots, linking, separate, apart.nonEmpty)
-      // A twin's classes resolve against its own and its peers' first, and the rest of the build behind them. The
+      val jvmModules = primary.map(_.module).toSet
+      // A twin's classes resolve against its own and its peers' first, and the rest of its run behind them. The
       // copies are read for what they reference only, and the classes of its own sources are analysed as the JVM
       // modules' are.
-      val behind     = primary.filterNot(separate).map(_.path) ++ merged
-      val outputs    = manifest.outputs.groupMap(_.module)(_.path)
-      val jvmModules = primary.map(_.module).toSet
-      val twinRuns   = replacements.map { twin =>
-        val ahead = (twin.module +: Twins.peers(manifest, jvmModules, twin.module)).flatMap(outputs.getOrElse(
-          _,
-          Vector.empty
-        ))
-        twin -> (ahead ++ manifest.classpathOf(Seq(twin.module)) ++ behind)
+      def twinning(run: Set[Output], target: Collector, behind: Vector[Path]): Vector[Twinned] = {
+        val outputs = manifest.outputs.filter(run).groupMap(_.module)(_.path)
+        Twins.reading(
+          classes.filter((output, _) => !manifest.platforms(output.module) && run(output)),
+          (copies ++ own.filter((_, file) => readable(file))).filter((output, _) => run(output)),
+          shared
+        ).map { twin =>
+          val ahead = (twin.module +: Twins.peers(manifest, jvmModules, twin.module)).flatMap(outputs.getOrElse(
+            _,
+            Vector.empty
+          ))
+          val classpath = ahead ++ manifest.classpathOf(Seq(twin.module)) ++ behind
+          val copies    = collector(Vector.empty, Set.empty, None)
+          val own       = collector(Vector.empty, Set.empty, linking)
+          val found     = reading(copies, twin.replaced, classpath) ++ reading(own, twin.own, classpath)
+          target.absorb(copies)
+          target.absorb(own)
+          Twinned(twin, own, copies, copies.problems ++ own.problems, found.toVector ++ copies.notes ++ own.notes)
+        }
       }
-      val absorbed = twinRuns.map { (twin, classpath) =>
-        val copies = collector(Vector.empty, Set.empty, None)
-        val own    = collector(Vector.empty, Set.empty, linking)
-        val found  = reading(copies, twin.replaced, classpath) ++ reading(own, twin.own, classpath)
-        phase.absorb(copies)
-        phase.absorb(own)
-        (own, copies, copies.problems ++ own.problems, found ++ copies.notes ++ own.notes)
+      val leading    = manifest.outputs.filterNot(separate).toSet
+      val behind     = behindOf(leading, manifest.classpath.keySet.diff(outputModules))
+      val phaseTwins = twinning(leading, phase, behind)
+      val groupRuns  = apart.map { group =>
+        val own    = collector(Vector.empty, Set.empty, linking, everything -- group, deferred = true)
+        val inside = behindOf(group, Set.empty)
+        val twins  = twinning(group, own, inside)
+        val files  = jvm.collect { case (output, file) if group(output) && readable(file) => file }
+        val found  = reading(own, files, inside)
+        (own, twins, found)
       }
-      val groupRuns = apart.map { group =>
-        val members = group.map(_.module).toVector.sorted
-        val files   = jvm.collect { case (output, file) if group(output) && readable(file) => file }
-        val own     = collector(Vector.empty, Set.empty, linking, everything -- group, deferred = true)
-        val found   = reading(
-          own,
-          files,
-          group.toVector.map(_.path) ++ Classpath.evicted(manifest.classpathOf(members))
-        )
-        (own, found)
-      }
-      val groups                 = groupRuns.map(_._1)
-      val owned                  = absorbed.map(_._1) ++ groups
-      val readers                = phase +: (absorbed.flatMap((own, copies, _, _) => Vector(own, copies)) ++ groups)
+      val groups     = groupRuns.map(_._1)
+      val groupTwins = groupRuns.flatMap(_._2)
+      val twinRuns   = phaseTwins ++ groupTwins
+      val owned      = phaseTwins.map(twin => Owned(twin.own, twin = true)) ++ groups.map(Owned(_, twin = false)) ++
+        groupTwins.map(twin => Owned(twin.own, twin = true))
+      val readers                = phase +: (twinRuns.flatMap(twin => Vector(twin.own, twin.copies)) ++ groups)
       val errors                 = reading(phase, together, behind)
       def beside(run: Collector) = (phase +: groups).filterNot(_ eq run).foldLeft(Collector.Evidence.empty)(_ ++
         _.evidence)
       groups.foreach(run => run.conclude(beside(run)))
       groups.foreach(phase.absorb(_))
       phase.conclude(beside(phase))
-      val problems = skipped ++ java.problems ++ phase.problems ++ absorbed.flatMap(_._3) ++ groups.flatMap(_.problems)
-      val notes    = phase.notes ++ errors ++ absorbed.flatMap(_._4) ++
-        groupRuns.flatMap((own, found) => found ++ own.notes)
+      val problems = skipped ++ java.problems ++ phase.problems ++ twinRuns.flatMap(_.problems) ++
+        groups.flatMap(_.problems)
+      val notes = phase.notes ++ errors ++ twinRuns.flatMap(_.notes) ++
+        groupRuns.flatMap((own, _, found) => found ++ own.notes)
       val graph = JavaConversion.merge(phase.graph, java)
       // A platform twin replaces some sources with its own of the same name, so the types in them cannot move.
       val twinned = manifest.sources.filter(source => manifest.platforms(source.module)).groupMap(_.module)(_.path)
@@ -328,8 +330,10 @@ object Extraction {
           source.path
       }
       // The classes of each twin's own sources are analysed apart from the JVM modules', and their models join.
-      def joined[A](base: A, part: Collector => A, join: (A, A) => A): A =
-        owned.foldLeft(base)((all, twin) => join(all, part(twin)))
+      def joined[A](base: A, part: Collector => A, join: (A, A) => A, standing: A => A = identity[A](_)): A =
+        owned.foldLeft(base)((all, run) =>
+          join(all, if (run.twin) standing(part(run.collector)) else part(run.collector))
+        )
       val whole      = joined(phase.structures, _.structures, _.joined(_))
       val structures = whole.copy(extents =
         whole.extents.filter((key, _) => graph.nodes.get(key).forall(node => !replaced.exists(_.endsWith(node.source))))
@@ -343,7 +347,7 @@ object Extraction {
         preconditions = scala.preconditions ++ java.preconditions
       )
       // A twin declares some of the types of the JVM modules again, and what its own sources record of them is theirs.
-      val declared                      = replacements.flatMap(_.declared).toSet
+      val declared                      = twinRuns.flatMap(_.reading.declared).toSet
       def stands(name: String): Boolean =
         declared(name) || name.indices.exists(index => name(index) == '.' && declared(name.take(index)))
       // A source that a twin holds in a form of its own keeps its declarations where they stand, as the twin's cannot move along.
@@ -352,7 +356,7 @@ object Extraction {
         case source if manifest.platforms(source.module) && !jvmPaths(source.path) => sourceSet(source.path.toString)
       }.toSet & jvmPaths.map(path => sourceSet(path.toString))
       def replacedAt(node: Node): Boolean = node.source.nonEmpty && seams(sourceSet(node.source))
-      val analysed                        = joined(phase.smells, _.smells.excluding(stands(_)), _.joined(_))
+      val analysed                        = joined(phase.smells, _.smells, _.joined(_), _.excluding(stands(_)))
       val smells                          = analysed.copy(
         methods = analysed.methods ++ java.methods,
         instantiations = if (groups.isEmpty) analysed.instantiations else Smells.merged(analysed.instantiations),
@@ -371,7 +375,9 @@ object Extraction {
           phase.referrers
         )
       }
-      val members = owned.foldLeft(observed(phase))((all, twin) => all.joined(observed(twin).excluding(stands(_))))
+      val members = owned.foldLeft(observed(phase))((all, run) =>
+        all.joined(if (run.twin) observed(run.collector).excluding(stands(_)) else observed(run.collector))
+      )
         .pinned(name => graph.nodes.get(name).exists(replacedAt(_)))
       val isHot     = Globs.heat(hot)
       val unmatched = {
@@ -401,13 +407,13 @@ object Extraction {
           structures,
           joined(phase.equality, _.equality, _.joined(_)),
           members.copy(calls = java.callers),
-          owned.foldLeft(phase.duplicates)(_ ++ _.duplicates) ++
+          owned.foldLeft(phase.duplicates)(_ ++ _.collector.duplicates) ++
             Clones.groups((phase +: groups).flatMap(_.candidates)) ++
             java.clones,
           bytecode(),
-          owned.foldLeft(phase.complexities)(_ ++ _.complexities),
-          absorbed.map(_._1).foldLeft(unmatched)(_ ++ _.unusedBounds),
-          owned.foldLeft(phase.pipelines)(_ ++ _.pipelines),
+          owned.foldLeft(phase.complexities)(_ ++ _.collector.complexities),
+          twinRuns.map(_.own).foldLeft(unmatched)(_ ++ _.unusedBounds),
+          owned.foldLeft(phase.pipelines)(_ ++ _.collector.pipelines),
           resolved.filterNot(_.site.settled),
           Megamorphic.shared(resolved, graph.nodes, linked.graph, world),
           Option.when(hot.nonEmpty)(graph.nodes.keySet.filter(isHot)),
@@ -417,7 +423,7 @@ object Extraction {
           joined(phase.nesting(graph.rooted), _.nesting(graph.rooted), _.joined(_)).pinned(replacedAt(_)),
           reach,
           notes,
-          owned.foldLeft(phase.dictionaries)(_ ++ _.dictionaries)
+          owned.foldLeft(phase.dictionaries)(_ ++ _.collector.dictionaries)
         ))
       }
     }
@@ -438,6 +444,16 @@ object Extraction {
       base.relativize(file).toString.replace(File.separatorChar, '/') -> file
     )
   }
+
+  private case class Owned(collector: Collector, twin: Boolean)
+
+  private case class Twinned(
+      reading: Twins.Reading,
+      own: Collector,
+      copies: Collector,
+      problems: Vector[String],
+      notes: Vector[String]
+  )
 
   private class Reader(phase: Collector, tastyPaths: Vector[(String, Path)]) extends Driver {
     override protected def newCompiler(using Context): Compiler = Reading(phase, tastyPaths)
