@@ -157,7 +157,9 @@ object Extraction {
     )
     val moduleUses = Modules.uses(manifest, java.nodes, java.reflections)
     val javaCosts  = JavaCosts(java.costs, Complexity.Declared(bounded))
+    val clashes    = Clashes.of(listed)
     if (uncompiled.nonEmpty) Left(uncompiled)
+    else if (clashes.nonEmpty) Left(clashes)
     else if (tasty.isEmpty && (skipped ++ java.problems).nonEmpty) Left(skipped ++ java.problems)
     else if (tasty.isEmpty) {
       // A build of Java code alone has no TASTy to read, so the model the javac plugin collected is all of it.

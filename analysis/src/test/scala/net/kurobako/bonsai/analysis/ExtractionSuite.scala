@@ -115,6 +115,62 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
+  test("an object in one module and a package of its name in an unrelated module fail naming both") {
+    Scratch.using("bonsai-") { directory =>
+      val objects =
+        compile(directory.resolve("a"), Seq("B.scala" -> "package a\nobject b { def one: Int = 1 }"), Vector.empty)
+      val packaged =
+        compile(directory.resolve("b"), Seq("C.scala" -> "package a.b\nclass C { def two: Int = 2 }"), Vector.empty)
+      val manifest = Manifest(
+        Vector(Output("objects", Output.Scope.Main, objects), Output("packaged", Output.Scope.Main, packaged)),
+        Map("objects" -> classpath, "packaged" -> classpath),
+        Set.empty,
+        jdk = targetJdk
+      )
+      val errors = Extraction.read(manifest).fold(identity, result => fail(s"read: ${result.notes}"))
+      assertEquals(errors.size, 1)
+      assert(errors.head.startsWith("a.b is a class in module objects and a package in module packaged"), errors.head)
+    }
+  }
+
+  test("top-level definitions of a file named as a package read beside that package") {
+    Scratch.using("bonsai-") { directory =>
+      val first =
+        compile(directory.resolve("a"), Seq("b.scala" -> "package a\ndef one: Int = 1"), Vector.empty)
+      val second =
+        compile(directory.resolve("b"), Seq("C.scala" -> "package a.b\nclass C { def two: Int = 2 }"), Vector.empty)
+      val manifest = Manifest(
+        Vector(Output("first", Output.Scope.Main, first), Output("second", Output.Scope.Main, second)),
+        Map("first" -> classpath, "second" -> classpath),
+        Set.empty,
+        jdk = targetJdk
+      )
+      val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      assertEquals(result.problems, Vector.empty)
+      assertEquals(result.notes, Vector.empty)
+      assert(result.graph.nodes.keySet.exists(_.contains("C")), result.graph.nodes.keySet.toString)
+    }
+  }
+
+  test("modules whose classes and packages never share a name read together") {
+    Scratch.using("bonsai-") { directory =>
+      val first =
+        compile(directory.resolve("a"), Seq("B.scala" -> "package a\nobject b { def one: Int = 1 }"), Vector.empty)
+      val second =
+        compile(directory.resolve("b"), Seq("C.scala" -> "package a.c\nclass C { def two: Int = 2 }"), Vector.empty)
+      val manifest = Manifest(
+        Vector(Output("first", Output.Scope.Main, first), Output("second", Output.Scope.Main, second)),
+        Map("first" -> classpath, "second" -> classpath),
+        Set.empty,
+        jdk = targetJdk
+      )
+      val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      assertEquals(result.problems, Vector.empty)
+      assertEquals(result.notes, Vector.empty)
+      assert(result.graph.nodes.keySet.exists(_.contains("C")), result.graph.nodes.keySet.toString)
+    }
+  }
+
   test("modules whose classpaths hold different jars of one artifact each resolve their own") {
     Scratch.using("bonsai-") { directory =>
       def library(platform: String, name: String): Path = {
