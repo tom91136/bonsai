@@ -307,10 +307,11 @@ object Extraction {
       else {
         val linked                       = phase.calls.getOrElse(Reach.link(manifest, graph, world))
         val Reach.Reached(reach, unread) = Reach.of(linked, graph)
+        val hotNames                     = graph.nodes.values.view.map(_.name).filter(isHot).toSet
         // Megamorphic calls cost only where the JVM compiles hot code, which a platform twin never runs on.
         val resolved = Megamorphic.resolve(
           phase.megamorphic.filter(site =>
-            graph.nodes.get(site.node).exists(node => !manifest.platforms(node.module) && isHot(node.name))
+            graph.nodes.get(site.node).exists(node => !manifest.platforms(node.module) && hotNames(node.name))
           ),
           graph.nodes,
           linked.graph,

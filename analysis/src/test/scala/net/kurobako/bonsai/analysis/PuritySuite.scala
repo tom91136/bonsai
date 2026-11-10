@@ -173,6 +173,23 @@ class PuritySuite extends AnalysisSuite {
     )
   }
 
+  test("computing into a java map has effects, whatever becomes of the result") {
+    val computing = extract(
+      Seq(
+        "Use.scala" ->
+          """object Use {
+            |  def bump(m: java.util.Map[String, Integer]): Unit = { m.compute("a", (_, v) => v); () }
+            |  def fill(m: java.util.Map[String, Integer]): Unit = { m.computeIfAbsent("a", _ => 1); () }
+            |  def join(m: java.util.Map[String, Integer]): Unit = { m.merge("a", 1, (a, _) => a); () }
+            |}""".stripMargin
+      )
+    )
+    assertEquals(
+      Purity.findings(computing.purity, computing.graph.nodes).filter(_.rule == Finding.Rule.PureDiscard).map(_.detail),
+      Vector.empty
+    )
+  }
+
   test("dropping a partial function that throws is not reported") {
     val throwing = analysed(
       "Throwing",
