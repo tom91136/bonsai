@@ -1088,4 +1088,35 @@ class PuritySuite extends AnalysisSuite {
     )
     assert(mutual.purity.resolved <= size * size * 10, mutual.purity.resolved)
   }
+
+  private def claimed(sources: Seq[(String, String)], name: String): String =
+    extract(Seq("Main.scala" -> "object Main { def main(args: Array[String]): Unit = println(Callers) }") ++ sources)
+      .purity.verdicts.getOrElse(name, fail(s"no verdict for $name")) match {
+      case Purity.Verdict.Effectful(cause, Purity.Certainty.Known) => cause
+      case other                                                   => fail(s"not impure: $other")
+    }
+
+  private val sinks = "Sinks.scala" ->
+    """trait Sink { def put(x: Int): Int }
+      |class Quiet extends Sink { def put(x: Int): Int = x }
+      |class Loud extends Sink { def put(x: Int): Int = { println(x); x } }
+      |class Louder extends Sink { def put(x: Int): Int = { println(x + 1); x } }
+      |object Callers {
+      |  def one(sink: Sink): Int = sink.put(1)
+      |  def two(sink: Sink): Int = one(sink)
+      |  def three(sink: Sink): Int = two(sink)
+      |}""".stripMargin
+
+  test("an effect only some of the bodies a call may run perform is said to be possible") {
+    val partial = Seq(sinks)
+    assertEquals(claimed(partial, "Callers.one"), "calls Loud.put, which may perform output")
+    assertEquals(claimed(partial, "Callers.two"), "calls Callers.one, which may perform output")
+    assertEquals(claimed(partial, "Callers.three"), "calls Callers.two, which may perform output")
+  }
+
+  test("an effect every body a call may run performs is said plainly") {
+    val certain = Seq(sinks._1 -> sinks._2.replace("Int = x }", "Int = { print(x); x } }"))
+    assert(claimed(certain, "Callers.one").endsWith(", which performs output"), claimed(certain, "Callers.one"))
+    assert(claimed(certain, "Callers.three").endsWith(", which performs output"), claimed(certain, "Callers.three"))
+  }
 }

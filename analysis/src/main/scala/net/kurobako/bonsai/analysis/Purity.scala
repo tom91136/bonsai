@@ -189,8 +189,8 @@ object Purity {
   private val Priority =
     Vector(Kind.Output, Kind.Input, Kind.Random, Kind.Writes, Kind.Reads, Kind.Unknown, Kind.Throws)
 
-  private def rank(effect: Generic[?]): (Int, String, Boolean, Boolean, String) =
-    (Priority.indexOf(effect.kind), effect.shown, effect.onThis, effect.library, effect.cause)
+  private def rank(effect: Generic[?]): (Int, String, Boolean, Boolean, Boolean, String) =
+    (Priority.indexOf(effect.kind), effect.told(false), effect.onThis, effect.library, effect.partial, effect.cause)
 
   private[analysis] def ranked[T](effects: Iterable[Generic[T]]): Vector[Generic[T]] =
     effects.map(effect => rank(effect) -> effect).toVector.sortBy(_._1).map(_._2)
@@ -794,7 +794,7 @@ object Purity {
 
     // A key is computed once its callees have settled, and computed again only while it is in a cycle with a callee
     // that has changed since, so the keys settle one component at a time, callees first. A summary only gains effects
-    // or trades one for an earlier cause, so each component stops at its least fixpoint.
+    // or trades one for a certain one or an earlier cause, so each component stops at its least fixpoint.
     private def solve(key: Key): State = states.getOrElse(key, visit(key))
 
     private def visit(key: Key): State = {
@@ -1275,12 +1275,14 @@ object Purity {
         ).getOrElse(Ids.Empty -> part.effects)
         def visible(effect: Effect): Option[Symbol] =
           effect.target.filter(local => ownedBy(target.owner, local.owner))
-        val firsts               = mutable.HashMap.empty[(Kind, Boolean, Option[Symbol], Boolean, Boolean), Effect]
+        val firsts               = mutable.HashMap.empty[Group, Effect]
         def offer(id: Int): Unit = {
           val effect = effectTable(id)
           firsts.updateWith((effect.kind, effect.onThis, visible(effect), effect.library || library, effect.assumed)) {
-            case Some(held) if held.cause <= effect.cause => Some(held)
-            case _                                        => Some(effect)
+            case Some(held)
+                if (if (held.partial == effect.partial) held.cause <= effect.cause else !held.partial) =>
+              Some(held)
+            case _ => Some(effect)
           }: Unit
         }
         before.foreach(offer(_))
@@ -1295,10 +1297,37 @@ object Purity {
       }(_._2)
     }
 
+    private type Group = (Kind, Boolean, Option[Symbol], Boolean, Boolean)
+
+    private def group(effect: Effect): Group =
+      (effect.kind, effect.onThis, effect.target, effect.library, effect.assumed)
+
+    private val possibles = mutable.LongMap.empty[Int]
+
     // The summaries of the bodies a call may run.
     private def joined(keys: Vector[Key]): Summary = keys match {
       case Vector(key) => viewed(key)
-      case _           => combined(keys.map(viewed(_)))
+      case _           =>
+        val parts   = keys.map(viewed(_))
+        val all     = combined(parts)
+        val running = keys.zip(parts).collect { case (key, part) if !key.method.is(Flags.Deferred) => part }
+        if (running.size < 2) all
+        else {
+          val certain = running.map(part =>
+            part.effects.values.view.map(effectTable(_)).filterNot(_.partial).map(group(_)).toSet
+          ).reduce(_ & _)
+          val found = builder()
+          all.effects.values.foreach { id =>
+            val effect = effectTable(id)
+            found.add(
+              if (effect.partial || certain(group(effect))) id
+              else possibles.getOrElseUpdate(id.toLong, intern(effect.copy(partial = true)))
+            )
+          }
+          val result = Summary(found.result(), all.invokes, all.captures)
+          spare(found)
+          result
+        }
     }
 
     private def combined(parts: Vector[Summary]): Summary = Summary(
