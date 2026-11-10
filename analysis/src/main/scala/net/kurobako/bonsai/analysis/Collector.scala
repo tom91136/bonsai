@@ -30,7 +30,7 @@ private[analysis] object Collector {
 
   /** What a twin's collector leaves for the collector it joins. */
   object Absorbed {
-    val empty: Absorbed = Absorbed(Symbols.Recorded.empty, Map.empty, Set.empty)
+    val empty: Absorbed = Absorbed(Map.empty, Set.empty)
   }
 
   object Evidence {
@@ -73,9 +73,9 @@ private[analysis] object Collector {
     )
   }
 
-  case class Absorbed(symbols: Symbols.Recorded, nodes: Map[String, Node], roots: Set[Root]) {
+  case class Absorbed(nodes: Map[String, Node], roots: Set[Root]) {
     @targetName("merge")
-    def ++(other: Absorbed): Absorbed = Absorbed(symbols ++ other.symbols, other.nodes ++ nodes, roots ++ other.roots)
+    def ++(other: Absorbed): Absorbed = Absorbed(other.nodes ++ nodes, roots ++ other.roots)
   }
 
   // A hierarchy of one case is a single implementation, which another rule reports.
@@ -166,6 +166,7 @@ private[analysis] class Collector(
   private val enumerations = mutable.ArrayBuffer.empty[Algebra.Enumeration]
   private var placements   = Option.empty[Placements]                    // scalafix:ok DisableSyntax.var
   private val callees      = mutable.Map.empty[Symbol, Callee]
+  private var concluded    = false                                       // scalafix:ok DisableSyntax.var
   private var read         = Option.empty[(Context, Fragments, Library)] // scalafix:ok DisableSyntax.var
   private var received     = Collector.Evidence.empty                    // scalafix:ok DisableSyntax.var
   private var gathered     = CallSites.Evidence.empty                    // scalafix:ok DisableSyntax.var
@@ -237,7 +238,6 @@ private[analysis] class Collector(
     dispatching.receive(others.dispatch)
     others.exposed.foreach(symbols.expose(_))
     qualifiedUses()
-    symbols.absorb(twinned.symbols)
     products.mapValuesInPlace((cls, product) =>
       if (derivations.derived(cls)) product.copy(origin = Algebra.Origin.Derived) else product
     )
@@ -310,6 +310,7 @@ private[analysis] class Collector(
     )
     complexityList ++= costs.javaSummaries
     unusedList ++= declared.unmatched
+    concluded = true
     val effects = inference(library, bytecode)
     val chains  = Pipelines.Chains(effects, lines, hot)
     pipelineList ++= bodies.view.filter((method, _) => ownMethod(method)).flatMap((method, definition) =>
@@ -324,12 +325,14 @@ private[analysis] class Collector(
   }
 
   /** Adds what a twin's classes reference, which the copies of the JVM modules the node records stand in for: the edges
-    * and the nodes. A twin is read before this collector, which joins it as it finishes.
+    * and the nodes. The edges join at once, so that a run that reads no file still holds them.
     */
-  def absorb(other: Collector): Unit =
-    twinned = twinned ++ Collector.Absorbed(other.symbols.recorded, other.graph.nodes, other.graph.roots)
+  def absorb(other: Collector): Unit = {
+    symbols.absorb(other.symbols.recorded)
+    twinned = twinned ++ Collector.Absorbed(other.graph.nodes, other.graph.roots)
+  }
 
-  /** The nodes with an edge to each node, with those of the twins this collector absorbed. */
+  /** The nodes with an edge to each node, with those of the runs this collector absorbed. */
   def referrers: Map[String, Vector[String]] = symbols.incoming
 
   /** The uses of members by name. */
@@ -401,7 +404,8 @@ private[analysis] class Collector(
 
   def complexities: Vector[Complexity.Summary] = complexityList.toVector
 
-  def unusedBounds: Vector[Complexity.Bounded] = unusedList.toVector
+  /** The bounds that no method this run costed matched, which are all of them where the run read no file. */
+  def unusedBounds: Vector[Complexity.Bounded] = if (concluded) unusedList.toVector else bounded
 
   def pipelines: Vector[Pipelines.Lifted] = pipelineList.toVector
 

@@ -381,7 +381,7 @@ object Extraction {
         .pinned(name => graph.nodes.get(name).exists(replacedAt(_)))
       val isHot     = Globs.heat(hot)
       val unmatched = {
-        val beside = groups.map(_.unusedBounds.toSet)
+        val beside = (groups ++ twinRuns.map(_.own)).map(_.unusedBounds.toSet)
         phase.unusedBounds.filter(bound => beside.forall(_(bound)))
       }
       if (graph.nodes.isEmpty && problems.nonEmpty) Left(problems ++ notes)
@@ -412,7 +412,7 @@ object Extraction {
             java.clones,
           bytecode(),
           owned.foldLeft(phase.complexities)(_ ++ _.collector.complexities),
-          twinRuns.map(_.own).foldLeft(unmatched)(_ ++ _.unusedBounds),
+          unmatched,
           owned.foldLeft(phase.pipelines)(_ ++ _.collector.pipelines),
           resolved.filterNot(_.site.settled),
           Megamorphic.shared(resolved, graph.nodes, linked.graph, world),
