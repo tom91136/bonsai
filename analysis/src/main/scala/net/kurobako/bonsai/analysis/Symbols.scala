@@ -128,8 +128,9 @@ private[analysis] class Symbols(
       known(named) = known(named).copy(exported = true)
     }
 
-  def expose(symbol: Symbol)(using Context): Unit =
-    key(symbol).foreach(named => known(named) = known(named).copy(exported = true))
+  def expose(symbol: Symbol)(using Context): Unit = key(symbol).foreach(expose(_))
+
+  def expose(name: String): Unit = known.get(name).foreach(node => known(name) = node.copy(exported = true))
 
   def methodName(method: Symbol, fields: Vector[Algebra.Field])(using Context): String =
     s"${qualifiedName(method)}(${fields.map(_.name).mkString(", ")})"

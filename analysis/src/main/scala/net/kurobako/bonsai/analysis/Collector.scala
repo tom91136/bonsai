@@ -42,7 +42,8 @@ private[analysis] object Collector {
       StructureObserver.Evidence.empty,
       Set.empty,
       Set.empty,
-      Dictionaries.Evidence.empty
+      Dictionaries.Evidence.empty,
+      Set.empty
     )
   }
 
@@ -55,7 +56,8 @@ private[analysis] object Collector {
       structure: StructureObserver.Evidence,
       named: Set[String],
       derived: Set[String],
-      dictionaries: Dictionaries.Evidence
+      dictionaries: Dictionaries.Evidence,
+      exposed: Set[String]
   ) {
     @targetName("merge")
     def ++(other: Evidence): Evidence = Evidence(
@@ -66,7 +68,8 @@ private[analysis] object Collector {
       structure ++ other.structure,
       named ++ other.named,
       derived ++ other.derived,
-      dictionaries ++ other.dictionaries
+      dictionaries ++ other.dictionaries,
+      exposed ++ other.exposed
     )
   }
 
@@ -215,7 +218,8 @@ private[analysis] class Collector(
         structure.evidence,
         named.filter(isForeign(_)).map(qualifiedName(_)).toSet,
         derivations.evidence,
-        dictionary.evidence
+        dictionary.evidence,
+        exposures
       )
     if (deferred) read = Some((ctx, fragments, library)) else finish(fragments, library, Collector.Evidence.empty)
     units
@@ -231,6 +235,7 @@ private[analysis] class Collector(
     structure.receive(others.structure)
     derivations.receive(others.derived)
     dispatching.receive(others.dispatch)
+    others.exposed.foreach(symbols.expose(_))
     qualifiedUses()
     symbols.absorb(twinned.symbols)
     products.mapValuesInPlace((cls, product) =>
@@ -1020,6 +1025,10 @@ private[analysis] class Collector(
     * string. A type so named is a reflective root, and the members it declares are exempt. Rendered code calls such a
     * member by name, so it is neither unused nor movable.
     */
+  private def exposures(using Context): Set[String] =
+    dispatching.classes.filter(exported(_)).flatMap(_.asClass.baseClasses.drop(1)).filter(isForeign(_)).flatMap(key(_))
+      .toSet
+
   private def qualifiedUses()(using Context): Unit = {
     val byName = dispatching.classes.toVector.groupBy(qualifiedName(_))
     structure.literals.foreach { (_, path, owner, member, info) =>

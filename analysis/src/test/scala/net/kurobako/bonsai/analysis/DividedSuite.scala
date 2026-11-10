@@ -251,4 +251,48 @@ class DividedSuite extends AnalysisSuite {
       assert(errors.head.contains("packaged compile for another platform"), errors.head)
     }
   }
+
+  private def apart(
+      core: Seq[(String, String)],
+      lib: Seq[(String, String)],
+      libraries: Set[String]
+  )(check: (Extraction.Result, Extraction.Result) => Unit): Unit = Seq(true, false).foreach { coreFirst =>
+    Scratch.using("bonsai-") { directory =>
+      val coreClasses = compile(directory.resolve("core"), core, Vector.empty)
+      val libClasses  = compile(directory.resolve("lib"), lib, Vector(coreClasses))
+      val outputs     = Vector(
+        Output("core", Output.Scope.Main, coreClasses),
+        Output("lib", Output.Scope.Main, libClasses)
+      )
+      val whole = Manifest(
+        outputs,
+        Map("core" -> classpath, "lib" -> (classpath :+ coreClasses)),
+        libraries,
+        jdk = targetJdk
+      )
+      val settings =
+        Extraction.Settings(Vector.empty, Set.empty, Vector.empty, Vector.empty, Vector.empty, Parallel.sequential)
+      def read(division: Clashes.Division) = Extraction.readDivided(whole, settings, division)
+        .fold(errors => fail(errors.mkString("\n")), identity)
+      val together = read((_, _) => Right(Vector(outputs.toSet)))
+      val groups   = if (coreFirst) outputs else outputs.reverse
+      val divided  = read((_, _) => Right(groups.map(Set(_))))
+      assertEquals(divided.problems, Vector.empty)
+      check(together, divided)
+    }
+  }
+
+  test("a base class of an exported class in another run keeps its members exempt") {
+    apart(
+      Seq("Base.scala" -> "package core\nclass Base { def hook: Int = 1 }"),
+      Seq("Impl.scala" -> "package lib\nclass Impl extends core.Base"),
+      Set("lib")
+    ) { (together, divided) =>
+      def unused(result: Extraction.Result) =
+        Members.findings(result.members, result.graph.nodes, result.reach).filter(_.rule == Finding.Rule.UnusedMember)
+          .map(_.detail)
+      assertEquals(unused(together), Vector.empty)
+      assertEquals(unused(divided), Vector.empty)
+    }
+  }
 }
