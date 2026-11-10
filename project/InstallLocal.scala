@@ -150,8 +150,10 @@ object InstallLocal {
     */
   private def maven(extracted: Extracted, versions: Seq[Path], target: File, log: Logger): Either[String, Unit] = {
     val command = sys.env.getOrElse("MAVEN_COMMAND", "mvn")
-    if (!onPath(command)) Right(())
-    else {
+    if (!onPath(command)) {
+      if (sys.env.contains("MAVEN_COMMAND")) Left(s"MAVEN_COMMAND=$command is not an executable file")
+      else Right(())
+    } else {
       val organization = extracted.get(ThisBuild / Keys.organization)
       val version      = extracted.get(ThisBuild / Keys.version)
       val base         = extracted.get(ThisBuild / baseDirectory)
@@ -196,9 +198,11 @@ object InstallLocal {
     }
   }
 
-  private def onPath(command: String): Boolean =
-    if (command.contains(File.separator)) new File(command).canExecute
-    else sys.env.getOrElse("PATH", "").split(File.pathSeparator).exists(directory =>
-      new File(directory, command).canExecute
-    )
+  private def onPath(command: String): Boolean = {
+    def executable(file: File): Boolean = file.isFile && file.canExecute
+    if (command.contains(File.separator)) executable(new File(command))
+    else sys.env.getOrElse("PATH", "").split(File.pathSeparator).exists { directory =>
+      executable(new File(directory, command))
+    }
+  }
 }
