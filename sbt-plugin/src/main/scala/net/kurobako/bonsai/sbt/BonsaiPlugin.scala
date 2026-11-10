@@ -536,7 +536,7 @@ object BonsaiPlugin extends AutoPlugin {
     else Def.task {
       skipped.foreach(streams.value.log.info(_))
       val entries = Def.task {
-        val _     = (compile.value, copyResources.value)
+        val _     = Def.sequential(compile, copyResources).value
         val id    = thisProject.value.id
         val name  = configuration.value.name
         val scope = ManifestLines.scope(fixtures, id, testNames(name))

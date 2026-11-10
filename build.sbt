@@ -520,7 +520,7 @@ lazy val root = project.in(file("."))
       val configured = analysisConfiguration.value
       val fixtures   = Fixtures.fixtures(buildStructure.value)
       val outputs    = Def.task {
-        val _ = (compile.value, copyResources.value)
+        val _ = Def.sequential(compile, copyResources).value
         (thisProject.value.id, configuration.value.name == Test.name, classDirectory.value, unmanagedSources.value)
       }.all(analysedOutputs).value.flatMap { (id, test, classes, sources) =>
         val scope = ManifestLines.scope(fixtures, id, test)
