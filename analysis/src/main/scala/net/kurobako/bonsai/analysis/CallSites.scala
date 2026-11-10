@@ -52,6 +52,13 @@ private object CallSites {
     )
   }
 
+  /** An argument value known to be passed, wrapped in `options` options, which is shown for the finding and compared
+    * whole, since the shown text keeps only the end of a name.
+    */
+  case class Valued(argument: Algebra.Argument, options: Int) {
+    def shown: String = "Some(" * options + argument.shown + ")" * options
+  }
+
   object Evidence {
     val empty: Evidence = Evidence(Map.empty, Map.empty, Map.empty)
   }
@@ -62,7 +69,7 @@ private object CallSites {
   case class Evidence(
       calls: Map[String, Vector[Call]],
       counts: Map[String, Count],
-      explicit: Map[(String, Int, String), Vector[Algebra.Site]]
+      explicit: Map[(String, Int, Valued), Vector[Algebra.Site]]
   ) {
     def ++(other: Evidence): Evidence = Evidence(
       Maps.join(calls, other.calls)(_ ++ _),
@@ -152,7 +159,7 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
         val onward  = forward(call).flatMap((helper, passed) => keyOf(helper).map(Forward(_, passed)))
         Call(site(call, call.arguments.map(classify(_)).toVector, derived), flags, onward)
       }.toVector).toMap
-    val explicit = mutable.Map.empty[(String, Int, String), Vector[Algebra.Site]]
+    val explicit = mutable.Map.empty[(String, Int, Valued), Vector[Algebra.Site]]
     for {
       call              <- pending if call.method.name != nme.copy && defaulted(call.method)
       key               <- keyOf(call.callee)
@@ -265,7 +272,7 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
         default <- defaults.get(defaultGetter(if (callee.isClass) callee.primaryConstructor else callee, index))
         if valueOf(default).contains(value)
         parameter <- fieldsOf(callee).lift(index)
-      } yield Smells.Default(subject.name, subject.node, parameter.name, value, recorded, subject.line)
+      } yield Smells.Default(subject.name, subject.node, parameter.name, value.shown, recorded, subject.line)
     }
   }
 
@@ -599,17 +606,17 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   private def readsWorld(symbol: Symbol)(using Context): Boolean =
     WorldPackages.exists(symbol.owner.fullName.toString.startsWith(_))
 
-  /** The value an argument is known to have, shown; an option is known by its contents. */
-  private def valueOf(argument: tpd.Tree)(using Context): Option[String] = {
+  /** The value an argument is known to have; an option is known by its contents. */
+  private def valueOf(argument: tpd.Tree)(using Context): Option[Valued] = {
     val tree = resolved(argument)
     classify(tree) match {
       case Algebra.Argument.Present =>
         Calls.peel(tree) match {
-          case tpd.Apply(_, List(inner)) => valueOf(inner).map(shown => s"Some($shown)")
+          case tpd.Apply(_, List(inner)) => valueOf(inner).map(value => value.copy(options = value.options + 1))
           case _                         => None
         }
       case Algebra.Argument.Unknown => None
-      case value                    => Some(value.shown)
+      case value                    => Some(Valued(value, 0))
     }
   }
 

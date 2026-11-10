@@ -1206,6 +1206,24 @@ class SmellsSuite extends AnalysisSuite {
     )
   }
 
+  test("an argument that shares a short name with its default but is another value is not redundant") {
+    val found = findings(
+      "Defaults.scala" ->
+        """package a { object Defaults { val timeout: Int = sys.props.size } }
+          |package b { object Defaults { val timeout: Int = sys.props.size + 1 } }""".stripMargin,
+      "Client.scala" ->
+        """object Client {
+          |  def connect(timeout: Int = a.Defaults.timeout): Int = timeout
+          |  def one(): Int = connect(b.Defaults.timeout)
+          |  def two(): Int = connect(a.Defaults.timeout)
+          |}""".stripMargin
+    )
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.RedundantDefault && finding.detail.contains("at 2 calls")
+    )
+    assertFinding(found, "redundant-default", "timeout is passed its default Defaults.timeout explicitly at 1 calls")
+  }
+
   test("named arguments equal to their defaults are redundant, as are positional ones followed only by named") {
     val found = findings(
       "Net.scala"  -> "object Net { def f(a: Int, b: Option[Int] = None, c: Int = 3): Int = a }",
