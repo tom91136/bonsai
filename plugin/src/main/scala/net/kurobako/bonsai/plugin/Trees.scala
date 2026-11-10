@@ -83,7 +83,8 @@ private object Trees {
     symbol == defn.BooleanClass || defn.ScalaNumericValueClasses().contains(symbol)
   }
 
-  def byName(parameter: Symbol)(using Context): Boolean = parameter.exists && parameter.info.isInstanceOf[ExprType]
+  def byName(parameter: Symbol)(using Context): Boolean =
+    parameter.exists && !parameter.is(Flags.StableRealizable) && parameter.info.isInstanceOf[ExprType]
 
   /** Option, Either and Try hold a failure, or an absent value, as a value. */
   def optional(tpe: Type)(using Context): Boolean =
