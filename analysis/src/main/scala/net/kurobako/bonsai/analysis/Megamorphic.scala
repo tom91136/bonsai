@@ -9,7 +9,8 @@ object Megamorphic {
   /** A method calling `callee` inside a loop. `key` names the bytecode method the call runs, as `Keys` does with the
     * class of the receiver as the owner, `holder` the key of the calling method, `settled` whether every receiver is
     * the same on each iteration of the loop, `unreaching` the build classes whose type arguments rule them out as
-    * receivers, and `stable` holds when every implementation in the build reads a field.
+    * receivers, and `stable` holds when every implementation in the build reads a field, and `generic` when the class
+    * of the callee has type parameters, which decide the receivers.
     */
   case class Site(
       caller: String,
@@ -20,7 +21,8 @@ object Megamorphic {
       settled: Boolean,
       unreaching: Set[String],
       stable: Boolean,
-      suppressed: Set[String]
+      suppressed: Set[String],
+      generic: Boolean = false
   )
 
   /** A site whose receivers are `names`, in all `count` classes and lambdas. */

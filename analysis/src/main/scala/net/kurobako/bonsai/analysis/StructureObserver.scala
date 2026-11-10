@@ -17,9 +17,36 @@ import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeTraverser
 import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.lifting.*
+import scala.annotation.targetName
 import scala.collection.mutable
 
 private[analysis] object StructureObserver {
+
+  object Evidence {
+    val empty: Evidence = Evidence(Map.empty, Map.empty, Vector.empty, Vector.empty, Map.empty, Set.empty)
+  }
+
+  /** What a run records for the runs beside it: the constructions and field reads of classes it did not read, the
+    * strings it holds that name members and types, the strings that spell a member, and the names of its classes.
+    */
+  case class Evidence(
+      built: Map[String, Int],
+      echoes: Map[(String, String), Int],
+      named: Vector[(String, String, String, String, Node)],
+      typed: Vector[(String, Node)],
+      spelled: Map[String, Set[String]],
+      classes: Set[String]
+  ) {
+    @targetName("merge")
+    def ++(other: Evidence): Evidence = Evidence(
+      Maps.join(built, other.built)(_ + _),
+      Maps.join(echoes, other.echoes)(_ + _),
+      named ++ other.named,
+      typed ++ other.typed,
+      Maps.join(spelled, other.spelled)(_ ++ _),
+      classes ++ other.classes
+    )
+  }
 
   // A string naming a member, alone or at the head of a call: `Owner.member`, `pkg.Owner.member` or `Owner.member(...`.
   private val Reference = """((?:[a-z][A-Za-z0-9_]*\.)*)([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)(\(.*)?""".r
@@ -65,33 +92,63 @@ private[analysis] object StructureObserver {
   * rules count. It owns the strings code spells out, which `literals` and `typeNames` give to reflective-use
   * resolution, and the members `detachable` tells apart for member listing.
   */
-private[analysis] class StructureObserver(symbols: Symbols, classes: () => Iterable[Symbol], lines: Lines) {
+private[analysis] class StructureObserver(
+    symbols: Symbols,
+    classes: () => Iterable[Symbol],
+    lines: Lines,
+    foreign: Set[Output]
+) {
   import StructureObserver.*
   import symbols.*
 
-  private val stuttering = mutable.Map.empty[Symbol, (String, String)]
-  private val echoes     = mutable.Map.empty[Symbol, Int]
-  private val spelled    = mutable.Map.empty[String, mutable.Set[String]]
-  private val spliced    = mutable.Set.empty[Span]
-  private val applied    = mutable.ArrayBuffer.empty[Structures.Applied]
-  private val built      = mutable.Map.empty[Symbol, Int]
-  private val grouped    = mutable.ArrayBuffer.empty[Structures.Member]
-  private val detached   = mutable.Set.empty[Symbol]
-  private val dispatched = mutable.ArrayBuffer.empty[Structures.Dispatch]
-  private val extents    = mutable.Map.empty[String, (Int, Int)]
-  private val named      = mutable.ArrayBuffer.empty[(String, String, String, String, Node)]
-  private val typed      = mutable.ArrayBuffer.empty[(String, Node)]
-  private val mirrors    = mutable.ArrayBuffer.empty[Counterparts.Mirror]
-  private val signed     = mutable.Set.empty[Structures.Signature]
-  private val wrapping   = Wrappers(symbols, lines)
+  private val stuttering  = mutable.Map.empty[Symbol, (String, String)]
+  private val echoes      = mutable.Map.empty[Symbol, Int]
+  private val spelled     = mutable.Map.empty[String, mutable.Set[String]]
+  private val spliced     = mutable.Set.empty[Span]
+  private val applied     = mutable.ArrayBuffer.empty[Structures.Applied]
+  private val built       = mutable.Map.empty[Symbol, Int]
+  private val grouped     = mutable.ArrayBuffer.empty[Structures.Member]
+  private val detached    = mutable.Set.empty[Symbol]
+  private val dispatched  = mutable.ArrayBuffer.empty[Structures.Dispatch]
+  private val extents     = mutable.Map.empty[String, (Int, Int)]
+  private val named       = mutable.ArrayBuffer.empty[(String, String, String, String, Node)]
+  private val typed       = mutable.ArrayBuffer.empty[(String, Node)]
+  private val mirrors     = mutable.ArrayBuffer.empty[Counterparts.Mirror]
+  private val signed      = mutable.Set.empty[Structures.Signature]
+  private val wrapping    = Wrappers(symbols, lines)
+  private val apartBuilt  = mutable.Map.empty[String, Int]
+  private val apartEchoes = mutable.Map.empty[(String, String), Int]
+  private var received    = StructureObserver.Evidence.empty // scalafix:ok DisableSyntax.var
+
+  private def elsewhere(symbol: Symbol)(using Context): Boolean = foreign.nonEmpty && output(symbol).exists(foreign)
+
+  private def construct(symbol: Symbol, change: Int)(using Context): Unit =
+    if (elsewhere(symbol)) apartBuilt(qualifiedName(symbol)) = apartBuilt.getOrElse(qualifiedName(symbol), 0) + change
+    else built(symbol) = built.getOrElse(symbol, 0) + change
+
+  /** What this run records for the runs beside it, which hold the definitions or the strings it concerns. */
+  def evidence(using Context): StructureObserver.Evidence =
+    if (foreign.isEmpty) StructureObserver.Evidence.empty
+    else
+      StructureObserver.Evidence(
+        apartBuilt.toMap,
+        apartEchoes.toMap,
+        named.toVector,
+        typed.toVector,
+        spelled.view.mapValues(_.toSet).toMap,
+        classes().filter(cls => !cls.isAnonymousClass && key(cls).isDefined).map(_.effectiveName.toString).toSet
+      )
   // Built once every class is declared, when the phase finishes.
   private var model = Structures.Model.empty // scalafix:ok DisableSyntax.var
 
+  /** Takes the evidence the runs beside this one recorded of what it defines. */
+  def receive(others: StructureObserver.Evidence): Unit = received = others
+
   /** The strings naming `Owner.member`, as text, package path, owner, member and the node holding the string. */
-  def literals: Iterable[(String, String, String, String, Node)] = named
+  def literals: Iterable[(String, String, String, String, Node)] = named ++ received.named
 
   /** The strings naming a type by package and name, with the node holding the string. */
-  def typeNames: Iterable[(String, Node)] = typed
+  def typeNames: Iterable[(String, Node)] = typed ++ received.typed
 
   def structures: Structures.Model = model
 
@@ -122,7 +179,7 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
       // An anonymous class is a construction of what it extends.
       if (!cls.isAnonymousClass) {
         template.parents.foreach(_.foreachSubTree {
-          case tpd.New(tpt) => built(tpt.tpe.typeSymbol) = built.getOrElse(tpt.tpe.typeSymbol, 0) - 1
+          case tpd.New(tpt) => construct(tpt.tpe.typeSymbol, -1)
           case _            => ()
         })
         if (info.outer.isEmpty && info.name == qualifiedName(cls) && definition.span.exists) {
@@ -292,8 +349,11 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
   def observe(tree: tpd.Tree, from: Option[String])(using Context): Unit = tree match {
     case tpd.Select(qualifier, name)
         if tree.symbol.is(Flags.ParamAccessor) && qualifier.symbol.exists && qualifier.symbol.name == name =>
-      echoes(tree.symbol) = echoes.getOrElse(tree.symbol, 0) + 1
-    case tpd.New(tpt) => built(tpt.tpe.typeSymbol) = built.getOrElse(tpt.tpe.typeSymbol, 0) + 1
+      if (elsewhere(tree.symbol)) {
+        val field = (qualifiedName(tree.symbol.owner), tree.symbol.name.toString)
+        apartEchoes(field) = apartEchoes.getOrElse(field, 0) + 1
+      } else echoes(tree.symbol) = echoes.getOrElse(tree.symbol, 0) + 1
+    case tpd.New(tpt) => construct(tpt.tpe.typeSymbol, 1)
     case tpd.Apply(tpd.Select(context @ tpd.Apply(_, List(parts)), _), _)
         if context.tpe.widen.isRef(defn.StringContextClass) =>
       val pieces = parts match {
@@ -321,18 +381,21 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
   }
 
   /** Builds the model, once every class is declared. */
-  def finish()(using Context): Unit = {
+  def finish(others: StructureObserver.Evidence)(using Context): Unit = {
     val types    = classes().toVector.filter(cls => !cls.isAnonymousClass && key(cls).isDefined)
     val byName   = types.groupBy(_.effectiveName.toString)
-    val mentions = named.toVector.flatMap { (text, path, owner, member, info) =>
+    val mentions = (named.toVector ++ others.named).flatMap { (text, path, owner, member, info) =>
       // A nested type goes by its simple name only inside the type that holds it.
       def nameable(cls: Symbol) =
         cls.owner.is(Flags.Package) || key(cls.topLevelClass).exists(Node.within(nodes, info.name, _))
       val candidates = byName.getOrElse(owner, Vector.empty)
         .filter(cls => (path.isEmpty || qualifiedName(cls) == path + owner) && nameable(cls))
       def spells(cls: Symbol) =
-        key(cls).exists(owner => spelled.getOrElse(member, Set.empty).exists(Node.within(nodes, _, owner)))
-      Option.when(candidates.nonEmpty && !candidates.exists(cls =>
+        key(cls).exists(owner =>
+          (spelled.getOrElse(member, Set.empty) ++ others.spelled.getOrElse(member, Set.empty))
+            .exists(Node.within(nodes, _, owner))
+        )
+      Option.when(candidates.nonEmpty && !others.classes(owner) && !candidates.exists(cls =>
         cls.info.member(termName(member)).exists || cls.info.member(typeName(member)).exists || spells(cls)
       ))(Structures.Mention(text, owner, member, info.name, info.test))
     }
@@ -341,7 +404,8 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
         Structures.Concrete(
           qualifiedName(cls),
           info.name,
-          !cls.isOneOf(Flags.Abstract | Flags.ModuleClass | Flags.Enum | Flags.Case) && built.getOrElse(cls, 0) <= 0,
+          !cls.isOneOf(Flags.Abstract | Flags.ModuleClass | Flags.Enum | Flags.Case) &&
+            built.getOrElse(cls, 0) + others.built.getOrElse(qualifiedName(cls), 0) <= 0,
           cls.asClass.parentSyms.collect {
             case parent if !parent.is(Flags.Trait) && key(parent).isDefined => qualifiedName(parent)
           }.toVector
@@ -364,7 +428,12 @@ private[analysis] class StructureObserver(symbols: Symbols, classes: () => Itera
     )
     model = Structures.Model(
       stuttering.toVector.map { case (field, (owner, node)) =>
-        Structures.Stutter(owner, node, field.name.toString, echoes.getOrElse(field, 0))
+        Structures.Stutter(
+          owner,
+          node,
+          field.name.toString,
+          echoes.getOrElse(field, 0) + others.echoes.getOrElse((owner, field.name.toString), 0)
+        )
       },
       mentions,
       applied.toVector,

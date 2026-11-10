@@ -7,12 +7,41 @@ import dotty.tools.dotc.core.Symbols.defn
 import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.lifting.*
+import scala.annotation.targetName
 import scala.collection.mutable
+
+private[analysis] object Dispatch {
+
+  object Evidence {
+    val empty: Evidence = Evidence(Map.empty, Set.empty, Set.empty, Set.empty, Set.empty)
+  }
+
+  /** What a run records of the abstractions another run reads, by their nodes: the implementations it found, and
+    * whether some class implements them, a class implementing them fixes a primitive type argument or is an object, and
+    * a type names them.
+    */
+  case class Evidence(
+      implemented: Map[String, Vector[(String, String)]],
+      subclassed: Set[String],
+      specialised: Set[String],
+      objectParents: Set[String],
+      asTypes: Set[String]
+  ) {
+    @targetName("merge")
+    def ++(other: Evidence): Evidence = Evidence(
+      Maps.join(implemented, other.implemented)(_ ++ _),
+      subclassed ++ other.subclassed,
+      specialised ++ other.specialised,
+      objectParents ++ other.objectParents,
+      asTypes ++ other.asTypes
+    )
+  }
+}
 
 /** The classes of the build, what implements each abstraction, and the calls that dispatch to more than one class.
   * `bodied` tells whether the build holds the body of a method.
   */
-private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
+private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean, foreign: Set[Output]) {
   import symbols.*
 
   private val declared   = mutable.LinkedHashSet.empty[Symbol]
@@ -29,6 +58,31 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
   private val prioritised   = mutable.Set.empty[Symbol]
   private val objectParents = mutable.Set.empty[Symbol]
   private val sites         = mutable.ArrayBuffer.empty[Megamorphic.Site]
+  private val apart         = mutable.Map.empty[String, mutable.ArrayBuffer[(String, String)]]
+  private val apartKinds    = mutable.Map.empty[Kind, mutable.Set[String]]
+
+  private enum Kind { case Subclassed, Specialised, ObjectParent, AsType }
+
+  private def elsewhere(symbol: Symbol)(using Context): Option[String] =
+    if (foreign.isEmpty || !output(symbol).exists(foreign)) None else key(symbol)
+
+  private def note(kind: Kind, symbol: Symbol, local: mutable.Set[Symbol])(using Context): Unit =
+    elsewhere(symbol).fold(local += symbol)(node => apartKinds.getOrElseUpdate(kind, mutable.Set.empty) += node): Unit
+
+  private var received = Dispatch.Evidence.empty // scalafix:ok DisableSyntax.var
+
+  def receive(others: Dispatch.Evidence): Unit = received = others
+
+  private def remote(owner: Symbol)(using Context): Boolean = key(owner).exists(received.subclassed)
+
+  /** What this run records of the abstractions that it did not read. */
+  def evidence: Dispatch.Evidence = Dispatch.Evidence(
+    apart.view.mapValues(_.toVector).toMap,
+    apartKinds.getOrElse(Kind.Subclassed, Set.empty).toSet,
+    apartKinds.getOrElse(Kind.Specialised, Set.empty).toSet,
+    apartKinds.getOrElse(Kind.ObjectParent, Set.empty).toSet,
+    apartKinds.getOrElse(Kind.AsType, Set.empty).toSet
+  )
 
   val classes: collection.Set[Symbol] = declared
 
@@ -40,10 +94,12 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
 
   def megamorphic: Vector[Megamorphic.Site] = sites.toVector
 
-  def asType(symbol: Symbol): Unit = asTypes += symbol: Unit
+  def asType(symbol: Symbol)(using Context): Unit = note(Kind.AsType, symbol, asTypes)
 
-  def implement(abstraction: Symbol, implementation: Symbol, name: String, module: String): Unit =
-    implements.getOrElseUpdate(abstraction, mutable.Map.empty) += (implementation -> (name -> module)): Unit
+  def implement(abstraction: Symbol, implementation: Symbol, name: String, module: String)(using Context): Unit =
+    elsewhere(abstraction).fold(
+      implements.getOrElseUpdate(abstraction, mutable.Map.empty) += (implementation -> (name -> module))
+    )(node => apart.getOrElseUpdate(node, mutable.ArrayBuffer.empty) += (name -> module)): Unit
 
   /** Records the abstraction a trait or abstract class `cls` is, or the abstractions a concrete class implements. */
   def classify(cls: Symbol, name: String, key: String, info: Node)(using Context): Unit =
@@ -56,26 +112,30 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
       }
     } else
       cls.asClass.baseClasses.drop(1).foreach { parent =>
-        subclassed += parent
+        note(Kind.Subclassed, parent, subclassed)
         implement(parent, cls, name, info.module)
-        if (cls.is(Flags.ModuleClass)) objectParents += parent
+        if (cls.is(Flags.ModuleClass)) note(Kind.ObjectParent, parent, objectParents)
         if (cls.typeRef.baseType(parent).argInfos.exists(_.widenDealias.typeSymbol.isPrimitiveValueClass))
-          specialised += parent
+          note(Kind.Specialised, parent, specialised)
       }
 
-  def abstractions: Vector[Smells.Abstraction] =
+  def abstractions: Vector[Smells.Abstraction] = {
+    val others = received
     abstracts.toVector.collect {
-      case (symbol, (name, node, module)) if !mixins(symbol) || asTypes(symbol) =>
+      case (symbol, (name, node, module)) if !mixins(symbol) || asTypes(symbol) || others.asTypes(node) =>
+        val found = implements.get(symbol).fold(Vector.empty)(_.values.toVector) ++
+          others.implemented.getOrElse(node, Vector.empty)
         Smells.Abstraction(
           name,
           node,
           module,
-          implements.get(symbol).fold(Vector.empty)(_.values.toVector.sorted),
-          functional = implements.contains(symbol) && !subclassed(symbol),
-          specialised = specialised(symbol),
-          prioritised = prioritised(symbol) && objectParents(symbol)
+          found.sorted,
+          functional = found.nonEmpty && !subclassed(symbol) && !others.subclassed(node),
+          specialised = specialised(symbol) || others.specialised(node),
+          prioritised = prioritised(symbol) && (objectParents(symbol) || others.objectParents(node))
         )
     }
+  }
 
   /** Resolves the calls recorded to the keys class files name them by, once every class is declared. */
   def resolve()(using Context): Unit =
@@ -97,7 +157,8 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
           settled,
           classes.diff(kept).map(Calls.qualified(_)).toSet,
           members.nonEmpty && members.forall(stableRead(_)),
-          suppressions(caller)
+          suppressions(caller),
+          callee.owner.typeParams.nonEmpty
         )
       )
     }
@@ -125,7 +186,7 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
     reachable.getOrElseUpdate(
       method -> from,
       if (bodied(method) && (method.isEffectivelyFinal || !method.owner.isClass)) Some(Vector(method))
-      else if (!declared.contains(Calls.owner(method))) None
+      else if (!declared.contains(Calls.owner(method)) || remote(Calls.owner(method))) None
       else {
         def main(owner: Symbol) = concreteSubclasses(owner).filter(cls => !nodeOf(cls).exists(_.test))
         val classes             = Some(main(from)).filter(_.nonEmpty).getOrElse(main(method.owner))

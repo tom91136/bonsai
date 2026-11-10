@@ -97,6 +97,18 @@ object Smells {
       fixed: Boolean = false
   )
 
+  /** The instantiations that several runs record of one type parameter, as one. */
+  def merged(found: Vector[Instantiation]): Vector[Instantiation] =
+    found.groupBy(instantiation => (instantiation.owner, instantiation.node, instantiation.parameter)).values.map(
+      _.reduce((left, right) =>
+        left.copy(
+          arguments = Maps.join(left.arguments, right.arguments)(_ + _),
+          varied = left.varied || right.varied,
+          testUses = left.testUses + right.testUses
+        )
+      )
+    ).toVector
+
   case class Model(
       methods: Vector[Method],
       sites: Map[String, Vector[Algebra.Site]],

@@ -235,6 +235,13 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
+  test("an abstract method implemented on both sides of a class and package clash stays shared") {
+    eachSide { result =>
+      val found = Smells.findings(result.smells, result.algebra.products, result.graph.nodes)
+      assertEquals(found.filter(_.rule == Finding.Rule.ConstantArgument).map(_.detail), Vector.empty)
+    }
+  }
+
   test("a module that needs both sides of a class and package clash fails naming it") {
     Scratch.using("bonsai-") { directory =>
       val whole    = divided(directory, "objects")

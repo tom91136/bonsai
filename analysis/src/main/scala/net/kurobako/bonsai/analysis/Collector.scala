@@ -33,6 +33,40 @@ private[analysis] object Collector {
     val empty: Absorbed = Absorbed(Symbols.Recorded.empty, Map.empty, Set.empty)
   }
 
+  object Evidence {
+    val empty: Evidence = Evidence(
+      CallSites.Evidence.empty,
+      Map.empty,
+      Dispatch.Evidence.empty,
+      Fragments.Keys.empty,
+      StructureObserver.Evidence.empty,
+      Set.empty,
+      Set.empty
+    )
+  }
+
+  /** What a run records of definitions the runs beside it read, by the keys they go by. */
+  case class Evidence(
+      calls: CallSites.Evidence,
+      overriders: Map[String, Int],
+      dispatch: Dispatch.Evidence,
+      fragments: Fragments.Keys,
+      structure: StructureObserver.Evidence,
+      named: Set[String],
+      derived: Set[String]
+  ) {
+    @targetName("merge")
+    def ++(other: Evidence): Evidence = Evidence(
+      calls ++ other.calls,
+      Maps.join(overriders, other.overriders)(_ + _),
+      dispatch ++ other.dispatch,
+      fragments ++ other.fragments,
+      structure ++ other.structure,
+      named ++ other.named,
+      derived ++ other.derived
+    )
+  }
+
   case class Absorbed(symbols: Symbols.Recorded, nodes: Map[String, Node], roots: Set[Root]) {
     @targetName("merge")
     def ++(other: Absorbed): Absorbed = Absorbed(symbols ++ other.symbols, other.nodes ++ nodes, roots ++ other.roots)
@@ -69,17 +103,19 @@ private[analysis] class Collector(
     references: (Components, Fragments) => Context ?=> tpd.TreeTraverser,
     lines: Lines,
     entryPoints: Set[Root],
-    link: Option[Graph => Reach.Calls]
+    link: Option[Graph => Reach.Calls],
+    foreign: Set[Output] = Set.empty,
+    deferred: Boolean = false
 ) extends Phase, Recorder {
   import Collector.*
 
   private val symbols     = Symbols(outputs, libraries, generated, reflective, lines)
   private val callSites   = CallSites(symbols, lines)
   private val reads       = Reads(symbols, (symbol, from) => use(symbol, from))
-  private val derivations = Derivations(symbol => symbols.key(symbol).isDefined)
-  private val dispatching = Dispatch(symbols, bodies.contains(_))
-  private val dictionary  = Dictionaries(symbols)
-  private val structure   = StructureObserver(symbols, () => dispatching.classes, lines)
+  private val derivations = Derivations(symbols, foreign)
+  private val dispatching = Dispatch(symbols, bodies.contains(_), foreign)
+  private val dictionary  = Dictionaries(symbols, !deferred)
+  private val structure   = StructureObserver(symbols, () => dispatching.classes, lines, foreign)
   private val comparing   = Comparisons(symbols, () => dispatching.classes, lines)
   import symbols.*
 
@@ -101,6 +137,7 @@ private[analysis] class Collector(
   private val memberList     = mutable.ArrayBuffer.empty[Members.Member]
   private val givens         = mutable.Map.empty[Symbol, (String, Node)]
   private val named          = mutable.Set.empty[Symbol]
+  private val apartNamed     = mutable.Set.empty[String]
   private val givenList      = mutable.ArrayBuffer.empty[Members.Given]
   private val unlisted       = mutable.Set.empty[Symbol]
   private val nested         = mutable.Set.empty[String]
@@ -116,14 +153,20 @@ private[analysis] class Collector(
   private val dictionaryList = mutable.ArrayBuffer.empty[Dictionaries.Parameter]
   private val templates      = mutable.Map.empty[Symbol, tpd.Template]
   // The phase runs once, and its results are read by the extraction that follows.
-  private var purityModel  = Purity.Model.empty        // scalafix:ok DisableSyntax.var
-  private var linked       = Option.empty[Reach.Calls] // scalafix:ok DisableSyntax.var
-  private var twinned      = Collector.Absorbed.empty  // scalafix:ok DisableSyntax.var
+  private var purityModel  = Purity.Model.empty                          // scalafix:ok DisableSyntax.var
+  private var linked       = Option.empty[Reach.Calls]                   // scalafix:ok DisableSyntax.var
+  private var twinned      = Collector.Absorbed.empty                    // scalafix:ok DisableSyntax.var
   private val hierarchies  = mutable.ArrayBuffer.empty[(Symbol, String, String)]
   private val bodied       = mutable.Set.empty[Symbol]
   private val enumerations = mutable.ArrayBuffer.empty[Algebra.Enumeration]
-  private var placements   = Option.empty[Placements]  // scalafix:ok DisableSyntax.var
+  private var placements   = Option.empty[Placements]                    // scalafix:ok DisableSyntax.var
   private val callees      = mutable.Map.empty[Symbol, Callee]
+  private var read         = Option.empty[(Context, Fragments, Library)] // scalafix:ok DisableSyntax.var
+  private var received     = Collector.Evidence.empty                    // scalafix:ok DisableSyntax.var
+  private var gathered     = CallSites.Evidence.empty                    // scalafix:ok DisableSyntax.var
+  private var pooled       = Vector.empty[Clones.Candidate]              // scalafix:ok DisableSyntax.var
+  private var outgoing     = Collector.Evidence.empty                    // scalafix:ok DisableSyntax.var
+  private val overriders   = mutable.Map.empty[String, Int]
 
   def phaseName: String = "bonsai-collect"
 
@@ -155,18 +198,43 @@ private[analysis] class Collector(
         placing.traverse(unit.tpdTree)
       } catch { case NonFatal(error) => failed(s"${unit.source.path} could not be analysed", error) }
     }
+    callees ++= products.view.map((cls, product) =>
+      cls -> Callee(product.name, product.fields.size, Finding.simple(product.name), product.node, Set.empty, 0)
+    ).toMap ++ methods.view.map((symbol, method) =>
+      symbol -> Callee(method.key, method.fields.size, method.short, method.node, method.suppressed, method.line)
+    )
+    gathered = callSites.collect(callees, isForeign(_))
+    outgoing = Collector.Evidence(
+      gathered.excluding(callees.values.map(_.key).toSet),
+      overriders.toMap,
+      dispatching.evidence,
+      if (deferred) fragments.keys else Fragments.Keys.empty,
+      structure.evidence,
+      apartNamed.toSet,
+      derivations.evidence
+    )
+    if (deferred) read = Some((ctx, fragments, library)) else finish(fragments, library, Collector.Evidence.empty)
+    units
+  }
+
+  /** Concludes what the units read give, with `others` the evidence the runs beside this one recorded of the
+    * definitions of this one. A collector that defers its conclusion keeps the compiler context until then.
+    */
+  def conclude(others: Collector.Evidence): Unit =
+    read.foreach((context, fragments, library) => finish(fragments, library, others)(using context))
+
+  private def finish(fragments: Fragments, library: Library, others: Collector.Evidence)(using Context): Unit = {
+    structure.receive(others.structure)
+    derivations.receive(others.derived)
+    dispatching.receive(others.dispatch)
     qualifiedUses()
     symbols.absorb(twinned.symbols)
     products.mapValuesInPlace((cls, product) =>
       if (derivations.derived(cls)) product.copy(origin = Algebra.Origin.Derived) else product
     )
     enumerations ++= hierarchies.flatMap((parent, name, key) => enumeration(parent, name, key))
-    callees ++= products.view.map((cls, product) =>
-      cls -> Callee(product.name, product.fields.size, Finding.simple(product.name), product.node, Set.empty, 0)
-    ).toMap ++ methods.view.map((symbol, method) =>
-      symbol -> Callee(method.key, method.fields.size, method.short, method.node, method.suppressed, method.line)
-    )
-    callSites.align(callees)
+    received = others
+    callSites.conclude(gathered ++ others.calls, callees)
     usage ++= users.toVector.groupMapReduce((symbol, _) => memberName(symbol))((_, nodes) => nodes.toSet)(_ ++ _)
     assignedNames ++= assigned.map(memberName(_))
     memberList ++= members.collect {
@@ -196,7 +264,7 @@ private[analysis] class Collector(
     val overridden = givens.keySet.flatMap(_.allOverriddenSymbols)
     givenList ++= givens.collect {
       case (symbol, (name, info)) if symbol.allOverriddenSymbols.isEmpty && !overridden(symbol) && !clashes(symbol) =>
-        Members.Given(name, info.name, named(symbol), suppressions(symbol))
+        Members.Given(name, info.name, named(symbol) || others.named(name), suppressions(symbol))
     }
     val incoming = symbols.incoming
     nestedList ++= nested.flatMap(inner =>
@@ -204,7 +272,8 @@ private[analysis] class Collector(
         Members.Nested(inner, outer, incoming.getOrElse(inner, Vector.empty).toSet, exposed(inner))
       )
     )
-    clones ++= fragments.groups()
+    val duplicates = fragments.candidates(others.fragments)
+    if (deferred) pooled = duplicates else clones ++= Clones.groups(duplicates)
     dispatching.resolve()
     dictionaryList ++= dictionary.parameters()
     linked = link.map(_(graph))
@@ -241,9 +310,8 @@ private[analysis] class Collector(
     )
     purityModel = purity(effects)
     effects.unanalysed.foreach(failed(_, _))
-    structure.finish()
+    structure.finish(others.structure)
     comparing.finish()
-    units
   }
 
   /** Adds what a twin's classes reference, which the copies of the JVM modules the node records stand in for: the edges
@@ -260,6 +328,16 @@ private[analysis] class Collector(
 
   /** The names of the variables assigned after their initialisation. */
   def assignments: Set[String] = assignedNames.toSet
+
+  /** What this run records of definitions that it did not read, for the runs that did. */
+  def evidence: Collector.Evidence = outgoing
+
+  /** The fragments of this run that share a hash with another in this run or beside it, which a build read in several
+    * runs groups together.
+    */
+  def candidates: Vector[Clones.Candidate] = pooled
+
+  private def isForeign(symbol: Symbol)(using Context): Boolean = foreign.nonEmpty && output(symbol).exists(foreign)
 
   def problem(message: String): Unit = failures += message
 
@@ -296,10 +374,12 @@ private[analysis] class Collector(
     )
 
   def smells: Smells.Model = {
-    val defaults = callSites.defaulting(callees)
+    val defaults = callSites.repeatedDefaults
     Smells.Model(
       methods.toVector.map((symbol, method) =>
-        if (overridden.getOrElse(symbol, 0) > 1) method.copy(shared = true) else method
+        if (overridden.getOrElse(symbol, 0) + received.overriders.getOrElse(method.key, 0) > 1)
+          method.copy(shared = true)
+        else method
       ).sortBy(method => (method.name, method.node)),
       callSites.recorded,
       callSites.usages(methods),
@@ -502,9 +582,12 @@ private[analysis] class Collector(
   def signature(method: Symbol, body: tpd.Tree)(using Context): Unit =
     nodeOf(method).foreach { info =>
       val fields = fieldsOf(method)
-      method.allOverriddenSymbols.filter(_.is(Flags.Deferred)).foreach(abstracted =>
-        overridden(abstracted) = overridden.getOrElse(abstracted, 0) + 1
-      )
+      method.allOverriddenSymbols.filter(_.is(Flags.Deferred)).foreach { abstracted =>
+        if (isForeign(abstracted)) {
+          val key = methodKey(abstracted, fieldsOf(abstracted))
+          overriders(key) = overriders.getOrElse(key, 0) + 1
+        } else overridden(abstracted) = overridden.getOrElse(abstracted, 0) + 1
+      }
       methods(method) = Smells.Method(
         methodName(method, fields),
         methodKey(method, fields),
@@ -916,11 +999,14 @@ private[analysis] class Collector(
   def mention(tree: tpd.Tree)(using Context): Unit = tree match {
     case tpd.Ident(_) | tpd.Select(_, _)
         if tree.symbol.is(Flags.Given) && tree.span.exists && !tree.span.isSynthetic =>
-      named += tree.symbol: Unit
+      mentioned(tree.symbol)
     case _ => ()
   }
 
-  def mention(symbols: List[Symbol])(using Context): Unit = named ++= symbols.filter(_.is(Flags.Given)): Unit
+  def mention(symbols: List[Symbol])(using Context): Unit = symbols.filter(_.is(Flags.Given)).foreach(mentioned(_))
+
+  private def mentioned(symbol: Symbol)(using Context): Unit =
+    if (isForeign(symbol)) apartNamed += qualifiedName(symbol): Unit else named += symbol: Unit
 
   // The compiler names an anonymous given after its type, so a second given of that type in the owner would collide.
   private def clashes(symbol: Symbol)(using Context): Boolean =

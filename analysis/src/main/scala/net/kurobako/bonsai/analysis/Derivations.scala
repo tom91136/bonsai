@@ -76,8 +76,10 @@ private[analysis] object Derivations {
   * build does not define, as no finding concerns their fields. A class can be reached from any file of the build, so
   * the evidence is complete only once every file is traversed.
   */
-private[analysis] class Derivations(defined: Symbol => Context ?=> Boolean) {
+private[analysis] class Derivations(symbols: Symbols, foreign: Set[Output]) {
   import Derivations.*
+
+  private def defined(cls: Symbol)(using Context): Boolean = symbols.key(cls).isDefined
 
   private val reached  = mutable.Set.empty[Symbol]
   private val generics = mutable.Map.empty[Symbol, Boolean]
@@ -101,7 +103,19 @@ private[analysis] class Derivations(defined: Symbol => Context ?=> Boolean) {
         }
     )
 
-  def derived(cls: Symbol)(using Context): Boolean = spread.headOption.getOrElse(spreading()).contains(cls)
+  private var received = Set.empty[String] // scalafix:ok DisableSyntax.var
+
+  def receive(others: Set[String]): Unit = received = others
+
+  def derived(cls: Symbol)(using Context): Boolean =
+    spread.headOption.getOrElse(spreading()).contains(cls) || received(symbols.qualifiedName(cls))
+
+  /** The classes this run did not read that its code derives, by name. */
+  def evidence(using Context): Set[String] =
+    if (foreign.isEmpty) Set.empty
+    else spread.headOption.getOrElse(
+      spreading()
+    ).filter(cls => symbols.output(cls).exists(foreign)).map(symbols.qualifiedName(_))
 
   private def spreading()(using Context): Set[Symbol] = {
     val visited = mutable.Set.empty[Symbol]

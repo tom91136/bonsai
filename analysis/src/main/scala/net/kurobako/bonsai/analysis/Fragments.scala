@@ -16,7 +16,27 @@ import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.java.Clones.*
 import net.kurobako.bonsai.lifting.*
 import scala.annotation.tailrec
+import scala.annotation.targetName
+import scala.collection.immutable.LongMap
 import scala.collection.mutable
+
+private[analysis] object Fragments {
+
+  object Keys {
+    val empty: Keys = Keys(LongMap.empty, LongMap.empty)
+  }
+
+  /** How many fragments of a run share each hash, and of those how many are whole, so that runs which read different
+    * modules still find copies between them.
+    */
+  case class Keys(loose: LongMap[(Int, Int)], broad: LongMap[Int]) {
+    @targetName("merge")
+    def ++(other: Keys): Keys = Keys(
+      loose.unionWith(other.loose, (_, left, right) => (left._1 + right._1, left._2 + right._2)),
+      broad.unionWith(other.broad, (_, left, right) => left + right)
+    )
+  }
+}
 
 /** Finds duplicated code the way IntelliJ's duplicate locator does: subtrees and statement windows of method bodies are
   * hashed bottom-up with local definitions anonymised, and fragments sharing a hash are confirmed with a hash that
@@ -111,7 +131,13 @@ class Fragments(lines: Lines)(using Context) {
       shape(body, origin, entire = true): Unit
     }
 
-  def groups(): Vector[Clones.Group] = Clones.groups(candidates())
+  def groups(): Vector[Clones.Group] = Clones.groups(candidates(Fragments.Keys.empty))
+
+  /** How many fragments of this run share each hash. */
+  def keys: Fragments.Keys = Fragments.Keys(
+    LongMap.from(pieces.view.mapValues(alike => (alike.size, alike.count(_.roles.whole)))),
+    LongMap.from(broadPieces.view.mapValues(_.size))
+  )
 
   /** Whether a call of `member` has the type of its body, which a declared result type that is wider, or an opaque
     * alias the body does not have outside its scope, would change.
@@ -132,14 +158,21 @@ class Fragments(lines: Lines)(using Context) {
 
   private def typeOf(tree: tpd.Tree): Option[Types.Type] = Option(tree.tpe)
 
-  /** The fragments that share a hash with another, confirmed with hashes that number locals by first occurrence. */
-  private def candidates(): Vector[Clones.Candidate] = {
+  /** The fragments that share a hash with another, in this run or in the runs `beside` it, confirmed with hashes that
+    * number locals by first occurrence.
+    */
+  def candidates(beside: Fragments.Keys): Vector[Clones.Candidate] = {
     val chosen = mutable.LinkedHashMap.empty[Piece, Boolean]
-    pieces.values.filter(_.size > 1).foreach { alike =>
-      val crowded = alike.count(_.roles.whole) > MaximumNear
-      alike.foreach(piece => chosen(piece) = crowded)
+    pieces.foreach { (hash, alike) =>
+      val (count, whole) = beside.loose.getOrElse(hash, (0, 0))
+      if (alike.size + count > 1) {
+        val crowded = alike.count(_.roles.whole) + whole > MaximumNear
+        alike.foreach(piece => chosen(piece) = crowded)
+      }
     }
-    broadPieces.values.filter(_.size > 1).foreach(_.foreach(piece => chosen.getOrElseUpdate(piece, false)))
+    broadPieces.foreach { (hash, alike) =>
+      if (alike.size + beside.broad.getOrElse(hash, 0) > 1) alike.foreach(piece => chosen.getOrElseUpdate(piece, false))
+    }
     chosen.view.flatMap((piece, crowded) => candidate(piece, crowded)).toVector
   }
 

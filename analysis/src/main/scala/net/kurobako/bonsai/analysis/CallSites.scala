@@ -16,6 +16,7 @@ import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeParamRef
 import net.kurobako.bonsai.lifting.*
+import scala.annotation.targetName
 import scala.collection.mutable
 
 private object CallSites {
@@ -31,6 +32,52 @@ private object CallSites {
       scope: Option[Symbol],
       helper: Option[Symbol]
   )
+
+  /** The method a construction sits in and the positions of its arguments among that method's parameters. */
+  case class Forward(helper: String, passed: Vector[Int])
+
+  /** A call or construction, with `omitted` telling which of its arguments are default getters, when the callee has
+    * defaults.
+    */
+  case class Call(site: Algebra.Site, omitted: Vector[Boolean], forward: Option[Forward])
+
+  /** How often a method returning a value is called, discarded, tested, negated and unwrapped. */
+  case class Count(result: String, calls: Int, tests: Int, discards: Int, negated: Int, unwrapped: Int) {
+    def +(other: Count): Count = Count(
+      result,
+      calls + other.calls,
+      tests + other.tests,
+      discards + other.discards,
+      negated + other.negated,
+      unwrapped + other.unwrapped
+    )
+  }
+
+  object Evidence {
+    val empty: Evidence = Evidence(Map.empty, Map.empty, Map.empty)
+  }
+
+  /** What the code of a run records of its callees, by the keys they go by, so that runs which read the definitions and
+    * the uses of a callee apart still count them together.
+    */
+  case class Evidence(
+      calls: Map[String, Vector[Call]],
+      counts: Map[String, Count],
+      explicit: Map[(String, Int, String), Vector[Algebra.Site]]
+  ) {
+    @targetName("merge")
+    def ++(other: Evidence): Evidence = Evidence(
+      Maps.join(calls, other.calls)(_ ++ _),
+      Maps.join(counts, other.counts)(_ + _),
+      Maps.join(explicit, other.explicit)(_ ++ _)
+    )
+
+    def excluding(keys: Set[String]): Evidence = Evidence(
+      calls.filterNot((key, _) => keys(key)),
+      counts.filterNot((key, _) => keys(key)),
+      explicit.filterNot { case ((key, _, _), _) => keys(key) }
+    )
+  }
 }
 
 /** The calls and constructions of the build, counted and classified by what they pass and drop. */
@@ -41,7 +88,6 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   private val pending      = mutable.ArrayBuffer.empty[Pending]
   private val sites        = mutable.Map.empty[String, Vector[Algebra.Site]]
   private val forwarded    = mutable.Map.empty[String, Vector[Algebra.Site]]
-  private val explicit     = mutable.Map.empty[(Symbol, String, String), mutable.ArrayBuffer[Algebra.Site]]
   private val spares       = mutable.ArrayBuffer.empty[Smells.Spare]
   private val results      = mutable.Map.empty[Symbol, Option[String]]
   private val calls        = mutable.Map.empty[Symbol, (Int, Int)]
@@ -59,6 +105,8 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   private val arguments    = mutable.Map.empty[(Symbol, Int), mutable.Map[String, Int]]
   private val testUses     = mutable.Map.empty[(Symbol, Int), Int]
   private val varied       = mutable.Set.empty[(Symbol, Int)]
+  private var concluded    = Evidence.empty               // scalafix:ok DisableSyntax.var
+  private var repeated     = Vector.empty[Smells.Default] // scalafix:ok DisableSyntax.var
 
   def recorded: Map[String, Vector[Algebra.Site]] = sites.toMap
 
@@ -79,68 +127,121 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
       derivations: Map[Int, Algebra.Derivation] = Map.empty
   ): Algebra.Site = Algebra.Site(arguments, call.test, call.own, call.location, derivations)
 
-  /** Classifies the calls kept, with `callees` those that have a model, and notes the default arguments they repeat and
-    * the defaults no call overrides.
+  /** The evidence of this run: its calls and constructions of `callees` and of the callees that `foreign` holds, the
+    * counts of its calls to methods that return values, and the defaults its calls repeat.
     */
-  def align(callees: collection.Map[Symbol, Callee])(using Context): Unit = {
+  def collect(callees: collection.Map[Symbol, Callee], foreign: Symbol => Boolean)(using Context): Evidence = {
     val passed = pending.filter(_.scope.isDefined).flatMap { call =>
       call.arguments.zipWithIndex.collect {
         case (argument, index) if !omitted(argument) => (call.callee, call.scope, index) -> argument
       }
     }.groupMap(_._1)(_._2)
-    for {
-      (callee, recorded) <- pending.groupBy(_.callee)
-      subject            <- callees.get(callee)
-      aligned = recorded.filter(_.arguments.size == subject.arity) if aligned.nonEmpty
-    } {
-      sites(subject.key) = aligned.map { call =>
-        val derived = if (callee.isClass) derivations(call.arguments) else Map.empty[Int, Algebra.Derivation]
-        site(call, call.arguments.map(classify(_)).toVector, derived)
-      }.toVector
-      if (callee.isClass) forwarded(subject.key) = aligned.flatMap(expand(_, pending)).toVector
-    }
+    val helpers                               = pending.flatMap(_.helper).toSet
+    val keys                                  = mutable.Map.empty[Symbol, Option[String]]
+    def keyOf(callee: Symbol): Option[String] = keys.getOrElseUpdate(
+      callee,
+      callees.get(callee).map(_.key).orElse(Option.when(foreign(callee) || helpers(callee))(calleeKey(callee)))
+    )
+    val withDefaults                = mutable.Map.empty[Symbol, Boolean]
+    def hasDefaults(callee: Symbol) = withDefaults.getOrElseUpdate(
+      callee,
+      (if (callee.isClass) callee.primaryConstructor else callee).paramSymss.flatten.exists(_.is(Flags.HasDefault))
+    )
+    val calls = pending.flatMap(call => keyOf(call.callee).map(key => key -> call)).groupMap(_._1)(_._2).view
+      .mapValues(_.map { call =>
+        val derived = if (call.callee.isClass) derivations(call.arguments) else Map.empty[Int, Algebra.Derivation]
+        val flags   = if (hasDefaults(call.callee)) call.arguments.map(omitted(_)).toVector else Vector.empty
+        val onward  = forward(call).flatMap((helper, passed) => keyOf(helper).map(Forward(_, passed)))
+        Call(site(call, call.arguments.map(classify(_)).toVector, derived), flags, onward)
+      }.toVector).toMap
+    val explicit = mutable.Map.empty[(String, Int, String), Vector[Algebra.Site]]
     for {
       call              <- pending if call.method.name != nme.copy && defaulted(call.method)
+      key               <- keyOf(call.callee)
       (argument, index) <- call.arguments.zipWithIndex if !omitted(argument) && droppable(call.arguments, index)
-      default           <- defaults.get(defaultGetter(call.method, index))
-      value             <- same(argument, default)
-      parameter         <- fieldsOf(call.callee).lift(index)
+      value             <- valueOf(argument)
       if !varied(argument, passed.getOrElse((call.callee, call.scope, index), Nil))
-    } explicit.getOrElseUpdate((call.callee, parameter.name, value), mutable.ArrayBuffer.empty) +=
-      site(call)
-    spares ++= spareDefaults(callees) ++ fixedDefaults(callees)
+    } explicit((key, index, value)) = explicit.getOrElse((key, index, value), Vector.empty) :+ site(call)
+    val counts = this.calls.view.flatMap { (method, total) =>
+      for {
+        key    <- keyOf(method)
+        result <- results.getOrElse(method, None)
+      } yield key -> Count(
+        result,
+        calls = total._1,
+        tests = total._2,
+        discards = discards.getOrElse(method, 0),
+        negated = negatedCalls.getOrElse(method, 0),
+        unwrapped = unwrapped.getOrElse(method, 0)
+      )
+    }.toMap
     pending.clear()
+    Evidence(calls, counts, explicit.toMap)
   }
+
+  private def forward(call: Pending)(using Context): Option[(Symbol, Vector[Int])] =
+    call.helper.filter(_ => call.callee.isClass).map { helper =>
+      val parameters = helper.paramSymss.find(_.forall(_.isTerm)).getOrElse(Nil).toVector
+      helper -> call.arguments.map(argument => parameters.indexOf(Calls.peel(argument).symbol)).toVector
+    }
+
+  /** The key under which the calls of `callee` are recorded. */
+  def calleeKey(callee: Symbol)(using Context): String =
+    if (callee.isClass) qualifiedName(callee) else methodKey(callee, fieldsOf(callee))
+
+  /** Classifies the calls of `evidence` to `callees`, and notes the defaults no call overrides. */
+  def conclude(evidence: Evidence, callees: collection.Map[Symbol, Callee])(using Context): Unit = {
+    for {
+      (callee, subject) <- callees
+      recorded          <- evidence.calls.get(subject.key)
+      aligned = recorded.filter(_.site.arguments.sizeIs == subject.arity) if aligned.nonEmpty
+    } {
+      sites(subject.key) = aligned.map(_.site)
+      if (callee.isClass) forwarded(subject.key) = aligned.flatMap(expand(_, evidence))
+    }
+    for {
+      (callee, subject) <- callees
+      recorded          <- evidence.calls.get(subject.key)
+    } {
+      if (!callee.isClass) spares ++= spare(callee, recorded, subject)
+      spares ++= fixed(callee, recorded, subject)
+    }
+    concluded = evidence
+    repeated = defaulting(callees)
+  }
+
+  def repeatedDefaults: Vector[Smells.Default] = repeated
+
+  private def bare(call: Call): Algebra.Site = call.site.copy(arguments = Vector.empty, derivations = Map.empty)
 
   // A construction inside a method passes that method's parameters on, so each call of the method is a construction
   // with the arguments of that call.
-  private def expand(call: Pending, calls: Iterable[Pending])(using Context): Vector[Algebra.Site] = {
-    val direct     = call.arguments.map(classify(_)).toVector
-    val parameters = call.helper.toVector.flatMap(_.paramSymss.find(_.forall(_.isTerm)).getOrElse(Nil))
-    val passed     = call.arguments.map(argument => parameters.indexOf(Calls.peel(argument).symbol)).toVector
-    val callers    = call.helper.toVector.flatMap(helper => calls.filter(_.callee == helper))
-    if (callers.isEmpty || passed.forall(_ < 0)) Vector(site(call, direct))
-    else
-      callers.map { caller =>
-        val supplied  = caller.arguments.toVector
-        val arguments = direct.zip(passed).map((value, index) => supplied.lift(index).fold(value)(classify(_)))
-        Algebra.Site(arguments, call.test || caller.test, call.own, call.location)
-      }
+  private def expand(call: Call, evidence: Evidence): Vector[Algebra.Site] = {
+    val direct = call.site.copy(derivations = Map.empty)
+    call.forward.map(forward => forward.passed -> evidence.calls.getOrElse(forward.helper, Vector.empty)) match {
+      case Some((passed, callers)) if callers.nonEmpty && !passed.forall(_ < 0) =>
+        callers.map { caller =>
+          val arguments = direct.arguments.zip(passed).map((value, index) =>
+            caller.site.arguments.lift(index).getOrElse(value)
+          )
+          Algebra.Site(arguments, call.site.test || caller.site.test, call.site.own, call.site.location)
+        }
+      case _ => Vector(direct)
+    }
   }
 
   def usages(methods: collection.Map[Symbol, Smells.Method]): Vector[Smells.Usage] =
-    calls.toVector.flatMap { case (symbol, (total, tests)) =>
-      for {
-        method <- methods.get(symbol)
-        result <- results.getOrElse(symbol, None)
-      } yield Smells.Usage(
-        method,
-        result,
-        total,
-        discards.getOrElse(symbol, 0),
-        tests,
-        negated = negatedCalls.getOrElse(symbol, 0),
-        unwrapped = unwrapped.getOrElse(symbol, 0)
+    methods.values.toVector.flatMap { method =>
+      concluded.counts.get(method.key).map(count =>
+        Smells.Usage(
+          method,
+          count.result,
+          count.calls,
+          count.discards,
+          count.tests,
+          negated = count.negated,
+          unwrapped = count.unwrapped
+        )
       )
     }
 
@@ -158,15 +259,17 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
       )
     }
 
-  def defaulting(callees: collection.Map[Symbol, Callee]): Vector[Smells.Default] =
-    explicit.toVector.flatMap { case ((callee, parameter, value), recorded) =>
-      callees.get(callee).map(subject =>
-        Smells.Default(subject.name, subject.node, parameter, value, recorded.toVector, subject.line)
-      )
+  private def defaulting(callees: collection.Map[Symbol, Callee])(using Context): Vector[Smells.Default] = {
+    val byKey = callees.map((symbol, subject) => subject.key -> (symbol, subject)).toMap
+    concluded.explicit.toVector.flatMap { case ((key, index, value), recorded) =>
+      for {
+        (callee, subject) <- byKey.get(key)
+        default <- defaults.get(defaultGetter(if (callee.isClass) callee.primaryConstructor else callee, index))
+        if valueOf(default).contains(value)
+        parameter <- fieldsOf(callee).lift(index)
+      } yield Smells.Default(subject.name, subject.node, parameter.name, value, recorded, subject.line)
     }
-
-  private def spareDefaults(callees: collection.Map[Symbol, Callee])(using Context): Vector[Smells.Spare] =
-    pending.groupBy(_.method).toVector.flatMap((method, calls) => spare(method, calls.toVector, callees))
+  }
 
   private def plain(method: Symbol)(using Context): Boolean =
     method.is(Flags.Method) && !method.isConstructor && !method.is(Flags.Synthetic) && method.isEffectivelyFinal &&
@@ -179,41 +282,35 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
       !callee.companionModule.moduleClass.info.decls.toList.exists(_.isOneOf(Flags.Given | Flags.Implicit))
     else plain(callee)
 
-  private def fixedDefaults(callees: collection.Map[Symbol, Callee])(using Context): Vector[Smells.Spare] =
-    pending.groupBy(_.callee).toVector.flatMap { (callee, calls) =>
+  private def fixed(callee: Symbol, calls: Vector[Call], subject: Callee)(using Context): Vector[Smells.Spare] =
+    if (calls.exists(!_.site.own) && fixable(callee)) {
       val clause = (if (callee.isClass) callee.primaryConstructor else callee).paramSymss.find(_.forall(_.isTerm))
         .getOrElse(Nil).toVector
-      val arguments = calls.map(_.arguments.toVector)
-      val sites     = calls.toVector.map(site(_))
-      callees.get(callee).filter(_ => calls.exists(!_.own) && fixable(callee)).toVector.flatMap { subject =>
-        clause.zipWithIndex.collect {
-          case (parameter, index)
-              if parameter.is(Flags.HasDefault) &&
-                arguments.forall(args => args.sizeIs == clause.size && omitted(args(index))) =>
-            Smells.Spare(
-              subject.name,
-              subject.node,
-              parameter.name.toString,
-              sites,
-              subject.suppressed,
-              lines.line(callee.sourcePos),
-              fixed = true
-            )
-        }
-      }
-    }
-
-  private def spare(method: Symbol, calls: Vector[Pending], callees: collection.Map[Symbol, Callee])(using
-      Context
-  ): Vector[Smells.Spare] = {
-    val clause    = method.paramSymss.find(_.forall(_.isTerm)).getOrElse(Nil).toVector
-    val sites     = calls.map(site(_))
-    val arguments = calls.map(_.arguments.toVector)
-    callees.get(method).filter(_ => plain(method) && calls.exists(!_.own)).toVector.flatMap { subject =>
+      val sites = calls.map(bare(_))
       clause.zipWithIndex.collect {
         case (parameter, index)
             if parameter.is(Flags.HasDefault) &&
-              arguments.forall(args => args.sizeIs == clause.size && !omitted(args(index))) =>
+              calls.forall(call => call.omitted.sizeIs == clause.size && call.omitted(index)) =>
+          Smells.Spare(
+            subject.name,
+            subject.node,
+            parameter.name.toString,
+            sites,
+            subject.suppressed,
+            lines.line(callee.sourcePos),
+            fixed = true
+          )
+      }
+    } else Vector.empty
+
+  private def spare(method: Symbol, calls: Vector[Call], subject: Callee)(using Context): Vector[Smells.Spare] =
+    if (plain(method) && calls.exists(!_.site.own)) {
+      val clause = method.paramSymss.find(_.forall(_.isTerm)).getOrElse(Nil).toVector
+      val sites  = calls.map(bare(_))
+      clause.zipWithIndex.collect {
+        case (parameter, index)
+            if parameter.is(Flags.HasDefault) &&
+              calls.forall(call => call.omitted.sizeIs == clause.size && !call.omitted(index)) =>
           Smells.Spare(
             subject.name,
             subject.node,
@@ -223,8 +320,7 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
             lines.line(method.sourcePos)
           )
       }
-    }
-  }
+    } else Vector.empty
 
   /** Keeps an application the code inverts with `!`, which is how a boolean method every caller negates is found. */
   def negate(call: tpd.Tree): Unit = negations += innermost(call)
@@ -504,6 +600,20 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
   // A value read from the file system or network is a snapshot of it, which later reads need not agree with.
   private def readsWorld(symbol: Symbol)(using Context): Boolean =
     WorldPackages.exists(symbol.owner.fullName.toString.startsWith(_))
+
+  /** The value an argument is known to have, shown; an option is known by its contents. */
+  private def valueOf(argument: tpd.Tree)(using Context): Option[String] = {
+    val tree = resolved(argument)
+    classify(tree) match {
+      case Algebra.Argument.Present =>
+        Calls.peel(tree) match {
+          case tpd.Apply(_, List(inner)) => valueOf(inner).map(shown => s"Some($shown)")
+          case _                         => None
+        }
+      case Algebra.Argument.Unknown => None
+      case value                    => Some(value.shown)
+    }
+  }
 
   /** The value two arguments are both known to have, shown; an option is known by its contents. */
   private def same(left: tpd.Tree, right: tpd.Tree)(using Context): Option[String] = {

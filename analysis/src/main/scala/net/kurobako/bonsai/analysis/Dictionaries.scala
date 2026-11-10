@@ -57,9 +57,10 @@ object Dictionaries {
 }
 
 /** The given arguments of the calls of the build, which a call writes out as trees, followed from the parameters they
-  * fill to the parameters their callers forward them from.
+  * fill to the parameters their callers forward them from. Callers read in another run are not followed, so a run that
+  * is not `complete` leaves every parameter open.
   */
-private[analysis] class Dictionaries(symbols: Symbols) {
+private[analysis] class Dictionaries(symbols: Symbols, complete: Boolean) {
   import Dictionaries.*
   import symbols.*
 
@@ -139,7 +140,7 @@ private[analysis] class Dictionaries(symbols: Symbols) {
     inputs.keys.toVector.flatMap { slot =>
       Keys.of(slot.method).map { key =>
         val found = reached(slot)
-        Parameter(key, slot.index, found.instances.toVector.sorted, found.open, generic(slot))
+        Parameter(key, slot.index, found.instances.toVector.sorted, found.open || !complete, generic(slot))
       }
     }.sortBy(parameter => (parameter.method, parameter.index))
   }
