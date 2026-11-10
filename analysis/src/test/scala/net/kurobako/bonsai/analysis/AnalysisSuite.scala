@@ -10,6 +10,9 @@ import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.jar.JarEntry
+import java.util.jar.JarOutputStream
+import java.util.jar.Manifest as JarManifest
 import java.util.regex.Pattern
 import javax.tools.DiagnosticListener
 import javax.tools.JavaFileObject
@@ -22,6 +25,7 @@ import net.kurobako.bonsai.testing.*
 import scala.concurrent.Promise
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
+import scala.util.Using
 
 /** Compiles test sources into throwaway main and test outputs and analyses them as one build. */
 trait AnalysisSuite extends FunSuite {
@@ -237,6 +241,24 @@ trait AnalysisSuite extends FunSuite {
     val path = root.resolve(name)
     Files.createDirectories(path.getParent)
     Files.writeString(path, content): Unit
+  }
+
+  protected def archive(classes: Path, jar: Path, title: String, version: String): Path = {
+    val manifest = JarManifest()
+    Seq(
+      "Manifest-Version"         -> "1.0",
+      "Implementation-Vendor-Id" -> "org.example",
+      "Implementation-Title"     -> title,
+      "Implementation-Version"   -> version
+    ).foreach(manifest.getMainAttributes.putValue(_, _))
+    Using.resource(JarOutputStream(Files.newOutputStream(jar), manifest)) { out =>
+      Using.resource(Files.walk(classes))(_.toList.asScala.filter(Files.isRegularFile(_)).sorted.foreach { entry =>
+        out.putNextEntry(JarEntry(classes.relativize(entry).toString))
+        out.write(Files.readAllBytes(entry))
+        out.closeEntry()
+      })
+    }
+    jar
   }
 
   protected def compile(

@@ -5,13 +5,8 @@ import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.jar.JarEntry
-import java.util.jar.JarOutputStream
-import java.util.jar.Manifest as JarManifest
 import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.testing.*
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
 
 class ExtractionSuite extends AnalysisSuite {
 
@@ -45,24 +40,6 @@ class ExtractionSuite extends AnalysisSuite {
     val result =
       extract(program("Deep", s"object Deep { val text: String = new java.lang.StringBuilder()$chain.toString }"))
     assert(result.graph.nodes.contains("Deep"), result.graph.nodes.keySet.mkString(", "))
-  }
-
-  private def archive(classes: Path, jar: Path, title: String, version: String): Path = {
-    val manifest = JarManifest()
-    Seq(
-      "Manifest-Version"         -> "1.0",
-      "Implementation-Vendor-Id" -> "org.example",
-      "Implementation-Title"     -> title,
-      "Implementation-Version"   -> version
-    ).foreach(manifest.getMainAttributes.putValue(_, _))
-    Using.resource(JarOutputStream(Files.newOutputStream(jar), manifest)) { out =>
-      Using.resource(Files.walk(classes))(_.toList.asScala.filter(Files.isRegularFile(_)).sorted.foreach { entry =>
-        out.putNextEntry(JarEntry(classes.relativize(entry).toString))
-        out.write(Files.readAllBytes(entry))
-        out.closeEntry()
-      })
-    }
-    jar
   }
 
   test("a build whose only class cannot be read fails, while readable classes keep the rest of the build") {
