@@ -1389,6 +1389,11 @@ class LintSuite extends FunSuite {
   private def tagged(found: List[String], check: String): List[String] =
     found.view.filter(_.endsWith(s"[bonsai:$check]")).map(_.takeWhile(_ != ';')).toList.sorted
 
+  test("a binding used only in the message of an inline assert offers no edit") {
+    val source = """object Lints { def run(c: Boolean): Unit = { val x = "a".concat("b"); assert(c, s"$x") } }"""
+    assert(tagged(warnings(source), "binding-in-one-branch").size == 1)
+  }
+
   test("a polymorphic function value passed to a library call has no result type to read") {
     val source = "object Lints { def run(poly: [A] => A => A): Int = Vector[Any](1).appended(poly).appended(2).size }"
     assert(!warnings(source).exists(_.contains("empty list")))

@@ -82,7 +82,10 @@ private class Bindings(checks: Checks)(using Context) {
           Check.BindingInOneBranch,
           s"${definition.name} is only used in one branch; define it there",
           definition.srcPos,
-          if (bound.intersect(free).isEmpty && body.span.exists && body.span.start < body.span.end)
+          if (
+            bound.intersect(free).isEmpty && body.span.exists && body.source == ctx.compilationUnit.source &&
+            body.span.start < body.span.end
+          )
             Edits.remove(text, definition) :: placement(definition, body)
           else Nil
         )
