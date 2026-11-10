@@ -1389,6 +1389,11 @@ class LintSuite extends FunSuite {
   private def tagged(found: List[String], check: String): List[String] =
     found.view.filter(_.endsWith(s"[bonsai:$check]")).map(_.takeWhile(_ != ';')).toList.sorted
 
+  test("a polymorphic function value passed to a library call has no result type to read") {
+    val source = "object Lints { def run(poly: [A] => A => A): Int = Vector[Any](1).appended(poly).appended(2).size }"
+    assert(!warnings(source).exists(_.contains("empty list")))
+  }
+
   test("argument reuse is reported only for inline methods whose source the build holds") {
     val library = "package lib\nobject Ops { inline def twice(inline value: Int): Int = value + value }"
     val use     = """object Lints {

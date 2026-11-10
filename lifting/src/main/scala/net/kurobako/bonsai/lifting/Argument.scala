@@ -84,7 +84,7 @@ private[lifting] object Argument {
       case _                                => false
     }
     val result = body.filterNot(converted(_)).map(_.tpe)
-      .orElse(Option.when(body.isEmpty && function(bare))(bare.tpe.widen.dealias.argInfos.last))
+      .orElse(Option.when(body.isEmpty && function(bare))(bare.tpe.widen.dealias.argInfos.lastOption).flatten)
     new Argument(
       Texts.of(tree),
       pure,
