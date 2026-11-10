@@ -50,7 +50,7 @@ object ExplicitEtaExpansion {
     def selectDynamic(name: String): Lookup = this
   }
   val lookup: Lookup                 = new Lookup
-  def emits[O](items: Seq[O]): Int                       = items.size
+  def emits[O](items: Array[O]): Int                     = items.length
   val nullaryOverload: Int                               = emits("12345".getBytes)
   val nullaryOverloadList: List[Array[Byte]]             = List("12345".getBytes)
   val overloadedArities: List[Int]                       = List(Path.of("a")).map(Files.readString).map(_.length)

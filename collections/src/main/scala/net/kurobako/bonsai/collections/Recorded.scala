@@ -78,7 +78,7 @@ object Recorded {
     val staged = target.resolveSibling(target.getFileName.toString + ".part")
     Files.createDirectories(target.getParent)
     Files.writeString(staged, render(record), UTF_8)
-    Files.move(staged, target, StandardCopyOption.REPLACE_EXISTING)
+    Files.move(staged, target, StandardCopyOption.REPLACE_EXISTING): Unit
   }
 
   def read(file: Path): Option[Record] =

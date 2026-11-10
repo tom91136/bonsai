@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.scalafix
 
 import scala.meta.*
+import scala.meta.tokens.Token
 import scalafix.v1.*
 
 /** Writes an if or else block of one statement and one result on one line, separated by a semicolon, when it fits.
