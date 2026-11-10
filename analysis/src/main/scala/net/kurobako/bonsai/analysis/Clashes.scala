@@ -85,12 +85,13 @@ private[analysis] object Clashes {
       ).toMap
       def needs(module: String, seen: Set[String] = Set.empty): Set[String] =
         uses(module).diff(seen).foldLeft(seen ++ uses(module))((all, next) => needs(next, all))
+      def visible(modules: Set[String]): Set[String] = modules ++ modules.flatMap(needs(_))
       val needing    = everything.toVector.flatMap(module => needs(module).map(_ -> module)).groupMap(_._1)(_._2)
       val dependents =
         everything.map(module => module -> (needing.getOrElse(module, Vector.empty).toSet + module)).toMap
       val sizes = outputs.groupMapReduce(_._1.module)(_._2.size)(_ + _)
       def divide(modules: Set[String]): Either[Vector[String], Vector[Set[String]]] =
-        clashes(modules).headOption match {
+        clashes(visible(modules)).headOption match {
           case None        => Right(Vector(modules))
           case Some(clash) =>
             val classed  = dependents(clash.classed) & modules

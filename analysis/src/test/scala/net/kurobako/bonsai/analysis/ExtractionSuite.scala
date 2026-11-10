@@ -258,6 +258,41 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
+  test("a module whose dependency holds the package of its class fails naming it whichever side is smaller") {
+    Seq("app", "other").foreach { padded =>
+      Scratch.using("bonsai-") { directory =>
+        def padding(module: String) =
+          Option.when(module == padded)("Padding.scala" ->
+            s"package padding.$module\nclass One\nclass Two\nclass Three")
+        val app = compile(
+          directory.resolve("app"),
+          Seq("B.scala" -> "package a\nobject b { def one: Int = 1 }") ++ padding("app"),
+          Vector.empty
+        )
+        val zlib  = compile(directory.resolve("zlib"), Seq("L.scala" -> "package a.b\nclass L"), Vector.empty)
+        val other = compile(
+          directory.resolve("other"),
+          Seq("O.scala" -> "package a.b\nclass O") ++ padding("other"),
+          Vector.empty
+        )
+        val manifest = Manifest(
+          Vector(
+            Output("app", Output.Scope.Main, app),
+            Output("zlib", Output.Scope.Main, zlib),
+            Output("other", Output.Scope.Main, other)
+          ),
+          Map("app" -> (classpath :+ zlib), "zlib" -> classpath, "other" -> classpath),
+          Set.empty,
+          jdk = targetJdk
+        )
+        val errors = Extraction.read(manifest).fold(identity, result => fail(s"read: ${result.notes}"))
+        assertEquals(errors.size, 1)
+        assert(errors.head.startsWith("a.b is a class in module app and a package in module"), errors.head)
+        assert(errors.head.endsWith("app need both"), errors.head)
+      }
+    }
+  }
+
   test("a class and a package that a library jar holds on the classpath of its module fail naming it") {
     Scratch.using("bonsai-") { directory =>
       val whole   = divided(directory, "objects")
