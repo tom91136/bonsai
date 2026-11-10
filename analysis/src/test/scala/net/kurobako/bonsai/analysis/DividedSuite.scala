@@ -353,6 +353,128 @@ class DividedSuite extends AnalysisSuite {
     }
   }
 
+  private def unusedMembers(result: Extraction.Result): Vector[String] =
+    Members.findings(result.members, result.graph.nodes, result.reach).filter(_.rule == Finding.Rule.UnusedMember)
+      .map(_.detail)
+
+  private def reaches(result: Extraction.Result, from: String, to: String): Boolean = {
+    val graph = result.graph
+    graph.edges.exists((source, targets) => source.startsWith(from) && targets.exists(_.startsWith(to))) ||
+    graph.bodies.exists((use, targets) => use.node.startsWith(from) && targets.exists(_.startsWith(to)))
+  }
+
+  test("a platform twin without a peer keeps the calls it makes into the other runs") {
+    Scratch.using("bonsai-") { directory =>
+      val whole  = manifest(directory, "objects", Twinned, "def a: Int = 1", "def viaTwin: Int = base.Util.spare", "")
+      val result = reads(whole.copy(platforms = Set("packaged")))
+      assert(reaches(result, "a.b.Side", "base.Util"), result.graph.bodies.toString)
+      assert(result.reach.live("base.Util"))
+      val unused = unusedMembers(result)
+      assert(!unused.contains("Util.spare is never referenced"), unused.toString)
+      assert(unused.contains("Util.untouched is never referenced"), unused.toString)
+    }
+  }
+
+  private def sole(padded: String)(check: Extraction.Result => Unit): Unit = Scratch.using("bonsai-") { directory =>
+    def padding(module: String) =
+      Option.when(module == padded)("Padding.scala" -> s"package padding.$module\nclass One\nclass Two\nclass Three")
+    val jvm = compile(
+      directory.resolve("core"),
+      Seq(
+        "B.scala"    -> "package a\nobject b",
+        "Main.scala" ->
+          ("package core\nobject Main { def main(args: Array[String]): Unit = { Helper.used(); () } }\n" +
+            "object Helper { def used(): Int = 1\n  def spare(): Int = 2 }")
+      ) ++ padding("core"),
+      Vector.empty
+    )
+    val twin = compile(
+      directory.resolve("coreJs"),
+      Seq(
+        "Side.scala" ->
+          ("package a.b\nobject Side { def main(args: Array[String]): Unit = { Tool.go(); () } }\n" +
+            "object Tool { def go(): Int = 1\n  def idle(): Int = 2 }")
+      ) ++ padding("coreJs"),
+      Vector.empty
+    )
+    val whole = Manifest(
+      Vector(Output("coreJs", Output.Scope.Main, twin), Output("core", Output.Scope.Main, jvm)),
+      Map("coreJs" -> classpath, "core" -> classpath),
+      Set.empty,
+      platforms = Set("coreJs"),
+      jdk = targetJdk
+    )
+    check(reads(whole))
+  }
+
+  private def soleChecks(result: Extraction.Result): Unit = {
+    assert(reaches(result, "core.Main", "core.Helper"), result.graph.bodies.toString)
+    assert(reaches(result, "a.b.Side", "a.b.Tool"), result.graph.bodies.toString)
+    assert(result.reach.live("core.Helper") && result.reach.live("a.b.Tool"))
+    assertEquals(
+      unusedMembers(result).sorted,
+      Vector("Helper.spare is never referenced", "Tool.idle is never referenced")
+    )
+  }
+
+  test("a run of platform twins alone keeps the edges of every run") {
+    sole("core")(soleChecks)
+    sole("coreJs")(soleChecks)
+  }
+
+  private val Pairs =
+    "def pairs(xs: Vector[Int], ys: Vector[Int]): Vector[Vector[Int]] = xs.map(x => ys.map(y => y + x))"
+
+  private def boundsOf(bounded: Vector[Complexity.Bounded], own: String): Vector[Complexity.Bounded] =
+    Scratch.using("bonsai-") { directory =>
+      val shared = Seq("Work.scala" -> s"package app\nobject Work {\n$Pairs\n}")
+      val jvm    = compile(directory.resolve("core"), shared, Vector.empty)
+      val twin   = compile(
+        directory.resolve("coreJs"),
+        shared :+ ("Js.scala" -> s"package twin\nobject Js {\n$own\n}"),
+        Vector.empty
+      )
+      val whole = Manifest(
+        Vector(Output("coreJs", Output.Scope.Main, twin), Output("core", Output.Scope.Main, jvm)),
+        Map("coreJs" -> classpath, "core" -> classpath),
+        Set.empty,
+        platforms = Set("coreJs"),
+        jdk = targetJdk
+      )
+      val result = Extraction.read(whole, bounded = bounded).fold(errors => fail(errors.mkString("\n")), identity)
+      assertEquals(result.problems, Vector.empty)
+      result.unusedBounds
+    }
+
+  private val OnJvm   = Complexity.Bounded("app.Work.pairs.ys", 4, "four at most")
+  private val OnTwin  = Complexity.Bounded("twin.Js.rows.zs", 4, "four at most")
+  private val Nowhere = Complexity.Bounded("app.Nowhere.rows", 4, "four at most")
+  private val Clashed = Complexity.Bounded("a.b.pairs.ys", 4, "four at most")
+  private val Rows    = "def rows(zs: Vector[Int]): Vector[Vector[Int]] = zs.map(z => zs.map(_ + z))"
+
+  test("a bound that only the JVM modules match is used in a build with a platform twin") {
+    assertEquals(boundsOf(Vector(OnJvm), Rows), Vector.empty)
+  }
+
+  test("a bound that only a platform twin matches is used") {
+    assertEquals(boundsOf(Vector(OnTwin), Rows), Vector.empty)
+  }
+
+  test("a bound that nothing matches is reported once in a build with a platform twin") {
+    assertEquals(boundsOf(Vector(OnJvm, Nowhere, OnTwin), Rows), Vector(Nowhere))
+  }
+
+  test("a bound that only the JVM side of a clash matches is used in a build with a platform twin") {
+    Seq("objects", "packaged").foreach { twin =>
+      Scratch.using("bonsai-") { directory =>
+        val whole  = manifest(directory, "objects", Twinned, Pairs, "def two: Int = 2", "", twins = Set(twin))
+        val result = Extraction.read(whole, bounded = Vector(Clashed))
+          .fold(errors => fail(errors.mkString("\n")), identity)
+        assertEquals(result.unusedBounds, Vector.empty)
+      }
+    }
+  }
+
   private def apart(
       core: Seq[(String, String)],
       lib: Seq[(String, String)],
