@@ -16,6 +16,8 @@ cd bonsai
 sbt installLocal
 ```
 
+`sbt installLocal` needs JDK 22 or later, because the build definition uses the `java.lang.foreign` API, finalised in JDK 22.
+
 The command publishes to `~/.ivy2/local` and, where Maven is installed, to `~/.m2`. Pull and rerun it to update. Each module replaces the one published in a single rename, so a build that resolves bonsai meanwhile never reads a half-written module. `-Dsbt.ivy.home` and `-Dmaven.repo.local` move the two repositories, and `MAVEN_COMMAND` names the Maven to use.
 
 ### sbt
