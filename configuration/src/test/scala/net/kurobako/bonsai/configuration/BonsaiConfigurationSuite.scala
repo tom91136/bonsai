@@ -225,7 +225,7 @@ class BonsaiConfigurationSuite extends munit.FunSuite {
       Map("demo.io" -> Set("output", "input")),
       Set("demo.run"),
       Set("gen/**"),
-      Set("duplicate-code", "*"),
+      Set("duplicate-code", "unspecialised-function", "*"),
       Set("demo.rendered.*"),
       Set("demo.kernel.**"),
       Set("demo.A=demo.B"),

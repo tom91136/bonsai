@@ -99,8 +99,8 @@ object BonsaiConfiguration {
       nesting: Map[String, Int]
   ) {
 
-    /** The options of these settings, naming of the ids only the `findings` the analysis knows, apart from those
-      * disabled over generated code, which the analysis rejects when it does not know them.
+    /** The options of these settings, naming of the ids only the `findings` the analysis knows. The ids disabled over
+      * generated code may also name checks of the compiler plugin, which it reads itself.
       */
     def options(findings: Set[String], baseline: File, purity: File): Seq[String] =
       flags("--disable", disabled & findings) ++ flags("--error", errors & findings) ++
@@ -109,7 +109,7 @@ object BonsaiConfiguration {
         effects.toSeq.sortBy(_._1).flatMap { case (prefix, kinds) =>
           Seq("--effects", s"$prefix=${kinds.toSeq.sorted.mkString(",")}")
         } ++ flags("--concurrent", concurrent) ++ flags("--generated", generated) ++
-        flags("--generated-disable", generatedDisabled) ++
+        flags("--generated-disable", generatedDisabled.filter(id => id == "*" || findings(id))) ++
         flags("--reflective", reflective) ++ flags("--hot", hot) ++ flags("--intended", intended) ++
         bounded.flatMap { case (member, max, reason) => Seq("--bounded", member, max.toString, reason) } ++
         (if (nesting.isEmpty) Nil
