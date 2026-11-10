@@ -683,4 +683,37 @@ class LoopsSuite extends FunSuite {
     )
     assertEquals(tagged(found, "invariant-in-loop"), Nil, found.mkString("\n"))
   }
+
+  test("a traversal in a loop that calls a local method drawing from a mutable object is not hoistable") {
+    val found = warnings(
+      """class Names { private var next = 0; def fresh(): Int = { next += 1; next } }
+        |object Use {
+        |  def run(body: List[Int], cleanups: List[Int], names: Names): List[Int] = {
+        |    def freshCopy(value: Int): List[Int] = List(value + names.fresh())
+        |    body.flatMap(item => item :: cleanups.flatMap(freshCopy(_)))
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(tagged(found, "invariant-in-loop"), Nil, found.mkString("\n"))
+  }
+
+  test("a traversal in a loop that calls a local method or lambda of pure values is still hoistable") {
+    val found = warnings(
+      """object Lints {
+        |  def run(body: List[Int], cleanups: List[Int], offset: Int): List[Int] = {
+        |    def spaced(value: Int): List[Int] = List(value + offset)
+        |    val shifted = (value: Int) => List(value - offset)
+        |    body.flatMap(item => item :: cleanups.flatMap(spaced(_)) ::: cleanups.flatMap(shifted))
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(
+      tagged(found, "invariant-in-loop"),
+      List(
+        "cleanups.flatMap(shifted) does not depend on the loop",
+        "cleanups.flatMap(spaced(_)) does not depend on the loop"
+      ).sorted,
+      found.mkString("\n")
+    )
+  }
 }

@@ -1005,11 +1005,20 @@ private class Loops(
   /** A function that draws from a random source, an iterator or a mutable collection, or calls a method of an object
     * with state of its own, gives a new result each time.
     */
-  private def drawn(function: tpd.Tree)(using Context): Boolean = !unchanging(function) ||
-    function.existsSubTree {
-      case tpd.Select(receiver, _) if receiver.isTerm && receiver.symbol.isTerm => changing(receiver.tpe.widen)
-      case _                                                                    => false
+  private def drawn(function: tpd.Tree)(using Context): Boolean = {
+    val seen                              = mutable.Set.empty[Symbol]
+    def reaching(tree: tpd.Tree): Boolean = !unchanging(tree) || tree.existsSubTree {
+      case tpd.Select(receiver, _) if receiver.isTerm && receiver.symbol.isTerm && changing(receiver.tpe.widen) => true
+      case reference @ (_: tpd.Ident | _: tpd.Select)                                                           =>
+        val symbol = reference.symbol
+        callee(symbol).exists(body => seen.add(symbol) && reaching(body))
+      case _ => false
     }
+    reaching(function)
+  }
+
+  private def callee(symbol: Symbol)(using Context): Option[tpd.Tree] =
+    definitions.get(symbol).map(_.rhs).orElse(bindings.get(symbol).flatMap(Calls.lambda(_)).map(_.rhs))
 
   private def label(tree: tpd.Tree)(using Context): String = {
     val text = Trees.text(tree)
