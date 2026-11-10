@@ -120,9 +120,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/apache-maven-$version/bin" >> "$GITHUB_PATH"
       - name: publish to ivy local and maven local
-        run: |
-          mkdir -p "$HOME/.ivy2"
-          scripts/publish-local.sh
+        run: sbt --batch installLocal
       - name: verify maven plugin
         working-directory: maven-plugin
         run: mvn -B verify

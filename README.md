@@ -13,10 +13,10 @@ bonsai has no published release. Build it from GitHub:
 ```bash
 git clone https://github.com/tom91136/bonsai.git
 cd bonsai
-scripts/publish-local.sh
+sbt installLocal
 ```
 
-The script publishes to `~/.ivy2/local` and, where Maven is installed, to `~/.m2`. Pull and rerun it to update.
+The command publishes to `~/.ivy2/local` and, where Maven is installed, to `~/.m2`. Pull and rerun it to update. Each module replaces the one published in a single rename, so a build that resolves bonsai meanwhile never reads a half-written module. `-Dsbt.ivy.home` and `-Dmaven.repo.local` move the two repositories, and `MAVEN_COMMAND` names the Maven to use.
 
 ### sbt
 
@@ -127,7 +127,7 @@ sbt scriptedAll
 The Maven plugin tests resolve the tools from `~/.m2`:
 
 ```bash
-scripts/publish-local.sh
+sbt installLocal
 (cd maven-plugin && mvn verify)
 ```
 

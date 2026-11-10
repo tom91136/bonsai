@@ -62,7 +62,7 @@ All of these pass on JDK 25 with sbt 2.0.10 and Maven 3.9; the Maven plugin buil
 - `sbt scalafmtCheckAll scalafmtSbtCheck Test/compile testFull`, with no compiler warnings. Plain `test` is incremental in sbt 2 and can run no suites.
 - `sbt ++3.3.9 lifting/testFull plugin/testFull`, and the same for each line in `scala3Versions`; 3.4 and 3.5 report discarded values that 3.3 and the newest do not.
 - `sbt scriptedAll`.
-- `scripts/publish-maven-local.sh`, then `mvn -B verify` in `maven-plugin`.
+- `sbt installLocal`, then `mvn -B verify` in `maven-plugin`.
 - `sbt analyse`: bonsai on itself, failing on any finding.
 - `sbt scalafixAll --check`: the scalafix rules of bonsai on every module of the build except the rule fixtures, failing on any finding.
 

@@ -30,11 +30,13 @@ def oldestPatch(line: String): String = oldestPatches.getOrElse(line, s"$line.0"
 
 // Everything for the newest Scala version, then the compiler plugin of every other minor line, then the configuration
 // reader and the sbt plugin of the sbt 1 line, and back to the versions the build loads with.
-addCommandAlias(
-  "publishLocalAll",
-  (("publishLocal" +: scala3Versions.init.flatMap(version => Seq(s"++$version", "plugin/publishLocal"))) ++
-    Seq(s"++$sbt1ScalaVersion", "bonsaiConfig/publishLocal", "sbtBonsai/publishLocal", "reload")).mkString("; ")
-)
+lazy val publishLocalSteps =
+  ("publishLocal" +: scala3Versions.init.flatMap(version => Seq(s"++$version", "plugin/publishLocal"))) ++
+    Seq(s"++$sbt1ScalaVersion", "bonsaiConfig/publishLocal", "sbtBonsai/publishLocal", "reload")
+
+addCommandAlias("publishLocalAll", publishLocalSteps.mkString("; "))
+
+commands ++= InstallLocal.commands(publishLocalSteps)
 
 // The scripted tests build with older lines too, so their compiler plugins are published first. The sbt plugin is then
 // tested on each sbt line, and the build returned to the Scala versions it loads with.
