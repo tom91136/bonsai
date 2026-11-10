@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.analysis
 
+import java.nio.file.Files
 import java.nio.file.Path
 import net.kurobako.bonsai.testing.*
 
@@ -274,9 +275,9 @@ class DividedSuite extends AnalysisSuite {
         Extraction.Settings(Vector.empty, Set.empty, Vector.empty, Vector.empty, Vector.empty, Parallel.sequential)
       def read(division: Clashes.Division) = Extraction.readDivided(whole, settings, division)
         .fold(errors => fail(errors.mkString("\n")), identity)
-      val together = read((_, _) => Right(Vector(outputs.toSet)))
+      val together = read((_, _, _) => Right(Vector(outputs.toSet)))
       val groups   = if (coreFirst) outputs else outputs.reverse
-      val divided  = read((_, _) => Right(groups.map(Set(_))))
+      val divided  = read((_, _, _) => Right(groups.map(Set(_))))
       assertEquals(divided.problems, Vector.empty)
       check(together, divided)
     }
@@ -324,6 +325,416 @@ class DividedSuite extends AnalysisSuite {
       assertEquals(errors.size, 1)
       assert(errors.head.startsWith("a.b is a class in module objects and a package in module packaged"), errors.head)
       assert(errors.head.contains("objectsJs compile for another platform"), errors.head)
+    }
+  }
+
+  private def library(directory: Path, name: String, version: String, source: String): Path =
+    archive(
+      compile(directory.resolve(s"$name-$version"), Seq(s"$name.scala" -> source), Vector.empty),
+      directory.resolve(s"$name-$version.jar"),
+      name,
+      version
+    )
+
+  private val Tools = "package tool\nobject Tools { def two: Int = base.Util.scale(new lib.implicits.Tool().two, 5) }"
+
+  private def libraries(
+      directory: Path,
+      padded: String,
+      onObjects: Path,
+      onPackage: Path,
+      tools: String = Tools
+  ): Manifest = {
+    def padding(module: String) =
+      Option.when(module == padded)("Padding.scala" -> s"package padding.$module\nclass One\nclass Two\nclass Three")
+    val shared = compile(
+      directory.resolve("base"),
+      base("object Util { def scale(x: Int, factor: Int): Int = x * factor }"),
+      Vector.empty
+    )
+    val users = compile(
+      directory.resolve("users"),
+      Seq("Users.scala" -> "package user\nobject Users { def one: Int = base.Util.scale(lib.implicits.one, 5) }") ++
+        padding("users"),
+      Vector(shared, onObjects)
+    )
+    val using =
+      compile(directory.resolve("tools"), Seq("Tools.scala" -> tools) ++ padding("tools"), Vector(shared, onPackage))
+    Manifest(
+      Vector(
+        Output("base", Output.Scope.Main, shared),
+        Output("users", Output.Scope.Main, users),
+        Output("tools", Output.Scope.Main, using)
+      ),
+      Map(
+        "base"  -> classpath,
+        "users" -> (classpath ++ Vector(shared, onObjects)),
+        "tools" -> (classpath ++ Vector(shared, onPackage))
+      ),
+      Set.empty,
+      jdk = targetJdk
+    )
+  }
+
+  private val objectLibrary  = "package lib\nobject implicits { def one: Int = 1 }"
+  private val packageLibrary = "package lib.implicits\nclass Tool { def two: Int = 2 }"
+
+  private def reads(whole: Manifest): Extraction.Result = {
+    val result = Extraction.read(whole).fold(errors => fail(errors.mkString("\n")), identity)
+    assertEquals(result.problems, Vector.empty)
+    assertEquals(result.notes, Vector.empty)
+    result
+  }
+
+  private def fails(whole: Manifest): String = {
+    val errors = Extraction.read(whole).fold(identity, result => fail(s"read: ${result.notes}"))
+    assertEquals(errors.size, 1)
+    errors.head
+  }
+
+  private def groups(whole: Manifest, known: Set[String] = Set.empty): Int =
+    Clashes.runs(whole, whole.outputs.map(output => output -> Outputs.files(output.path)), known)
+      .fold(errors => fail(errors.mkString("\n")), _.size)
+
+  private def single(
+      module: String,
+      directory: Path,
+      sources: Seq[(String, String)],
+      jars: Vector[Path] = Vector.empty
+  ): Manifest = Manifest(
+    Vector(Output(module, Output.Scope.Main, compile(directory.resolve(module), sources, jars))),
+    Map(module -> (classpath ++ jars)),
+    Set.empty,
+    jdk = targetJdk
+  )
+
+  private def withJars(whole: Manifest, module: String, jars: Path*): Manifest =
+    whole.copy(classpath = whole.classpath.updated(module, whole.classpath(module) ++ jars))
+
+  test("an object in one library and a package of its name in another, each on an unrelated module, are read apart") {
+    Seq("users", "tools").foreach { padded =>
+      Scratch.using("bonsai-") { directory =>
+        val whole = libraries(
+          directory,
+          padded,
+          library(directory, "objects", "1.0", objectLibrary),
+          library(directory, "packaged", "1.0", packageLibrary)
+        )
+        val result = reads(whole)
+        assert(Seq("user.Users", "tool.Tools").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
+        assertFinding(smells(result), "constant-argument", "Util.scale(x, factor).factor is always 5 across 2")
+      }
+    }
+  }
+
+  test("two versions of one artifact are read as the newest alone") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = libraries(
+        directory,
+        "tools",
+        library(directory, "lib", "3.0", objectLibrary),
+        library(directory, "lib", "2.0", packageLibrary),
+        "package tool\nobject Tools { def two: Int = base.Util.scale(2, 5) }"
+      )
+      val result = reads(whole)
+      assert(Seq("user.Users", "tool.Tools").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
+      assertEquals(groups(whole, Set("lib.implicits")), 1)
+    }
+  }
+
+  test("two versions of one artifact on a module are read as the newest alone") {
+    Scratch.using("bonsai-") { directory =>
+      val newer = library(directory, "lib", "3.0", objectLibrary)
+      val older = library(directory, "lib", "2.0", packageLibrary)
+      val whole = withJars(
+        single(
+          "users",
+          directory,
+          Seq("Users.scala" -> "package user\nobject Users { def one: Int = lib.implicits.one }"),
+          Vector(newer)
+        ),
+        "users",
+        older
+      )
+      assert(reads(whole).graph.nodes.contains("user.Users"))
+    }
+  }
+
+  test("a module whose classpath holds an object and a package of one name in two libraries fails naming them") {
+    Scratch.using("bonsai-") { directory =>
+      val objects  = library(directory, "objects", "1.0", objectLibrary)
+      val packaged = library(directory, "packaged", "1.0", packageLibrary)
+      val whole    = libraries(directory, "tools", objects, packaged)
+      val both     = whole.classpath("users") ++ whole.classpath("tools").takeRight(1)
+      val error    = fails(whole.copy(classpath = whole.classpath.updated("users", both)))
+      assert(
+        error.startsWith(s"lib.implicits is a class in library $objects and a package in library $packaged"),
+        error
+      )
+      assert(error.endsWith("users need both"), error)
+    }
+  }
+
+  test("two jars of one file name are told apart by their paths") {
+    Scratch.using("bonsai-") { directory =>
+      def jar(folder: String, title: String, source: String): Path = {
+        val classes = compile(directory.resolve(title), Seq(s"$title.scala" -> source), Vector.empty)
+        archive(classes, Files.createDirectories(directory.resolve(folder)).resolve("lib.jar"), title, "1.0")
+      }
+      val objects  = jar("one", "objects", objectLibrary)
+      val packaged = jar("two", "packaged", packageLibrary)
+      val whole    = libraries(directory, "tools", objects, packaged)
+      val both     = whole.classpath("users") ++ whole.classpath("tools").takeRight(1)
+      val error    = fails(whole.copy(classpath = whole.classpath.updated("users", both)))
+      assert(
+        error.startsWith(s"lib.implicits is a class in library $objects and a package in library $packaged"),
+        error
+      )
+    }
+  }
+
+  test("a class in the default package does not clash with a package of its name") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = single("m", directory, Seq("A.scala" -> "class a", "C.scala" -> "package a.b\nclass C"))
+      assert(reads(whole).graph.nodes.contains("a.b.C"))
+    }
+  }
+
+  test("a class in the default package of one module and a package of its name in another are read together") {
+    Scratch.using("bonsai-") { directory =>
+      val root  = compile(directory.resolve("root"), Seq("A.scala" -> "class a"), Vector.empty)
+      val deep  = compile(directory.resolve("deep"), Seq("C.scala" -> "package a.b\nclass C"), Vector.empty)
+      val whole = Manifest(
+        Vector(Output("root", Output.Scope.Main, root), Output("deep", Output.Scope.Main, deep)),
+        Map("root" -> classpath, "deep" -> classpath),
+        Set.empty,
+        jdk = targetJdk
+      )
+      assertEquals(groups(whole), 1)
+    }
+  }
+
+  test("a jar with a class in the default package and a package of its name is no clash") {
+    Scratch.using("bonsai-") { directory =>
+      val classes = compile(
+        directory.resolve("obf"),
+        Seq("A.scala" -> "class a", "C.scala" -> "package a.b\nclass C"),
+        Vector.empty
+      )
+      val whole = withJars(
+        single("users", directory, Seq("Users.scala" -> "package user\nobject Users")),
+        "users",
+        archive(classes, directory.resolve("obf.jar"), "obf", "1.0")
+      )
+      assert(reads(whole).graph.nodes.contains("user.Users"))
+    }
+  }
+
+  private def resourced(directory: Path, name: String, resource: String): Path = {
+    val classes = compile(directory.resolve(name), Seq("MyTest.scala" -> "package com.foo\nclass MyTest"), Vector.empty)
+    write(classes, Seq(resource -> "{}"))
+    classes
+  }
+
+  test("a resource directory without subdirectories named like a class of its module is no package") {
+    Scratch.using("bonsai-") { directory =>
+      val classes = resourced(directory, "m", "com/foo/MyTest/input.json")
+      val whole   = Manifest(
+        Vector(Output("m", Output.Scope.Main, classes)),
+        Map("m" -> classpath),
+        Set.empty,
+        jdk = targetJdk
+      )
+      assert(reads(whole).graph.nodes.contains("com.foo.MyTest"))
+    }
+  }
+
+  test("a resource directory with subdirectories named like a class of its module fails naming the clash") {
+    Scratch.using("bonsai-") { directory =>
+      val classes = resourced(directory, "m", "com/foo/MyTest/data/input.json")
+      val whole   = Manifest(
+        Vector(Output("m", Output.Scope.Main, classes)),
+        Map("m" -> classpath),
+        Set.empty,
+        jdk = targetJdk
+      )
+      val error = fails(whole)
+      assert(error.startsWith("com.foo.MyTest is a class in module m and a package in module m"), error)
+    }
+  }
+
+  test("a resource directory with subdirectories named like a class of another module is read apart") {
+    Scratch.using("bonsai-") { directory =>
+      val classes = compile(
+        directory.resolve("classes"),
+        Seq("MyTest.scala" -> "package com.foo\nclass MyTest", "Use.scala" -> "package com.foo\nclass Use"),
+        Vector.empty
+      )
+      val data = Files.createDirectories(directory.resolve("data"))
+      write(data, Seq("com/foo/MyTest/data/input.json" -> "{}"))
+      val padding = compile(
+        directory.resolve("padding"),
+        Seq("P.scala" -> "package padding\nclass One\nclass Two\nclass Three"),
+        Vector.empty
+      )
+      val whole = Manifest(
+        Vector(
+          Output("classes", Output.Scope.Main, classes),
+          Output("data", Output.Scope.Main, data),
+          Output("padding", Output.Scope.Main, padding)
+        ),
+        Map("classes" -> classpath, "data" -> classpath, "padding" -> classpath),
+        Set.empty,
+        jdk = targetJdk
+      )
+      assertEquals(groups(whole), 2)
+      assert(reads(whole).graph.nodes.contains("com.foo.Use"))
+    }
+  }
+
+  private def resources(directory: Path, name: String, resource: String): Path = {
+    val classes = Files.createDirectories(directory.resolve(name))
+    write(classes, Seq(resource -> "data"))
+    archive(classes, directory.resolve(s"$name.jar"), name, "1.0")
+  }
+
+  test("a library holding only resource directories named like an object in another is read apart") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = libraries(
+        directory,
+        "tools",
+        library(directory, "objects", "1.0", objectLibrary),
+        resources(directory, "data", "lib/implicits/data/data.txt"),
+        "package tool\nobject Tools { def two: Int = base.Util.scale(2, 5) }"
+      )
+      val result = reads(whole)
+      assert(Seq("user.Users", "tool.Tools").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
+    }
+  }
+
+  test("libraries that the analysed code never completes the package of are no clash") {
+    Scratch.using("bonsai-") { directory =>
+      val classes = library(directory, "foo", "1.0", "package org.x\nclass Foo")
+      val nested  = library(directory, "bar", "1.0", "package org.x.Foo\nclass Bar")
+      val whole   = withJars(
+        single("users", directory, Seq("Users.scala" -> "package user\nobject Users")),
+        "users",
+        classes,
+        nested
+      )
+      assert(reads(whole).graph.nodes.contains("user.Users"))
+    }
+  }
+
+  test("a library only the classpath of a module without classes holds is kept in the first run") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = libraries(
+        directory,
+        "tools",
+        library(directory, "objects", "1.0", objectLibrary),
+        library(directory, "packaged", "1.0", packageLibrary)
+      )
+      val objects = whole.classpath("users").last
+      val only    = whole.copy(
+        outputs = whole.outputs.filterNot(_.module == "users"),
+        classpath = whole.classpath.removed("users").updated("ghost", classpath :+ objects)
+      )
+      val result = Extraction.read(only).fold(errors => fail(errors.mkString("\n")), identity)
+      assertEquals(result.problems, Vector.empty)
+      assertEquals(result.notes, Vector.empty)
+      assert(result.graph.nodes.contains("tool.Tools"), result.graph.nodes.keySet.toString)
+    }
+  }
+
+  private def nested(directory: Path, jar: Path, qualified: String, module: String): Manifest = {
+    val classes =
+      compile(directory.resolve(module), Seq("Extra.scala" -> s"package $qualified\nclass Extra"), Vector.empty)
+    Manifest(
+      Vector(Output(module, Output.Scope.Main, classes)),
+      Map(module -> (classpath :+ jar)),
+      Set.empty,
+      jdk = targetJdk
+    )
+  }
+
+  test("a package of a module and an object of its name in a jar the compiler tolerates is read as one run") {
+    Scratch.using("bonsai-") { directory =>
+      val object_ = compile(directory.resolve("caps"), Seq("c.scala" -> "package q\nobject caps"), Vector.empty)
+      val content = Files.createDirectories(directory.resolve("content"))
+      val caps    = Files.createDirectories(content.resolve("scala"))
+      Files.copy(object_.resolve("q/caps.class"), caps.resolve("caps.class"))
+      Files.copy(object_.resolve("q/caps$.class"), caps.resolve("caps$.class"))
+      val jar   = archive(content, directory.resolve("caps.jar"), "caps", "1.0")
+      val whole = nested(directory, jar, "scala.caps", "m")
+      assert(reads(whole).graph.nodes.contains("scala.caps.Extra"))
+      assertEquals(groups(whole), 1)
+    }
+  }
+
+  test("a package of a module and an object of its name in a jar the code completes fails naming the clash") {
+    Scratch.using("bonsai-") { directory =>
+      val jar   = library(directory, "objects", "1.0", "package p\nobject q")
+      val whole = nested(directory, jar, "p.q", "m")
+      val error = fails(whole)
+      assert(error.startsWith(s"p.q is a class in library $jar and a package in module m"), error)
+      assert(error.endsWith("m need both"), error)
+    }
+  }
+
+  test("libraries that only modules without classes use fail as they cannot be read apart") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = libraries(
+        directory,
+        "tools",
+        library(directory, "objects", "1.0", objectLibrary),
+        library(directory, "packaged", "1.0", packageLibrary)
+      )
+      val only = whole.copy(
+        outputs = whole.outputs.filterNot(_.module == "users"),
+        classpath = whole.classpath.removed("users").updated("ghost", classpath :+ whole.classpath("users").last)
+          .updated("shadow", classpath :+ whole.classpath("tools").last)
+      )
+      val error = fails(only)
+      assert(error.startsWith("lib.implicits is a class in library"), error)
+      assert(error.endsWith("ghost, shadow, tools cannot be read apart"), error)
+    }
+  }
+
+  test("a directory on a classpath holding an object and a library holding a package of its name are read apart") {
+    Scratch.using("bonsai-") { directory =>
+      val unpacked = compile(directory.resolve("unpacked"), Seq("o.scala" -> objectLibrary), Vector.empty)
+      val whole    = libraries(directory, "tools", unpacked, library(directory, "packaged", "1.0", packageLibrary))
+      val result   = reads(whole)
+      assert(Seq("user.Users", "tool.Tools").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
+    }
+  }
+
+  test("entries below META-INF are no packages or classes") {
+    Scratch.using("bonsai-") { directory =>
+      val classes = Files.createDirectories(directory.resolve("versions"))
+      write(classes, Seq("META-INF/versions/9/a/B.class" -> "x", "META-INF/versions/9/a/B/X.class" -> "x"))
+      val whole = withJars(
+        single("users", directory, Seq("Users.scala" -> "package user\nobject Users")),
+        "users",
+        archive(classes, directory.resolve("versions.jar"), "versions", "1.0")
+      )
+      assert(reads(whole).graph.nodes.contains("user.Users"))
+    }
+  }
+
+  test("a clash the compiler reports that no division resolves is never a successful read") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = libraries(
+        directory,
+        "tools",
+        library(directory, "objects", "1.0", objectLibrary),
+        library(directory, "packaged", "1.0", packageLibrary)
+      )
+      val settings =
+        Extraction.Settings(Vector.empty, Set.empty, Vector.empty, Vector.empty, Vector.empty, Parallel.sequential)
+      val errors = Extraction.readDivided(whole, settings, (_, _, _) => Right(Vector(whole.outputs.toSet)))
+        .fold(identity, result => fail(s"read: ${result.notes}"))
+      assert(errors.exists(_.contains("lib.implicits")), errors.toString)
     }
   }
 }

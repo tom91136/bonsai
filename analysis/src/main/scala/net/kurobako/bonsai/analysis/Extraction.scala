@@ -15,6 +15,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import net.kurobako.bonsai.java.{Model => JavaModel}
 import net.kurobako.bonsai.lifting.{Purity as _, *}
+import scala.annotation.tailrec
 import scala.concurrent.Promise
 import scala.util.Try
 import scala.util.Using
@@ -98,7 +99,7 @@ object Extraction {
             Thread.currentThread.getThreadGroup,
             () =>
               result.complete(
-                Try(extract(manifest, settings, world, division))
+                Try(settled(manifest, settings, world, division))
               ): Unit,
             "bonsai-extraction",
             StackSize
@@ -117,11 +118,26 @@ object Extraction {
         }
     )
 
+  @tailrec private def settled(
+      manifest: Manifest,
+      settings: Settings,
+      world: ClassWorld,
+      division: Clashes.Division,
+      known: Set[String] = Set.empty
+  ): Either[Vector[String], Result] = {
+    val read     = extract(manifest, settings, world, division, known)
+    val reported = Clashes.reported(read.fold(identity, result => result.problems ++ result.notes))
+    if (reported.isEmpty) read
+    else if (reported.subsetOf(known)) Left(Clashes.unresolved(reported))
+    else settled(manifest, settings, world, division, known ++ reported)
+  }
+
   private def extract(
       manifest: Manifest,
       settings: Settings,
       world: ClassWorld,
-      divide: Clashes.Division
+      divide: Clashes.Division,
+      known: Set[String]
   ): Either[Vector[String], Result] = {
     import settings.*
     // The compiler aborts the whole run on a file whose names or sections it cannot index, so those are set aside.
@@ -155,7 +171,7 @@ object Extraction {
     val checked    = files.zip(parallel.map(files)(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess))
     val readable   = checked.collect { case (file, true) => file }.toSet
     val tasty      = jvm.collect { case (_, file) if readable(file) => file }
-    val division   = divide(manifest, listed)
+    val division   = divide(manifest, listed, known)
     val apart      = division.getOrElse(Vector.empty).drop(1)
     val separate   = apart.flatten.toSet
     val together   = jvm.collect { case (output, file) if readable(file) && !separate(output) => file }
