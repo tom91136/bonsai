@@ -3,6 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.jar.JarFile
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
@@ -83,8 +84,9 @@ private[analysis] object Clashes {
 
   /** The sets of modules to read in runs of their own, the first being the bulk of the build: where a class of one
     * module or library is a package of another, the smaller of the two sides, the modules that hold or use it with
-    * those that depend on them, is read apart. `known` names the clashes the compiler has reported. Fails naming the
-    * clash where a module needs both sides, or where a platform twin would be read apart.
+    * those that depend on them and the platform twins that share classes with them, is read apart. `known` names the
+    * clashes the compiler has reported. Fails naming the clash where a module, or a twin and its peers, needs both
+    * sides.
     */
   def runs(
       manifest: Manifest,
@@ -134,12 +136,24 @@ private[analysis] object Clashes {
       def needs(module: String, seen: Set[String] = Set.empty): Set[String] =
         uses(module).diff(seen).foldLeft(seen ++ uses(module))((all, next) => needs(next, all))
       def visible(modules: Set[String]): Set[String] = modules ++ modules.flatMap(needs(_))
-      val needing    = everything.toVector.flatMap(module => needs(module).map(_ -> module)).groupMap(_._1)(_._2)
-      val dependents =
-        everything.map(module => module -> (needing.getOrElse(module, Vector.empty).toSet + module)).toMap
+      val needing = everything.toVector.flatMap(module => needs(module).map(_ -> module)).groupMap(_._1)(_._2)
+      val tasty   = outputs.groupMapReduce(_._1.module)((output, files) =>
+        files.map(output.path.relativize(_)).filter(_.getFileName.toString.endsWith(".tasty")).toSet
+      )(_ ++ _)
+      val sharing = tasty.toVector.flatMap((module, paths) => paths.toVector.map(_ -> module)).groupMap(_._1)(_._2)
+        .values.map(_.toSet).filter(_.exists(manifest.platforms)).toVector
+      val mates = sharing.flatMap(group => group.toVector.map(_ -> group)).groupMapReduce(_._1)(_._2)(_ ++ _)
+      val near  = everything.map(module =>
+        module -> (needing.getOrElse(module, Vector.empty).toSet ++ mates.getOrElse(module, Set.empty) + module)
+      ).toMap
+      @tailrec def following(modules: Set[String]): Set[String] = {
+        val next = modules.flatMap(near)
+        if (next.subsetOf(modules)) modules else following(modules ++ next)
+      }
       def holding(holder: Holder, modules: Set[String]): Set[String] = holder match {
-        case Owned(module) => dependents(module) & modules
-        case Library(path) => modules.filter(manifest.classpath.getOrElse(_, Vector.empty).contains(path))
+        case Owned(module) => following(Set(module)) & modules
+        case Library(path) =>
+          following(modules.filter(manifest.classpath.getOrElse(_, Vector.empty).contains(path))) & modules
       }
       def movable(side: Set[String], modules: Set[String]): Boolean =
         !side.exists(fixed) && (modules -- side).exists(holdings.contains)
@@ -164,28 +178,7 @@ private[analysis] object Clashes {
                   } yield rest ++ extra
               }
         }
-      divide(everything).flatMap { divided =>
-        val twinned = twins(manifest, outputs, divided)
-        val tail    = s", and ${twinned.mkString(", ")} compile for another platform"
-        if (twinned.nonEmpty) Left(whole.map(shown(_, tail))) else Right(divided)
-      }
+      divide(everything)
     }
-  }
-
-  private def twins(
-      manifest: Manifest,
-      outputs: Vector[(Output, Vector[Path])],
-      divided: Vector[Set[String]]
-  ): Vector[String] = {
-    val compiled = outputs.groupMapReduce(_._1.module)((output, files) =>
-      files.map(output.path.relativize(_)).filter(_.getFileName.toString.endsWith(".tasty")).toSet
-    )(_ ++ _)
-    val groupOf              = divided.zipWithIndex.flatMap((group, index) => group.map(_ -> index)).toMap
-    def parted(twin: String) = compiled.keySet.exists(peer =>
-      !manifest.platforms(peer) && groupOf(peer) != groupOf(twin) && compiled(peer).exists(compiled(twin))
-    )
-    divided.zipWithIndex.flatMap((group, index) =>
-      group.filter(twin => manifest.platforms(twin) && (index > 0 || parted(twin)))
-    ).sorted
   }
 }

@@ -15,29 +15,44 @@ class DividedSuite extends AnalysisSuite {
       shared: Seq[(String, String)],
       objects: String,
       packaged: String,
-      top: String
+      top: String,
+      twins: Set[String] = Set.empty,
+      own: String = "",
+      replacing: String = ""
   ): Manifest = {
     def padding(module: String) =
       Option.when(module == padded)("Padding.scala" -> s"package padding.$module\nclass One\nclass Two\nclass Three")
-    val base      = compile(directory.resolve("base"), shared, Vector.empty)
-    val onObjects = compile(
-      directory.resolve("objects"),
-      Seq("B.scala" -> s"package a\nobject b {\n$objects\n}") ++ padding("objects"),
-      Vector(base)
+    val base           = compile(directory.resolve("base"), shared, Vector.empty)
+    val objectSources  = Seq("B.scala" -> s"package a\nobject b {\n$objects\n}") ++ padding("objects")
+    val packageSources =
+      Seq("Side.scala" -> s"package a.b\nobject Side {\n$packaged\n}\n$top") ++ padding("packaged")
+    val onObjects = compile(directory.resolve("objects"), objectSources, Vector(base))
+    val onPackage = compile(directory.resolve("packaged"), packageSources, Vector(base))
+    val visible   = classpath :+ base
+    val replaced  = Option.when(replacing.nonEmpty)(
+      packageSources.map((name, code) =>
+        if (name == "Side.scala") name -> s"package a.b\nobject Side {\n$packaged\n}\n$replacing" else name -> code
+      )
     )
-    val onPackage = compile(
-      directory.resolve("packaged"),
-      Seq("Side.scala" -> s"package a.b\nobject Side {\n$packaged\n}\n$top") ++ padding("packaged"),
-      Vector(base)
-    )
+    val twinned = Vector("objects" -> objectSources, "packaged" -> replaced.getOrElse(packageSources)).collect {
+      case (module, sources) if twins(module) =>
+        val classes =
+          compile(
+            directory.resolve(s"${module}Js"),
+            sources :+ ("Js.scala" -> s"package twin\nobject ${module}Js {\n$own\n}"),
+            Vector(base)
+          )
+        Output(s"${module}Js", Output.Scope.Main, classes)
+    }
     Manifest(
-      Vector(
+      twinned ++ Vector(
         Output("base", Output.Scope.Main, base),
         Output("objects", Output.Scope.Main, onObjects),
         Output("packaged", Output.Scope.Main, onPackage)
       ),
-      Map("base" -> classpath, "objects" -> (classpath :+ base), "packaged" -> (classpath :+ base)),
+      Map("base" -> classpath, "objects" -> visible, "packaged" -> visible) ++ twinned.map(_.module -> visible),
       Set.empty,
+      platforms = twinned.map(_.module).toSet,
       jdk = targetJdk
     )
   }
@@ -242,14 +257,99 @@ class DividedSuite extends AnalysisSuite {
     )(result => assertEquals(result.unusedBounds, Vector.empty))
   }
 
-  test("a platform twin that a clash would read apart fails naming the clash") {
+  private val Twinned = base(
+    "object Util {\n  def scale(x: Int, factor: Int): Int = x * factor\n  def compute(x: Int): Int = x + 1\n" +
+      "  def spare: Int = 1\n  def untouched: Int = 2\n}"
+  )
+
+  private val Stats = "def stats(xs: List[Int]): Int = {\n  val ys = xs.map(_ * 2).filter(_ > 3)\n" +
+    "  val zs = ys.zip(ys.drop(1)).map((a, b) => a * b + a)\n  zs.sum + ys.size + xs.length + zs.max\n}"
+
+  private def weight(side: String, heavy: String): String =
+    if (side == heavy) (1 to 12).map(index => s"class Pad$index").mkString("\n", "\n", "") else ""
+
+  private def twinned(heavy: String, twins: Set[String], own: String = ""): Extraction.Result =
     Scratch.using("bonsai-") { directory =>
-      val whole =
-        manifest(directory, "objects", base("object Util { def one: Int = 1 }"), "def a: Int = 1", "def b: Int = 2", "")
-      val errors = Extraction.read(whole.copy(platforms = Set("packaged"))).fold(identity, _ => fail("read"))
-      assertEquals(errors.size, 1)
-      assert(errors.head.startsWith("a.b is a class in module objects and a package in module packaged"), errors.head)
-      assert(errors.head.contains("packaged compile for another platform"), errors.head)
+      reads(
+        manifest(
+          directory,
+          "",
+          Twinned,
+          s"def one: Int = base.Util.scale(1, 5)\ndef drop(): Unit = { base.Util.compute(1); () }\n$Stats" +
+            weight("objects", heavy),
+          s"def two: Int = base.Util.scale(2, 5)\ndef drop(): Unit = { base.Util.compute(2); () }\n$Stats" +
+            weight("packaged", heavy),
+          "class Lonely { def lonely: Int = 3 }",
+          twins,
+          own
+        )
+      )
+    }
+
+  private def facts(result: Extraction.Result): Vector[String] =
+    ((smells(result) ++ Members.findings(result.members, result.graph.nodes, result.reach))
+      .map(finding => s"${finding.rule.id} ${finding.detail}").filterNot(_.contains("twin")) ++
+      result.clones.map(group => s"clones ${group.fragments.map(_.node).sorted}")).sorted
+
+  private def sidesWith(twins: Set[String], own: String = "")(check: (String, Extraction.Result) => Unit): Unit =
+    Seq("objects", "packaged").foreach(heavy => check(heavy, twinned(heavy, twins, own)))
+
+  test("a platform twin read in the run of its peer has its own classes and counts the shared ones once") {
+    Seq("objects", "packaged").foreach { side =>
+      sidesWith(Set(side)) { (heavy, result) =>
+        assert(result.graph.nodes.contains(s"twin.${side}Js"), result.graph.nodes.keySet.toString)
+        assertEquals(facts(result), facts(twinned(heavy, Set.empty)))
+        assertFinding(smells(result), "constant-argument", "Util.scale(x, factor).factor is always 5 across 2")
+        assertFinding(smells(result), "ignored-result", "its Int result is discarded at all 2 calls")
+        assert(result.clones.nonEmpty)
+      }
+    }
+  }
+
+  test("a source a platform twin replaces leaves the findings of its peer's version in a run apart") {
+    Scratch.using("bonsai-") { directory =>
+      val result = reads(
+        manifest(
+          directory,
+          "",
+          Twinned,
+          s"def one: Int = base.Util.scale(1, 5)${weight("objects", "objects")}",
+          "def drops(): Unit = { new Lonely().produce(); new Lonely().produce(); () }",
+          "class Lonely { def produce(): Int = 3 }",
+          Set("packaged"),
+          replacing = "class Lonely { def produce(): Int = 4; def extra: Int = 5 }"
+        )
+      )
+      assertFinding(smells(result), "ignored-result", "Lonely.produce", "discarded at all 2 calls")
+    }
+  }
+
+  test("a platform twin on each side of a clash is read in the run of its peer") {
+    sidesWith(Set("objects", "packaged")) { (heavy, result) =>
+      assert(Seq("objectsJs", "packagedJs").forall(side => result.graph.nodes.contains(s"twin.$side")))
+      assertEquals(facts(result), facts(twinned(heavy, Set.empty)))
+      assertFinding(smells(result), "constant-argument", "Util.scale(x, factor).factor is always 5 across 2")
+    }
+  }
+
+  test("a call from a platform twin into a module in another run is a use of its callee") {
+    Seq(Set("objects"), Set("packaged"), Set("objects", "packaged")).foreach { twins =>
+      sidesWith(twins, "def viaTwin: Int = base.Util.spare") { (_, result) =>
+        val unused = Members.findings(result.members, result.graph.nodes, result.reach)
+          .filter(_.rule == Finding.Rule.UnusedMember).map(_.detail)
+        assert(unused.contains("Util.untouched is never referenced"), unused.toString)
+        assert(!unused.contains("Util.spare is never referenced"), unused.toString)
+      }
+    }
+  }
+
+  test("a platform twin without a peer is read in a run of its own") {
+    Seq("objects", "packaged").foreach { padded =>
+      Scratch.using("bonsai-") { directory =>
+        val whole  = manifest(directory, padded, Twinned, "def a: Int = 1", "def b: Int = 2", "")
+        val result = reads(whole.copy(platforms = Set("packaged")))
+        assert(result.graph.nodes.contains("a.b.Side"), result.graph.nodes.keySet.toString)
+      }
     }
   }
 
@@ -297,11 +397,12 @@ class DividedSuite extends AnalysisSuite {
     }
   }
 
-  test("a platform twin whose peer a clash would read apart fails naming the clash") {
+  test("a platform twin holding one side of a clash and its peer the other fails naming them") {
     Scratch.using("bonsai-") { directory =>
       val shared  = "Peer.scala" -> "package twinned\nclass Peer { def one: Int = 1 }"
       val objects = compile(directory.resolve("objects"), Seq("B.scala" -> "package a\nobject b", shared), Vector.empty)
-      val twin    = compile(directory.resolve("twin"), Seq(shared), Vector.empty)
+      val twin    =
+        compile(directory.resolve("twin"), Seq("Other.scala" -> "package a.b\nobject Other", shared), Vector.empty)
       val packaged = compile(
         directory.resolve("packaged"),
         Seq(
@@ -323,8 +424,8 @@ class DividedSuite extends AnalysisSuite {
       )
       val errors = Extraction.read(whole).fold(identity, _ => fail("read"))
       assertEquals(errors.size, 1)
-      assert(errors.head.startsWith("a.b is a class in module objects and a package in module packaged"), errors.head)
-      assert(errors.head.contains("objectsJs compile for another platform"), errors.head)
+      assert(errors.head.startsWith("a.b is a class in module objects and a package in module objectsJs"), errors.head)
+      assert(errors.head.endsWith("and objects, objectsJs need both"), errors.head)
     }
   }
 
@@ -343,7 +444,8 @@ class DividedSuite extends AnalysisSuite {
       padded: String,
       onObjects: Path,
       onPackage: Path,
-      tools: String = Tools
+      tools: String = Tools,
+      twinJars: Option[(Path, Path)] = None
   ): Manifest = {
     def padding(module: String) =
       Option.when(module == padded)("Padding.scala" -> s"package padding.$module\nclass One\nclass Two\nclass Three")
@@ -352,16 +454,26 @@ class DividedSuite extends AnalysisSuite {
       base("object Util { def scale(x: Int, factor: Int): Int = x * factor }"),
       Vector.empty
     )
-    val users = compile(
-      directory.resolve("users"),
+    val userSources =
       Seq("Users.scala" -> "package user\nobject Users { def one: Int = base.Util.scale(lib.implicits.one, 5) }") ++
-        padding("users"),
-      Vector(shared, onObjects)
-    )
-    val using =
-      compile(directory.resolve("tools"), Seq("Tools.scala" -> tools) ++ padding("tools"), Vector(shared, onPackage))
-    Manifest(
+        padding("users")
+    val toolSources = Seq("Tools.scala" -> tools) ++ padding("tools")
+    val users       = compile(directory.resolve("users"), userSources, Vector(shared, onObjects))
+    val using       = compile(directory.resolve("tools"), toolSources, Vector(shared, onPackage))
+    val twinned     = twinJars.toVector.flatMap { (objectsJar, packageJar) =>
       Vector(
+        ("usersNative", userSources, objectsJar),
+        ("toolsJs", toolSources, packageJar)
+      ).map { (module, sources, jar) =>
+        val own = s"Own.scala" -> s"package twin\nobject $module { def go: Int = 3 }"
+        (
+          Output(module, Output.Scope.Main, compile(directory.resolve(module), sources :+ own, Vector(shared, jar))),
+          jar
+        )
+      }
+    }
+    Manifest(
+      twinned.map(_._1) ++ Vector(
         Output("base", Output.Scope.Main, shared),
         Output("users", Output.Scope.Main, users),
         Output("tools", Output.Scope.Main, using)
@@ -370,8 +482,9 @@ class DividedSuite extends AnalysisSuite {
         "base"  -> classpath,
         "users" -> (classpath ++ Vector(shared, onObjects)),
         "tools" -> (classpath ++ Vector(shared, onPackage))
-      ),
+      ) ++ twinned.map((output, jar) => output.module -> (classpath ++ Vector(shared, jar))),
       Set.empty,
+      platforms = twinned.map(_._1.module).toSet,
       jdk = targetJdk
     )
   }
@@ -422,6 +535,31 @@ class DividedSuite extends AnalysisSuite {
         )
         val result = reads(whole)
         assert(Seq("user.Users", "tool.Tools").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
+        assertFinding(smells(result), "constant-argument", "Util.scale(x, factor).factor is always 5 across 2")
+      }
+    }
+  }
+
+  test("platform twins using the libraries of each side of a clash are read with their peers") {
+    Seq("users", "tools").foreach { padded =>
+      Scratch.using("bonsai-") { directory =>
+        val whole = libraries(
+          directory,
+          padded,
+          library(directory, "objects", "1.0", objectLibrary),
+          library(directory, "packaged", "1.0", packageLibrary),
+          twinJars = Some(
+            (
+              library(directory, "objectsNative", "1.0", objectLibrary),
+              library(directory, "packagedJs", "1.0", packageLibrary)
+            )
+          )
+        )
+        val result = reads(whole)
+        assert(
+          Seq("user.Users", "tool.Tools", "twin.usersNative", "twin.toolsJs").forall(result.graph.nodes.contains),
+          result.graph.nodes.keySet.toString
+        )
         assertFinding(smells(result), "constant-argument", "Util.scale(x, factor).factor is always 5 across 2")
       }
     }
