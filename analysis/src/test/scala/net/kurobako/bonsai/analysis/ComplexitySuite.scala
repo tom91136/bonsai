@@ -405,6 +405,32 @@ class ComplexitySuite extends AnalysisSuite {
     assertEquals(early.map(_.detail), Vector.empty)
   }
 
+  test("a call a loop returns runs once, not once per turn of the loop") {
+    val early = complexities(
+      "Early",
+      """object Early {
+        |  def rest(values: Array[Int], from: Int): Int = {
+        |    var index = from
+        |    var total = 0
+        |    while (index < values.length) {
+        |      total += values(index)
+        |      index += 1
+        |    }
+        |    total
+        |  }
+        |  def scan(values: Array[Int]): Int = {
+        |    var index = 0
+        |    while (index < values.length) {
+        |      if (values(index) < 0) return rest(values, index)
+        |      index += 1
+        |    }
+        |    0
+        |  }
+        |}""".stripMargin
+    )
+    assertEquals(early.map(_.detail), Vector.empty)
+  }
+
   test("fields left to their default value have no size, and the methods beside them are still costed") {
     val wild = complexities(
       "Wild",
