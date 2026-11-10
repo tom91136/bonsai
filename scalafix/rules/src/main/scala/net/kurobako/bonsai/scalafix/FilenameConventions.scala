@@ -36,6 +36,12 @@ class FilenameConventions extends SyntacticRule("FilenameConventions") {
                 s"$parent or remove sealed from $parent",
               stray.position
             )
+          case None if stray.name.equalsIgnoreCase(expected) =>
+            lint(
+              "top-level-filename",
+              s"top-level declaration ${stray.name} in $fileName must be nested in object $expected",
+              stray.position
+            )
           case None =>
             lint(
               "top-level-filename",
