@@ -1192,6 +1192,33 @@ object Callers {
       Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), _.purity)
     }
 
+  test("a module of Java sources alone resolves for the Scala modules that use it") {
+    Scratch.using("bonsai-java-module-") { directory =>
+      val java = directory.resolve("java")
+      write(java, Seq("fixture/Hook.java" -> "package fixture; public interface Hook { void fire(); }"))
+      val javaClasses = Files.createDirectories(java.resolve("classes"))
+      javac(Seq(java.resolve("fixture/Hook.java")), javaClasses, classpath): Unit
+      val source   = """package fixture
+class Impl extends Hook { def fire(): Unit = println("fired") }
+object Uses {
+  def run(hook: Hook): Unit = hook.fire()
+  def main(args: Array[String]): Unit = run(() => println(args.length))
+}
+"""
+      val classes  = compile(directory.resolve("scala"), Seq("Uses.scala" -> source), Vector(javaClasses))
+      val manifest = Manifest(
+        Vector(Output("j", Output.Scope.Main, javaClasses), Output("m", Output.Scope.Main, classes)),
+        Map("m" -> classpath),
+        Set.empty,
+        sources = Vector(Output("m", Output.Scope.Main, directory.resolve("scala/Uses.scala"))),
+        jdk = targetJdk
+      )
+      val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      assert(result.problems.isEmpty, result.problems.mkString("\n"))
+      assert(result.notes.isEmpty, result.notes.mkString("\n"))
+    }
+  }
+
   test("a Java library call that was unknown is classified, and one that must stay unknown stays") {
     def verdict(model: Purity.Model, name: String) = model.methods.collectFirst {
       case (key, method) if key.startsWith(s"fixture.Callers.$name") => method.verdict

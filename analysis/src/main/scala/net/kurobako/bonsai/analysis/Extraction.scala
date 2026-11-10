@@ -244,7 +244,7 @@ object Extraction {
       }
       val owned    = absorbed.map(_._1)
       val readers  = phase +: absorbed.flatMap((own, copies, _, _) => Vector(own, copies))
-      val errors   = reading(phase, tasty, merged)
+      val errors   = reading(phase, tasty, behind)
       val problems = skipped ++ java.problems ++ phase.problems ++ absorbed.flatMap(_._3)
       val notes    = phase.notes ++ errors ++ absorbed.flatMap(_._4)
       val graph    = JavaConversion.merge(phase.graph, java)
