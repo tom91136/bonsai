@@ -124,6 +124,33 @@ class DictionariesSuite extends Graphed {
     assertEquals(instances("Runner.run"), Set("fixture.Instances.optionMonad"))
   }
 
+  test("a class and its companion keep their own dictionaries for methods that share a signature") {
+    val sources = Seq(
+      "Companions.scala" ->
+        """package fixture
+          |
+          |trait Monad[F[_]] { def pure[A](a: A): F[A] }
+          |
+          |object Instances {
+          |  given optionMonad: Monad[Option] with { def pure[A](a: A): Option[A] = Some(a) }
+          |  given listMonad: Monad[List] with { def pure[A](a: A): List[A] = List(a) }
+          |}
+          |
+          |class Reg { def run[F[_]](using m: Monad[F]): F[Int] = m.pure(1) }
+          |object Reg { def run[F[_]](using m: Monad[F]): F[Int] = m.pure(2) }
+          |
+          |object Companions {
+          |  import Instances.given
+          |  def main(args: Array[String]): Unit = println((Reg.run[Option], Reg().run[List]))
+          |}""".stripMargin
+    )
+    val reached = inspect(sources)((result, _) => result.dictionaries).filter(_.method.startsWith("fixture.Reg.run("))
+    assertEquals(
+      reached.map(_.instances).sortBy(_.mkString),
+      Vector(Vector("fixture.Instances.listMonad"), Vector("fixture.Instances.optionMonad"))
+    )
+  }
+
   test("a method without dictionary parameters has no entry") {
     assertEquals(of("Programs.plain"), Vector.empty)
   }

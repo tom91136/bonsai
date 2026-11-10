@@ -21,6 +21,24 @@ private object Keys {
   /** The key of the method, unless a class its signature names is missing from the classpath. */
   def of(method: Symbol)(using Context): Option[String] = at(method, Calls.owner(method))
 
+  /** The key of the method, told apart from a method of the same name and signature in the companion of its class or in
+    * another local class, which `of` gives the same key as class files do.
+    */
+  def unique(method: Symbol)(using Context): Option[String] =
+    of(method).map(_ + companioned(method) + localised(method))
+
+  private def companioned(method: Symbol)(using Context): String = {
+    val owner = method.owner
+    if (owner.isClass && !owner.is(Flags.Module) && owner.companionModule.moduleClass.info.decl(method.name).exists)
+      "#class"
+    else ""
+  }
+
+  private def localised(method: Symbol)(using Context): String =
+    if (method.ownersIterator.drop(1).exists(owner => owner.isTerm && !owner.is(Flags.Package)))
+      s"@${method.span.start}"
+    else ""
+
   /** The key of a call of the method on a receiver of class `owner`, which is how class files name the callee. */
   def at(method: Symbol, owner: Symbol)(using Context): Option[String] =
     try {

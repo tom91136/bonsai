@@ -135,7 +135,7 @@ private[analysis] class Symbols(
     s"${qualifiedName(method)}(${fields.map(_.name).mkString(", ")})"
 
   def methodKey(method: Symbol, fields: Vector[Algebra.Field])(using Context): String =
-    Keys.of(method).getOrElse(methodName(method, fields))
+    Keys.unique(method).getOrElse(methodName(method, fields))
 
   def fieldsOf(symbol: Symbol)(using Context): Vector[Algebra.Field] =
     parameters.getOrElseUpdate(symbol, if (symbol.isClass) Shapes.fields(symbol) else Shapes.parameters(symbol))

@@ -92,7 +92,7 @@ private[analysis] class Dictionaries(symbols: Symbols, foreign: Set[Output]) {
 
   private def slot(method: Symbol, index: Int)(using Context): Slot =
     Slot(
-      if (method.owner.isClass) Keys.of(method).getOrElse(qualifiedName(method)) else s"$tag#${method.id}",
+      if (method.owner.isClass) Keys.unique(method).getOrElse(qualifiedName(method)) else s"$tag#${method.id}",
       index
     )
 

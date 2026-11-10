@@ -1206,6 +1206,50 @@ class SmellsSuite extends AnalysisSuite {
     )
   }
 
+  test("a class and its companion keep their own usages for methods that share a signature") {
+    val result = extract(
+      Seq(
+        "Reg.scala"  -> "class Reg { def get(k: String): String = k }\nobject Reg { def get(k: String): String = k }",
+        "Main.scala" ->
+          """object Main {
+            |  def run(reg: Reg): String = {
+            |    Reg.get("a")
+            |    Reg.get("b")
+            |    reg.get("x") + reg.get("y") + reg.get("z") + reg.get("u") + reg.get("v")
+            |  }
+            |}""".stripMargin
+      )
+    )
+    assertEquals(
+      result.smells.usages.filter(_.method.short.startsWith("Reg.get")).map(usage => usage.calls -> usage.discarded)
+        .sorted,
+      Vector(2 -> 2, 5 -> 0)
+    )
+  }
+
+  test("methods of anonymous classes in one class keep their own usages") {
+    val result = extract(
+      Seq(
+        "Host.scala" ->
+          """class Host {
+            |  def one: Runnable = new Runnable {
+            |    def get(k: String): String = k
+            |    def run(): Unit = { get("a"); get("b") }
+            |  }
+            |  def two: Runnable = new Runnable {
+            |    def get(k: String): String = k
+            |    def run(): Unit = println(get("a") + get("b") + get("c"))
+            |  }
+            |}""".stripMargin
+      )
+    )
+    assertEquals(
+      result.smells.usages.filter(_.method.short.endsWith("get(k)")).map(usage => usage.calls -> usage.discarded)
+        .sorted,
+      Vector(2 -> 2, 3 -> 0)
+    )
+  }
+
   test("an argument that shares a short name with its default but is another value is not redundant") {
     val found = findings(
       "Defaults.scala" ->
