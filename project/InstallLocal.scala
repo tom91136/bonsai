@@ -9,6 +9,7 @@ import java.nio.file.StandardCopyOption
 import sbt.*
 import sbt.Keys.*
 import scala.jdk.CollectionConverters.*
+import scala.jdk.OptionConverters.*
 import scala.sys.process.Process
 import scala.sys.process.ProcessLogger
 
@@ -92,35 +93,54 @@ object InstallLocal {
     }
 
   private val RenameExchange = 2
+  private val RenameSwap     = 2
   private val AtFdcwd        = -100
 
-  // glibc and musl both have renameat2; the Java file API has no exchange
-  private lazy val renameat2 = {
+  // glibc and musl have renameat2, macOS has renamex_np; the Java file API has no exchange
+  private lazy val renameExchange: (Arena, Path, Path) => Int = {
     val linker = Linker.nativeLinker()
-    linker.downcallHandle(
-      linker.defaultLookup().find("renameat2").orElseThrow(() => new UnsupportedOperationException("renameat2")),
-      FunctionDescriptor.of(
-        ValueLayout.JAVA_INT,
-        ValueLayout.JAVA_INT,
-        ValueLayout.ADDRESS,
-        ValueLayout.JAVA_INT,
-        ValueLayout.ADDRESS,
-        ValueLayout.JAVA_INT
-      )
-    )
+    val lookup = linker.defaultLookup()
+    (lookup.find("renameat2").toScala, lookup.find("renamex_np").toScala) match {
+      case (Some(renameat2), _) =>
+        val handle = linker.downcallHandle(
+          renameat2,
+          FunctionDescriptor.of(
+            ValueLayout.JAVA_INT,
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT
+          )
+        )
+        (arena, from, to) =>
+          handle.invoke(
+            AtFdcwd,
+            arena.allocateFrom(from.toString),
+            AtFdcwd,
+            arena.allocateFrom(to.toString),
+            RenameExchange
+          ).asInstanceOf[Int]
+      case (_, Some(renamex)) =>
+        val handle = linker.downcallHandle(
+          renamex,
+          FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+        )
+        (arena, from, to) =>
+          handle.invoke(
+            arena.allocateFrom(from.toString),
+            arena.allocateFrom(to.toString),
+            RenameSwap
+          ).asInstanceOf[Int]
+      case _ => throw new UnsupportedOperationException("renameat2 or renamex_np")
+    }
   }
 
   /** Swaps two directories in a single rename, so that a reader of either path sees the old content or the new. */
   private def exchange(from: Path, to: Path): Unit = {
     val arena = Arena.ofConfined()
     try {
-      val result = renameat2.invoke(
-        AtFdcwd,
-        arena.allocateFrom(from.toString),
-        AtFdcwd,
-        arena.allocateFrom(to.toString),
-        RenameExchange
-      ).asInstanceOf[Int]
+      val result = renameExchange(arena, from, to)
       if (result != 0) throw new java.io.IOException(s"could not exchange $from with $to")
     } finally arena.close()
   }
