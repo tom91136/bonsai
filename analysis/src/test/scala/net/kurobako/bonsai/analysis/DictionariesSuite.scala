@@ -151,6 +151,22 @@ class DictionariesSuite extends Graphed {
     )
   }
 
+  test("a polymorphic context function called with its given is read without problems") {
+    val result = extract(
+      Seq(
+        "Poly.scala" ->
+          """class Poly[F[_]] {
+            |  def call(g: [x] => DummyImplicit ?=> List[x] => F[x]): Int = {
+            |    given DummyImplicit = DummyImplicit.dummyImplicit
+            |    g[Int](List(1))
+            |    2
+            |  }
+            |}""".stripMargin
+      )
+    )
+    assertEquals(result.problems, Vector.empty)
+  }
+
   test("a method without dictionary parameters has no entry") {
     assertEquals(of("Programs.plain"), Vector.empty)
   }
