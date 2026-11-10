@@ -359,7 +359,7 @@ object Axioms {
       else if (Filling(name)) effect(Kind.Writes)
       else stateful(if (mutates(name) || owner.startsWith(Atomics) && updates(name)) Kind.Writes else Kind.Reads)
     else if (
-      Pure.exists(owner.startsWith(_)) || call.generated ||
+      Pure.exists(owner.startsWith(_)) && !(call.java && owner.startsWith("scala.")) || call.generated ||
       owner.startsWith("scala.") && !owner.stripPrefix("scala.").contains('.')
     ) {
       // A companion's apply builds a value, where a collection's looks one up; checks fail to validate.

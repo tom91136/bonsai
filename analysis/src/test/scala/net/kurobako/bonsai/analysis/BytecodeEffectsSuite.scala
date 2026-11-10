@@ -265,6 +265,51 @@ public class Boot {
   public Boot() { made++; }
 }
 """,
+    "fixture/Updating.java" -> """package fixture;
+
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+
+public class Updating {
+  static final AtomicReferenceFieldUpdater<Updating, Object> LINK =
+      AtomicReferenceFieldUpdater.newUpdater(Updating.class, Object.class, "link");
+  static final AtomicIntegerFieldUpdater<Updating> SIZE = AtomicIntegerFieldUpdater.newUpdater(Updating.class, "size");
+  static final VarHandle COUNT;
+
+  static {
+    try {
+      COUNT = MethodHandles.lookup().findVarHandle(Updating.class, "count", int.class);
+    } catch (ReflectiveOperationException e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
+
+  volatile Object link;
+  volatile int size;
+  volatile int count;
+
+  public boolean casLink(Object a, Object b) { return LINK.compareAndSet(this, a, b); }
+  public boolean casSize(int a, int b) { return SIZE.compareAndSet(this, a, b); }
+  public boolean casCount(int a, int b) { return COUNT.compareAndSet(this, a, b); }
+  public int readSize() { return SIZE.get(this); }
+}
+""",
+    "fixture/Atoms.java" -> """package fixture;
+
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class Atoms {
+  public static boolean cas(AtomicInteger cell) { return cell.compareAndSet(0, 1); }
+  public static int bump(Holding holding) { return holding.cell.incrementAndGet(); }
+  public static int read(AtomicInteger cell) { return cell.get(); }
+
+  public static class Holding {
+    public final AtomicInteger cell = new AtomicInteger();
+  }
+}
+""",
     "fixture/Cell.java" -> """package fixture;
 
 public class Cell {
@@ -547,6 +592,18 @@ public class Pulls {
       val bump = of(world, summaries, ref("Alloc", "bump", "()V"))
       assertEquals(kinds(bump), Set(EffectKind.Writes, EffectKind.Reads))
       assert(bump.effects.forall(!_.onThis))
+    }
+  }
+
+  test("a write through a field updater, a variable handle or an atomic is an effect") {
+    summarised() { (world, summaries) =>
+      def at(owner: String, name: String, descriptor: String) = of(world, summaries, ref(owner, name, descriptor))
+      assert(kinds(at("Updating", "casLink", "(Ljava/lang/Object;Ljava/lang/Object;)Z")).contains(EffectKind.Writes))
+      assert(kinds(at("Updating", "casSize", "(II)Z")).contains(EffectKind.Writes))
+      assert(!isPure(at("Updating", "casCount", "(II)Z")))
+      assertEquals(kinds(at("Atoms", "cas", "(Ljava/util/concurrent/atomic/AtomicInteger;)Z")), Set(EffectKind.Writes))
+      assertEquals(kinds(at("Atoms", "bump", "(Lfixture/Atoms$Holding;)I")), Set(EffectKind.Writes))
+      assertEquals(kinds(at("Atoms", "read", "(Ljava/util/concurrent/atomic/AtomicInteger;)I")), Set(EffectKind.Reads))
     }
   }
 

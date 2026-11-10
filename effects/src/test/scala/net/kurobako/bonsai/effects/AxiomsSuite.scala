@@ -214,6 +214,16 @@ class AxiomsSuite extends munit.FunSuite {
     assertEquals(kinds(call("scala.collection.immutable.List.map")), Set.empty)
   }
 
+  test("a Java class in a scala package is not covered by the table of the Scala library") {
+    val node = on("scala.collection.concurrent.MainNode")
+    assertEquals(kinds(call("scala.collection.concurrent.MainNode.CAS_PREV", node, java = true)), Set(Kind.Reads))
+    assertEquals(
+      kinds(call("scala.collection.concurrent.TrieMap.size", on("scala.collection.concurrent.TrieMap"))),
+      Set.empty
+    )
+    assertEquals(kinds(call("java.lang.String.length", on("java.lang.String"), java = true)), Set.empty)
+  }
+
   test("unknown code is unknown, a Java object may be read or written, a constructor has no effect of its own") {
     assertEquals(kinds(call("demo.Service.run")), Set(Kind.Unknown))
     assertEquals(kinds(call("demo.Handle.fill", on("demo.Handle"), java = true)), Set(Kind.Reads))
