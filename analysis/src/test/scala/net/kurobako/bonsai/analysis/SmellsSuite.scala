@@ -1227,6 +1227,27 @@ class SmellsSuite extends AnalysisSuite {
     )
   }
 
+  test("a class and its companion keep their own unused results and fixed defaults") {
+    val found = findings(
+      "Comparer.scala" ->
+        """class Comparer {
+          |  def explaining(op: Int, short: Boolean = false): String = op.toString + short
+          |}
+          |object Comparer {
+          |  def explaining(op: Int, short: Boolean = false): String = op.toString + short
+          |}""".stripMargin,
+      "Main.scala" ->
+        """object Main {
+          |  def run(comparer: Comparer, flag: Boolean): String = {
+          |    Comparer.explaining(1)
+          |    comparer.explaining(2, true) + comparer.explaining(3, flag)
+          |  }
+          |}""".stripMargin
+    )
+    assertEquals(found.count(_.rule == Finding.Rule.UnusedReturnValue), 1, found.mkString("\n"))
+    assertEquals(found.count(_.rule == Finding.Rule.FixedDefault), 1, found.mkString("\n"))
+  }
+
   test("methods of anonymous classes in one class keep their own usages") {
     val result = extract(
       Seq(
