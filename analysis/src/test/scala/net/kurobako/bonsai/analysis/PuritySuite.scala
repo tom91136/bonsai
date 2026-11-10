@@ -1013,4 +1013,25 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(chained.purity.verdicts("Diamond.quiet"), Purity.Verdict.Pure)
     assert(chained.purity.resolved <= depth * 10, chained.purity.resolved)
   }
+
+  test("local functions that all call each other are evaluated a bounded number of times") {
+    val size      = 9
+    val functions = (1 to size).map { n =>
+      val calls = (1 to size).filter(_ != n).map(m => s"f$m(x)").mkString(" + ")
+      s"    lazy val f$n: Int => Int = x => if (x <= 0) 0 else $calls"
+    }
+    val mutual = extract(
+      Seq(
+        "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Mutual) }",
+        "Mutual.scala" ->
+          s"""object Mutual {
+             |  def quiet: Int = {
+             |${functions.mkString("\n")}
+             |    f1(1)
+             |  }
+             |}""".stripMargin
+      )
+    )
+    assert(mutual.purity.resolved <= size * size * 10, mutual.purity.resolved)
+  }
 }

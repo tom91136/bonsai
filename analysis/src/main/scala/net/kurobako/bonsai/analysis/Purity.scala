@@ -655,19 +655,18 @@ object Purity {
     private case class DiscardSite(method: Symbol, name: String, facts: Facts, tree: tpd.Tree)
 
     private var resolutions = 0 // scalafix:ok DisableSyntax.var
-
-    private val summaries = mutable.Map.empty[Key, Summary]
-    private val views     = mutable.Map.empty[Key, (Summary, Summary)]
-    private val states    = mutable.HashMap.empty[Key, State]
-    private val open      = mutable.ArrayBuffer.empty[Key]
-    private val dirtied   = mutable.ArrayBuffer.empty[Key]
-    private val readers   = mutable.HashMap.empty[Key, mutable.ArrayBuffer[Key]]
-    private val computing = mutable.Stack.empty[Key]
-    private val Silent    = Summary(Ids.Empty, Set.empty, Set.empty)
-    private val locals    = mutable.Map.empty[Symbol, tpd.Tree]
-    private val lambdas   = mutable.Map.empty[Symbol, Facts]
-    private val evaluated = mutable.Map.empty[Evaluation, Value]
-    private val returning = mutable.Map.empty[Returned, Value]
+    private val summaries   = mutable.Map.empty[Key, Summary]
+    private val views       = mutable.Map.empty[Key, (Summary, Summary)]
+    private val states      = mutable.HashMap.empty[Key, State]
+    private val open        = mutable.ArrayBuffer.empty[Key]
+    private val dirtied     = mutable.ArrayBuffer.empty[Key]
+    private val readers     = mutable.HashMap.empty[Key, mutable.ArrayBuffer[Key]]
+    private val computing   = mutable.Stack.empty[Key]
+    private val Silent      = Summary(Ids.Empty, Set.empty, Set.empty)
+    private val locals      = mutable.Map.empty[Symbol, tpd.Tree]
+    private val lambdas     = mutable.Map.empty[Symbol, Facts]
+    private val evaluated   = mutable.Map.empty[Evaluation, Value]
+    private val returning   = mutable.Map.empty[Returned, Value]
     // Swapped by `isolated` and read by every evaluation, so it is a field rather than a parameter.
     private var scratch    = Scratch() // scalafix:ok DisableSyntax.var
     private val sites      = mutable.Map.empty[Symbol, mutable.ArrayBuffer[(Symbol, Vector[Argument])]]
@@ -830,13 +829,29 @@ object Purity {
     }
 
     private class Scratch {
-      val evaluating: mutable.Set[Returned]         = mutable.Set.empty[Returned]
-      val pendingValues: mutable.Set[Evaluation]    = mutable.Set.empty[Evaluation]
-      val running: mutable.Map[Symbol, Int]         = mutable.Map.empty[Symbol, Int]
-      val resolving: mutable.Map[Resolving, Int]    = mutable.Map.empty[Resolving, Int]
-      val resolved: mutable.Map[Resolving, Summary] = mutable.Map.empty[Resolving, Summary]
+      val evaluating: mutable.Set[Returned]                   = mutable.Set.empty[Returned]
+      val pendingValues: mutable.Set[Evaluation]              = mutable.Set.empty[Evaluation]
+      val running: mutable.Map[Symbol, Int]                   = mutable.Map.empty[Symbol, Int]
+      val resolving: mutable.Map[Resolving, Int]              = mutable.Map.empty[Resolving, Int]
+      val resolved: mutable.Map[Resolving, Summary]           = mutable.Map.empty[Resolving, Summary]
+      val shaped: mutable.Map[Resolving, (Summary, Int, Int)] = mutable.Map.empty[Resolving, (Summary, Int, Int)]
+      val serials: mutable.ArrayBuffer[Int]                   = mutable.ArrayBuffer.empty[Int]
+      var issued: Int                                         = 0 // scalafix:ok DisableSyntax.var
       // the shallowest resolution a guard cut short since the last reset, which a summary must not depend on to be kept
       var reach: Int = Int.MaxValue // scalafix:ok DisableSyntax.var
+
+      def enter(): Unit = {
+        serials += issued
+        issued += 1
+      }
+
+      // a summary a guard shaped holds while the resolution that guard cut stays on the stack
+      def keep(key: Resolving, found: Summary, depth: Int): Unit =
+        if (reach >= depth) resolved(key) = found else shaped(key) = (found, reach, serials(reach))
+
+      def holding(key: Resolving): Option[(Summary, Int)] = shaped.get(key).collect {
+        case (found, tag, serial) if serials.lift(tag).contains(serial) => found -> tag
+      }
     }
 
     // A key is computed as if it were the first, whichever key's computation reached it.
@@ -1160,8 +1175,15 @@ object Purity {
           outer
         )
       }
-      val key = Resolving(facts, frame, method)
-      state.resolved.get(key).filter(_ => !keepFresh).getOrElse {
+      val key  = Resolving(facts, frame, method)
+      val kept =
+        if (keepFresh) None
+        else
+          state.resolved.get(key).orElse(state.holding(key).map { (found, tag) =>
+            state.reach = math.min(state.reach, tag)
+            found
+          })
+      kept.getOrElse {
         // Evaluating the same facts in the same frame again from within itself never ends, so what cannot be known
         // stays unknown.
         state.resolving.get(key) match {
@@ -1172,13 +1194,16 @@ object Purity {
             val outer = state.reach
             state.reach = Int.MaxValue
             state.resolving(key) = depth
+            state.enter()
             try
               try {
                 val found = summarise()
-                // a summary that no guard above it shaped is the same wherever it is reached
-                if (state.reach >= depth && !keepFresh) state.resolved(key) = found
+                if (!keepFresh) state.keep(key, found, depth)
                 found
-              } finally state.resolving -= key
+              } finally {
+                state.resolving -= key
+                state.serials.dropRightInPlace(1)
+              }
             catch { case NonFatal(error) => Summary(Set(unknown(frame.root, error)), Set.empty) }
             finally state.reach = math.min(outer, if (state.reach >= depth) Int.MaxValue else state.reach)
         }
