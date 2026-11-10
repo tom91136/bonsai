@@ -204,15 +204,16 @@ private[analysis] class Collector(
       symbol -> Callee(method.key, method.fields.size, method.short, method.node, method.suppressed, method.line)
     )
     gathered = callSites.collect(callees, isForeign(_))
-    outgoing = Collector.Evidence(
-      gathered.excluding(callees.values.map(_.key).toSet),
-      overriders.toMap,
-      dispatching.evidence,
-      if (deferred) fragments.keys else Fragments.Keys.empty,
-      structure.evidence,
-      named.filter(isForeign(_)).map(qualifiedName(_)).toSet,
-      derivations.evidence
-    )
+    if (deferred)
+      outgoing = Collector.Evidence(
+        gathered.excluding(callees.values.map(_.key).toSet),
+        overriders.toMap,
+        dispatching.evidence,
+        fragments.keys,
+        structure.evidence,
+        named.filter(isForeign(_)).map(qualifiedName(_)).toSet,
+        derivations.evidence
+      )
     if (deferred) read = Some((ctx, fragments, library)) else finish(fragments, library, Collector.Evidence.empty)
     units
   }

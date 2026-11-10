@@ -41,11 +41,15 @@ class DividedSuite extends AnalysisSuite {
     )
   }
 
-  private def eachSide(shared: Seq[(String, String)], objects: String, packaged: String, top: String = "")(
-      check: Extraction.Result => Unit
-  ): Unit = Seq("objects", "packaged").foreach { padded =>
+  private def eachSide(
+      shared: Seq[(String, String)],
+      objects: String,
+      packaged: String,
+      top: String = "",
+      bounded: Vector[Complexity.Bounded] = Vector.empty
+  )(check: Extraction.Result => Unit): Unit = Seq("objects", "packaged").foreach { padded =>
     Scratch.using("bonsai-") { directory =>
-      val result = Extraction.read(manifest(directory, padded, shared, objects, packaged, top))
+      val result = Extraction.read(manifest(directory, padded, shared, objects, packaged, top), bounded = bounded)
         .fold(errors => fail(errors.mkString("\n")), identity)
       assertEquals(result.problems, Vector.empty)
       check(result)
@@ -226,5 +230,14 @@ class DividedSuite extends AnalysisSuite {
       "class A extends base.Task { def run(): Int = 1 }\ndef drop(t: base.Task): Unit = { base.Util.exec(t); () }",
       "class B extends base.Task { def run(): Int = { println(\"x\"); 2 } }"
     )(result => assertEquals(result.purity.discards, Vector.empty))
+  }
+
+  test("a bound that a member on one side of a clash matches is used") {
+    eachSide(
+      base("object Util { def one: Int = 1 }"),
+      "def pairs(xs: Vector[Int], ys: Vector[Int]): Vector[Vector[Int]] = xs.map(x => ys.map(y => y + x))",
+      "def two: Int = 2",
+      bounded = Vector(Complexity.Bounded("a.b.pairs.ys", 4, "four at most"))
+    )(result => assertEquals(result.unusedBounds, Vector.empty))
   }
 }

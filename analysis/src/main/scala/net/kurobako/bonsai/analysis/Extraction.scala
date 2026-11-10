@@ -374,7 +374,11 @@ object Extraction {
       }
       val members = owned.foldLeft(observed(phase))((all, twin) => all.joined(observed(twin).excluding(stands(_))))
         .pinned(name => graph.nodes.get(name).exists(replacedAt(_)))
-      val isHot = Globs.heat(hot)
+      val isHot     = Globs.heat(hot)
+      val unmatched = {
+        val beside = groups.map(_.unusedBounds.toSet)
+        phase.unusedBounds.filter(bound => beside.forall(_(bound)))
+      }
       if (graph.nodes.isEmpty && problems.nonEmpty) Left(problems ++ notes)
       else {
         val linked                       = phase.calls.getOrElse(Reach.link(manifest, graph, world))
@@ -403,7 +407,7 @@ object Extraction {
             java.clones,
           bytecode(),
           owned.foldLeft(phase.complexities)(_ ++ _.complexities),
-          owned.foldLeft(phase.unusedBounds)(_ ++ _.unusedBounds),
+          absorbed.map(_._1).foldLeft(unmatched)(_ ++ _.unusedBounds),
           owned.foldLeft(phase.pipelines)(_ ++ _.pipelines),
           resolved.filterNot(_.site.settled),
           Megamorphic.shared(resolved, graph.nodes, linked.graph, world),
