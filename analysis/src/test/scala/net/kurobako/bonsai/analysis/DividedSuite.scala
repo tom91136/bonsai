@@ -295,4 +295,35 @@ class DividedSuite extends AnalysisSuite {
       assertEquals(unused(divided), Vector.empty)
     }
   }
+
+  test("a platform twin whose peer a clash would read apart fails naming the clash") {
+    Scratch.using("bonsai-") { directory =>
+      val shared  = "Peer.scala" -> "package twinned\nclass Peer { def one: Int = 1 }"
+      val objects = compile(directory.resolve("objects"), Seq("B.scala" -> "package a\nobject b", shared), Vector.empty)
+      val twin    = compile(directory.resolve("twin"), Seq(shared), Vector.empty)
+      val packaged = compile(
+        directory.resolve("packaged"),
+        Seq(
+          "Side.scala"    -> "package a.b\nobject Side",
+          "Padding.scala" -> "package padding\nclass One\nclass Two\nclass Three\nclass Four"
+        ),
+        Vector.empty
+      )
+      val whole = Manifest(
+        Vector(
+          Output("objectsJs", Output.Scope.Main, twin),
+          Output("objects", Output.Scope.Main, objects),
+          Output("packaged", Output.Scope.Main, packaged)
+        ),
+        Map("objectsJs" -> classpath, "objects" -> classpath, "packaged" -> classpath),
+        Set.empty,
+        platforms = Set("objectsJs"),
+        jdk = targetJdk
+      )
+      val errors = Extraction.read(whole).fold(identity, _ => fail("read"))
+      assertEquals(errors.size, 1)
+      assert(errors.head.startsWith("a.b is a class in module objects and a package in module packaged"), errors.head)
+      assert(errors.head.contains("objectsJs compile for another platform"), errors.head)
+    }
+  }
 }

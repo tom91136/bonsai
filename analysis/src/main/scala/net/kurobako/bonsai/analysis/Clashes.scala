@@ -107,9 +107,18 @@ private[analysis] object Clashes {
             }
         }
       divide(everything).flatMap { divided =>
-        val twinned = divided.drop(1).flatMap(_.filter(manifest.platforms)).sorted
-        val tail    = s", and ${twinned.mkString(", ")} compile for another platform"
-        val jarred  = divided.flatMap { modules =>
+        val compiled = outputs.groupMapReduce(_._1.module)((output, files) =>
+          files.map(output.path.relativize(_)).filter(_.getFileName.toString.endsWith(".tasty")).toSet
+        )(_ ++ _)
+        val groupOf              = divided.zipWithIndex.flatMap((group, index) => group.map(_ -> index)).toMap
+        def parted(twin: String) = holdings.keySet.exists(peer =>
+          !manifest.platforms(peer) && groupOf(peer) != groupOf(twin) && compiled(peer).exists(compiled(twin))
+        )
+        val twinned = divided.zipWithIndex.flatMap((group, index) =>
+          group.filter(twin => manifest.platforms(twin) && (index > 0 || parted(twin)))
+        ).sorted
+        val tail   = s", and ${twinned.mkString(", ")} compile for another platform"
+        val jarred = divided.flatMap { modules =>
           val sorted = modules.toVector.sorted
           for {
             jar <- manifest.classpathOf(sorted).filter(Files.isRegularFile(_))
