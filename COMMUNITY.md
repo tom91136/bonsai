@@ -47,7 +47,7 @@ Per project: build log, manifest, report, timings, peak heap, and any crash trac
 - findings per rule per thousand lines;
 - crash, timeout, and build-failure rates, with build failures split by whether bonsai caused them;
 - the slowest projects by analysis time;
-- a diff against the previous run by bonsai version, through `scripts/corpus.sh`.
+- a diff against the previous run by bonsai version, through `scripts/corpus.scala`.
 
 ## Reading the reports
 
