@@ -14,35 +14,19 @@ import java.nio.file.PathMatcher
 import net.kurobako.bonsai.collections.*
 import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.lifting.*
-import scala.annotation.targetName
 import scala.collection.mutable
 import scala.util.matching.Regex
 
 private[analysis] object Symbols {
 
   /** The references a registry recorded, without the symbols they came from. */
-  object Recorded {
-    val empty: Recorded = Recorded(Map.empty, Map.empty, Map.empty, Map.empty, Map.empty, Map.empty)
-  }
-
   case class Recorded(
       edges: Map[String, Set[String]],
       bodies: Map[Use, Set[String]],
-      incoming: Map[String, Vector[String]],
       inlines: Map[String, Set[Use]],
       splices: Map[String, Set[Use]],
       arguments: Map[String, Set[(Use, String)]]
-  ) {
-    @targetName("merge")
-    def ++(other: Recorded): Recorded = Recorded(
-      Maps.join(edges, other.edges)(_ ++ _),
-      Maps.join(bodies, other.bodies)(_ ++ _),
-      Maps.join(incoming, other.incoming)(_ ++ _),
-      Maps.join(inlines, other.inlines)(_ ++ _),
-      Maps.join(splices, other.splices)(_ ++ _),
-      Maps.join(arguments, other.arguments)(_ ++ _)
-    )
-  }
+  )
 
   // A Scala.js facade describes a JavaScript API, which Scala does not implement; the library may be off the classpath.
   def facade(cls: Symbol)(using Context): Boolean = {
@@ -106,7 +90,6 @@ private[analysis] class Symbols(
   def recorded: Symbols.Recorded = Symbols.Recorded(
     edges.view.mapValues(_.toSet).toMap,
     bodies.view.mapValues(_.toSet).toMap,
-    incoming,
     inlines.view.mapValues(_.toSet).toMap,
     splices.view.mapValues(_.toSet).toMap,
     arguments.view.mapValues(_.toSet).toMap

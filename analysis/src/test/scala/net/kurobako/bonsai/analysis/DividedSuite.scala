@@ -418,8 +418,8 @@ class DividedSuite extends AnalysisSuite {
   }
 
   test("a run of platform twins alone keeps the edges of every run") {
-    sole("core")(soleChecks)
-    sole("coreJs")(soleChecks)
+    sole("core")(soleChecks(_))
+    sole("coreJs")(soleChecks(_))
   }
 
   private val Pairs =
