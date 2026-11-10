@@ -12,6 +12,19 @@ class MembersSuite extends AnalysisSuite {
 
   private def entry(body: String) = "Main.scala" -> s"object Main { def main(args: Array[String]): Unit = { $body } }"
 
+  test("a member only unreachable code refers to is referenced, by code nothing reaches") {
+    val found = findings(
+      Seq(
+        entry("println(Tools.kept)"),
+        "Tools.scala" -> "object Tools { def kept = 1; def lonely = helper; def helper = 2 }"
+      )
+    )
+    assertEquals(
+      found.collect { case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail }.sorted,
+      Vector("Tools.helper is referenced only from code nothing reaches", "Tools.lonely is never referenced")
+    )
+  }
+
   test("a method annotated as a command line entry point is not reported as unreferenced") {
     val found = findings(
       Seq(
@@ -45,7 +58,11 @@ class MembersSuite extends AnalysisSuite {
     )
     assertEquals(
       found.collect { case finding if finding.rule == Finding.Rule.UnusedMember => finding.detail }.sorted,
-      Vector("Tools.dead is never referenced", "Tools.first is never referenced", "Tools.second is never referenced")
+      Vector(
+        "Tools.dead is never referenced",
+        "Tools.first is referenced only from code nothing reaches",
+        "Tools.second is referenced only from code nothing reaches"
+      )
     )
   }
 
@@ -234,7 +251,7 @@ class MembersSuite extends AnalysisSuite {
     )
     assertEquals(
       found.collect { case finding if finding.rule == Finding.Rule.TestOnlyMember => finding.detail },
-      Vector("2 members of Tools are referenced only from tests: Tools.shared, Tools.staged")
+      Vector("2 members of Tools are reachable only from tests: Tools.shared, Tools.staged")
     )
   }
 
@@ -276,7 +293,7 @@ class MembersSuite extends AnalysisSuite {
     assertEquals(unused("def stray(value: Int) = 2", "stray(1)"), Vector("Box.stray is never referenced"))
     assertEquals(
       unused("def stray(value: Int, other: Int) = 2", "stray(1, 2)"),
-      Vector("Box.secret is never referenced", "Box.stray is never referenced")
+      Vector("Box.secret is referenced only from code nothing reaches", "Box.stray is never referenced")
     )
   }
 
@@ -492,7 +509,7 @@ class MembersSuite extends AnalysisSuite {
     )
     assertEquals(
       found.collect { case finding if finding.rule == Finding.Rule.TestOnlyMember => finding.detail },
-      Vector("Item.title is referenced only from tests")
+      Vector("Item.title is reachable only from tests")
     )
   }
 
@@ -875,7 +892,7 @@ class MembersSuite extends AnalysisSuite {
     ).filter(_.rule == Finding.Rule.TestOnlyMember)
     assertEquals(
       found.map(_.detail),
-      Vector("2 members of Builder are referenced only from tests: Builder.a, Builder.b")
+      Vector("2 members of Builder are reachable only from tests: Builder.a, Builder.b")
     )
   }
 
@@ -898,7 +915,7 @@ class MembersSuite extends AnalysisSuite {
         Seq("ToolsCheck.scala"                          -> "class ToolsCheck { val value = Tools.helper }")
       ),
       "test-only-member",
-      "Tools.helper is referenced only from tests"
+      "Tools.helper is reachable only from tests"
     )
   }
 
@@ -1295,7 +1312,7 @@ class MembersSuite extends AnalysisSuite {
       Vector.empty,
       Vector.empty
     )).filter(_.rule == Finding.Rule.TestOnlyMember)
-    assertEquals(found.map(_.detail), Vector("Tools.checked is referenced only from tests"))
+    assertEquals(found.map(_.detail), Vector("Tools.checked is reachable only from tests"))
   }
 
   test("members a supertype or other build fixes, or already hidden, are not told to be private") {

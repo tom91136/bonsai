@@ -141,7 +141,8 @@ object Members {
       case Some(value) =>
         val used = if (value.users.nonEmpty || value.inherited) "; the value of that name is" else ""
         s"the type alias ${member.short} is never referenced$used"
-      case None => s"${member.short} is never referenced"
+      case None if member.users.nonEmpty => s"${member.short} is referenced only from code nothing reaches"
+      case None                          => s"${member.short} is never referenced"
     }
 
   // Members of one type that only tests use say the same of the type, as of a builder only tests drive, so they are
@@ -151,10 +152,10 @@ object Members {
     others ++ tested.groupBy(_.node.name).toVector.sortBy(_._1).flatMap {
       case (_, Vector(single)) => Vector(single)
       case (owner, several)    =>
-        val members = several.map(_.detail.stripSuffix(" is referenced only from tests")).sorted
+        val members = several.map(_.detail.stripSuffix(" is reachable only from tests")).sorted
         Vector(
           several.minBy(finding => (finding.node.line, finding.detail)).copy(detail =
-            s"${members.size} members of ${Finding.simple(owner)} are referenced only from tests: " +
+            s"${members.size} members of ${Finding.simple(owner)} are reachable only from tests: " +
               Finding.listed(members, Shown)
           )
         )
@@ -182,7 +183,7 @@ object Members {
               at(nodes, member, if (member.field) Finding.Rule.UnreadField else Finding.Rule.UnusedMember, _)
             )
           else if (!member.inherited && running.forall(tests(_)))
-            at(nodes, member, Finding.Rule.TestOnlyMember, s"${member.short} is referenced only from tests")
+            at(nodes, member, Finding.Rule.TestOnlyMember, s"${member.short} is reachable only from tests")
               .filterNot(found => support(found.node.module))
           else
             Option.when(
