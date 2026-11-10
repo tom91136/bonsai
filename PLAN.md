@@ -102,7 +102,7 @@ A closed world is the JDK the program runs on, not the JDK Bonsai runs on. The m
 - A target of 9 or later is read through its own `lib/jrt-fs.jar`: `FileSystems.newFileSystem(URI.create("jrt:/"), Map.of("java.home", target))`, which works from a JDK 17 host.
 - A target of 8 is read from `jre/lib/rt.jar`.
 - `ct.sym` holds signatures without bodies and cannot serve.
-- The JDK the analysis runs on is a setting of its own, never the target: `bonsaiAnalysisJavaHome` in sbt and `BONSAI_ANALYSIS_JAVA_HOME` for `scala-cli/analyse.sh`. It defaults to the JDK that runs the build tool, and the launcher reads the version of the `java` binary it would use and fails, naming the setting, when that is older than 17. The Maven plugin is compiled for 17, so Maven already runs on a JDK that serves, and `bonsai.jdk` names the target.
+- The JDK the analysis runs on is a setting of its own, never the target: `bonsaiAnalysisJavaHome` in sbt and `BONSAI_ANALYSIS_JAVA_HOME` for `scala-cli/analyse.scala`. It defaults to the JDK that runs the build tool, and the launcher reads the version of the `java` binary it would use and fails, naming the setting, when that is older than 17. The Maven plugin is compiled for 17, so Maven already runs on a JDK that serves, and `bonsai.jdk` names the target.
 
 ### One owner per fact
 
