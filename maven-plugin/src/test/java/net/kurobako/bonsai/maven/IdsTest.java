@@ -40,8 +40,10 @@ class IdsTest {
     assertTrue(ids.rules().containsAll(Set.of("BannedSyntax", "OptionIdioms", "DisableSyntax", "RedundantSyntax")),
       ids.rules().toString());
     assertTrue(ids.rules().containsAll(Set.of("RemoveUnused", "ExplicitResultTypes")), ids.rules().toString());
-    assertFalse(ids.rules().contains("DisableSyntax.noVars"), ids.rules().toString());
-    assertTrue(ids.bans().contains("DisableSyntax.noVars"), ids.bans().toString());
+    assertFalse(ids.rules().contains("DisableSyntax.var"), ids.rules().toString());
+    assertTrue(ids.bans().containsAll(Set.of("DisableSyntax.var", "DisableSyntax.asInstanceOfMatchable")),
+      ids.bans().toString());
+    assertFalse(ids.bans().contains("DisableSyntax.noVars"), ids.bans().toString());
     assertFalse(ids.settings().isEmpty());
     assertTrue(ids.unusedOptions().contains("-Wunused:all"), ids.unusedOptions().toString());
   }
@@ -54,6 +56,22 @@ class IdsTest {
       write("rules.id", "BannedSyntax\n"), BUILTIN);
 
     ids.validate(Set.of("RemoveUnused", "DisableSyntax.noXml"), Set.of("ExplicitResultTypes"), Set.of(), Set.of());
+  }
+
+  @Test
+  void aBanIsNamedByTheLintScalafixPrintsNotBySetting() throws IOException {
+    Ids ids = Ids.of(
+      write("checks.id", "acyclic\n"),
+      write("findings.id", "duplicate-code\n"),
+      write("rules.id", "BannedSyntax\n"), BUILTIN);
+
+    ids.validate(Set.of("DisableSyntax.asInstanceOf", "DisableSyntax.null"), Set.of(), Set.of(),
+      Set.of("DisableSyntax.asInstanceOfMatchable"));
+    for (String setting : Set.of("DisableSyntax.noVars", "DisableSyntax.noAsInstanceOf", "DisableSyntax.noNulls")) {
+      IOException error = assertThrows(IOException.class,
+        () -> ids.validate(Set.of(setting), Set.of(), Set.of(), Set.of()));
+      assertTrue(error.getMessage().contains(setting), error.getMessage());
+    }
   }
 
   @Test

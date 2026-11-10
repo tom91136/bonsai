@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -27,15 +28,15 @@ public final class Ids {
   private final Set<String> findings;
   private final Set<String> rules;
   private final Set<String> optIn = new TreeSet<>();
-  private final List<String> bans = new ArrayList<>();
+  private final Map<String, List<String>> banSettings = new LinkedHashMap<>();
   private final Map<String, List<String>> banLints = new HashMap<>();
   private final List<String> settings = new ArrayList<>();
   private final List<String> unusedOptions = new ArrayList<>();
 
   /**
-   * The built-in entries are the rule names scalafix provides, their bans, which each contain a dot, their settings,
-   * which each contain {@code =}, and the compiler options the unused-code rule reads, which each start with
-   * {@code -}. A rule which starts with {@code ?} is opt-in.
+   * The built-in entries are the rule names scalafix provides, their bans, which each contain a dot and name the lints
+   * the ban reports after a {@code |}, their settings, which each contain {@code =}, and the compiler options the
+   * unused-code rule reads, which each start with {@code -}. A rule which starts with {@code ?} is opt-in.
    */
   private Ids(Set<String> checks, Set<String> findings, Set<String> rules, Set<String> builtin) {
     this.checks = checks;
@@ -51,10 +52,11 @@ public final class Ids {
         settings.add(entry);
       } else if (entry.contains(".")) {
         int bar = entry.indexOf('|');
-        String ban = entry.substring(0, bar);
-        bans.add(ban);
-        String prefix = ban.substring(0, ban.indexOf('.') + 1);
-        banLints.put(ban, Arrays.stream(entry.substring(bar + 1).split(",")).map(prefix::concat).toList());
+        String setting = entry.substring(0, bar);
+        String prefix = setting.substring(0, setting.indexOf('.') + 1);
+        List<String> lints = Arrays.stream(entry.substring(bar + 1).split(",")).map(prefix::concat).toList();
+        banSettings.put(setting, lints);
+        lints.forEach(lint -> banLints.put(lint, lints));
       } else {
         this.rules.add(entry);
       }
@@ -81,14 +83,19 @@ public final class Ids {
     return optIn;
   }
 
-  /** The bans the DisableSyntax rule holds, each turned off by its own name. */
   /** The ids of the lints a nonfatal rule or ban reports, as scalafix names them. */
   public List<String> lints(String id) {
     return banLints.getOrDefault(id, List.of(id));
   }
 
-  public List<String> bans() {
-    return bans;
+  /** The lints of the DisableSyntax rule, which name its bans. */
+  public Set<String> bans() {
+    return banLints.keySet();
+  }
+
+  /** The setting that turns each ban on, with the lints the ban reports. */
+  public Map<String, List<String>> banSettings() {
+    return banSettings;
   }
 
   /** The settings the built-in rules always run with, as scalafix configuration lines. */
@@ -145,7 +152,7 @@ public final class Ids {
     unknown.removeAll(checks);
     unknown.removeAll(findings);
     unknown.removeAll(rules);
-    unknown.removeAll(bans);
+    unknown.removeAll(bans());
     if (!unknown.isEmpty()) {
       throw new IOException(
         "bonsai: unknown ids " + String.join(", ", unknown) + "; the ids are the compiler plugin checks " +

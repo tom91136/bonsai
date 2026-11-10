@@ -6,7 +6,7 @@
 > scalafixAll --check
 > set ThisBuild / bonsaiMode := BonsaiMode.Strict
 # each of its bans can be turned off by id
-> set ThisBuild / bonsaiDisabled += "DisableSyntax.noVars"
+> set ThisBuild / bonsaiDisabled += "DisableSyntax.var"
 > scalafixAll --check
 > set ThisBuild / bonsaiDisabled := Set("DisableSyntax")
 > scalafixAll --check

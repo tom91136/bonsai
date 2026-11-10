@@ -41,13 +41,25 @@ class ScalafixTest {
 
   @Test
   void aNonfatalBanWarnsUnderTheLintsScalafixReports() throws IOException {
-    Configuration configuration = configuration("nonfatal\tDisableSyntax.noAsInstanceOf");
+    Configuration configuration = configuration("nonfatal\tDisableSyntax.asInstanceOf");
 
     String scalafix = Scalafix.configuration(configuration, ids(), SUPPORT, SCALA);
 
     assertTrue(scalafix.contains("\"DisableSyntax.asInstanceOf\""), scalafix);
     assertTrue(scalafix.contains("\"DisableSyntax.asInstanceOfMatchable\""), scalafix);
-    assertTrue(!scalafix.contains("\"DisableSyntax.noAsInstanceOf\""), scalafix);
+    assertTrue(!scalafix.contains("\"DisableSyntax.var\""), scalafix);
+  }
+
+  @Test
+  void eitherLintOfABanNamesTheWholeBan() throws IOException {
+    String nonfatal = Scalafix.configuration(
+      configuration("nonfatal\tDisableSyntax.asInstanceOfMatchable"), ids(), SUPPORT, SCALA);
+    String disabled = Scalafix.configuration(
+      configuration("disabled\tDisableSyntax.asInstanceOfMatchable"), ids(), SUPPORT, SCALA);
+
+    assertTrue(nonfatal.contains("\"DisableSyntax.asInstanceOf\""), nonfatal);
+    assertTrue(disabled.contains("DisableSyntax.noAsInstanceOf = false"), disabled);
+    assertTrue(disabled.contains("DisableSyntax.noVars = true"), disabled);
   }
 
   @Test
@@ -141,7 +153,7 @@ class ScalafixTest {
 
   @Test
   void aBanLeftOutOnItsOwnIsOff() throws IOException {
-    Configuration configuration = configuration("disabled\tDisableSyntax.noVars");
+    Configuration configuration = configuration("disabled\tDisableSyntax.var");
 
     String scalafix = Scalafix.configuration(configuration, ids(), SUPPORT, SCALA);
 

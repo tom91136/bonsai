@@ -29,9 +29,10 @@ public final class Scalafix {
       scalafix.append(setting).append("\n");
     }
     if (!configuration.disabled().contains("DisableSyntax")) {
-      for (String ban : ids.bans()) {
-        scalafix.append(ban).append(" = ").append(!configuration.disabled().contains(ban)).append("\n");
-      }
+      ids.banSettings().forEach((setting, lints) -> {
+        boolean disabled = lints.stream().anyMatch(configuration.disabled()::contains);
+        scalafix.append(setting).append(" = ").append(!disabled).append("\n");
+      });
     }
     scalafix.append("lint.warning = [\n");
     for (String id : new TreeSet<>(configuration.nonfatal())) {

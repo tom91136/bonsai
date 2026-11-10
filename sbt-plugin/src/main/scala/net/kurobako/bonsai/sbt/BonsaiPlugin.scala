@@ -180,22 +180,22 @@ object BonsaiPlugin extends AutoPlugin {
   /** Every check the compiler plugin knows. */
   private val Checks: Set[String] = BonsaiArtifacts.checks
 
-  // The built-in entries are the rule names scalafix provides, their bans, which each contain a dot, their settings,
-  // which each contain =, and the compiler options RemoveUnused reads, which each start with -. A ? before a rule
-  // name makes it opt-in.
+  // The built-in entries are the rule names scalafix provides, their bans, which each contain a dot and name the lints
+  // the ban reports after a |, their settings, which each contain =, and the compiler options RemoveUnused reads, which
+  // each start with -. A ? before a rule name makes it opt-in.
   private val Settings = BonsaiArtifacts.builtin.filter(line => !line.startsWith("-") && line.contains('='))
-  private val Named    = BonsaiArtifacts.builtin.diff(CompilerOptions.UnusedOptions ++ Settings).map(_.stripPrefix("?"))
-    .map(_.takeWhile(_ != '|'))
-  private val Bans     = Named.filter(_.contains('.'))
-  private val BanLints = BonsaiArtifacts.builtin.diff(CompilerOptions.UnusedOptions ++ Settings).filter(_.contains('|'))
-    .map { line =>
-      val (ban, lints) = line.span(_ != '|')
-      ban -> lints.drop(1).split(',').toSeq.map(lint => s"${ban.takeWhile(_ != '.')}.$lint")
-    }.toMap
+  private val Entries  = BonsaiArtifacts.builtin.diff(CompilerOptions.UnusedOptions ++ Settings)
+  private val Named    = Entries.filterNot(_.contains('|')).map(_.stripPrefix("?"))
+  private val BanTable: Seq[(String, Seq[String])] = Entries.filter(_.contains('|')).map { line =>
+    val (setting, lints) = line.span(_ != '|')
+    setting -> lints.drop(1).split(',').toSeq.map(lint => s"${setting.takeWhile(_ != '.')}.$lint")
+  }
+  private val Bans               = BanTable.flatMap(_._2)
+  private val BanLints           = BanTable.flatMap { case (_, lints) => lints.map(_ -> lints) }.toMap
   private val OptIn: Set[String] = BonsaiArtifacts.builtin.filter(_.startsWith("?")).map(_.drop(1)).toSet
 
   /** Every scalafix rule, in the order they run, with the built-in ones last. */
-  val Rules: Seq[String] = BonsaiArtifacts.rules ++ Named.diff(Bans)
+  val Rules: Seq[String] = BonsaiArtifacts.rules ++ Named
 
   /** Every analysis rule. */
   private val Findings: Set[String] = BonsaiArtifacts.findings
@@ -375,7 +375,7 @@ object BonsaiPlugin extends AutoPlugin {
       else Seq("DisableSyntax"),
       (if (bonsaiMode.value != BonsaiMode.Strict) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiNonfatal.value))
         .flatMap(id => BanLints.getOrElse(id, Seq(id))),
-      (if (bonsaiDisabled.value("DisableSyntax")) Nil else Bans).partition(!bonsaiDisabled.value(_))
+      banSettings(bonsaiDisabled.value)
     )),
     Compile / scalafix / unmanagedSources :=
       (if (bonsaiEnabled.value) (Compile / scalafix / unmanagedSources).value else Nil),
@@ -470,6 +470,13 @@ object BonsaiPlugin extends AutoPlugin {
         else (kept :+ entry, dropped)
       }._2
     }
+
+  // The settings of the bans that are on and off, a ban being off when any of its lints is disabled.
+  private def banSettings(disabled: Set[String]): (Seq[String], Seq[String]) = {
+    val bans      = if (disabled("DisableSyntax")) Nil else BanTable
+    val (off, on) = bans.partition { case (_, lints) => lints.exists(disabled) }
+    (on.map(_._1), off.map(_._1))
+  }
 
   // The user's own file supplies rule settings and any rules of its own, which bonsai's rules extend; it can turn
   // a ban off, while a disabled ban stays off.

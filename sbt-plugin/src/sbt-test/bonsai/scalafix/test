@@ -13,9 +13,14 @@ $ delete src/main/scala/demo/Dollar.scala
 > set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "DisableSyntax"
 $ copy-file changes/Cast.scala src/main/scala/demo/Cast.scala
 -> scalafixAll --check
-> set ThisBuild / bonsaiNonfatal += "DisableSyntax.noAsInstanceOf"
+> set ThisBuild / bonsaiNonfatal += "DisableSyntax.asInstanceOfMatchable"
 > scalafixAll --check
 > set ThisBuild / bonsaiNonfatal := Set.empty
+# either lint of a ban turns the whole ban off
+-> scalafixAll --check
+> set ThisBuild / bonsaiDisabled += "DisableSyntax.asInstanceOfMatchable"
+> scalafixAll --check
+> set ThisBuild / bonsaiDisabled -= "DisableSyntax.asInstanceOfMatchable"
 $ delete src/main/scala/demo/Cast.scala
 > set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
 # rules listed in .scalafix.conf run alongside bonsai's
@@ -49,3 +54,7 @@ $ delete src/generated/scala/demo/Counter.scala
 # every tool's ids are accepted, and ids no tool knows are rejected
 > set bonsaiDisabled ++= Set("TargetName", "megamorphic-call")
 -> set bonsaiDisabled += "Bogus"
+# a ban is named by the lint scalafix prints, not by its setting
+> set bonsaiDisabled ++= Set("DisableSyntax.var", "DisableSyntax.asInstanceOf", "DisableSyntax.null")
+-> set bonsaiDisabled += "DisableSyntax.noVars"
+-> set bonsaiNonfatal += "DisableSyntax.noAsInstanceOf"

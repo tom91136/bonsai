@@ -159,7 +159,7 @@ def mentionsUnused(project: Path): Boolean = {
     declared.filter(line => !line.contains("=") && !line.contains(".")).map(_.trim).filter(supported).map("  " + _) ++
     Vector("]") ++
     declared.filter(_.contains("=")) ++
-    declared.filter(line => !line.contains("=") && line.contains(".")).map(_ + " = true")
+    declared.filter(line => !line.contains("=") && line.contains(".")).map(_.takeWhile(_ != '|') + " = true")
   Files.writeString(work.resolve(".scalafix.conf"), conf.map(_ + "\n").mkString, ISO_8859_1)
 
   var scalac = Vector.empty[String]
