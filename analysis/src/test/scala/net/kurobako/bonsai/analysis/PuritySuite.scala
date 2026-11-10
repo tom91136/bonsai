@@ -993,4 +993,24 @@ class PuritySuite extends AnalysisSuite {
     )
     assert(chained.purity.returns <= depth, chained.purity.returns)
   }
+
+  test("local functions that each call the one before twice are evaluated once each") {
+    val depth     = 20
+    val functions = (1 to depth).map(n => s"    val g$n: Int => Int = x => g${n - 1}(x) + g${n - 1}(x)")
+    val chained   = extract(
+      Seq(
+        "Main.scala"    -> "object Main { def main(args: Array[String]): Unit = println(Diamond) }",
+        "Diamond.scala" ->
+          s"""object Diamond {
+             |  def quiet: Int = {
+             |    val g0: Int => Int = x => x + 1
+             |${functions.mkString("\n")}
+             |    g$depth(1)
+             |  }
+             |}""".stripMargin
+      )
+    )
+    assertEquals(chained.purity.verdicts("Diamond.quiet"), Purity.Verdict.Pure)
+    assert(chained.purity.resolved <= depth * 10, chained.purity.resolved)
+  }
 }

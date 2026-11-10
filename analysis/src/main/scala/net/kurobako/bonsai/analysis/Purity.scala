@@ -142,7 +142,8 @@ object Purity {
   }
 
   /** `methods` holds the authored methods of the build by qualified name; `library` counts the library bodies read and
-    * `returns` the call results evaluated, one for each distinct receiver and arguments.
+    * `returns` the call results evaluated, one for each distinct receiver and arguments, and `resolved` the function
+    * bodies and method summaries evaluated in a frame.
     */
   case class Model(
       discards: Vector[Discard],
@@ -152,7 +153,8 @@ object Purity {
       library: Int,
       ordered: Vector[Ordered] = Vector.empty,
       invariant: Vector[Invariant] = Vector.empty,
-      returns: Int = 0
+      returns: Int = 0,
+      resolved: Int = 0
   ) {
     def verdicts: Map[String, Verdict] = methods.view.mapValues(_.verdict).toMap
 
@@ -164,7 +166,8 @@ object Purity {
       library + other.library,
       ordered ++ other.ordered,
       invariant ++ other.invariant,
-      returns + other.returns
+      returns + other.returns,
+      resolved + other.resolved
     )
   }
 
@@ -651,6 +654,8 @@ object Purity {
     private case class OrderSite(method: Symbol, operator: String, operands: Vector[(tpd.Tree, Facts)], tree: tpd.Tree)
     private case class DiscardSite(method: Symbol, name: String, facts: Facts, tree: tpd.Tree)
 
+    private var resolutions = 0 // scalafix:ok DisableSyntax.var
+
     private val summaries = mutable.Map.empty[Key, Summary]
     private val views     = mutable.Map.empty[Key, (Summary, Summary)]
     private val states    = mutable.HashMap.empty[Key, State]
@@ -732,6 +737,8 @@ object Purity {
     def library: Int = explored.size
 
     def returns: Int = returning.size
+
+    def resolved: Int = resolutions
 
     /** The library bodies that could not be read, one line per classpath entry. */
     def unreadable(using Context): Vector[String] =
@@ -823,10 +830,13 @@ object Purity {
     }
 
     private class Scratch {
-      val evaluating: mutable.Set[Returned]      = mutable.Set.empty[Returned]
-      val pendingValues: mutable.Set[Evaluation] = mutable.Set.empty[Evaluation]
-      val running: mutable.Set[Symbol]           = mutable.Set.empty[Symbol]
-      val resolving: mutable.Set[Resolving]      = mutable.Set.empty[Resolving]
+      val evaluating: mutable.Set[Returned]         = mutable.Set.empty[Returned]
+      val pendingValues: mutable.Set[Evaluation]    = mutable.Set.empty[Evaluation]
+      val running: mutable.Map[Symbol, Int]         = mutable.Map.empty[Symbol, Int]
+      val resolving: mutable.Map[Resolving, Int]    = mutable.Map.empty[Resolving, Int]
+      val resolved: mutable.Map[Resolving, Summary] = mutable.Map.empty[Resolving, Summary]
+      // the shallowest resolution a guard cut short since the last reset, which a summary must not depend on to be kept
+      var reach: Int = Int.MaxValue // scalafix:ok DisableSyntax.var
     }
 
     // A key is computed as if it were the first, whichever key's computation reached it.
@@ -1080,7 +1090,10 @@ object Purity {
       * function passed along allocates die with it.
       */
     private def resolve(facts: Facts, frame: Frame, method: Option[Symbol], keepFresh: Boolean = false): Summary = {
+      val state                = scratch
+      val depth                = state.resolving.size
       def summarise(): Summary = {
+        resolutions += 1
         val effects  = builder().addAll(facts.ids)
         val invokes  = mutable.Set.from(facts.invokes)
         val captures = mutable.Set.empty[Symbol]
@@ -1125,13 +1138,17 @@ object Purity {
           .partition(parameter => ownedBy(frame.root, parameter.owner))
         invokes ++= captures.flatMap(own.get)
         // Another method's parameter runs whatever the build passes it.
-        unenclosed.filterNot(scratch.running).foreach { parameter =>
-          scratch.running += parameter
-          val ran =
-            try invoke(passed(parameter), frame)
-            finally scratch.running -= parameter
-          effects.addAll(ran.effects)
-          invokes ++= ran.invokes
+        unenclosed.foreach { parameter =>
+          state.running.get(parameter) match {
+            case Some(held) => state.reach = math.min(state.reach, held)
+            case None       =>
+              state.running(parameter) = depth
+              val ran =
+                try invoke(passed(parameter), frame)
+                finally state.running -= parameter
+              effects.addAll(ran.effects)
+              invokes ++= ran.invokes
+          }
         }
         val found = effects.result()
         spare(effects)
@@ -1144,14 +1161,28 @@ object Purity {
         )
       }
       val key = Resolving(facts, frame, method)
-      // Evaluating the same facts in the same frame again from within itself never ends, so what cannot be known stays
-      // unknown.
-      if (!scratch.resolving.add(key)) Summary(Set(plain(Kind.Unknown, "runs a function that runs itself")), Set.empty)
-      else
-        try
-          try summarise()
-          finally scratch.resolving -= key
-        catch { case NonFatal(error) => Summary(Set(unknown(frame.root, error)), Set.empty) }
+      state.resolved.get(key).filter(_ => !keepFresh).getOrElse {
+        // Evaluating the same facts in the same frame again from within itself never ends, so what cannot be known
+        // stays unknown.
+        state.resolving.get(key) match {
+          case Some(entered) =>
+            state.reach = math.min(state.reach, entered)
+            Summary(Set(plain(Kind.Unknown, "runs a function that runs itself")), Set.empty)
+          case None =>
+            val outer = state.reach
+            state.reach = Int.MaxValue
+            state.resolving(key) = depth
+            try
+              try {
+                val found = summarise()
+                // a summary that no guard above it shaped is the same wherever it is reached
+                if (state.reach >= depth && !keepFresh) state.resolved(key) = found
+                found
+              } finally state.resolving -= key
+            catch { case NonFatal(error) => Summary(Set(unknown(frame.root, error)), Set.empty) }
+            finally state.reach = math.min(outer, if (state.reach >= depth) Int.MaxValue else state.reach)
+        }
+      }
     }
 
     private def ran(resolution: Resolution, arguments: Vector[Argument], frame: Frame): Summary = resolution match {

@@ -371,7 +371,8 @@ private[analysis] class Collector(
           Purity.Invariant(short(method), operation, shown(call), node, location, line, suppressions(method))
         )
       ),
-      effects.returns
+      effects.returns,
+      effects.resolved
     )
   }
 
