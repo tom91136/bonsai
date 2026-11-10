@@ -499,8 +499,6 @@ object Purity {
     private val effectTable = mutable.ArrayBuffer.empty[Effect]
     private val targeted    = java.util.BitSet()
     private val retargets   = mutable.LongMap.empty[Int]
-    private val viewings    = mutable.LongMap.empty[Int]
-    private val viewKinds   = mutable.HashMap.empty[(String, Boolean), Int]
 
     private def intern(effect: Effect): Int = effectIds.get(effect).getOrElse {
       val id = effectTable.size
@@ -795,8 +793,8 @@ object Purity {
     }
 
     // A key is computed once its callees have settled, and computed again only while it is in a cycle with a callee
-    // that has grown since, so the keys settle one component at a time, callees first. Summaries only grow, so each
-    // component stops at its least fixpoint.
+    // that has changed since, so the keys settle one component at a time, callees first. A summary only gains effects
+    // or trades one for an earlier cause, so each component stops at its least fixpoint.
     private def solve(key: Key): State = states.getOrElse(key, visit(key))
 
     private def visit(key: Key): State = {
@@ -1270,18 +1268,26 @@ object Purity {
         val target  = key.method
         val library = !bodies.contains(target) && !templates.contains(target.owner)
         val name    = short(target)
-        val kind    = viewKinds.getOrElseUpdate((name, library), viewKinds.size)
         val via     = Some(name)
-        // A summary only grows, so what it gained since the last view is all that needs viewing.
+        // A summary that lost nothing needs viewing only for what it gained.
         val (before, gained) = views.get(key).flatMap((earlier, view) =>
           Ids.gained(earlier.effects, part.effects).map(view.effects -> _)
         ).getOrElse(Ids.Empty -> part.effects)
-        val seen = Ids.Builder().addAll(before)
-        gained.foreach { id =>
-          seen.add(viewings.getOrElseUpdate(
-            id.toLong << 32 | kind,
-            intern(effectTable(id).copy(via = via, library = effectTable(id).library || library))
-          ))
+        def visible(effect: Effect): Option[Symbol] =
+          effect.target.filter(local => ownedBy(target.owner, local.owner))
+        val firsts               = mutable.HashMap.empty[(Kind, Boolean, Option[Symbol], Boolean, Boolean), Effect]
+        def offer(id: Int): Unit = {
+          val effect = effectTable(id)
+          firsts.updateWith((effect.kind, effect.onThis, visible(effect), effect.library || library, effect.assumed)) {
+            case Some(held) if held.cause <= effect.cause => Some(held)
+            case _                                        => Some(effect)
+          }: Unit
+        }
+        before.foreach(offer(_))
+        gained.foreach(offer(_))
+        val seen = Ids.Builder()
+        firsts.values.foreach { effect =>
+          seen.add(intern(effect.copy(target = visible(effect), via = via, library = effect.library || library)))
         }
         val view = Summary(seen.result(), part.invokes, part.captures)
         views(key) = part -> view
