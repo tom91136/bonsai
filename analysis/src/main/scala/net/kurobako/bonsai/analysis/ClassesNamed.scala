@@ -1,6 +1,7 @@
 package net.kurobako.bonsai.analysis
 
 import dotty.tools.dotc.core.Contexts.Context
+import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Types.NamedType
 import dotty.tools.dotc.core.Types.Type
@@ -18,8 +19,11 @@ private[analysis] object ClassesNamed {
 
   private class Traverser(found: mutable.Set[Symbol])(using Context) extends TypeTraverser {
     def traverse(tpe: Type): Unit = tpe.dealias match {
-      case named: NamedType => if (named.symbol.isClass) found ++= named.symbol.asClass.baseClasses
-      case other            => traverseChildren(other)
+      case named: NamedType =>
+        val symbol =
+          if (named.symbol.isTerm && named.symbol.is(Flags.Module)) named.symbol.moduleClass else named.symbol
+        if (symbol.isClass) found ++= symbol.asClass.baseClasses
+      case other => traverseChildren(other)
     }
   }
 }

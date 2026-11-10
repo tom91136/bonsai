@@ -1424,6 +1424,18 @@ class MembersSuite extends AnalysisSuite {
     assertEquals(unusedMembers(found), Set.empty[String])
   }
 
+  test("a member of an object a live macro receives as a singleton type is used") {
+    val found = findings(
+      Seq(
+        entry("println(Mirror.reads[Target.type])"),
+        reading,
+        mirror,
+        "Target.scala" -> "object Target { def foo: Int = 1 }"
+      )
+    )
+    assertEquals(unusedMembers(found), Set.empty[String])
+  }
+
   test("a member of a class nested in a type argument of a macro reached through an inline method is used") {
     val found = findings(
       Seq(
