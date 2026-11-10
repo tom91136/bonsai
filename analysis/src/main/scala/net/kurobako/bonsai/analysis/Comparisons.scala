@@ -94,9 +94,10 @@ private[analysis] class Comparisons(symbols: Symbols, classes: () => Iterable[Sy
   def observe(tree: tpd.Tree, from: Option[String])(using Context): Unit = tree match {
     case tpd.Apply(select @ tpd.Select(receiver, name), List(argument))
         if Binary(name.toString) && universal(select.symbol) && !nulled(receiver, argument) &&
-          !singular(receiver, argument) =>
+          !singular(receiver, argument) && !delegated(receiver) =>
       record(List(receiver, argument), s"by $name", tree, from)
-    case select @ tpd.Select(receiver, name) if Hashing(name.toString) && universal(select.symbol) =>
+    case select @ tpd.Select(receiver, name)
+        if Hashing(name.toString) && universal(select.symbol) && !delegated(receiver) =>
       record(List(receiver), s"by $name", tree, from)
     case tpd.Apply(tpd.Select(receiver, name), arguments)
         if Elementwise(name.toString) && container(receiver.tpe) =>
@@ -156,6 +157,8 @@ private[analysis] class Comparisons(symbols: Symbols, classes: () => Iterable[Sy
     def root(symbol: Symbol) = symbol.owner == defn.AnyClass || symbol.owner == defn.ObjectClass
     method.exists && (root(method) || method.allOverriddenSymbols.exists(root(_)))
   }
+
+  private def delegated(receiver: tpd.Tree): Boolean = receiver.isInstanceOf[tpd.Super]
 
   private def nulled(trees: tpd.Tree*): Boolean = trees.exists {
     case tpd.Literal(constant) => constant.tag == Constants.NullTag

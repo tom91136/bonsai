@@ -38,6 +38,19 @@ class EqualitySuite extends AnalysisSuite {
     assertFinding(found, "unstable-equality", "a value of ByHash is compared by ## at Use (line 11)")
   }
 
+  test("an equals that hands over to its superclass compares no value of the types that superclass extends") {
+    val found = findings(source(
+      """sealed trait Base
+        |case class Held(values: Array[Int]) extends Base
+        |class Root
+        |object Empty extends Root with Base {
+        |  override def equals(that: Any): Boolean = super.equals(that)
+        |  override def hashCode: Int = super.hashCode
+        |}""".stripMargin
+    ))
+    assertEquals(reported(found), Vector.empty)
+  }
+
   test("a comparison with a singleton compares identity, not the values a case holds") {
     val found = findings(source(
       """case class Bits(lanes: Array[Long])
