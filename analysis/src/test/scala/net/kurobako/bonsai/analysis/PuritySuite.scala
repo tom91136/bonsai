@@ -190,6 +190,43 @@ class PuritySuite extends AnalysisSuite {
     )
   }
 
+  test("a call runs only the overrides of the receiver's static type") {
+    val narrowed = extract(
+      Seq(
+        "Use.scala" ->
+          """trait Compared { def score(value: Int): Int }
+            |abstract class Quiet extends Compared
+            |final class Silent extends Quiet { def score(value: Int): Int = value }
+            |final class Loud extends Compared { def score(value: Int): Int = { println(value); value } }
+            |object Use {
+            |  def quiet(target: Quiet): Int = target.score(1)
+            |  def any(target: Compared): Int = target.score(1)
+            |}""".stripMargin
+      )
+    )
+    def judged(name: String) = narrowed.purity.methods.collectFirst {
+      case (key, method) if key.startsWith(s"Use.$name") => method.verdict
+    }.getOrElse(fail(s"no verdict for $name"))
+    assertEquals(judged("quiet"), Purity.Verdict.Pure)
+    assert(judged("any") != Purity.Verdict.Pure)
+  }
+
+  test("a call on this may run an override another mixin brings") {
+    val mixed = extract(
+      Seq(
+        "Use.scala" ->
+          """trait Checks { def check(value: Int): Int = value }
+            |trait Loud extends Checks { override def check(value: Int): Int = { println(value); value } }
+            |trait Tables extends Checks { def run(value: Int): Int = check(value) }
+            |object Tables extends Tables
+            |object Shouting extends Loud""".stripMargin
+      )
+    )
+    val found =
+      mixed.purity.methods.collectFirst { case (key, method) if key.startsWith("Tables.run") => method.verdict }
+    assert(!found.contains(Purity.Verdict.Pure), found.toString)
+  }
+
   test("dropping a partial function that throws is not reported") {
     val throwing = analysed(
       "Throwing",

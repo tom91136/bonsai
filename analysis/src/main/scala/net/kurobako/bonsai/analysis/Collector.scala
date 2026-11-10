@@ -323,7 +323,7 @@ private[analysis] class Collector(
   def purity: Purity.Model = purityModel
 
   private def inference(library: Library, bytecode: BytecodeEffects.Summaries)(using Context): Purity.Inference = {
-    val effects = Purity.Inference(bodies, templates, dispatching.implementations(_), concurrent, library, bytecode)
+    val effects = Purity.Inference(bodies, templates, dispatching.implementations(_, _), concurrent, library, bytecode)
     effects.run()
     effects.unreadable.foreach(note(_))
     effects

@@ -16,7 +16,7 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
   import symbols.*
 
   private val declared   = mutable.LinkedHashSet.empty[Symbol]
-  private val reachable  = mutable.Map.empty[Symbol, Option[Vector[Symbol]]]
+  private val reachable  = mutable.Map.empty[(Symbol, Symbol), Option[Vector[Symbol]]]
   private val subclasses = mutable.Map.empty[Symbol, mutable.ArrayBuffer[Symbol]]
   private val dispatches = mutable.Map.empty[(Symbol, Symbol), (String, Type, Boolean)]
   private val abstracts  = mutable.Map.empty[Symbol, (String, String, String)]
@@ -114,25 +114,27 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean) {
         .map(member.matchingDecl(_, cls.thisType))
     ).filter(_.exists)
 
-  /** The bodies a call of `method` can run: its own, or every override in the build's main classes, which test doubles
-    * never reach at run time; nothing when one of them lies outside the build.
+  /** The bodies a call of `method` on a receiver of the static class `receiver` can run: its own, or every override in
+    * the build's main classes that extend the receiver's, which test doubles never reach at run time; nothing when one
+    * of them lies outside the build.
     */
-  def implementations(method: Symbol)(using Context): Option[Vector[Symbol]] =
+  def implementations(method: Symbol, receiver: Option[Symbol])(using Context): Option[Vector[Symbol]] = {
+    val from =
+      if (!method.exists) method
+      else receiver.filter(cls => cls.exists && cls.isClass && cls.derivesFrom(method.owner)).getOrElse(method.owner)
     reachable.getOrElseUpdate(
-      method,
+      method -> from,
       if (bodied(method) && (method.isEffectivelyFinal || !method.owner.isClass)) Some(Vector(method))
       else if (!declared.contains(Calls.owner(method))) None
       else {
-        val overrides =
-          concreteSubclasses(method.owner).view.filter(cls => !nodeOf(cls).exists(_.test)).flatMap(concreteMember(
-            method,
-            _
-          ))
-            .toVector
-        val all = (Option.when(bodied(method))(method).toVector ++ overrides).distinct
+        def main(owner: Symbol) = concreteSubclasses(owner).filter(cls => !nodeOf(cls).exists(_.test))
+        val classes             = Some(main(from)).filter(_.nonEmpty).getOrElse(main(method.owner))
+        val overrides           = classes.view.flatMap(concreteMember(method, _)).toVector
+        val all                 = (Option.when(bodied(method))(method).toVector ++ overrides).distinct
         Option.when(all.nonEmpty && all.forall(target => bodied(target) || immutableRead(target)))(all)
       }
     )
+  }
 
   // An immutable val implements a method by a read, which has no effect.
   private def immutableRead(member: Symbol)(using Context): Boolean =

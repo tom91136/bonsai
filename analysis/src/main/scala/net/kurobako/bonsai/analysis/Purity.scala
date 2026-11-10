@@ -483,7 +483,7 @@ object Purity {
   class Inference(
       bodies: collection.Map[Symbol, tpd.DefDef],
       templates: collection.Map[Symbol, tpd.Template],
-      implementations: Symbol => Option[Vector[Symbol]],
+      implementations: (Symbol, Option[Symbol]) => Option[Vector[Symbol]],
       concurrent: Set[String],
       knowledge: Library,
       bytecode: BytecodeEffects.Summaries = BytecodeEffects.none
@@ -1983,7 +1983,7 @@ object Purity {
           if (templates.contains(cls)) Call(name, Resolution.Bodies(Vector(cls.primaryConstructor)), on, passed)
           else Call(name, Resolution.Axiom(axiom(method, None, parameters)), on, passed)
         } else
-          implementations(method) match {
+          implementations(method, qualifier.filterNot(_.isInstanceOf[tpd.This]).map(_.tpe.widen.classSymbol)) match {
             case Some(targets) if targets.nonEmpty => Call(name, Resolution.Bodies(targets), on, passed)
             case _                                 =>
               val known = axiom(method, qualifier, parameters)
