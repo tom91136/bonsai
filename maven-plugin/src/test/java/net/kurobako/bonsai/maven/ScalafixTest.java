@@ -27,13 +27,17 @@ class ScalafixTest {
   }
 
   private Ids ids() throws IOException {
+    return ids(BUILTIN);
+  }
+
+  private Ids ids(Path builtin) throws IOException {
     Path checks = root.resolve("checks.id");
     Path findings = root.resolve("findings.id");
     Path rules = root.resolve("rules.id");
     Files.writeString(checks, "acyclic\n");
     Files.writeString(findings, "duplicate-code\n");
     Files.writeString(rules, "BannedSyntax\nOptionIdioms\n");
-    return Ids.of(checks, findings, rules, BUILTIN);
+    return Ids.of(checks, findings, rules, builtin);
   }
 
   private static final Versions.Support SUPPORT = new Versions.Support("3.3.4", List.of("3.4"));
@@ -41,25 +45,27 @@ class ScalafixTest {
 
   @Test
   void aNonfatalBanWarnsUnderTheLintsScalafixReports() throws IOException {
-    Configuration configuration = configuration("nonfatal\tDisableSyntax.asInstanceOf");
+    Configuration configuration = configuration("nonfatal\tDisableSyntax.var");
 
     String scalafix = Scalafix.configuration(configuration, ids(), SUPPORT, SCALA);
 
-    assertTrue(scalafix.contains("\"DisableSyntax.asInstanceOf\""), scalafix);
-    assertTrue(scalafix.contains("\"DisableSyntax.asInstanceOfMatchable\""), scalafix);
-    assertTrue(!scalafix.contains("\"DisableSyntax.var\""), scalafix);
+    assertTrue(scalafix.contains("\"DisableSyntax.var\""), scalafix);
+    assertTrue(!scalafix.contains("\"DisableSyntax.noVars\""), scalafix);
+    assertTrue(!scalafix.contains("\"DisableSyntax.null\""), scalafix);
   }
 
   @Test
   void eitherLintOfABanNamesTheWholeBan() throws IOException {
-    String nonfatal = Scalafix.configuration(
-      configuration("nonfatal\tDisableSyntax.asInstanceOfMatchable"), ids(), SUPPORT, SCALA);
-    String disabled = Scalafix.configuration(
-      configuration("disabled\tDisableSyntax.asInstanceOfMatchable"), ids(), SUPPORT, SCALA);
+    Path builtin = root.resolve("builtin.id");
+    Files.writeString(builtin, "DisableSyntax\nDisableSyntax.noVars|var,variable\nDisableSyntax.noNulls|null\n");
+    Ids ids = ids(builtin);
 
-    assertTrue(nonfatal.contains("\"DisableSyntax.asInstanceOf\""), nonfatal);
-    assertTrue(disabled.contains("DisableSyntax.noAsInstanceOf = false"), disabled);
-    assertTrue(disabled.contains("DisableSyntax.noVars = true"), disabled);
+    String nonfatal = Scalafix.configuration(configuration("nonfatal\tDisableSyntax.variable"), ids, SUPPORT, SCALA);
+    String disabled = Scalafix.configuration(configuration("disabled\tDisableSyntax.variable"), ids, SUPPORT, SCALA);
+
+    assertTrue(nonfatal.contains("\"DisableSyntax.var\""), nonfatal);
+    assertTrue(disabled.contains("DisableSyntax.noVars = false"), disabled);
+    assertTrue(disabled.contains("DisableSyntax.noNulls = true"), disabled);
   }
 
   @Test
@@ -137,7 +143,7 @@ class ScalafixTest {
 
     assertTrue(scalafix.contains("DisableSyntax.noVars = true"), scalafix);
     assertTrue(scalafix.contains("DisableSyntax.noFinalize = true"), scalafix);
-    assertTrue(scalafix.contains("DisableSyntax.noAsInstanceOf = true"), scalafix);
+    assertTrue(!scalafix.contains("noAsInstanceOf"), scalafix);
     assertTrue(scalafix.contains("DisableSyntax.noIsInstanceOf = true"), scalafix);
   }
 

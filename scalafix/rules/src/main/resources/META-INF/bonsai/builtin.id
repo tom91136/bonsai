@@ -5,7 +5,6 @@ RemoveUnused
 DisableSyntax.noVars|var
 DisableSyntax.noReturns|return
 DisableSyntax.noNulls|null
-DisableSyntax.noAsInstanceOf|asInstanceOf,asInstanceOfMatchable
 DisableSyntax.noIsInstanceOf|isInstanceOf
 DisableSyntax.noXml|noXml
 DisableSyntax.noFinalize|noFinalize

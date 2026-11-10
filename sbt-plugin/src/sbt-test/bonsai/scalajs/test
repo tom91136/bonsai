@@ -1,0 +1,6 @@
+# a cast to a Scala.js type is not reported
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "NoAsInstanceOf"
+> scalafixAll --check
+# a cast to a JVM type still is
+$ copy-file changes/Cast.scala src/main/scala/demo/Cast.scala
+-> scalafixAll --check

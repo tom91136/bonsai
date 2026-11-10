@@ -40,3 +40,4 @@ net.kurobako.bonsai.scalafix.DanglingDocComment
 net.kurobako.bonsai.scalafix.DuplicateAnnotation
 net.kurobako.bonsai.scalafix.DisjunctionTables
 net.kurobako.bonsai.scalafix.FoldIdentity
+net.kurobako.bonsai.scalafix.NoAsInstanceOf

@@ -19,7 +19,8 @@ class RuleRegistrationSuite extends AnyFunSuite {
       }
     }
     assert(fixtures.forall(_._2.isDefined), fixtures.filter(_._2.isEmpty).mkString("\n"))
-    val declared   = fixtures.flatMap(_._2.toList).flatMap(_.split(',').map(_.trim)).toSet
+    val declared =
+      fixtures.flatMap(_._2.toList).flatMap(_.split(',').map(_.trim.stripPrefix("[").stripSuffix("]"))).toSet
     val registered = Using.resource(
       getClass.getClassLoader.getResourceAsStream("META-INF/services/scalafix.v1.Rule")
     )(stream =>

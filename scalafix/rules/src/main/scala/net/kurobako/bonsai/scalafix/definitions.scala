@@ -102,6 +102,10 @@ private object definitions {
     case _ => None
   }
 
+  /** The class a declared type names, through aliases. */
+  def classSymbol(tpe: Type)(using SemanticDocument): Symbol =
+    resolve(TypeRef(NoType, symbol(tpe), Nil), Set.empty).getOrElse(Symbol.None)
+
   /** The type constructor of a value or parameterless method, through aliases. */
   private def valueType(symbol: Symbol)(using SemanticDocument): Option[Symbol] =
     info(symbol).map(_.signature).flatMap {

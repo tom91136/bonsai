@@ -41,8 +41,7 @@ class IdsTest {
       ids.rules().toString());
     assertTrue(ids.rules().containsAll(Set.of("RemoveUnused", "ExplicitResultTypes")), ids.rules().toString());
     assertFalse(ids.rules().contains("DisableSyntax.var"), ids.rules().toString());
-    assertTrue(ids.bans().containsAll(Set.of("DisableSyntax.var", "DisableSyntax.asInstanceOfMatchable")),
-      ids.bans().toString());
+    assertTrue(ids.bans().containsAll(Set.of("DisableSyntax.var", "DisableSyntax.isInstanceOf")), ids.bans().toString());
     assertFalse(ids.bans().contains("DisableSyntax.noVars"), ids.bans().toString());
     assertFalse(ids.settings().isEmpty());
     assertTrue(ids.unusedOptions().contains("-Wunused:all"), ids.unusedOptions().toString());
@@ -65,13 +64,26 @@ class IdsTest {
       write("findings.id", "duplicate-code\n"),
       write("rules.id", "BannedSyntax\n"), BUILTIN);
 
-    ids.validate(Set.of("DisableSyntax.asInstanceOf", "DisableSyntax.null"), Set.of(), Set.of(),
-      Set.of("DisableSyntax.asInstanceOfMatchable"));
-    for (String setting : Set.of("DisableSyntax.noVars", "DisableSyntax.noAsInstanceOf", "DisableSyntax.noNulls")) {
+    ids.validate(Set.of("DisableSyntax.isInstanceOf", "DisableSyntax.null"), Set.of(), Set.of(),
+      Set.of("DisableSyntax.var"));
+    for (String setting : Set.of("DisableSyntax.noVars", "DisableSyntax.noNulls")) {
       IOException error = assertThrows(IOException.class,
         () -> ids.validate(Set.of(setting), Set.of(), Set.of(), Set.of()));
       assertTrue(error.getMessage().contains(setting), error.getMessage());
     }
+  }
+
+  @Test
+  void theCastBanIsARuleOfItsOwn() throws IOException {
+    Ids ids = Ids.of(
+      write("checks.id", "acyclic\n"),
+      write("findings.id", "duplicate-code\n"),
+      write("rules.id", "BannedSyntax\nNoAsInstanceOf\n"), BUILTIN);
+
+    ids.validate(Set.of("NoAsInstanceOf"), Set.of(), Set.of(), Set.of("NoAsInstanceOf"));
+    assertFalse(ids.bans().contains("DisableSyntax.asInstanceOf"), ids.bans().toString());
+    assertThrows(IOException.class,
+      () -> ids.validate(Set.of("DisableSyntax.asInstanceOf"), Set.of(), Set.of(), Set.of()));
   }
 
   @Test
