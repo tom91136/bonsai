@@ -131,8 +131,6 @@ class Fragments(lines: Lines)(using Context) {
       shape(body, origin, entire = true): Unit
     }
 
-  def groups(): Vector[Clones.Group] = Clones.groups(candidates(Fragments.Keys.empty))
-
   /** How many fragments of this run share each hash. */
   def keys: Fragments.Keys = Fragments.Keys(
     LongMap.from(pieces.view.mapValues(alike => (alike.size, alike.count(_.roles.whole)))),

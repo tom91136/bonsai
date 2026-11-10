@@ -16,7 +16,6 @@ import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeParamRef
 import net.kurobako.bonsai.lifting.*
-import scala.annotation.targetName
 import scala.collection.mutable
 
 private object CallSites {
@@ -65,7 +64,6 @@ private object CallSites {
       counts: Map[String, Count],
       explicit: Map[(String, Int, String), Vector[Algebra.Site]]
   ) {
-    @targetName("merge")
     def ++(other: Evidence): Evidence = Evidence(
       Maps.join(calls, other.calls)(_ ++ _),
       Maps.join(counts, other.counts)(_ + _),

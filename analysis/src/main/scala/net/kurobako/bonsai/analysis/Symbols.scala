@@ -304,11 +304,19 @@ private[analysis] class Symbols(
       if (canonical.isAllOf(Flags.EnumCase)) node(canonical.owner) else canonical
     } else node(symbol.owner)
 
+  private val outputsOf = mutable.HashMap.empty[String, Option[Output]]
+
   def output(symbol: Symbol)(using Context): Option[Output] =
-    Option[AbstractFile](symbol.associatedFile).flatMap { file =>
-      val path = Path.of(file.path).toAbsolutePath.normalize
-      roots.collectFirst { case (output, root) if path.startsWith(root) => output }
-    }
+    Option[AbstractFile](symbol.associatedFile).flatMap(file =>
+      outputsOf.getOrElseUpdate(file.path, located(file.path))
+    )
+
+  private val rooted: Map[Path, (Int, Output)] =
+    roots.zipWithIndex.reverse.map { case ((output, root), index) => root -> (index, output) }.toMap
+
+  private def located(file: String): Option[Output] =
+    Iterator.iterate(Option(Path.of(file).toAbsolutePath.normalize))(_.flatMap(path => Option(path.getParent)))
+      .takeWhile(_.isDefined).flatten.flatMap(rooted.get).minByOption(_._1).map(_._2)
 
   private def sourcePath(symbol: Symbol)(using Context): String =
     if (symbol.source.exists) symbol.source.path

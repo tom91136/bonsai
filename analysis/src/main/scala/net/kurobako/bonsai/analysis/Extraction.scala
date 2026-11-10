@@ -51,7 +51,7 @@ object Extraction {
       dictionaries: Vector[Dictionaries.Parameter] = Vector.empty
   )
 
-  private case class Settings(
+  private[analysis] case class Settings(
       generated: Vector[String],
       concurrent: Set[String],
       reflective: Vector[String],
@@ -81,16 +81,11 @@ object Extraction {
       bounded: Vector[Complexity.Bounded] = Vector.empty,
       parallel: Parallel = Parallel.sequential
   ): Either[Vector[String], Result] =
-    readDivided(manifest, generated, concurrent, reflective, hot, bounded, parallel, Clashes.runs)
+    readDivided(manifest, Settings(generated, concurrent, reflective, hot, bounded, parallel), Clashes.runs)
 
   private[analysis] def readDivided(
       manifest: Manifest,
-      generated: Vector[String],
-      concurrent: Set[String],
-      reflective: Vector[String],
-      hot: Vector[String],
-      bounded: Vector[Complexity.Bounded],
-      parallel: Parallel,
+      settings: Settings,
       division: Clashes.Division
   ): Either[Vector[String], Result] =
     Reach.source(manifest).fold(
@@ -103,12 +98,7 @@ object Extraction {
             Thread.currentThread.getThreadGroup,
             () =>
               result.complete(
-                Try(extract(
-                  manifest,
-                  Settings(generated, concurrent, reflective, hot, bounded, parallel),
-                  world,
-                  division
-                ))
+                Try(extract(manifest, settings, world, division))
               ): Unit,
             "bonsai-extraction",
             StackSize

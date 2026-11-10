@@ -137,7 +137,6 @@ private[analysis] class Collector(
   private val memberList     = mutable.ArrayBuffer.empty[Members.Member]
   private val givens         = mutable.Map.empty[Symbol, (String, Node)]
   private val named          = mutable.Set.empty[Symbol]
-  private val apartNamed     = mutable.Set.empty[String]
   private val givenList      = mutable.ArrayBuffer.empty[Members.Given]
   private val unlisted       = mutable.Set.empty[Symbol]
   private val nested         = mutable.Set.empty[String]
@@ -210,7 +209,7 @@ private[analysis] class Collector(
       dispatching.evidence,
       if (deferred) fragments.keys else Fragments.Keys.empty,
       structure.evidence,
-      apartNamed.toSet,
+      named.filter(isForeign(_)).map(qualifiedName(_)).toSet,
       derivations.evidence
     )
     if (deferred) read = Some((ctx, fragments, library)) else finish(fragments, library, Collector.Evidence.empty)
@@ -999,14 +998,11 @@ private[analysis] class Collector(
   def mention(tree: tpd.Tree)(using Context): Unit = tree match {
     case tpd.Ident(_) | tpd.Select(_, _)
         if tree.symbol.is(Flags.Given) && tree.span.exists && !tree.span.isSynthetic =>
-      mentioned(tree.symbol)
+      named += tree.symbol: Unit
     case _ => ()
   }
 
-  def mention(symbols: List[Symbol])(using Context): Unit = symbols.filter(_.is(Flags.Given)).foreach(mentioned(_))
-
-  private def mentioned(symbol: Symbol)(using Context): Unit =
-    if (isForeign(symbol)) apartNamed += qualifiedName(symbol): Unit else named += symbol: Unit
+  def mention(symbols: List[Symbol])(using Context): Unit = named ++= symbols.filter(_.is(Flags.Given)): Unit
 
   // The compiler names an anonymous given after its type, so a second given of that type in the owner would collide.
   private def clashes(symbol: Symbol)(using Context): Boolean =
