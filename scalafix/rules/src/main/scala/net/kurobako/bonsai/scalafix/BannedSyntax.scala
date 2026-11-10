@@ -40,6 +40,29 @@ class BannedSyntax extends SemanticRule("BannedSyntax") {
       }.getOrElse(symbol)
   }
 
+  private def definesTerm(tree: Tree, name: String): Boolean = tree match {
+    case definition: (Defn.Def | Decl.Def) => definition.name.value == name
+    case definition: (Defn.Val | Decl.Val) => definition.pats.exists {
+        case Pat.Var(Term.Name(value)) => value == name
+        case _                         => false
+      }
+    case _ => false
+  }
+
+  private def shadowed(term: Term.New): Boolean = {
+    val constructor = term.init.tpe match {
+      case Type.Apply.After_4_6_0(tpe, _) => tpe
+      case tpe                            => tpe
+    }
+    constructor match {
+      case Type.Name(name) =>
+        ancestry.ancestors(term).exists(ancestor =>
+          definesTerm(ancestor, name) || ancestor.children.exists(definesTerm(_, name))
+        )
+      case _ => false
+    }
+  }
+
   // A case class's synthetic apply takes the constructor's arguments, so outside its companion creator application
   // reaches the same code, while inside a companion with a custom apply only new reaches the constructor.
   private def constructs(term: Term.New)(using SemanticDocument): Boolean = {
@@ -49,7 +72,7 @@ class BannedSyntax extends SemanticRule("BannedSyntax") {
       case owner: Defn.Object => owner.name.symbol == companion
       case _                  => false
     }
-    reachable && definesApply(companion)
+    shadowed(term) || reachable && definesApply(companion)
   }
 
   private def scalaJsAny(term: Term.NewAnonymous)(using SemanticDocument): Boolean =

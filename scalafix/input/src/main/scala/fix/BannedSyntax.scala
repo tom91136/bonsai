@@ -77,6 +77,25 @@ object ExplicitNew {
   }
 }
 
+object ShadowedNew {
+  class Url(val raw: String)
+  def Url(raw: String): Url = new Url(raw)
+
+  class Link(val raw: String)
+  def make(raw: String): Link = new Link(raw)
+  def Link(raw: String): Link = make(raw)
+
+  class Path(val raw: String)
+  val makePath: String => Path = raw => new Path(raw)
+  val Path: String => Path     = makePath
+}
+
+object UnshadowedNew {
+  class Link(val raw: String)
+  def make(raw: String): Link = new Link(raw) // assert: BannedSyntax.explicit-new
+  def Other(raw: String): Link = make(raw)
+}
+
 object ArrayAllocations {
   val sized: Array[Long]                = new Array[Long](4) // assert: BannedSyntax.explicit-new-array
   val ofDim: Array[Long]                = Array.ofDim[Long](4)
