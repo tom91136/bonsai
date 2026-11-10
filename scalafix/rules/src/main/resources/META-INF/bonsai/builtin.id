@@ -2,13 +2,13 @@ DisableSyntax
 RedundantSyntax
 RemoveUnused
 ?ExplicitResultTypes
-DisableSyntax.noVars
-DisableSyntax.noReturns
-DisableSyntax.noNulls
-DisableSyntax.noAsInstanceOf
-DisableSyntax.noIsInstanceOf
-DisableSyntax.noXml
-DisableSyntax.noFinalize
+DisableSyntax.noVars|var
+DisableSyntax.noReturns|return
+DisableSyntax.noNulls|null
+DisableSyntax.noAsInstanceOf|asInstanceOf,asInstanceOfMatchable
+DisableSyntax.noIsInstanceOf|isInstanceOf
+DisableSyntax.noXml|noXml
+DisableSyntax.noFinalize|noFinalize
 ExplicitResultTypes.fetchScala3CompilerArtifactsOnVersionMismatch = true
 RedundantSyntax.stringInterpolator = false
 -Wunused:all

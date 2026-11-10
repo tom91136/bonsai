@@ -185,7 +185,13 @@ object BonsaiPlugin extends AutoPlugin {
   // name makes it opt-in.
   private val Settings = BonsaiArtifacts.builtin.filter(line => !line.startsWith("-") && line.contains('='))
   private val Named    = BonsaiArtifacts.builtin.diff(CompilerOptions.UnusedOptions ++ Settings).map(_.stripPrefix("?"))
+    .map(_.takeWhile(_ != '|'))
   private val Bans     = Named.filter(_.contains('.'))
+  private val BanLints = BonsaiArtifacts.builtin.diff(CompilerOptions.UnusedOptions ++ Settings).filter(_.contains('|'))
+    .map { line =>
+      val (ban, lints) = line.span(_ != '|')
+      ban -> lints.drop(1).split(',').toSeq.map(lint => s"${ban.takeWhile(_ != '.')}.$lint")
+    }.toMap
   private val OptIn: Set[String] = BonsaiArtifacts.builtin.filter(_.startsWith("?")).map(_.drop(1)).toSet
 
   /** Every scalafix rule, in the order they run, with the built-in ones last. */
@@ -367,7 +373,8 @@ object BonsaiPlugin extends AutoPlugin {
         Rules.filter(rule => !OptIn(rule) || bonsaiEnabledRules.value(rule)).filterNot(bonsaiDisabled.value)
           .filter(supported(_, scalaVersion.value))
       else Seq("DisableSyntax"),
-      if (bonsaiMode.value != BonsaiMode.Strict) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiNonfatal.value),
+      (if (bonsaiMode.value != BonsaiMode.Strict) Rules ++ Bans else (Rules ++ Bans).filter(bonsaiNonfatal.value))
+        .flatMap(id => BanLints.getOrElse(id, Seq(id))),
       (if (bonsaiDisabled.value("DisableSyntax")) Nil else Bans).partition(!bonsaiDisabled.value(_))
     )),
     Compile / scalafix / unmanagedSources :=

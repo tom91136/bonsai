@@ -33,6 +33,15 @@ public final class Scalafix {
         scalafix.append(ban).append(" = ").append(!configuration.disabled().contains(ban)).append("\n");
       }
     }
+    scalafix.append("lint.warning = [\n");
+    for (String id : new TreeSet<>(configuration.nonfatal())) {
+      if (ids.rules().contains(id) || ids.bans().contains(id)) {
+        for (String lint : ids.lints(id)) {
+          scalafix.append("  \"").append(lint).append("\"\n");
+        }
+      }
+    }
+    scalafix.append("]\n");
     return scalafix.toString();
   }
 

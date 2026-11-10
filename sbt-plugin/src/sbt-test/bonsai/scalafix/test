@@ -9,6 +9,15 @@ $ copy-file changes/Dollar.scala src/main/scala/demo/Dollar.scala
 > scalafixAll --check
 $ delete src/main/scala/demo/Dollar.scala
 > set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
+# a ban kept a warning reports without failing, under the id scalafix gives its lint
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "DisableSyntax"
+$ copy-file changes/Cast.scala src/main/scala/demo/Cast.scala
+-> scalafixAll --check
+> set ThisBuild / bonsaiNonfatal += "DisableSyntax.noAsInstanceOf"
+> scalafixAll --check
+> set ThisBuild / bonsaiNonfatal := Set.empty
+$ delete src/main/scala/demo/Cast.scala
+> set ThisBuild / bonsaiDisabled := net.kurobako.bonsai.sbt.BonsaiPlugin.Rules.toSet - "PatternShadow"
 # rules listed in .scalafix.conf run alongside bonsai's
 $ copy-file changes/Counter.scala src/main/scala/demo/Counter.scala
 -> scalafixAll --check

@@ -40,6 +40,17 @@ class ScalafixTest {
   private static final String SCALA = "3.9.0";
 
   @Test
+  void aNonfatalBanWarnsUnderTheLintsScalafixReports() throws IOException {
+    Configuration configuration = configuration("nonfatal\tDisableSyntax.noAsInstanceOf");
+
+    String scalafix = Scalafix.configuration(configuration, ids(), SUPPORT, SCALA);
+
+    assertTrue(scalafix.contains("\"DisableSyntax.asInstanceOf\""), scalafix);
+    assertTrue(scalafix.contains("\"DisableSyntax.asInstanceOfMatchable\""), scalafix);
+    assertTrue(!scalafix.contains("\"DisableSyntax.noAsInstanceOf\""), scalafix);
+  }
+
+  @Test
   void writesTheRulesThatRun() throws IOException {
     Configuration configuration = configuration("disabled\tOptionIdioms");
 

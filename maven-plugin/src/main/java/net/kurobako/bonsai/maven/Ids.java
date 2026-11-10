@@ -6,8 +6,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -25,6 +28,7 @@ public final class Ids {
   private final Set<String> rules;
   private final Set<String> optIn = new TreeSet<>();
   private final List<String> bans = new ArrayList<>();
+  private final Map<String, List<String>> banLints = new HashMap<>();
   private final List<String> settings = new ArrayList<>();
   private final List<String> unusedOptions = new ArrayList<>();
 
@@ -46,7 +50,11 @@ public final class Ids {
       } else if (entry.contains("=")) {
         settings.add(entry);
       } else if (entry.contains(".")) {
-        bans.add(entry);
+        int bar = entry.indexOf('|');
+        String ban = entry.substring(0, bar);
+        bans.add(ban);
+        String prefix = ban.substring(0, ban.indexOf('.') + 1);
+        banLints.put(ban, Arrays.stream(entry.substring(bar + 1).split(",")).map(prefix::concat).toList());
       } else {
         this.rules.add(entry);
       }
@@ -74,6 +82,11 @@ public final class Ids {
   }
 
   /** The bans the DisableSyntax rule holds, each turned off by its own name. */
+  /** The ids of the lints a nonfatal rule or ban reports, as scalafix names them. */
+  public List<String> lints(String id) {
+    return banLints.getOrDefault(id, List.of(id));
+  }
+
   public List<String> bans() {
     return bans;
   }
