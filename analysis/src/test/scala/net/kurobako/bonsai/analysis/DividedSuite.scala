@@ -475,6 +475,47 @@ class DividedSuite extends AnalysisSuite {
     }
   }
 
+  private def barred(redeclared: Boolean): Unit =
+    Scratch.using("bonsai-") { directory =>
+      val padding = "Padding.scala" -> "package padding\nclass One\nclass Two\nclass Three"
+      val jvm     = compile(
+        directory.resolve("core"),
+        Seq("Foo.scala" -> "package a\nobject Foo { def x: Int = 1 }", padding),
+        Vector.empty
+      )
+      val peer = compile(
+        directory.resolve("coreJs"),
+        Seq("Foo.scala" -> "package a\nobject Foo { def x: Int = 2 }"),
+        Vector.empty
+      )
+      val lone = compile(
+        directory.resolve("appJs"),
+        Seq(
+          "Bar.scala"    -> "package a.Foo\nclass Bar { def produce: Int = 3 }",
+          "Caller.scala" ->
+            "package other\nobject Caller { def go(): Unit = { new a.Foo.Bar().produce; new a.Foo.Bar().produce; () } }"
+        ),
+        Vector.empty
+      )
+      val whole = Manifest(
+        Vector(Output("appJs", Output.Scope.Main, lone), Output("core", Output.Scope.Main, jvm)) ++
+          Option.when(redeclared)(Output("coreJs", Output.Scope.Main, peer)),
+        Map("appJs" -> classpath, "core" -> classpath) ++ Option.when(redeclared)("coreJs" -> classpath),
+        Set.empty,
+        platforms = Set("appJs") ++ Option.when(redeclared)("coreJs"),
+        jdk = targetJdk
+      )
+      assertFinding(smells(reads(whole)), "ignored-result", "Bar.produce", "discarded at all 2 calls")
+    }
+
+  test("a type of a twin in a run apart is analysed") {
+    barred(redeclared = false)
+  }
+
+  test("a type a twin in one run redeclares leaves the findings about a type of another twin in a run apart") {
+    barred(redeclared = true)
+  }
+
   private def apart(
       core: Seq[(String, String)],
       lib: Seq[(String, String)],

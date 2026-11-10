@@ -306,8 +306,15 @@ object Extraction {
       val groups     = groupRuns.map(_._1)
       val groupTwins = groupRuns.flatMap(_._2)
       val twinRuns   = phaseTwins ++ groupTwins
-      val owned      = phaseTwins.map(twin => Owned(twin.own, twin = true)) ++ groups.map(Owned(_, twin = false)) ++
-        groupTwins.map(twin => Owned(twin.own, twin = true))
+      // A twin declares some of the types of the JVM modules again, and what the sources of its run record of them is
+      // theirs.
+      def standing(twins: Vector[Twinned]): String => Boolean = {
+        val declared = twins.flatMap(_.reading.declared).toSet
+        name => declared(name) || name.indices.exists(index => name(index) == '.' && declared(name.take(index)))
+      }
+      val owned = phaseTwins.map(twin => Owned(twin.own, Some(standing(phaseTwins)))) ++
+        groups.map(Owned(_, None)) ++
+        groupRuns.flatMap((_, twins, _) => twins.map(twin => Owned(twin.own, Some(standing(twins)))))
       val readers                = phase +: (twinRuns.flatMap(twin => Vector(twin.own, twin.copies)) ++ groups)
       val errors                 = reading(phase, together, behind)
       def beside(run: Collector) = (phase +: groups).filterNot(_ eq run).foldLeft(Collector.Evidence.empty)(_ ++
@@ -330,9 +337,14 @@ object Extraction {
           source.path
       }
       // The classes of each twin's own sources are analysed apart from the JVM modules', and their models join.
-      def joined[A](base: A, part: Collector => A, join: (A, A) => A, standing: A => A = identity[A](_)): A =
+      def joined[A](
+          base: A,
+          part: Collector => A,
+          join: (A, A) => A,
+          excluding: (A, String => Boolean) => A = (model: A, _: String => Boolean) => model
+      ): A =
         owned.foldLeft(base)((all, run) =>
-          join(all, if (run.twin) standing(part(run.collector)) else part(run.collector))
+          join(all, run.stands.fold(part(run.collector))(stands => excluding(part(run.collector), stands)))
         )
       val whole      = joined(phase.structures, _.structures, _.joined(_))
       val structures = whole.copy(extents =
@@ -346,17 +358,13 @@ object Extraction {
         sites = scala.sites ++ java.guarded,
         preconditions = scala.preconditions ++ java.preconditions
       )
-      // A twin declares some of the types of the JVM modules again, and what its own sources record of them is theirs.
-      val declared                      = twinRuns.flatMap(_.reading.declared).toSet
-      def stands(name: String): Boolean =
-        declared(name) || name.indices.exists(index => name(index) == '.' && declared(name.take(index)))
       // A source that a twin holds in a form of its own keeps its declarations where they stand, as the twin's cannot move along.
       val jvmPaths = manifest.sources.collect { case source if !manifest.platforms(source.module) => source.path }.toSet
       val seams    = manifest.sources.collect {
         case source if manifest.platforms(source.module) && !jvmPaths(source.path) => sourceSet(source.path.toString)
       }.toSet & jvmPaths.map(path => sourceSet(path.toString))
       def replacedAt(node: Node): Boolean = node.source.nonEmpty && seams(sourceSet(node.source))
-      val analysed                        = joined(phase.smells, _.smells, _.joined(_), _.excluding(stands(_)))
+      val analysed                        = joined(phase.smells, _.smells, _.joined(_), _.excluding(_))
       val smells                          = analysed.copy(
         methods = analysed.methods ++ java.methods,
         instantiations = if (groups.isEmpty) analysed.instantiations else Smells.merged(analysed.instantiations),
@@ -376,7 +384,7 @@ object Extraction {
         )
       }
       val members = owned.foldLeft(observed(phase))((all, run) =>
-        all.joined(if (run.twin) observed(run.collector).excluding(stands(_)) else observed(run.collector))
+        all.joined(run.stands.fold(observed(run.collector))(stands => observed(run.collector).excluding(stands)))
       )
         .pinned(name => graph.nodes.get(name).exists(replacedAt(_)))
       val isHot     = Globs.heat(hot)
@@ -445,7 +453,7 @@ object Extraction {
     )
   }
 
-  private case class Owned(collector: Collector, twin: Boolean)
+  private case class Owned(collector: Collector, stands: Option[String => Boolean])
 
   private case class Twinned(
       reading: Twins.Reading,
