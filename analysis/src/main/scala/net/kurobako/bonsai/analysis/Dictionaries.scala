@@ -57,10 +57,10 @@ object Dictionaries {
 }
 
 /** The given arguments of the calls of the build, which a call writes out as trees, followed from the parameters they
-  * fill to the parameters their callers forward them from. Callers read in another run are not followed, so a run that
-  * is not `complete` leaves every parameter open.
+  * fill to the parameters their callers forward them from. Callers read in another run are not followed, so the
+  * parameters of methods in the outputs that another run depends on, `exposed`, are left open.
   */
-private[analysis] class Dictionaries(symbols: Symbols, complete: Boolean) {
+private[analysis] class Dictionaries(symbols: Symbols, exposed: Set[Output]) {
   import Dictionaries.*
   import symbols.*
 
@@ -140,10 +140,13 @@ private[analysis] class Dictionaries(symbols: Symbols, complete: Boolean) {
     inputs.keys.toVector.flatMap { slot =>
       Keys.of(slot.method).map { key =>
         val found = reached(slot)
-        Parameter(key, slot.index, found.instances.toVector.sorted, found.open || !complete, generic(slot))
+        Parameter(key, slot.index, found.instances.toVector.sorted, found.open || opened(slot.method), generic(slot))
       }
     }.sortBy(parameter => (parameter.method, parameter.index))
   }
+
+  private def opened(method: Symbol)(using Context): Boolean = exposed.nonEmpty &&
+    symbols.output(method).exists(exposed)
 
   private def generic(slot: Slot)(using Context): Option[Generic] = {
     val method    = slot.method

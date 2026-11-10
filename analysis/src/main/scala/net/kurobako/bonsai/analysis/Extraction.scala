@@ -212,7 +212,8 @@ object Extraction {
           entry: Set[Root],
           link: Option[Graph => Reach.Calls],
           foreign: Set[Output] = Set.empty,
-          deferred: Boolean = false
+          deferred: Boolean = false,
+          depended: Set[Output] = Set.empty
       ) =
         Collector(
           manifest.outputs,
@@ -228,7 +229,8 @@ object Extraction {
           entry,
           link,
           foreign,
-          deferred
+          deferred,
+          depended
         )
       val tastyPaths                                                              = relativePaths(manifest)
       def reading(phase: Collector, files: Vector[Path], classpath: Vector[Path]) = Reader(phase, tastyPaths).process(
@@ -253,9 +255,18 @@ object Extraction {
       val modules      = ((primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted).filter(
         module => held(module) || !apartModules(module)
       )
-      val merged  = Classpath.evicted(manifest.classpathOf(modules))
-      val linking = Some((graph: Graph) => Reach.link(manifest, JavaConversion.merge(graph, java), world))
-      val phase   = collector(java.costs, roots, linking, separate, apart.nonEmpty)
+      val merged     = Classpath.evicted(manifest.classpathOf(modules))
+      val linking    = Some((graph: Graph) => Reach.link(manifest, JavaConversion.merge(graph, java), world))
+      val everything = manifest.outputs.toSet
+      val phase      =
+        collector(
+          java.costs,
+          roots,
+          linking,
+          separate,
+          apart.nonEmpty,
+          dependedOn(everything -- separate, separate, manifest)
+        )
       // A twin's classes resolve against its own and its peers' first, and the rest of the build behind them. The
       // copies are read for what they reference only, and the classes of its own sources are analysed as the JVM
       // modules' are.
@@ -277,12 +288,18 @@ object Extraction {
         phase.absorb(own)
         (own, copies, copies.problems ++ own.problems, found ++ copies.notes ++ own.notes)
       }
-      val everything = manifest.outputs.toSet
-      val groupRuns  = apart.map { group =>
+      val groupRuns = apart.map { group =>
         val members = group.map(_.module).toVector.sorted
         val files   = jvm.collect { case (output, file) if group(output) && readable(file) => file }
-        val own     = collector(Vector.empty, Set.empty, linking, everything -- group, deferred = true)
-        val found   = reading(
+        val own     = collector(
+          Vector.empty,
+          Set.empty,
+          linking,
+          everything -- group,
+          true,
+          dependedOn(group, everything -- group, manifest)
+        )
+        val found = reading(
           own,
           files,
           group.toVector.map(_.path) ++ Classpath.evicted(manifest.classpathOf(members))
@@ -401,6 +418,11 @@ object Extraction {
         ))
       }
     }
+  }
+
+  private def dependedOn(run: Set[Output], others: Set[Output], manifest: Manifest): Set[Output] = {
+    val needed = others.flatMap(output => manifest.classpath.getOrElse(output.module, Vector.empty))
+    run.filter(output => needed(output.path))
   }
 
   // The path of a source below its source root, or its file name where it stands in none, which a platform's sources

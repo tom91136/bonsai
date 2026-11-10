@@ -219,4 +219,12 @@ class DividedSuite extends AnalysisSuite {
       "def two: Int = base.Util.encode[Option](2)(using base.Codecs.optCodec)"
     )(result => assertEquals(Dictionaries.findings(result.dictionaries, result.graph.nodes), Vector.empty))
   }
+
+  test("a call that an implementation on the other side of a clash makes effectful is not pure") {
+    eachSide(
+      base("trait Task { def run(): Int }\nobject Util { def exec(t: Task): Int = t.run() }"),
+      "class A extends base.Task { def run(): Int = 1 }\ndef drop(t: base.Task): Unit = { base.Util.exec(t); () }",
+      "class B extends base.Task { def run(): Int = { println(\"x\"); 2 } }"
+    )(result => assertEquals(result.purity.discards, Vector.empty))
+  }
 }

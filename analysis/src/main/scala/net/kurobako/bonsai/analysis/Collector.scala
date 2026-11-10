@@ -105,7 +105,8 @@ private[analysis] class Collector(
     entryPoints: Set[Root],
     link: Option[Graph => Reach.Calls],
     foreign: Set[Output] = Set.empty,
-    deferred: Boolean = false
+    deferred: Boolean = false,
+    depended: Set[Output] = Set.empty
 ) extends Phase, Recorder {
   import Collector.*
 
@@ -114,7 +115,7 @@ private[analysis] class Collector(
   private val reads       = Reads(symbols, (symbol, from) => use(symbol, from))
   private val derivations = Derivations(symbols, foreign)
   private val dispatching = Dispatch(symbols, bodies.contains(_), foreign)
-  private val dictionary  = Dictionaries(symbols, !deferred)
+  private val dictionary  = Dictionaries(symbols, depended)
   private val structure   = StructureObserver(symbols, () => dispatching.classes, lines, foreign)
   private val comparing   = Comparisons(symbols, () => dispatching.classes, lines)
   import symbols.*
