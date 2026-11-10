@@ -81,6 +81,18 @@ object Extraction {
       bounded: Vector[Complexity.Bounded] = Vector.empty,
       parallel: Parallel = Parallel.sequential
   ): Either[Vector[String], Result] =
+    readDivided(manifest, generated, concurrent, reflective, hot, bounded, parallel, Clashes.runs)
+
+  private[analysis] def readDivided(
+      manifest: Manifest,
+      generated: Vector[String],
+      concurrent: Set[String],
+      reflective: Vector[String],
+      hot: Vector[String],
+      bounded: Vector[Complexity.Bounded],
+      parallel: Parallel,
+      division: Clashes.Division
+  ): Either[Vector[String], Result] =
     Reach.source(manifest).fold(
       error => Left(Vector(error)),
       source =>
@@ -91,7 +103,12 @@ object Extraction {
             Thread.currentThread.getThreadGroup,
             () =>
               result.complete(
-                Try(extract(manifest, Settings(generated, concurrent, reflective, hot, bounded, parallel), world))
+                Try(extract(
+                  manifest,
+                  Settings(generated, concurrent, reflective, hot, bounded, parallel),
+                  world,
+                  division
+                ))
               ): Unit,
             "bonsai-extraction",
             StackSize
@@ -110,7 +127,12 @@ object Extraction {
         }
     )
 
-  private def extract(manifest: Manifest, settings: Settings, world: ClassWorld): Either[Vector[String], Result] = {
+  private def extract(
+      manifest: Manifest,
+      settings: Settings,
+      world: ClassWorld,
+      divide: Clashes.Division
+  ): Either[Vector[String], Result] = {
     import settings.*
     // The compiler aborts the whole run on a file whose names or sections it cannot index, so those are set aside.
     // A platform twin compiles the shared sources again, so only the classes the JVM modules lack are its own. The
@@ -143,6 +165,10 @@ object Extraction {
     val checked    = files.zip(parallel.map(files)(file => Try(TastyUnpickler(Files.readAllBytes(file))).isSuccess))
     val readable   = checked.collect { case (file, true) => file }.toSet
     val tasty      = jvm.collect { case (_, file) if readable(file) => file }
+    val division   = divide(manifest, listed)
+    val apart      = division.getOrElse(Vector.empty).drop(1)
+    val separate   = apart.flatten.toSet
+    val together   = jvm.collect { case (output, file) if readable(file) && !separate(output) => file }
     val unreadable = checked.collect { case (file, false) => file }
     val skipped    =
       unreadable.map(file => s"class file ${file.getFileName.toString.stripSuffix(".tasty")} could not be read")
@@ -151,13 +177,13 @@ object Extraction {
     val reflectiveGlobs = reflective.map(Globs.qualifiedNames)
     val java            = JavaConversion.collected(manifest, matchers, parallel, reflectiveGlobs)
     val replacements    = Twins.reading(
-      classes.filterNot((output, _) => manifest.platforms(output.module)),
+      classes.filterNot((output, _) => manifest.platforms(output.module) || separate(output)),
       copies ++ own.filter((_, file) => readable(file)),
       shared
     )
     val moduleUses = Modules.uses(manifest, java.nodes, java.reflections)
     val javaCosts  = JavaCosts(java.costs, Complexity.Declared(bounded))
-    val clashes    = Clashes.of(listed)
+    val clashes    = division.left.getOrElse(Vector.empty)
     if (uncompiled.nonEmpty) Left(uncompiled)
     else if (clashes.nonEmpty) Left(clashes)
     else if (tasty.isEmpty && (skipped ++ java.problems).nonEmpty) Left(skipped ++ java.problems)
@@ -224,29 +250,44 @@ object Extraction {
       ).allErrors.map(_.message).distinct
       // The compiler resolves a class once per run, so the run reads the classpaths of the modules in turn, the JVM
       // modules' first, and a class several platforms' copies of a library hold resolves to the first copy.
-      val modules = (primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted
+      val held         = manifest.outputs.filterNot(separate).map(_.module).toSet
+      val apartModules = separate.map(_.module)
+      val modules      = ((primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted).filter(
+        module => held(module) || !apartModules(module)
+      )
       val merged  = Classpath.evicted(manifest.classpathOf(modules))
       val linking = Some((graph: Graph) => Reach.link(manifest, JavaConversion.merge(graph, java), world))
       val phase   = collector(java.costs, roots, linking)
       // A twin's classes resolve against its own and its peers' first, and the rest of the build behind them. The
       // copies are read for what they reference only, and the classes of its own sources are analysed as the JVM
       // modules' are.
-      val behind   = primary.map(_.path) ++ merged
-      val outputs  = manifest.outputs.groupMap(_.module)(_.path)
-      val jvm      = primary.map(_.module).toSet
-      val absorbed = replacements.map { twin =>
-        val ahead = (twin.module +: Twins.peers(manifest, jvm, twin.module)).flatMap(outputs.getOrElse(_, Vector.empty))
-        val classpath = ahead ++ manifest.classpathOf(Seq(twin.module)) ++ behind
-        val copies    = collector(Vector.empty, Set.empty, None)
-        val own       = collector(Vector.empty, Set.empty, linking)
-        val found     = reading(copies, twin.replaced, classpath) ++ reading(own, twin.own, classpath)
+      val behind     = primary.filterNot(separate).map(_.path) ++ merged
+      val outputs    = manifest.outputs.groupMap(_.module)(_.path)
+      val jvmModules = primary.map(_.module).toSet
+      val twinRuns   = replacements.map { twin =>
+        val ahead = (twin.module +: Twins.peers(manifest, jvmModules, twin.module)).flatMap(outputs.getOrElse(
+          _,
+          Vector.empty
+        ))
+        twin -> (ahead ++ manifest.classpathOf(Seq(twin.module)) ++ behind)
+      }
+      val groupRuns = apart.map { group =>
+        val members = group.map(_.module).toVector.sorted
+        val held    = jvm.collect { case (output, file) if group(output) && readable(file) => file }
+        Twins.Reading(members.head, Vector.empty, held, Set.empty) ->
+          (group.toVector.map(_.path) ++ Classpath.evicted(manifest.classpathOf(members)))
+      }
+      val absorbed = (twinRuns ++ groupRuns).map { (twin, classpath) =>
+        val copies = collector(Vector.empty, Set.empty, None)
+        val own    = collector(Vector.empty, Set.empty, linking)
+        val found  = reading(copies, twin.replaced, classpath) ++ reading(own, twin.own, classpath)
         phase.absorb(copies)
         phase.absorb(own)
         (own, copies, copies.problems ++ own.problems, found ++ copies.notes ++ own.notes)
       }
       val owned    = absorbed.map(_._1)
       val readers  = phase +: absorbed.flatMap((own, copies, _, _) => Vector(own, copies))
-      val errors   = reading(phase, tasty, behind)
+      val errors   = reading(phase, together, behind)
       val problems = skipped ++ java.problems ++ phase.problems ++ absorbed.flatMap(_._3)
       val notes    = phase.notes ++ errors ++ absorbed.flatMap(_._4)
       val graph    = JavaConversion.merge(phase.graph, java)

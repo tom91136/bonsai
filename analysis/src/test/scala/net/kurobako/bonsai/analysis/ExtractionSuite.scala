@@ -115,21 +115,156 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
-  test("an object in one module and a package of its name in an unrelated module fail naming both") {
+  private def divided(directory: Path, padded: String): Manifest = {
+    def padding(module: String) =
+      Option.when(module == padded)("Padding.scala" -> s"package padding.$module\nclass One\nclass Two\nclass Three")
+    val base = compile(
+      directory.resolve("base"),
+      Seq(
+        "Base.scala" ->
+          "package base\ntrait Greeter { def greet: String }\ncase class Mode(fast: Boolean, level: Int)\ntrait Sink { def put(slot: Int, width: Int): Int }\nobject Shared { def common: Int = 1; def fromPackaged: Int = 3 }"
+      ),
+      Vector.empty
+    )
+    val objects = compile(
+      directory.resolve("objects"),
+      Seq(
+        "B.scala" ->
+          "package a\nobject b extends base.Greeter with base.Sink {\n  def greet: String = \"b\"\n  def put(slot: Int, width: Int): Int = slot + width\n  def one: Int = base.Shared.common }"
+      ) ++ padding("objects"),
+      Vector(base)
+    )
+    val packaged = compile(
+      directory.resolve("packaged"),
+      Seq(
+        "Shapes.scala" ->
+          "package a.b\nsealed trait Shape\ncase class Circle(radius: Int) extends Shape\ncase class Square(side: Int) extends Shape",
+        "Util.scala" ->
+          "package a.b\ntrait Source { def next: Int }\nobject Util extends base.Greeter with base.Sink {\n  def put(slot: Int, width: Int): Int = slot + width\n  def greet: String = \"u\"\n  def two: Int = base.Shared.fromPackaged + 1\n}"
+      ) ++ padding("packaged"),
+      Vector(base)
+    )
+    val usingObjects = compile(
+      directory.resolve("usingObjects"),
+      Seq(
+        "Main.scala" ->
+          "object UsingObjects {\n  def twice(sink: base.Sink, n: Int): Int = sink.put(n, 5) + sink.put(n + 1, 5)\n  def modes(n: Int): Int = Seq(base.Mode(true, n), base.Mode(true, n + 1)).map(m => if (m.fast) m.level else 0).sum\n  def main(args: Array[String]): Unit = println(modes(1) + a.b.one + a.b.greet + (a.b: base.Greeter).greet + twice(a.b, args.length))\n}"
+      ),
+      Vector(base, objects)
+    )
+    val usingPackaged = compile(
+      directory.resolve("usingPackaged"),
+      Seq(
+        "Main.scala" ->
+          """object UsingPackaged {
+            |  def area(shape: a.b.Shape): Int = shape match {
+            |    case a.b.Circle(radius) => radius
+            |    case a.b.Square(side)   => side
+            |  }
+            |  def count(source: a.b.Source): Int = source.next
+            |  def mode(n: Int): Int = { val m = base.Mode(false, n); if (m.fast) m.level else 0 }
+            |  def twice(sink: base.Sink, n: Int): Int = sink.put(n, 5) + sink.put(n + 1, 5)
+            |  def main(args: Array[String]): Unit = {
+            |    val greeter: base.Greeter = a.b.Util
+            |    println(mode(1) + a.b.Util.two + count(new Counter) + area(a.b.Circle(1)) + greeter.greet + twice(a.b.Util, args.length))
+            |  }
+            |}
+            |class Counter extends a.b.Source { override def next: Int = 1 }""".stripMargin
+      ),
+      Vector(base, packaged)
+    )
+    Manifest(
+      Vector(
+        Output("base", Output.Scope.Main, base),
+        Output("objects", Output.Scope.Main, objects),
+        Output("packaged", Output.Scope.Main, packaged),
+        Output("usingObjects", Output.Scope.Main, usingObjects),
+        Output("usingPackaged", Output.Scope.Main, usingPackaged)
+      ),
+      Map(
+        "base"          -> classpath,
+        "objects"       -> (classpath :+ base),
+        "packaged"      -> (classpath :+ base),
+        "usingObjects"  -> (classpath ++ Vector(base, objects)),
+        "usingPackaged" -> (classpath ++ Vector(base, packaged))
+      ),
+      Set.empty,
+      jdk = targetJdk
+    )
+  }
+
+  private def readDivided(manifest: Manifest) = {
+    val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+    assertEquals(result.problems, Vector.empty)
+    assertEquals(result.notes, Vector.empty)
+    result
+  }
+
+  private def eachSide(check: Extraction.Result => Unit): Unit = Seq("objects", "packaged").foreach { padded =>
+    Scratch.using("bonsai-")(directory => check(readDivided(divided(directory, padded))))
+  }
+
+  test("an object in one module and a package of its name in an unrelated module read without problems") {
+    eachSide { result =>
+      val nodes = result.graph.nodes.keySet
+      Seq("a.b", "a.b.Shape", "a.b.Circle", "a.b.Util", "UsingObjects", "UsingPackaged", "base.Shared").foreach(name =>
+        assert(nodes.contains(name), s"$name not in ${nodes.toVector.sorted}")
+      )
+    }
+  }
+
+  test("calls into either side of a class and package clash resolve from the modules that depend on them") {
+    eachSide { result =>
+      val found = Members.findings(result.members, result.graph.nodes, result.reach)
+      assertEquals(found.filter(_.rule == Finding.Rule.UnusedMember).map(_.detail), Vector.empty)
+      Seq("a.b", "a.b.Util", "base.Shared", "base.Greeter", "a.b.Source").foreach(name =>
+        assert(result.reach.live(name), s"$name is dead")
+      )
+    }
+  }
+
+  test("a sealed hierarchy and an override across modules of the separately read side stay known") {
+    eachSide { result =>
+      val sum = result.algebra.sums.find(_.node == "a.b.Shape")
+      assertEquals(sum.map(_.cases.map(_.name).sorted), Some(Vector("a.b.Circle", "a.b.Square")))
+      val members = result.members.members.map(member => member.name -> member).toMap
+      assert(members("Counter.next").overriding, members.keySet.toString)
+      assertEquals(members("Counter.next").bases, Vector("a.b.Source.next"))
+      assert(members("a.b.greet").overriding, members.keySet.toString)
+      assertEquals(members("a.b.Util.greet").bases, Vector("base.Greeter.greet"))
+    }
+  }
+
+  test("a module that needs both sides of a class and package clash fails naming it") {
     Scratch.using("bonsai-") { directory =>
-      val objects =
-        compile(directory.resolve("a"), Seq("B.scala" -> "package a\nobject b { def one: Int = 1 }"), Vector.empty)
-      val packaged =
-        compile(directory.resolve("b"), Seq("C.scala" -> "package a.b\nclass C { def two: Int = 2 }"), Vector.empty)
-      val manifest = Manifest(
-        Vector(Output("objects", Output.Scope.Main, objects), Output("packaged", Output.Scope.Main, packaged)),
-        Map("objects" -> classpath, "packaged" -> classpath),
-        Set.empty,
-        jdk = targetJdk
+      val whole    = divided(directory, "objects")
+      val needing  = whole.outputs.filter(_.module == "usingObjects").map(_.copy(module = "both"))
+      val packaged = whole.outputs.filter(_.module == "packaged").map(_.path)
+      val manifest = whole.copy(
+        outputs = whole.outputs ++ needing,
+        classpath = whole.classpath + ("both" -> (whole.classpath("usingObjects") ++ packaged))
       )
       val errors = Extraction.read(manifest).fold(identity, result => fail(s"read: ${result.notes}"))
       assertEquals(errors.size, 1)
       assert(errors.head.startsWith("a.b is a class in module objects and a package in module packaged"), errors.head)
+      assert(errors.head.contains("both"), errors.head)
+    }
+  }
+
+  test("a class and a package that a library jar holds on the classpath of its module fail naming it") {
+    Scratch.using("bonsai-") { directory =>
+      val whole   = divided(directory, "objects")
+      val library = archive(
+        compile(directory.resolve("lib"), Seq("C.scala" -> "package a.b\nclass Held"), Vector.empty),
+        directory.resolve("lib.jar"),
+        "lib",
+        "1.0"
+      )
+      val manifest =
+        whole.copy(classpath = whole.classpath.updated("usingObjects", whole.classpath("usingObjects") :+ library))
+      val errors = Extraction.read(manifest).fold(identity, result => fail(s"read: ${result.notes}"))
+      assertEquals(errors.size, 1)
+      assert(errors.head.contains("lib.jar"), errors.head)
     }
   }
 
