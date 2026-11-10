@@ -6,6 +6,7 @@ import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Types.MethodType
 import net.kurobako.bonsai.lifting.*
+import scala.annotation.targetName
 import scala.collection.mutable
 
 object Dictionaries {
@@ -45,30 +46,55 @@ object Dictionaries {
     )
   } yield found
 
-  private case class Slot(method: Symbol, index: Int)
+  /** A parameter of a method, by the key of the method. */
+  private[analysis] case class Slot(method: String, index: Int)
 
-  private enum Term {
+  private[analysis] enum Term {
     case Instance(name: String, arguments: Vector[Term])
     case Forward(slot: Slot)
     case Open
   }
 
+  /** The slots a declared parameter takes the terms of: its own and those of the methods it overrides. */
+  private[analysis] case class Declared(terms: Vector[Term], via: Vector[Slot])
+
+  private[analysis] object Evidence {
+    val empty: Evidence = Evidence(Map.empty, Map.empty)
+  }
+
+  /** What a run records of the dictionary parameters of the build: the parameters it declares with the terms its calls
+    * pass them, and the terms its calls pass the parameters it did not read.
+    */
+  private[analysis] case class Evidence(declared: Map[Slot, Declared], apart: Map[Slot, Vector[Term]]) {
+    @targetName("merge")
+    def ++(other: Evidence): Evidence = Evidence(declared ++ other.declared, Maps.join(apart, other.apart)(_ ++ _))
+  }
+
   private case class Reaching(instances: Set[String], open: Boolean)
+
+  private val runs = java.util.concurrent.atomic.AtomicInteger()
 }
 
 /** The given arguments of the calls of the build, which a call writes out as trees, followed from the parameters they
-  * fill to the parameters their callers forward them from. Callers read in another run are not followed, so the
-  * parameters of methods in the outputs that another run depends on, `exposed`, are left open.
+  * fill to the parameters their callers forward them from, in this run and in the runs beside it.
   */
-private[analysis] class Dictionaries(symbols: Symbols, exposed: Set[Output]) {
+private[analysis] class Dictionaries(symbols: Symbols, foreign: Set[Output]) {
   import Dictionaries.*
   import symbols.*
 
+  private val tag      = runs.incrementAndGet()
   private val declared = mutable.LinkedHashMap.empty[Symbol, Vector[Symbol]]
   private val passed   = mutable.Map.empty[Slot, mutable.ArrayBuffer[Term]]
+  private val apart    = mutable.Map.empty[Slot, mutable.ArrayBuffer[Term]]
 
   private def clauses(method: Symbol)(using Context): List[List[Symbol]] =
     method.paramSymss.filter(clause => clause.isEmpty || clause.head.isTerm)
+
+  private def slot(method: Symbol, index: Int)(using Context): Slot =
+    Slot(
+      if (method.owner.isClass) Keys.of(method).getOrElse(qualifiedName(method)) else s"$tag#${method.id}",
+      index
+    )
 
   /** Notes the dictionary parameters of a method, which are those its `using` clauses declare. */
   def declare(method: Symbol)(using Context): Unit =
@@ -84,8 +110,9 @@ private[analysis] class Dictionaries(symbols: Symbols, exposed: Set[Output]) {
         val callee = application.symbol
         val before = clause(application.fun)
         val offset = clauses(callee).take(before).map(_.size).sum
+        val target = if (foreign.nonEmpty && output(callee).exists(foreign)) apart else passed
         application.args.zipWithIndex.foreach((argument, position) =>
-          passed.getOrElseUpdate(Slot(callee, offset + position), mutable.ArrayBuffer.empty) += term(argument)
+          target.getOrElseUpdate(slot(callee, offset + position), mutable.ArrayBuffer.empty) += term(argument)
         )
       case _ => ()
     }
@@ -105,26 +132,41 @@ private[analysis] class Dictionaries(symbols: Symbols, exposed: Set[Output]) {
 
   private def reference(symbol: Symbol)(using Context): Term =
     if (symbol.is(Flags.Param) && symbol.owner.is(Flags.Method))
-      Term.Forward(Slot(symbol.owner, clauses(symbol.owner).flatten.indexOf(symbol)))
+      Term.Forward(slot(symbol.owner, clauses(symbol.owner).flatten.indexOf(symbol)))
     else if (symbol.is(Flags.ParamAccessor) && symbol.owner.isClass) {
       val constructor = symbol.owner.primaryConstructor
-      Term.Forward(Slot(constructor, clauses(constructor).flatten.indexWhere(_.name == symbol.name)))
+      Term.Forward(slot(constructor, clauses(constructor).flatten.indexWhere(_.name == symbol.name)))
     } else if (symbol.is(Flags.Given) || symbol.is(Flags.Module)) Term.Instance(Calls.qualified(symbol), Vector.empty)
     else Term.Open
+
+  private def entries(using Context): Vector[(Slot, Symbol, Declared)] =
+    declared.toVector.flatMap { (method, parameters) =>
+      val owners = method +: method.allOverriddenSymbols.toVector
+      parameters.indices.filter(parameters(_).is(Flags.Given)).map { index =>
+        val via = owners.map(slot(_, index))
+        (slot(method, index), method, Declared(via.flatMap(passed.get(_).fold(Vector.empty)(_.toVector)), via))
+      }
+    }
+
+  /** What this run records for the runs beside it. */
+  def evidence(using Context): Evidence =
+    if (foreign.isEmpty) Evidence.empty
+    else
+      Evidence(
+        entries.map((slot, _, found) => slot -> found).toMap,
+        apart.view.mapValues(_.toVector).toMap
+      )
 
   /** The instances reaching each dictionary parameter of the build. A parameter takes what its callers pass, and what
     * the callers of the methods it overrides pass; one that forwards a parameter of its caller takes what that one
     * does.
     */
-  def parameters()(using Context): Vector[Parameter] = {
-    val inputs = declared.view.flatMap { (method, parameters) =>
-      val overridden = method.allOverriddenSymbols.toVector
-      parameters.indices.filter(parameters(_).is(Flags.Given)).map { index =>
-        Slot(method, index) -> (method +: overridden).flatMap(owner =>
-          passed.getOrElse(Slot(owner, index), mutable.ArrayBuffer.empty)
-        )
-      }
-    }.toMap
+  def parameters(others: Evidence)(using Context): Vector[Parameter] = {
+    val local    = entries
+    val slots    = others.declared ++ local.map((slot, _, found) => slot -> found)
+    val supplied = Maps.join(others.apart, apart.view.mapValues(_.toVector).toMap)(_ ++ _)
+    val inputs   = slots.view.mapValues(found => found.terms ++ found.via.flatMap(supplied.getOrElse(_, Vector.empty)))
+      .toMap
     val reached = mutable.Map.from(inputs.keys.map(_ -> Reaching(Set.empty, open = false)))
     var changed = true // scalafix:ok DisableSyntax.var
     while (changed) {
@@ -137,20 +179,16 @@ private[analysis] class Dictionaries(symbols: Symbols, exposed: Set[Output]) {
         }
       }
     }
-    inputs.keys.toVector.flatMap { slot =>
-      Keys.of(slot.method).map { key =>
+    local.flatMap { (slot, method, _) =>
+      Keys.of(method).map { key =>
         val found = reached(slot)
-        Parameter(key, slot.index, found.instances.toVector.sorted, found.open || opened(slot.method), generic(slot))
+        Parameter(key, slot.index, found.instances.toVector.sorted, found.open, generic(method, slot.index))
       }
     }.sortBy(parameter => (parameter.method, parameter.index))
   }
 
-  private def opened(method: Symbol)(using Context): Boolean = exposed.nonEmpty &&
-    symbols.output(method).exists(exposed)
-
-  private def generic(slot: Slot)(using Context): Option[Generic] = {
-    val method    = slot.method
-    val typeClass = declared(method)(slot.index).info.widenDealias.typeSymbol
+  private def generic(method: Symbol, index: Int)(using Context): Option[Generic] = {
+    val typeClass = declared(method)(index).info.widenDealias.typeSymbol
     for {
       node <- key(method)
       if !method.is(Flags.Deferred) && method.allOverriddenSymbols.isEmpty && overTypeConstructor(typeClass) &&

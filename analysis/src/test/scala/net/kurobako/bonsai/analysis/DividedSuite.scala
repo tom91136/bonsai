@@ -240,4 +240,15 @@ class DividedSuite extends AnalysisSuite {
       bounded = Vector(Complexity.Bounded("a.b.pairs.ys", 4, "four at most"))
     )(result => assertEquals(result.unusedBounds, Vector.empty))
   }
+
+  test("a platform twin that a clash would read apart fails naming the clash") {
+    Scratch.using("bonsai-") { directory =>
+      val whole =
+        manifest(directory, "objects", base("object Util { def one: Int = 1 }"), "def a: Int = 1", "def b: Int = 2", "")
+      val errors = Extraction.read(whole.copy(platforms = Set("packaged"))).fold(identity, _ => fail("read"))
+      assertEquals(errors.size, 1)
+      assert(errors.head.startsWith("a.b is a class in module objects and a package in module packaged"), errors.head)
+      assert(errors.head.contains("packaged compile for another platform"), errors.head)
+    }
+  }
 }

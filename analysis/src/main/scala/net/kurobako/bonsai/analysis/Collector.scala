@@ -41,7 +41,8 @@ private[analysis] object Collector {
       Fragments.Keys.empty,
       StructureObserver.Evidence.empty,
       Set.empty,
-      Set.empty
+      Set.empty,
+      Dictionaries.Evidence.empty
     )
   }
 
@@ -53,7 +54,8 @@ private[analysis] object Collector {
       fragments: Fragments.Keys,
       structure: StructureObserver.Evidence,
       named: Set[String],
-      derived: Set[String]
+      derived: Set[String],
+      dictionaries: Dictionaries.Evidence
   ) {
     @targetName("merge")
     def ++(other: Evidence): Evidence = Evidence(
@@ -63,7 +65,8 @@ private[analysis] object Collector {
       fragments ++ other.fragments,
       structure ++ other.structure,
       named ++ other.named,
-      derived ++ other.derived
+      derived ++ other.derived,
+      dictionaries ++ other.dictionaries
     )
   }
 
@@ -105,8 +108,7 @@ private[analysis] class Collector(
     entryPoints: Set[Root],
     link: Option[Graph => Reach.Calls],
     foreign: Set[Output] = Set.empty,
-    deferred: Boolean = false,
-    depended: Set[Output] = Set.empty
+    deferred: Boolean = false
 ) extends Phase, Recorder {
   import Collector.*
 
@@ -115,7 +117,7 @@ private[analysis] class Collector(
   private val reads       = Reads(symbols, (symbol, from) => use(symbol, from))
   private val derivations = Derivations(symbols, foreign)
   private val dispatching = Dispatch(symbols, bodies.contains(_), foreign)
-  private val dictionary  = Dictionaries(symbols, depended)
+  private val dictionary  = Dictionaries(symbols, foreign)
   private val structure   = StructureObserver(symbols, () => dispatching.classes, lines, foreign)
   private val comparing   = Comparisons(symbols, () => dispatching.classes, lines)
   import symbols.*
@@ -212,7 +214,8 @@ private[analysis] class Collector(
         fragments.keys,
         structure.evidence,
         named.filter(isForeign(_)).map(qualifiedName(_)).toSet,
-        derivations.evidence
+        derivations.evidence,
+        dictionary.evidence
       )
     if (deferred) read = Some((ctx, fragments, library)) else finish(fragments, library, Collector.Evidence.empty)
     units
@@ -276,7 +279,7 @@ private[analysis] class Collector(
     val duplicates = fragments.candidates(others.fragments)
     if (deferred) pooled = duplicates else clones ++= Clones.groups(duplicates)
     dispatching.resolve()
-    dictionaryList ++= dictionary.parameters()
+    dictionaryList ++= dictionary.parameters(others.dictionaries)
     linked = link.map(_(graph))
     val bytecode = linked.fold(BytecodeEffects.none)(_.summaries)
     val declared = Complexity.Declared(bounded)
