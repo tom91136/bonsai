@@ -33,7 +33,7 @@ import java.nio.file.StandardOpenOption
   val before   = previous.map(readPrevious).getOrElse(Map.empty)
 
   val names   = parseProjects(Files.readString(Path.of(required("--projects")), UTF_8)).map(nameOf)
-  val outputs = names.map { name =>
+  val outputs = names.iterator.map { name =>
     val dir = out.resolve(name)
     if (Files.isDirectory(dir)) Output.read(dir)
     else Output(name, "missing", Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty)
@@ -52,7 +52,7 @@ import java.nio.file.StandardOpenOption
     StandardOpenOption.CREATE,
     StandardOpenOption.APPEND
   )
-  options.get("--baseline").foreach(dir => writeBaseline(outputs, out, Path.of(dir)))
+  options.get("--baseline").foreach(dir => writeBaseline(all.map(_.output), out, Path.of(dir)))
 
   val failing     = all.filter(_.failures.nonEmpty)
   val regressions = all.filter(_.regressed)

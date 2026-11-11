@@ -29,8 +29,11 @@ def changes(current: Vector[String], previous: Vector[String]): (Vector[String],
   (surplus(after, before), surplus(before, after))
 }
 
-def rows(outputs: Vector[Output], previous: Map[String, Before]): Vector[Row] =
-  outputs.map(output => Row(output, Health.assess(output), previous.get(output.name)))
+def rows(outputs: Iterator[Output], previous: Map[String, Before]): Vector[Row] =
+  outputs.map { output =>
+    val kept = output.copy(log = output.log.takeRight(20), err = Vector.empty, crash = output.crash.takeRight(20))
+    Row(kept, Health.assess(output), previous.get(output.name))
+  }.toVector
 
 def findingChanges(all: Vector[Row]): Vector[Changes] =
   all.flatMap { row =>
@@ -84,8 +87,8 @@ def fenced(lines: Vector[String]): String =
   lines.map(Health.truncated(_).replace("```", "'''")).mkString("```text\n", "\n", "\n```\n")
 
 def regressionExcerpt(output: Output): Vector[String] = {
-  val tail = if (output.crash.nonEmpty) output.crash.takeRight(20) else output.log.takeRight(20)
-  s"status ${output.status}" +: tail
+  val errors = output.log.filter(_.startsWith("[error]"))
+  s"status ${output.status}" +: (if (errors.nonEmpty) errors else output.log).takeRight(15)
 }
 
 def render(all: Vector[Row], diffs: Vector[Changes], previousRun: Option[String], budget: Int): String = {

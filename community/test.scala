@@ -124,6 +124,11 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   check("ok to ok is not red")(!row("ok", Some("ok")).red)
   check("a failure makes a row red")(Row(output(), Vector(Failure("problem", Vector("x"))), None).red)
 
+  val long =
+    rows(Iterator(output(status = "failed", log = Vector("problem: x") ++ Vector.fill(50)("tail"))), Map.empty).head
+  check("rows judge the whole log and keep its tail")(long.failures.map(_.kind) == Vector("problem") &&
+    long.output.log.size == 20)
+
   check("changes see added and removed lines")(
     changes(Vector("a", "b", "c"), Vector("b", "c", "d")) == (Vector("a"), Vector("d"))
   )
