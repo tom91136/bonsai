@@ -99,6 +99,7 @@ private[analysis] object Collector {
 
 private[analysis] class Collector(
     outputs: Vector[Output],
+    entries: Map[String, Output],
     libraries: Set[String],
     generated: Vector[PathMatcher],
     concurrent: Set[String],
@@ -115,7 +116,7 @@ private[analysis] class Collector(
 ) extends Phase, Recorder {
   import Collector.*
 
-  private val symbols     = Symbols(outputs, libraries, generated, reflective, lines)
+  private val symbols     = Symbols(outputs, entries, libraries, generated, reflective, lines)
   private val callSites   = CallSites(symbols, lines)
   private val reads       = Reads(symbols, (symbol, from) => use(symbol, from))
   private val derivations = Derivations(symbols, foreign)

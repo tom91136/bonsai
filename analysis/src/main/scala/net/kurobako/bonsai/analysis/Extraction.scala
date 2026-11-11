@@ -149,7 +149,7 @@ object Extraction {
     // Test support compiles its main sources in the test scope, so one scope can hold an empty output beside a full one.
     val sourced  = manifest.sources.map(source => (source.module, source.scope)).toSet
     val compiled = listed.collect {
-      case (output, files) if files.exists(file => Set(".class", ".tasty").exists(file.toString.endsWith(_))) =>
+      case (output, files) if files.exists(compiledFile(_)) =>
         (output.module, output.scope)
     }.toSet
     val uncompiled = (sourced -- compiled).filter(listed.map((output, _) =>
@@ -174,6 +174,7 @@ object Extraction {
     val division   = divide(manifest, listed, known)
     val apart      = division.getOrElse(Vector.empty).drop(1)
     val separate   = apart.flatten.toSet
+    val entries    = classesBy(listed, apart.nonEmpty)
     val together   = jvm.collect { case (output, file) if readable(file) && !separate(output) => file }
     val unreadable = checked.collect { case (file, false) => file }
     val skipped    =
@@ -227,6 +228,7 @@ object Extraction {
       ) =
         Collector(
           manifest.outputs,
+          entries,
           manifest.libraries,
           matchers,
           concurrent,
@@ -436,6 +438,17 @@ object Extraction {
       }
     }
   }
+
+  private def compiledFile(file: Path): Boolean = Set(".class", ".tasty").exists(file.toString.endsWith(_))
+
+  private def classesBy(listed: Vector[(Output, Vector[Path])], divided: Boolean): Map[String, Output] =
+    if (!divided) Map.empty
+    else
+      listed.reverse.flatMap((output, files) =>
+        files.filter(compiledFile(_)).map(file =>
+          output.path.relativize(file).toString.replace(File.separatorChar, '/') -> output
+        )
+      ).toMap
 
   // The path of a source below its source root, or its file name where it stands in none, which a platform's sources
   // share with the JVM's when they stand for them.

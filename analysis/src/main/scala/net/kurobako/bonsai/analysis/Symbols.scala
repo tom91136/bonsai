@@ -42,6 +42,7 @@ private[analysis] object Symbols {
 /** The nodes of the build that its symbols name, and the references between them. */
 private[analysis] class Symbols(
     outputs: Vector[Output],
+    entries: Map[String, Output],
     libraries: Set[String],
     generated: Vector[PathMatcher],
     reflective: Vector[Regex],
@@ -292,7 +293,7 @@ private[analysis] class Symbols(
 
   def output(symbol: Symbol)(using Context): Option[Output] =
     Option[AbstractFile](symbol.associatedFile).flatMap(file =>
-      outputsOf.getOrElseUpdate(file.path, located(file.path))
+      outputsOf.getOrElseUpdate(file.path, located(file.path).orElse(entries.get(file.path)))
     )
 
   private val rooted: Map[Path, (Int, Output)] =
