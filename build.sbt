@@ -526,13 +526,14 @@ lazy val root = project.in(file("."))
           configuration.value.name == Test.name,
           classDirectory.value,
           unmanagedSources.value,
+          resources.value,
           resourceDirectories.value
         )
-      }.all(analysedOutputs).value.flatMap { (id, test, classes, sources, resourceDirs) =>
+      }.all(analysedOutputs).value.flatMap { (id, test, classes, sources, resourceFiles, resourceDirs) =>
         val scope = ManifestLines.scope(fixtures, id, test)
         ManifestLines.outputs(id, scope, configured.library(id).getOrElse(false), classes.toString) ++
           ManifestLines.sources(id, scope, sources.map(_.toString)) ++
-          ManifestLines.resources(id, scope, resourceDirs.map(_.toString))
+          ManifestLines.resources(id, resourceFiles.map(_.toString), resourceDirs.map(_.toString))
       }
       val managed = Def.task((managedSourceDirectories.value.map(_.toString), managedSources.value.map(_.toString)))
         .all(analysedOutputs).value

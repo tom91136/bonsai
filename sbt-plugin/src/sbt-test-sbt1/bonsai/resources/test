@@ -1,0 +1,6 @@
+# a class only a service file names stays reachable, and so does one only a generated resource names
+> bonsaiAnalyse
+# hidden and excluded files beside the registrations are not read
+> stray
+> bonsaiAnalyse
+> checkResource

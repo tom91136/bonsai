@@ -5,9 +5,10 @@ class LivenessSuite extends AnalysisSuite {
       main: Seq[(String, String)],
       test: Seq[(String, String)] = Nil,
       resources: Seq[(String, String)] = Nil,
-      resourced: Seq[(String, String)] = Nil
+      resourced: Seq[(String, String)] = Nil,
+      unlisted: Seq[(String, String)] = Nil
   ): Set[(String, String)] = {
-    val result = extract(main, test, resources, resourced = resourced)
+    val result = extract(main, test, resources, resourced = resourced, unlisted = unlisted)
     Liveness.findings(result.graph, result.reach).map(finding => finding.rule.id -> finding.node.name).toSet
   }
 
@@ -421,6 +422,33 @@ class LivenessSuite extends AnalysisSuite {
       ),
       Set.empty
     )
+  }
+
+  test("files of a resource directory the build does not package register nothing and are not read") {
+    val found = findings(
+      Seq(
+        "src/main/scala/Service.scala" -> "package p; class Service extends Runnable { def run(): Unit = () }",
+        "src/main/scala/Old.scala"     -> "package p; class Old extends Runnable { def run(): Unit = () }"
+      ),
+      resourced = Seq("META-INF/services/java.lang.Runnable" -> "p.Service\n"),
+      unlisted = Seq(
+        "META-INF/services/.java.lang.Runnable.swp" -> "p.Service\n\u00e9\n",
+        "META-INF/services/java.lang.Runnable.orig" -> "p.Old\n"
+      )
+    )
+    assertEquals(found.map(_._2), Set("p.Old"))
+  }
+
+  test("a registration left in the class directory is not read when the build lists its resources") {
+    val found = findings(
+      Seq(
+        "src/main/scala/Service.scala" -> "package p; class Service extends Runnable { def run(): Unit = () }",
+        "src/main/scala/Old.scala"     -> "package p; class Old extends Runnable { def run(): Unit = () }"
+      ),
+      resources = Seq("META-INF/services/java.lang.Runnable" -> "p.Old\n"),
+      resourced = Seq("META-INF/services/java.lang.Runnable" -> "p.Service\n")
+    )
+    assertEquals(found.map(_._2), Set("p.Old"))
   }
 
   test("a registration in both the classes and a resource directory is read once") {

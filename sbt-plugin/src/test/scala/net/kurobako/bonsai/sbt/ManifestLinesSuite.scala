@@ -37,17 +37,39 @@ class ManifestLinesSuite extends munit.FunSuite {
     assertEquals(ManifestLines.options("api", Seq("-deprecation")), Seq("option\tapi\t-deprecation"))
   }
 
-  test("resource lines name the resource directories that exist, once each") {
+  test("resource lines name the entry point files below their resource directory, once each") {
     IO.withTemporaryDirectory { directory =>
-      val present = directory / "resources"
-      IO.createDirectory(present)
+      val main    = directory / "main"
+      val managed = directory / "managed"
+      val files   = Seq(
+        main / "META-INF" / "services" / "a.Spi",
+        main / "plugin.properties",
+        managed / "sbt" / "sbt.autoplugins",
+        main / "logback.xml",
+        main / "META-INF" / "MANIFEST.MF",
+        main / "sbt" / "other.autoplugins"
+      )
+      files.foreach(IO.write(_, "x\n"))
+      IO.createDirectory(main / "META-INF" / "services" / "nested")
+      val listed = (files :+ main / "META-INF" / "services" / "nested" :+ main / "plugin.properties").map(_.toString)
       assertEquals(
-        ManifestLines.resources(
-          "api",
-          "main",
-          Seq(present.toString, (directory / "managed").toString, present.toString)
-        ),
-        Seq(s"resource\tapi\tmain\t$present")
+        ManifestLines.resources("api", listed, Seq(main, managed).map(_.toString)),
+        Seq(
+          s"resource\tapi\tMETA-INF/services/a.Spi\t${files(0)}",
+          s"resource\tapi\tplugin.properties\t${files(1)}",
+          s"resource\tapi\tsbt/sbt.autoplugins\t${files(2)}"
+        )
+      )
+    }
+  }
+
+  test("a resource outside every resource directory is named by its file name") {
+    IO.withTemporaryDirectory { directory =>
+      val loose = directory / "extra" / "plugin.properties"
+      IO.write(loose, "x\n")
+      assertEquals(
+        ManifestLines.resources("api", Seq(loose.toString), Seq((directory / "main").toString)),
+        Seq(s"resource\tapi\tplugin.properties\t$loose")
       )
     }
   }

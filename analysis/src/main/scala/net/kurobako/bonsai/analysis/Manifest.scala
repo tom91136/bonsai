@@ -14,7 +14,7 @@ object Manifest {
 
   /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <module> <entry>`, `library <module>`,
     * `platform <module>`, `recorded <module>`, `option <module> <compiler option>`, `source <module> <scope> <file>`,
-    * `resource <module> <scope> <directory>`, `model <module> <scope> <file>`, `generated <path>`, `jdk <home>`,
+    * `resource <module> <name> <file>`, `model <module> <scope> <file>`, `generated <path>`, `jdk <home>`,
     * `root <directory>`, `text-exclude <glob>` and `text <rule index> <field> <value>` lines.
     */
   def read(path: Path): Either[String, Manifest] =
@@ -45,10 +45,8 @@ object Manifest {
                 scopeOf(path, index, scope).map {
                   parsed => current.copy(sources = current.sources :+ Output(module, parsed, Path.of(location)))
                 }
-              case List("resource", module, scope, location) =>
-                scopeOf(path, index, scope).map {
-                  parsed => current.copy(resources = current.resources :+ Output(module, parsed, Path.of(location)))
-                }
+              case List("resource", module, name, location) =>
+                Right(current.copy(resources = current.resources :+ Resource(module, name, Path.of(location))))
               case List("model", module, scope, location) =>
                 scopeOf(path, index, scope).map {
                   parsed => current.copy(models = current.models :+ Output(module, parsed, Path.of(location)))
@@ -78,13 +76,13 @@ object Manifest {
 /** Compiled outputs of a build and the external classpath of each module needed to read them; the public API of
   * `libraries`, modules other builds depend on, is used by those builds. `options` holds the compiler options of each
   * module, `sources` the source files written by hand, and `root` the directory of the build, which reported paths are
-  * relative to. `resources` are the directories the build takes resources from, which hold the entry point
-  * registrations the outputs do not when the build has not copied them. `platforms` are the Scala.js and Scala Native
-  * twins of JVM modules, which compile the shared sources again. `texts` holds the fields of each repository text rule
-  * by its index, and `textExclusions` the files no text rule reads. `models` holds the files the javac plugin collected
-  * the model of the Java code of each module in, `generated` the directories and files the build generates sources in,
-  * `jdk` the home of the JDK the build targets, whose classes are read before the outputs, and `recorded` the modules
-  * the compiler plugin compiled in the audit mode, whose findings it kept beside their classes.
+  * relative to. `resources` are the files that register entry points, each with its path in the jar, which the outputs
+  * of a module that lists some are not read for. `platforms` are the Scala.js and Scala Native twins of JVM modules,
+  * which compile the shared sources again. `texts` holds the fields of each repository text rule by its index, and
+  * `textExclusions` the files no text rule reads. `models` holds the files the javac plugin collected the model of the
+  * Java code of each module in, `generated` the directories and files the build generates sources in, `jdk` the home of
+  * the JDK the build targets, whose classes are read before the outputs, and `recorded` the modules the compiler plugin
+  * compiled in the audit mode, whose findings it kept beside their classes.
   */
 case class Manifest(
     outputs: Vector[Output],
@@ -100,7 +98,7 @@ case class Manifest(
     jdk: Option[Path] = None,
     generated: Vector[Path] = Vector.empty,
     recorded: Set[String] = Set.empty,
-    resources: Vector[Output] = Vector.empty
+    resources: Vector[Resource] = Vector.empty
 ) {
 
   /** Whether a source lies in, or is, one of the directories and files the build generates, named by its path or

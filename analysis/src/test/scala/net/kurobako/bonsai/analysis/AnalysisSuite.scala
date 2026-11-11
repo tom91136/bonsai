@@ -8,6 +8,7 @@ import dotty.tools.dotc.Driver
 import dotty.tools.dotc.reporting.Reporter
 import dotty.tools.dotc.reporting.StoreReporter
 import java.io.File
+import java.nio.charset.StandardCharsets.ISO_8859_1
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.jar.JarEntry
@@ -42,8 +43,8 @@ trait AnalysisSuite extends FunSuite {
     * `concurrent` names methods that run the functions passed to them on other threads, and `twins` holds the sources
     * each platform twin, module `t0` and on, compiles beside the main ones, in place of those it names alike. `rooted`
     * compiles the build's sources under the build directory as their source root, and names it the root of the
-    * manifest, as a build does. `resourced` are resources held in a resource directory of the build, beside the
-    * classes.
+    * manifest, as a build does. `resourced` are resources the build packages from a resource directory, and `unlisted`
+    * the files of that directory it does not, such as hidden and excluded ones, written in Latin-1.
     */
   protected def extract(
       main: Seq[(String, String)],
@@ -60,7 +61,8 @@ trait AnalysisSuite extends FunSuite {
       bounded: Vector[Complexity.Bounded] = Vector.empty,
       removed: Seq[String] = Nil,
       rooted: Boolean = false,
-      resourced: Seq[(String, String)] = Nil
+      resourced: Seq[(String, String)] = Nil,
+      unlisted: Seq[(String, String)] = Nil
   ): Extraction.Result =
     inspect(
       main,
@@ -77,7 +79,8 @@ trait AnalysisSuite extends FunSuite {
       bounded,
       removed,
       rooted,
-      resourced
+      resourced,
+      unlisted
     )((result, _) => result)
 
   /** As `extract`, with the class directories the build compiled to, which are gone once this returns, for `use` to
@@ -98,7 +101,8 @@ trait AnalysisSuite extends FunSuite {
       bounded: Vector[Complexity.Bounded] = Vector.empty,
       removed: Seq[String] = Nil,
       rooted: Boolean = false,
-      resourced: Seq[(String, String)] = Nil
+      resourced: Seq[(String, String)] = Nil,
+      unlisted: Seq[(String, String)] = Nil
   )(use: (Extraction.Result, Vector[Path]) => A): A =
     Scratch.using("bonsai-") { directory =>
       val sourceRoot = Option.when(rooted)(directory)
@@ -108,6 +112,11 @@ trait AnalysisSuite extends FunSuite {
       val mainClasses = compile(directory.resolve("main"), main, external.toVector ++ missing, sourceRoot)
       write(mainClasses, resources)
       write(directory.resolve("resources"), resourced)
+      unlisted.foreach { (name, content) =>
+        val path = directory.resolve("resources").resolve(name)
+        Files.createDirectories(path.getParent)
+        Files.write(path, content.getBytes(ISO_8859_1)): Unit
+      }
       val testClasses =
         compile(directory.resolve("test"), test, mainClasses +: (external.toVector ++ missing), sourceRoot)
       removed.foreach(name => Files.delete(directory.resolve("main").resolve(name)))
@@ -138,7 +147,8 @@ trait AnalysisSuite extends FunSuite {
         root = sourceRoot,
         platforms = platforms.map(_._1.module).toSet,
         jdk = targetJdk,
-        resources = Vector(Output("m", Output.Scope.Main, directory.resolve("resources")))
+        resources =
+          resourced.map((name, _) => Resource("m", name, directory.resolve("resources").resolve(name))).toVector
       )
       val result =
         Extraction.read(manifest, generated, concurrent, reflective, hot, bounded).fold(

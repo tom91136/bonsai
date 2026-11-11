@@ -8,7 +8,8 @@ lazy val Shared = config("shared").extend(Test)
 lazy val Bare   = config("bare").extend(Test)
 lazy val Plain  = config("plain").extend(Runtime)
 
-lazy val checkOutputs = taskKey[Unit]("Check the outputs and sources the manifest lists")
+lazy val checkOutputs   = taskKey[Unit]("Check the outputs and sources the manifest lists")
+lazy val checkResources = taskKey[Unit]("Check the manifest lists the resources of every configuration")
 
 lazy val root = project.in(file("."))
   .configs(IT, Deep, Shared, Bare, Plain)
@@ -18,6 +19,12 @@ lazy val root = project.in(file("."))
     inConfig(Shared)(Defaults.testSettings),
     inConfig(Plain)(Defaults.testSettings),
     Shared / scalaSource := (IT / scalaSource).value,
+    checkResources       := Def.uncached {
+      val named = IO.readLines(target.value / "bonsai" / "manifest.tsv").collect { case s"resource\t$_\t$name\t$_" =>
+        name
+      }
+      assert(named.sorted == Seq("META-INF/services/demo.Shared", "META-INF/services/demo.Spi"), named.mkString(", "))
+    },
     checkOutputs         := Def.uncached {
       val lines   = IO.readLines(target.value / "bonsai" / "manifest.tsv")
       assert(lines.count(_.startsWith("jdk\t")) == 1, lines.mkString(", "))

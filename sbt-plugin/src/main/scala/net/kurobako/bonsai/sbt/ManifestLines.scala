@@ -3,6 +3,7 @@ package net.kurobako.bonsai.sbt
 import java.nio.file.Path
 import java.nio.file.Paths
 import sbt.*
+import scala.annotation.tailrec
 
 /** The lines of the `manifest.tsv` the analysis reads, written alike by the sbt plugin and the whole-build analysis. */
 object ManifestLines {
@@ -16,11 +17,27 @@ object ManifestLines {
   def sources(project: String, scope: String, files: Seq[String]): Seq[String] =
     files.map(file => s"source\t$project\t$scope\t$file")
 
-  /** The lines naming the resource directories that exist, which hold the registrations the classes may lack. */
-  def resources(project: String, scope: String, directories: Seq[String]): Seq[String] =
-    directories.filter(Paths.get(_).toFile.isDirectory).distinct.map(directory =>
-      s"resource\t$project\t$scope\t$directory"
-    )
+  /** The lines naming the files among `files`, the resources of a build, that register entry points, each with its path
+    * in the jar: below the nearest of `directories` that holds it, or by its name where none does.
+    */
+  def resources(project: String, files: Seq[String], directories: Seq[String]): Seq[String] = {
+    val roots                                                          = directories.map(Paths.get(_)).toSet
+    @tailrec def below(path: Path, tail: List[String]): Option[String] =
+      Option(path.getParent) match {
+        case Some(parent) =>
+          val parts = path.getFileName.toString :: tail
+          if (roots(parent)) Some(parts.mkString("/")) else below(parent, parts)
+        case None => None
+      }
+    files.flatMap { file =>
+      val path = Paths.get(file)
+      val name = below(path, Nil).getOrElse(path.getFileName.toString)
+      if (registers(name) && path.toFile.isFile) Seq(s"resource\t$project\t$name\t$file") else Nil
+    }.distinct
+  }
+
+  private def registers(name: String): Boolean =
+    name.startsWith("META-INF/services/") || name == "plugin.properties" || name == "sbt/sbt.autoplugins"
 
   /** The lines naming where the build generates sources: the directory of the managed sources that lie in one of the
     * `directories`, and the file of each that lies in none.

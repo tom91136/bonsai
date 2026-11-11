@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption.APPEND
 import java.nio.file.attribute.FileTime
 import net.kurobako.bonsai.testing.*
 import scala.jdk.CollectionConverters.*
@@ -124,6 +125,20 @@ class ReuseSuite extends AnalysisSuite {
     assertInvalidated(f)(Files.writeString(f.classes.resolve("extra.txt"), "x"): Unit)
   }
 
+  test("a changed resource file of the manifest invalidates, and an unlisted file beside it does not") {
+    val f        = fixture()
+    val services = Files.createDirectories(f.dir.resolve("resources/META-INF/services"))
+    val listed   = services.resolve("a.Spi")
+    val stray    = services.resolve("a.Spi.orig")
+    Files.writeString(listed, "p.A\n")
+    Files.writeString(stray, "p.B\n")
+    Files.writeString(f.manifest, s"resource\tm\tMETA-INF/services/a.Spi\t$listed\n", APPEND)
+    assertInvalidated(f)(Files.writeString(listed, "p.C\n"): Unit)
+    Files.writeString(stray, "p.D\n")
+    Files.writeString(services.resolve(".a.Spi.swp"), "p.E\n")
+    assert(f.run().reused)
+  }
+
   test("a changed source file invalidates") {
     val f = fixture()
     assertInvalidated(f)(Files.writeString(f.source, sources(1)._2 + "\n// edited\n"): Unit)
@@ -225,7 +240,7 @@ class ReuseSuite extends AnalysisSuite {
       Set.empty,
       sources = Vector(Output("a", Output.Scope.Main, Path.of("s"))),
       models = Vector(Output("a", Output.Scope.Main, Path.of("m"))),
-      resources = Vector(Output("a", Output.Scope.Main, Path.of("r")))
+      resources = Vector(Resource("a", "r", Path.of("r")))
     )
     assertEquals(Reuse.paths(manifest).map(_.toString).toSet, Set("o", "c", "s", "m", "r"))
     assertEquals(

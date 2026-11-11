@@ -19,16 +19,30 @@ private[analysis] object Outputs {
     else Using.resource(Files.walk(directory))(_.toList.asScala.toVector.filter(Files.isRegularFile(_)).sorted)
 
   // Classes instantiated reflectively by ServiceLoader, the compiler plugin loader or sbt plugin discovery.
-  def entryPoints(directory: Path): Vector[Root] = {
-    val services = files(directory.resolve("META-INF/services")).view.flatMap(Files.readAllLines(_).asScala)
-      .map(_.takeWhile(_ != '#').trim).toVector
-    def lines(file: Path) = Some(file).filter(Files.isRegularFile(_)).toVector.flatMap(Files.readAllLines(_).asScala)
-    val plugins           = lines(directory.resolve("plugin.properties")).collect {
-      case line if line.startsWith("pluginClass=") => line.stripPrefix("pluginClass=").trim
-    }
-    val autoplugins = lines(directory.resolve("sbt/sbt.autoplugins")).map(_.trim)
-    (services ++ plugins ++ autoplugins).view.collect {
+  def entryPoints(directory: Path): Vector[Root] = registered(
+    files(directory.resolve("META-INF/services")),
+    Vector(directory.resolve("plugin.properties")),
+    Vector(directory.resolve("sbt/sbt.autoplugins"))
+  )
+
+  def entryPoints(resources: Vector[Resource]): Vector[Root] = {
+    def named(accepts: String => Boolean) = resources.filter(resource => accepts(resource.name)).map(_.path).sorted
+    registered(
+      named(_.startsWith("META-INF/services/")),
+      named(_ == "plugin.properties"),
+      named(_ == "sbt/sbt.autoplugins")
+    )
+  }
+
+  private def registered(services: Vector[Path], plugins: Vector[Path], autoplugins: Vector[Path]): Vector[Root] = {
+    def lines(files: Vector[Path]) = files.filter(Files.isRegularFile(_)).flatMap(Files.readAllLines(_).asScala)
+    val names                      = lines(services).map(_.takeWhile(_ != '#').trim) ++
+      lines(plugins).collect {
+        case line if line.startsWith("pluginClass=") => line.stripPrefix("pluginClass=").trim
+      } ++
+      lines(autoplugins).map(_.trim)
+    names.collect {
       case name if name.nonEmpty => Root(name.stripSuffix("$").replace('$', '.'), Root.Kind.Provided)
-    }.toVector
+    }
   }
 }

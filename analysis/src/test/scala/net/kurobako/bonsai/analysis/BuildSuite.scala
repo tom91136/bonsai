@@ -16,7 +16,7 @@ class BuildSuite extends FunSuite {
   }
 
   withRoot("an unknown scope is named whichever record gives it") { root =>
-    Vector("output", "source", "resource", "model").foreach { tag =>
+    Vector("output", "source", "model").foreach { tag =>
       val manifest = write(root, s"$tag.tsv", s"$tag\tcore\tclasses\t/x\n")
       assert(Manifest.read(manifest).left.exists(_.contains("unknown scope: classes")), tag)
     }
@@ -34,11 +34,15 @@ class BuildSuite extends FunSuite {
     assertEquals(read.map(_.root), Right(Some(root)))
   }
 
-  withRoot("the manifest names the resource directories of each module") { root =>
-    val manifest = write(root, "manifest.tsv", "resource\tcore\tmain\t/core/resources\nroot\t/x\n")
+  withRoot("the manifest names the resource files of each module by their path in the jar") { root =>
+    val manifest = write(
+      root,
+      "manifest.tsv",
+      "resource\tcore\tMETA-INF/services/a.Spi\t/core/res/META-INF/services/a.Spi\nroot\t/x\n"
+    )
     assertEquals(
       Manifest.read(manifest).map(_.resources),
-      Right(Vector(Output("core", Output.Scope.Main, Path.of("/core/resources"))))
+      Right(Vector(Resource("core", "META-INF/services/a.Spi", Path.of("/core/res/META-INF/services/a.Spi"))))
     )
   }
 

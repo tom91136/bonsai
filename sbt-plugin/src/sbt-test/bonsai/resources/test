@@ -1,2 +1,6 @@
 # a class only a service file names stays reachable when the compile clears the resources copied beside it
 > bonsaiAnalyse
+# so does one only a generated resource names, while hidden and excluded files beside the registrations are not read
+> stray
+> bonsaiAnalyse
+> checkResource
