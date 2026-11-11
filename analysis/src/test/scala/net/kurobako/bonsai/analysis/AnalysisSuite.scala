@@ -42,7 +42,8 @@ trait AnalysisSuite extends FunSuite {
     * `concurrent` names methods that run the functions passed to them on other threads, and `twins` holds the sources
     * each platform twin, module `t0` and on, compiles beside the main ones, in place of those it names alike. `rooted`
     * compiles the build's sources under the build directory as their source root, and names it the root of the
-    * manifest, as a build does.
+    * manifest, as a build does. `resourced` are resources held in a resource directory of the build, beside the
+    * classes.
     */
   protected def extract(
       main: Seq[(String, String)],
@@ -58,7 +59,8 @@ trait AnalysisSuite extends FunSuite {
       hot: Vector[String] = Vector.empty,
       bounded: Vector[Complexity.Bounded] = Vector.empty,
       removed: Seq[String] = Nil,
-      rooted: Boolean = false
+      rooted: Boolean = false,
+      resourced: Seq[(String, String)] = Nil
   ): Extraction.Result =
     inspect(
       main,
@@ -74,7 +76,8 @@ trait AnalysisSuite extends FunSuite {
       hot,
       bounded,
       removed,
-      rooted
+      rooted,
+      resourced
     )((result, _) => result)
 
   /** As `extract`, with the class directories the build compiled to, which are gone once this returns, for `use` to
@@ -94,7 +97,8 @@ trait AnalysisSuite extends FunSuite {
       hot: Vector[String] = Vector.empty,
       bounded: Vector[Complexity.Bounded] = Vector.empty,
       removed: Seq[String] = Nil,
-      rooted: Boolean = false
+      rooted: Boolean = false,
+      resourced: Seq[(String, String)] = Nil
   )(use: (Extraction.Result, Vector[Path]) => A): A =
     Scratch.using("bonsai-") { directory =>
       val sourceRoot = Option.when(rooted)(directory)
@@ -103,6 +107,7 @@ trait AnalysisSuite extends FunSuite {
       val missing     = Option.when(absent.nonEmpty)(compile(directory.resolve("absent"), absent, Vector.empty))
       val mainClasses = compile(directory.resolve("main"), main, external.toVector ++ missing, sourceRoot)
       write(mainClasses, resources)
+      write(directory.resolve("resources"), resourced)
       val testClasses =
         compile(directory.resolve("test"), test, mainClasses +: (external.toVector ++ missing), sourceRoot)
       removed.foreach(name => Files.delete(directory.resolve("main").resolve(name)))
@@ -132,7 +137,8 @@ trait AnalysisSuite extends FunSuite {
           platforms.flatMap(_._2),
         root = sourceRoot,
         platforms = platforms.map(_._1.module).toSet,
-        jdk = targetJdk
+        jdk = targetJdk,
+        resources = Vector(Output("m", Output.Scope.Main, directory.resolve("resources")))
       )
       val result =
         Extraction.read(manifest, generated, concurrent, reflective, hot, bounded).fold(

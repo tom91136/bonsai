@@ -4,9 +4,10 @@ class LivenessSuite extends AnalysisSuite {
   private def findings(
       main: Seq[(String, String)],
       test: Seq[(String, String)] = Nil,
-      resources: Seq[(String, String)] = Nil
+      resources: Seq[(String, String)] = Nil,
+      resourced: Seq[(String, String)] = Nil
   ): Set[(String, String)] = {
-    val result = extract(main, test, resources)
+    val result = extract(main, test, resources, resourced = resourced)
     Liveness.findings(result.graph, result.reach).map(finding => finding.rule.id -> finding.node.name).toSet
   }
 
@@ -400,6 +401,36 @@ class LivenessSuite extends AnalysisSuite {
       ),
       Set.empty
     )
+  }
+
+  test("registrations in a resource directory of the build are entry points") {
+    assertEquals(
+      findings(
+        Seq(
+          "src/main/scala/Service.scala" ->
+            "package p; class Service extends Runnable { def run(): Unit = { val _ = Helper } }",
+          "src/main/scala/Helper.scala" -> "package p; object Helper",
+          "src/main/scala/Plugin.scala" -> "package p; class Plugin",
+          "src/main/scala/Build.scala"  -> "package p; object Build"
+        ),
+        resourced = Seq(
+          "META-INF/services/java.lang.Runnable" -> "p.Service\n",
+          "plugin.properties"                    -> "pluginClass=p.Plugin\n",
+          "sbt/sbt.autoplugins"                  -> "p.Build\n"
+        )
+      ),
+      Set.empty
+    )
+  }
+
+  test("a registration in both the classes and a resource directory is read once") {
+    val sources = Seq(
+      "src/main/scala/Service.scala" -> "package p; class Service extends Runnable { def run(): Unit = () }"
+    )
+    val registration = "META-INF/services/java.lang.Runnable" -> "p.Service\n"
+    val both         = extract(sources, resources = Seq(registration), resourced = Seq(registration))
+    val classes      = extract(sources, resources = Seq(registration))
+    assertEquals(both.graph.roots, classes.graph.roots)
   }
 
   test("the public types of a library are entry points, while its hidden types still need a user") {

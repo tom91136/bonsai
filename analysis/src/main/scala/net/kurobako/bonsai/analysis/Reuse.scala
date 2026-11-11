@@ -69,8 +69,9 @@ private[analysis] object Reuse {
   /** The paths the analysis reads, which are those of the outputs, sources, models and classpaths, and the release file
     * of the target JDK, whose classes are read in place.
     */
-  def paths(manifest: Manifest): Vector[Path] = (manifest.outputs ++ manifest.sources ++ manifest.models).map(_.path) ++
-    manifest.classpath.toVector.sortBy(_._1).flatMap(_._2) ++ manifest.jdk.map(_.resolve("release"))
+  def paths(manifest: Manifest): Vector[Path] =
+    (manifest.outputs ++ manifest.sources ++ manifest.models ++ manifest.resources).map(_.path) ++
+      manifest.classpath.toVector.sortBy(_._1).flatMap(_._2) ++ manifest.jdk.map(_.resolve("release"))
 
   // Jars are immutable where a dependency cache keeps them, and cost seconds to read in full.
   private def inputs(paths: Vector[Path]): Vector[(String, Option[Path])] =
