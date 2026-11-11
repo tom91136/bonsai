@@ -175,7 +175,7 @@ object Extraction {
     val readable   = checked.collect { case (file, true) => file }.toSet
     val tasty      = jvm.collect { case (_, file) if readable(file) => file }
     val division   = divide(manifest, listed, known)
-    val apart      = division.getOrElse(Vector.empty).drop(1)
+    val apart      = division.fold(_ => Vector.empty, _.runs.drop(1))
     val separate   = apart.flatten.toSet
     val entries    = classesBy(listed, apart.nonEmpty)
     val together   = jvm.collect { case (output, file) if readable(file) && !separate(output) => file }
@@ -192,13 +192,9 @@ object Extraction {
     val moduleUses      = Modules.uses(manifest, java.nodes, java.reflections)
     val javaCosts       = JavaCosts(java.costs, Complexity.Declared(bounded))
     val clashes         = division.left.getOrElse(Vector.empty)
-    val status          = Option.when(apart.nonEmpty) {
-      val runs = s"read in ${apart.size + 1} compiler runs"
-      Clashes.because(manifest, listed, known) match {
-        case Vector() => runs
-        case causes   => s"$runs: ${causes.mkString("; ")}"
-      }
-    }.toVector
+    val status          = division.toOption.filter(_.runs.size > 1).map(divided =>
+      s"read in ${divided.runs.size} groups: ${divided.because.mkString("; ")}"
+    ).toVector
     if (uncompiled.nonEmpty) Left(uncompiled)
     else if (clashes.nonEmpty) Left(clashes)
     else if (tasty.isEmpty && (skipped ++ java.problems).nonEmpty) Left(skipped ++ java.problems)

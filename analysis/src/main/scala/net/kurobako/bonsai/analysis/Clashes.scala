@@ -88,29 +88,23 @@ private[analysis] object Clashes {
     * module or library is a package of another, the smaller of the two sides, the modules that hold or use it with
     * those that depend on them and the platform twins that share classes with them, is read apart. `known` names the
     * clashes the compiler has reported. Fails naming the clash where a module, or a twin and its peers, needs both
-    * sides.
+    * sides. `because` names each clash a run was set apart for, as the failure would.
     */
   def runs(
       manifest: Manifest,
       outputs: Vector[(Output, Vector[Path])],
       known: Set[String]
-  ): Either[Vector[String], Vector[Set[Output]]] = divided(manifest, outputs, known).map(_._1)
-
-  /** The clashes the runs were set apart for, each as the failure would name it. */
-  def because(manifest: Manifest, outputs: Vector[(Output, Vector[Path])], known: Set[String]): Vector[String] =
-    divided(manifest, outputs, known).fold(_ => Vector.empty, _._2)
-
-  type Division =
-    (Manifest, Vector[(Output, Vector[Path])], Set[String]) => Either[Vector[String], Vector[Set[Output]]]
-
-  private def divided(
-      manifest: Manifest,
-      outputs: Vector[(Output, Vector[Path])],
-      known: Set[String]
-  ): Either[Vector[String], (Vector[Set[Output]], Vector[String])] =
+  ): Either[Vector[String], Divided] =
     modules(manifest, outputs, known).map((groups, because) =>
-      groups.map(group => outputs.collect { case (output, _) if group(output.module) => output }.toSet) -> because
+      Divided(
+        groups.map(group => outputs.collect { case (output, _) if group(output.module) => output }.toSet),
+        because
+      )
     )
+
+  case class Divided(runs: Vector[Set[Output]], because: Vector[String])
+
+  type Division = (Manifest, Vector[(Output, Vector[Path])], Set[String]) => Either[Vector[String], Divided]
 
   private def modules(
       manifest: Manifest,

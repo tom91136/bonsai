@@ -543,9 +543,9 @@ class DividedSuite extends AnalysisSuite {
         Extraction.Settings(Vector.empty, Set.empty, Vector.empty, Vector.empty, Vector.empty, Parallel.sequential)
       def read(division: Clashes.Division) = Extraction.readDivided(whole, settings, division)
         .fold(errors => fail(errors.mkString("\n")), identity)
-      val together = read((_, _, _) => Right(Vector(outputs.toSet)))
+      val together = read((_, _, _) => Right(Clashes.Divided(Vector(outputs.toSet), Vector.empty)))
       val groups   = if (coreFirst) outputs else outputs.reverse
-      val divided  = read((_, _, _) => Right(groups.map(Set(_))))
+      val divided  = read((_, _, _) => Right(Clashes.Divided(groups.map(Set(_)), Vector.empty)))
       assertEquals(divided.problems, Vector.empty)
       check(together, divided)
     }
@@ -764,7 +764,7 @@ class DividedSuite extends AnalysisSuite {
 
   private def groups(whole: Manifest, known: Set[String] = Set.empty): Int =
     Clashes.runs(whole, whole.outputs.map(output => output -> Outputs.files(output.path)), known)
-      .fold(errors => fail(errors.mkString("\n")), _.size)
+      .fold(errors => fail(errors.mkString("\n")), _.runs.size)
 
   private def single(
       module: String,
@@ -1127,7 +1127,11 @@ class DividedSuite extends AnalysisSuite {
       )
       val settings =
         Extraction.Settings(Vector.empty, Set.empty, Vector.empty, Vector.empty, Vector.empty, Parallel.sequential)
-      val errors = Extraction.readDivided(whole, settings, (_, _, _) => Right(Vector(whole.outputs.toSet)))
+      val errors = Extraction.readDivided(
+        whole,
+        settings,
+        (_, _, _) => Right(Clashes.Divided(Vector(whole.outputs.toSet), Vector.empty))
+      )
         .fold(identity, result => fail(s"read: ${result.notes}"))
       assert(errors.exists(_.contains("lib.implicits")), errors.toString)
     }
@@ -1199,7 +1203,7 @@ class DividedSuite extends AnalysisSuite {
         assertEquals(
           run.lines("read in"),
           Seq(
-            s"read in 2 compiler runs: lib.implicits is a class in library $objects and a package in library $packaged"
+            s"read in 2 groups: lib.implicits is a class in library $objects and a package in library $packaged"
           )
         )
       }
@@ -1214,6 +1218,38 @@ class DividedSuite extends AnalysisSuite {
       assert(again.err.linesIterator.contains(Reuse.Marker), again.err)
       assertEquals(again.lines("read in"), first.lines("read in"))
       assertEquals(first.lines("read in").size, 1)
+    }
+  }
+
+  test("the line counts the groups of modules read apart, whatever the platform twins add to the reads") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = libraries(
+        directory,
+        "tools",
+        library(directory, "objects", "1.0", objectLibrary),
+        library(directory, "packaged", "1.0", packageLibrary),
+        twinJars = Some(
+          (
+            library(directory, "objectsNative", "1.0", objectLibrary),
+            library(directory, "packagedJs", "1.0", packageLibrary)
+          )
+        )
+      )
+      val line = ran(whole, directory).lines("read in")
+      assertEquals(line.size, 1)
+      assert(line.head.startsWith("read in 2 groups: lib.implicits is a class in library "), line.head)
+    }
+  }
+
+  test("the line names the reasons the division gives") {
+    Scratch.using("bonsai-") { directory =>
+      val whole    = clashing(directory)
+      val settings =
+        Extraction.Settings(Vector.empty, Set.empty, Vector.empty, Vector.empty, Vector.empty, Parallel.sequential)
+      val division: Clashes.Division = (manifest, outputs, known) =>
+        Clashes.runs(manifest, outputs, known).map(_.copy(because = Vector("one reason", "another")))
+      val result = Extraction.readDivided(whole, settings, division).fold(errors => fail(errors.mkString), identity)
+      assertEquals(result.status, Vector("read in 2 groups: one reason; another"))
     }
   }
 
@@ -1248,7 +1284,11 @@ class DividedSuite extends AnalysisSuite {
         Extraction.Settings(Vector.empty, Set.empty, Vector.empty, Vector.empty, Vector.empty, Parallel.sequential)
       val whole              = clashing(directory)
       val (result, out, err) =
-        captured(Extraction.readDivided(whole, settings, (_, _, _) => Right(Vector(whole.outputs.toSet))))
+        captured(Extraction.readDivided(
+          whole,
+          settings,
+          (_, _, _) => Right(Clashes.Divided(Vector(whole.outputs.toSet), Vector.empty))
+        ))
       assert(result.isLeft, result.toString)
       assertEquals("exception caught when loading".r.findAllIn(out + err).size, 1)
     }
