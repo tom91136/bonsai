@@ -5,7 +5,8 @@
 //   --out DIR        output root (default community-out)
 //   --name NAME      output directory name (default derived from the url)
 //   --image IMAGE    image to run (default localhost/bonsai-community:latest)
-//   --memory SIZE    container memory cap, swap included (default 12g)
+//   --memory SIZE    container memory cap (default 12g)
+//   --memory-swap SIZE  cap on memory plus swap (default: --memory, so no swap)
 //   --heap SIZE      sbt heap (default 6g)
 //   --cpus N         cpu cap
 //   --timeout SEC    wall-clock limit for the sbt run (default 3600)
@@ -79,6 +80,7 @@ def quietly(args: String*): Unit =
   var image          = "localhost/bonsai-community:latest"
   var out            = "community-out"
   var memory         = "12g"
+  var memorySwap     = ""
   var heap           = "6g"
   var timeoutSeconds = "3600"
   var version        = "0.1.0-SNAPSHOT"
@@ -99,23 +101,24 @@ def quietly(args: String*): Unit =
     val value                             = rest.tail.headOption
     def set(assign: String => Unit): Unit = assign(value.getOrElse(fail(1, s"$option: missing value")))
     option match {
-      case "--url"     => set(url = _)
-      case "--ref"     => set(ref = _)
-      case "--java"    => set(java = _)
-      case "--ivy"     => set(ivy = _)
-      case "--out"     => set(out = _)
-      case "--name"    => set(name = _)
-      case "--image"   => set(image = _)
-      case "--memory"  => set(memory = _)
-      case "--heap"    => set(heap = _)
-      case "--cpus"    => set(cpus = _)
-      case "--timeout" => set(timeoutSeconds = _)
-      case "--cache"   => set(cache = _)
-      case "--version" => set(version = _)
-      case "--tag"     => set(tag = _)
-      case "--bonsai"  => set(inject = _)
-      case "--sbt"     => set(sbt += _)
-      case _           => fail(2, s"unknown option: $option")
+      case "--url"         => set(url = _)
+      case "--ref"         => set(ref = _)
+      case "--java"        => set(java = _)
+      case "--ivy"         => set(ivy = _)
+      case "--out"         => set(out = _)
+      case "--name"        => set(name = _)
+      case "--image"       => set(image = _)
+      case "--memory"      => set(memory = _)
+      case "--memory-swap" => set(memorySwap = _)
+      case "--heap"        => set(heap = _)
+      case "--cpus"        => set(cpus = _)
+      case "--timeout"     => set(timeoutSeconds = _)
+      case "--cache"       => set(cache = _)
+      case "--version"     => set(version = _)
+      case "--tag"         => set(tag = _)
+      case "--bonsai"      => set(inject = _)
+      case "--sbt"         => set(sbt += _)
+      case _               => fail(2, s"unknown option: $option")
     }
     rest = rest.drop(2)
   }
@@ -146,7 +149,8 @@ def quietly(args: String*): Unit =
     if (cache.isEmpty) quietly(engine, "volume", "rm", "-f", volume)
   }))
 
-  val limits = Vector("--memory", memory, "--memory-swap", memory, "--pids-limit", "8192") ++
+  val swap   = if (memorySwap.nonEmpty) memorySwap else memory
+  val limits = Vector("--memory", memory, "--memory-swap", swap, "--pids-limit", "8192") ++
     (if (cpus.nonEmpty) Vector("--cpus", cpus) else Vector.empty)
 
   val command = Vector("timeout", "-k", "60", (limit + 900).toString, engine, "run", "--name", container) ++
@@ -175,6 +179,8 @@ def quietly(args: String*): Unit =
       s"PROJECT_TAG=$tag",
       "-e",
       s"BONSAI_INJECT=$inject",
+      "-e",
+      "BONSAI_MODE=relaxed",
       "-e",
       s"TIMEOUT_SECONDS=$timeoutSeconds",
       "-e",

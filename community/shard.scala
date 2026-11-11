@@ -4,7 +4,8 @@
 // Runs the projects of one shard one after another within a time budget, through run.scala.
 // usage: shard.scala <projects.jsonl> <shard> <of> <budget seconds> <per-project timeout seconds> [run.scala options]
 // A project is a JSON object per line: {"url": ..., "ref": ..., "java": 17, "sbt": ["bonsaiAnalyse"], "name": ...};
-// "sbt", "name" and "fetch_tag" (a tag, or ALL, to fetch) are optional. Project i belongs to shard i mod <of>.
+// "sbt", "name" and "fetch_tag" (a tag, or ALL, to fetch) are optional. A project with a "shard" runs in that shard,
+// and one without belongs to shard i mod <of>, i being its index in the list.
 
 import java.nio.file.Files
 import java.nio.file.Path
@@ -53,7 +54,7 @@ def derivedName(url: String): String =
   def seconds: Long = (System.nanoTime() - started) / 1000000000L
 
   Files.readAllLines(Path.of(list)).asScala.filterNot(_.isBlank).map(ujson.read(_)).zipWithIndex
-    .collect { case (project, i) if i % of == shard => project }
+    .collect { case (project, i) if project.obj.get("shard").fold(i % of)(_.num.toInt) == shard => project }
     .foreach { project =>
       val url  = text(project.obj.getOrElse("url", ujson.Null))
       val ref  = text(project.obj.getOrElse("ref", ujson.Null))
