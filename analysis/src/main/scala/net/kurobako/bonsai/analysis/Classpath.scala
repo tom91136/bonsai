@@ -26,23 +26,33 @@ private[analysis] object Classpath {
     )
   }
 
-  /** `classpath` with the standard library jars of the build, whatever their version and platform, replaced by the one
-    * the analysis runs on at the position of the first, as the compiler that reads the build's TASTy expects it. A jar
-    * is one by its name and by holding the `Predef` of the library.
+  /** `classpath` with the JVM standard library jars of the build, whatever their version, replaced by the one the
+    * analysis runs on at the position of the first, as the compiler that reads the build's TASTy expects it. The jars
+    * of a platform's variant of the library, which hold classes the JVM one lacks, follow it. A jar is a standard
+    * library by its name and by holding the `Predef` of the library.
     */
   def unified(classpath: Vector[Path]): Vector[Path] = running.fold(classpath) { library =>
-    val standards = classpath.map(standard(_))
-    val first     = standards.indexOf(true)
+    val kinds = classpath.map(kind(_))
+    val first = kinds.indexWhere(_.nonEmpty)
     if (first < 0) classpath
-    else
-      classpath.zip(standards).zipWithIndex.collect {
-        case (_, index) if index == first => library
-        case ((path, false), _)           => path
+    else {
+      val variants = classpath.zip(kinds).collect { case (path, Some(Library.Variant)) => path }
+      classpath.zip(kinds).zipWithIndex.flatMap {
+        case (_, index) if index == first => library +: variants
+        case ((path, None), _)            => Vector(path)
+        case _                            => Vector.empty
       }
+    }
   }
 
-  private def standard(path: Path): Boolean =
-    StandardLibrary.matches(path.getFileName.toString) && Markers.exists(holds(path.toString, _))
+  private enum Library { case Jvm, Variant }
+
+  private def kind(path: Path): Option[Library] = {
+    val name = path.getFileName.toString
+    if (StandardLibrary.matches(name) && Markers.exists(holds(path.toString, _)))
+      Some(if (JvmLibrary.matches(name)) Library.Jvm else Library.Variant)
+    else None
+  }
 
   private val Markers = Seq("scala/Predef.class", "scala/runtime/stdLibPatches/Predef.class")
 
@@ -52,6 +62,8 @@ private[analysis] object Classpath {
   def readable(classpath: Vector[Path]): Vector[Path] = unified(evicted(classpath))
 
   private val StandardLibrary = """scala3?-library.*\.jar""".r
+
+  private val JvmLibrary = """scala-library-.*\.jar|scala3-library_3-.*\.jar""".r
 
   private val running: Option[Path] =
     Try(Path.of(classOf[Predef.type].getProtectionDomain.getCodeSource.getLocation.toURI)).toOption

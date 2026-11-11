@@ -62,9 +62,10 @@ class StandardLibrarySuite extends AnalysisSuite {
       val sjs     = jar("scala3-library_sjs1_3-3.3.6.jar", "scala/runtime/stdLibPatches/Predef.class")
       assertEquals(
         Classpath.unified(Vector(app, next, old, renamed, three, sjs)),
-        Vector(app, next, current, renamed)
+        Vector(app, next, current, sjs, renamed)
       )
       assertEquals(Classpath.unified(Vector(app, next, renamed)), Vector(app, next, renamed))
+      assertEquals(Classpath.unified(Vector(sjs, app, three)), Vector(current, sjs, app))
     }
   }
 }
