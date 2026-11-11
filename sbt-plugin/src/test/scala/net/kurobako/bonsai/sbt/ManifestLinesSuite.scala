@@ -37,16 +37,14 @@ class ManifestLinesSuite extends munit.FunSuite {
     assertEquals(ManifestLines.options("api", Seq("-deprecation")), Seq("option\tapi\t-deprecation"))
   }
 
-  test("depends lines name the analysed projects a project's dependency classes belong to, once each") {
-    val owners = Map("/core/classes" -> "core", "/app/classes" -> "app", "/app/test-classes" -> "app")
+  test("depends lines name the analysed projects a project requires, once each") {
     assertEquals(
       ManifestLines.depends(
         Seq(
-          "app"  -> Seq("/lib/cats.jar", "/core/classes", "/app/classes"),
-          "app"  -> Seq("/core/classes"),
-          "core" -> Seq("/lib/cats.jar")
-        ),
-        owners
+          "app"  -> Seq("app", "core", "stray"),
+          "app"  -> Seq("core"),
+          "core" -> Seq("core")
+        )
       ),
       Seq("depends\tapp\tcore")
     )

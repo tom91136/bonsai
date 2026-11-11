@@ -1,0 +1,3 @@
+# the projects a project depends on are named by the build, whether it exports jars or not
+> bonsaiAnalyse
+> checkDepends

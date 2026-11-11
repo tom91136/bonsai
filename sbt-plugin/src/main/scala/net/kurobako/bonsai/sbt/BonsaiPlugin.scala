@@ -451,6 +451,7 @@ object BonsaiPlugin extends AutoPlugin {
       scope: String,
       classes: String,
       library: Boolean,
+      required: Seq[String],
       sources: Seq[String],
       managed: Seq[String],
       managedDirectories: Seq[String],
@@ -547,6 +548,8 @@ object BonsaiPlugin extends AutoPlugin {
           scope,
           classDirectory.value.toString,
           bonsaiLibrary.value,
+          Classpaths.interSort(thisProjectRef.value, configuration.value, settingsData.value, buildDependencies.value)
+            .map(_._1.project),
           unmanagedSources.value.map(_.toString),
           managedSources.value.map(_.toString),
           managedSourceDirectories.value.map(_.toString),
@@ -559,7 +562,7 @@ object BonsaiPlugin extends AutoPlugin {
       )
       val analysedOutputs = kept.map(_.classes).toSet
       val dependencies    = external.all(analysed).value
-      val depends         = ManifestLines.depends(dependencies, kept.map(entry => entry.classes -> entry.project).toMap)
+      val depends         = ManifestLines.depends(kept.map(entry => entry.project -> entry.required))
       val libraries       = dependencies.groupBy(_._1).map { case (id, pairs) =>
         id -> pairs.map(_._2)
       }.toSeq.sortBy(_._1).map { case (id, paths) =>
