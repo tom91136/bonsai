@@ -85,6 +85,16 @@ class ProblemsSuite extends AnalysisSuite {
     assert(strict.problems.exists(_.startsWith("problem: class file Broken could not be read")), strict.err)
   }
 
+  test("a build read in one run prints its banner and its problems and nothing else") {
+    val f      = brokenClass
+    val rules  = Finding.Rule.values.size
+    val banner = s"bonsai: relaxed mode, ${rules - 1} of $rules analysis rules active"
+    val run    = f.run("relaxed", "--nesting", "--disable", "unused-member")
+    assertEquals(run.problems.size, 1)
+    assertEquals(run.err.linesIterator.toSeq, banner +: run.problems)
+    assert(run.problems.head.startsWith("problem: class file Broken could not be read"), run.err)
+  }
+
   test("the run names its mode and the analysis rules it applies") {
     val f       = Fixture(_ => Nil)
     val rules   = Finding.Rule.values.size

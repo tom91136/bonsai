@@ -78,9 +78,11 @@ private[analysis] object Clashes {
       }
   }.getOrElse(Holding(Set.empty, Set.empty))
 
+  private def described(pair: Pair): String =
+    s"${pair.name} is a class in ${pair.classed.shown} and a package in ${pair.packaged.shown}"
+
   private def shown(pair: Pair, tail: String): String =
-    s"${pair.name} is a class in ${pair.classed.shown} and a package in ${pair.packaged.shown}, " +
-      s"which the compiler cannot read together$tail"
+    s"${described(pair)}, which the compiler cannot read together$tail"
 
   /** The sets of modules to read in runs of their own, the first being the bulk of the build: where a class of one
     * module or library is a package of another, the smaller of the two sides, the modules that hold or use it with
@@ -92,19 +94,29 @@ private[analysis] object Clashes {
       manifest: Manifest,
       outputs: Vector[(Output, Vector[Path])],
       known: Set[String]
-  ): Either[Vector[String], Vector[Set[Output]]] =
-    modules(manifest, outputs, known).map(_.map(group =>
-      outputs.collect { case (output, _) if group(output.module) => output }.toSet
-    ))
+  ): Either[Vector[String], Vector[Set[Output]]] = divided(manifest, outputs, known).map(_._1)
+
+  /** The clashes the runs were set apart for, each as the failure would name it. */
+  def because(manifest: Manifest, outputs: Vector[(Output, Vector[Path])], known: Set[String]): Vector[String] =
+    divided(manifest, outputs, known).fold(_ => Vector.empty, _._2)
 
   type Division =
     (Manifest, Vector[(Output, Vector[Path])], Set[String]) => Either[Vector[String], Vector[Set[Output]]]
+
+  private def divided(
+      manifest: Manifest,
+      outputs: Vector[(Output, Vector[Path])],
+      known: Set[String]
+  ): Either[Vector[String], (Vector[Set[Output]], Vector[String])] =
+    modules(manifest, outputs, known).map((groups, because) =>
+      groups.map(group => outputs.collect { case (output, _) if group(output.module) => output }.toSet) -> because
+    )
 
   private def modules(
       manifest: Manifest,
       outputs: Vector[(Output, Vector[Path])],
       known: Set[String]
-  ): Either[Vector[String], Vector[Set[String]]] = {
+  ): Either[Vector[String], (Vector[Set[String]], Vector[String])] = {
     val holdings   = outputs.groupMapReduce(_._1.module)((output, _) => held(output.path))(_ ++ _)
     val fixed      = manifest.classpath.keySet -- holdings.keySet
     val everything = holdings.keySet ++ fixed
@@ -128,7 +140,7 @@ private[analysis] object Clashes {
       }
     }
     val whole = clashes(holdings.keySet, everything)
-    if (whole.isEmpty) Right(Vector(everything))
+    if (whole.isEmpty) Right(Vector(everything) -> Vector.empty)
     else {
       val uses = everything.map(module =>
         module -> manifest.classpath.getOrElse(module, Vector.empty).flatMap(owners.get).toSet.excl(module)
@@ -157,7 +169,8 @@ private[analysis] object Clashes {
       }
       def movable(side: Set[String], modules: Set[String]): Boolean =
         !side.exists(fixed) && (modules -- side).exists(holdings.contains)
-      val sizes = outputs.groupMapReduce(_._1.module)(_._2.size)(_ + _)
+      val sizes  = outputs.groupMapReduce(_._1.module)(_._2.size)(_ + _)
+      val causes = mutable.LinkedHashSet.empty[String]
       def divide(modules: Set[String]): Either[Vector[String], Vector[Set[String]]] =
         clashes(visible(modules), modules).headOption match {
           case None        => Right(Vector(modules))
@@ -172,13 +185,14 @@ private[analysis] object Clashes {
                   val stuck = (classed ++ packaged).toVector.sorted.mkString(", ")
                   Left(Vector(shown(clash, s", and $stuck cannot be read apart")))
                 case Some(apart) =>
+                  causes += described(clash)
                   for {
                     rest  <- divide(modules -- apart)
                     extra <- divide(apart)
                   } yield rest ++ extra
               }
         }
-      divide(everything)
+      divide(everything).map(_ -> causes.toVector)
     }
   }
 }

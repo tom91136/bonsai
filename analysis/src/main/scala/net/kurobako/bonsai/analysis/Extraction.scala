@@ -49,7 +49,8 @@ object Extraction {
       nesting: Nesting.Model = Nesting.Model.empty,
       reach: Reach = Reach.empty,
       notes: Vector[String] = Vector.empty,
-      dictionaries: Vector[Dictionaries.Parameter] = Vector.empty
+      dictionaries: Vector[Dictionaries.Parameter] = Vector.empty,
+      status: Vector[String] = Vector.empty
   )
 
   private[analysis] case class Settings(
@@ -125,8 +126,10 @@ object Extraction {
       division: Clashes.Division,
       known: Set[String] = Set.empty
   ): Either[Vector[String], Result] = {
-    val read     = extract(manifest, settings, world, division, known)
-    val reported = Clashes.reported(read.fold(identity, result => result.problems ++ result.notes))
+    def clashing(read: Either[Vector[String], Result]) =
+      Clashes.reported(read.fold(identity, result => result.problems ++ result.notes))
+    val read     = Quiet.attempt(extract(manifest, settings, world, division, known))(clashing(_).diff(known).nonEmpty)
+    val reported = clashing(read)
     if (reported.isEmpty) read
     else if (reported.subsetOf(known)) Left(Clashes.unresolved(reported))
     else settled(manifest, settings, world, division, known ++ reported)
@@ -186,6 +189,13 @@ object Extraction {
     val moduleUses      = Modules.uses(manifest, java.nodes, java.reflections)
     val javaCosts       = JavaCosts(java.costs, Complexity.Declared(bounded))
     val clashes         = division.left.getOrElse(Vector.empty)
+    val status          = Option.when(apart.nonEmpty) {
+      val runs = s"read in ${apart.size + 1} compiler runs"
+      Clashes.because(manifest, listed, known) match {
+        case Vector() => runs
+        case causes   => s"$runs: ${causes.mkString("; ")}"
+      }
+    }.toVector
     if (uncompiled.nonEmpty) Left(uncompiled)
     else if (clashes.nonEmpty) Left(clashes)
     else if (tasty.isEmpty && (skipped ++ java.problems).nonEmpty) Left(skipped ++ java.problems)
@@ -433,7 +443,8 @@ object Extraction {
           joined(phase.nesting(graph.rooted), _.nesting(graph.rooted), _.joined(_)).pinned(replacedAt(_)),
           reach,
           notes,
-          owned.foldLeft(phase.dictionaries)(_ ++ _.collector.dictionaries)
+          owned.foldLeft(phase.dictionaries)(_ ++ _.collector.dictionaries),
+          status
         ))
       }
     }

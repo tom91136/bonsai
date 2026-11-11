@@ -177,7 +177,8 @@ object CLI {
           Files.writeString(file, Report.merge(previous, lines, nodes, manifest.outputs.map(_.module).toSet)): Unit
         }
         Reuse.Record(
-          result.problems.map(problem => s"${Reuse.Problem}$problem") ++
+          result.status ++
+            result.problems.map(problem => s"${Reuse.Problem}$problem") ++
             result.notes.map(note => s"${Reuse.Note}$note") ++
             (if (options.purity) Purity.summary(result.purity) else Vector.empty),
           Report(findings, result.graph.nodes, report).map(line => Reuse.Shown(line.failing, line.show))

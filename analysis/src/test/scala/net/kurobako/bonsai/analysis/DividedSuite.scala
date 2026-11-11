@@ -1,7 +1,12 @@
 package net.kurobako.bonsai.analysis
 
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
+import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import net.kurobako.bonsai.testing.*
 
 /** Builds where one module has an object and an unrelated one the package of its name, which the analysis reads in
@@ -1127,4 +1132,171 @@ class DividedSuite extends AnalysisSuite {
       assert(errors.exists(_.contains("lib.implicits")), errors.toString)
     }
   }
+
+  private case class Ran(status: Int, out: String, err: String) {
+    def all: String                        = out + err
+    def lines(prefix: String): Seq[String] = err.linesIterator.filter(_.startsWith(prefix)).toSeq
+  }
+
+  private val Traces = Seq("exception caught", "AssertionError", "contains object and package", "Extraction$")
+
+  // scalafix:off ForbiddenAPIs.forbidden-api
+  private def captured[A](body: => A): (A, String, String) = {
+    val out    = ByteArrayOutputStream()
+    val err    = ByteArrayOutputStream()
+    val before = (System.out, System.err)
+    System.setOut(PrintStream(out, true, UTF_8))
+    System.setErr(PrintStream(err, true, UTF_8))
+    try {
+      val value = Console.withOut(out)(Console.withErr(err)(body))
+      (value, out.toString(UTF_8), err.toString(UTF_8))
+    } finally {
+      System.setOut(before._1)
+      System.setErr(before._2)
+    }
+  }
+
+  // scalafix:on ForbiddenAPIs.forbidden-api
+
+  private def ran(whole: Manifest, directory: Path, mode: String = "relaxed"): Ran = {
+    val file  = Files.createDirectories(directory.resolve("target/bonsai")).resolve("manifest.tsv")
+    val lines = whole.outputs.map(o => s"output\t${o.module}\t${o.scope.id}\t${o.path}") ++
+      whole.classpath.toVector.sortBy(_._1).flatMap((module, entries) =>
+        entries.map(entry => s"classpath\t$module\t$entry")
+      ) ++
+      whole.libraries.toVector.sorted.map(module => s"library\t$module") ++
+      whole.platforms.toVector.sorted.map(module => s"platform\t$module") ++
+      whole.jdk.map(home => s"jdk\t$home") :+ s"root\t$directory"
+    Files.writeString(file, lines.mkString("", "\n", "\n"))
+    val (status, out, err) = captured(CLI.run(List("--manifest", file.toString, "--parallelism", "4", "--mode", mode)))
+    Ran(status, out, err)
+  }
+
+  private def clashing(directory: Path, padded: String = "tools"): Manifest = libraries(
+    directory,
+    padded,
+    library(directory, "objects", "1.0", objectLibrary),
+    library(directory, "packaged", "1.0", packageLibrary)
+  )
+
+  test("a divided read of a library clash prints nothing of the attempt that met the clash") {
+    Scratch.using("bonsai-") { directory =>
+      val (result, out, err) = captured(Extraction.read(clashing(directory)))
+      assert(result.isRight, result.toString)
+      Traces.foreach(trace => assert(!(out + err).contains(trace), s"$trace in:\n$out\n$err"))
+    }
+  }
+
+  test("a divided read prints one line naming the runs, the clash and its sides") {
+    Seq("users", "tools").foreach { padded =>
+      Scratch.using("bonsai-") { directory =>
+        val whole = clashing(directory, padded)
+        val run   = ran(whole, directory)
+        assertEquals(run.status, 0)
+        Traces.foreach(trace => assert(!run.all.contains(trace), s"$trace in:\n${run.out}\n${run.err}"))
+        val objects  = directory.resolve("objects-1.0.jar")
+        val packaged = directory.resolve("packaged-1.0.jar")
+        assertEquals(
+          run.lines("read in"),
+          Seq(
+            s"read in 2 compiler runs: lib.implicits is a class in library $objects and a package in library $packaged"
+          )
+        )
+      }
+    }
+  }
+
+  test("the line of a divided read is kept when the report is reused") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = clashing(directory)
+      val first = ran(whole, directory)
+      val again = ran(whole, directory)
+      assert(again.err.linesIterator.contains(Reuse.Marker), again.err)
+      assertEquals(again.lines("read in"), first.lines("read in"))
+      assertEquals(first.lines("read in").size, 1)
+    }
+  }
+
+  test("a build read in one run prints no line about runs") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = single("users", directory, Seq("Users.scala" -> "package user\nobject Users"))
+      assertEquals(ran(whole, directory).lines("read in"), Seq.empty)
+    }
+  }
+
+  test("the problems of the divided read still print and fail the strict mode") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = clashing(directory)
+      val base  = whole.outputs.find(_.module == "base").get.path
+      val bytes = Files.readAllBytes(Outputs.files(base).find(_.toString.endsWith(".class")).get)
+      bytes(7) = 99
+      Files.write(base.resolve("Broken.class"), bytes): Unit
+      val relaxed = ran(whole, directory)
+      assertEquals(relaxed.status, 0)
+      assert(relaxed.lines("problem: ").exists(_.contains("Broken could not be read")), relaxed.err)
+      assertEquals(relaxed.lines("read in").size, 1)
+      Traces.foreach(trace => assert(!relaxed.all.contains(trace), s"$trace in:\n${relaxed.err}"))
+      val strict = ran(whole, directory, "strict")
+      assertEquals(strict.status, 1)
+      assert(strict.lines("problem: ").exists(_.contains("Broken could not be read")), strict.err)
+    }
+  }
+
+  test("the compiler output of the read of a clash no division resolves reaches the user once") {
+    Scratch.using("bonsai-") { directory =>
+      val settings =
+        Extraction.Settings(Vector.empty, Set.empty, Vector.empty, Vector.empty, Vector.empty, Parallel.sequential)
+      val whole              = clashing(directory)
+      val (result, out, err) =
+        captured(Extraction.readDivided(whole, settings, (_, _, _) => Right(Vector(whole.outputs.toSet))))
+      assert(result.isLeft, result.toString)
+      assertEquals("exception caught when loading".r.findAllIn(out + err).size, 1)
+    }
+  }
+
+  // scalafix:off ForbiddenAPIs.forbidden-api
+  test("the output of an attempt that is not discarded reaches the user as it was printed") {
+    val (kept, keptOut, keptErr) = captured(Quiet.attempt {
+      println("one")
+      Console.err.println("two")
+      System.err.println("three")
+      System.out.println("four")
+      7
+    }(_ => false))
+    assertEquals(kept, 7)
+    assertEquals(keptOut.linesIterator.toSeq, Seq("one", "four"))
+    assertEquals(keptErr.linesIterator.toSeq, Seq("two", "three"))
+  }
+
+  test("the output of a discarded attempt reaches nobody, from any thread it starts") {
+    val (dropped, out, err) = captured(Quiet.attempt {
+      println("one")
+      Console.err.println("two")
+      Throwable("trace").printStackTrace()
+      val thread = Thread(() => System.err.println("three"))
+      thread.start()
+      thread.join()
+      7
+    }(_ => true))
+    assertEquals(dropped, 7)
+    assertEquals((out, err), ("", ""))
+  }
+
+  test("an attempt hides its output only from its own thread") {
+    val (_, out, err) = captured {
+      val started = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      val inside  = Thread(() =>
+        Quiet.attempt { started.countDown(); release.await(1, TimeUnit.MINUTES); println("inside") }(_ => true)
+      )
+      inside.start()
+      started.await(1, TimeUnit.MINUTES)
+      System.err.println("beside")
+      release.countDown()
+      inside.join()
+    }
+    assertEquals(out, "")
+    assertEquals(err.linesIterator.toSeq, Seq("beside"))
+  }
+  // scalafix:on ForbiddenAPIs.forbidden-api
 }
