@@ -372,11 +372,12 @@ object Smells {
           s"${instantiation.owner}: type parameter ${instantiation.parameter} is always $argument across $uses uses"
         Finding.at(nodes, node, Finding.Rule.FixedTypeParameter, detail, onlyTests = onlyTests)
       case _ =>
-        val entries = group.sortBy(_.owner).map { instantiation =>
-          val own = instantiation.owner.stripPrefix(node).stripPrefix(".")
-          val tag = if (own.isEmpty) instantiation.parameter else s"$own[${instantiation.parameter}]"
-          s"$tag is ${instantiation.arguments.keys.head}"
-        }
+        val entries =
+          group.sortBy(instantiation => (instantiation.owner, instantiation.parameter)).map { instantiation =>
+            val own = instantiation.owner.stripPrefix(node).stripPrefix(".")
+            val tag = if (own.isEmpty) instantiation.parameter else s"$own[${instantiation.parameter}]"
+            s"$tag is ${instantiation.arguments.keys.head}"
+          }
         val detail = s"${group.size} type parameters of ${Finding.simple(node)} are always given one type each " +
           s"(${Finding.listed(entries, FixedShown)})"
         Finding.at(nodes, node, Finding.Rule.FixedTypeParameter, detail, onlyTests = onlyTests)

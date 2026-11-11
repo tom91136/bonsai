@@ -1081,6 +1081,18 @@ class SmellsSuite extends AnalysisSuite {
     assertNoFinding(found)(_.rule == Finding.Rule.FixedTypeParameter)
   }
 
+  test("fixed type parameters of one definition are named in an order that does not depend on the read") {
+    val found = findings(
+      "Pairs.scala" ->
+        """object Pairs {
+          |  def make[B, A](b: B, a: A): (B, A) = (b, a)
+          |  val first  = make(1, "a")
+          |  val second = make(2, "b")
+          |}""".stripMargin
+    )
+    assertFinding(found, "fixed-type-parameter", "make[A] is String, make[B] is Int")
+  }
+
   test("fixed type parameters of the definitions of one type are one finding that names them") {
     val found = findings(
       "Machines.scala" ->
