@@ -45,7 +45,9 @@ trait AnalysisSuite extends FunSuite {
     * compiles the build's sources under the build directory as their source root, and names it the root of the
     * manifest, as a build does. `resourced` are resources the build packages from a resource directory, and `unlisted`
     * the files of that directory it does not, such as hidden and excluded ones, written in Latin-1. `marked` has the
-    * manifest name the module as one whose resources are listed, as `resourced` does.
+    * manifest name the module as one whose resources are listed, as `resourced` does. `outdated` are classes the
+    * analysed classpath holds in place of the `absent` ones the build compiled against, as another version of a
+    * dependency would be.
     */
   protected def extract(
       main: Seq[(String, String)],
@@ -64,7 +66,8 @@ trait AnalysisSuite extends FunSuite {
       rooted: Boolean = false,
       resourced: Seq[(String, String)] = Nil,
       unlisted: Seq[(String, String)] = Nil,
-      marked: Boolean = false
+      marked: Boolean = false,
+      outdated: Seq[(String, String)] = Nil
   ): Extraction.Result =
     inspect(
       main,
@@ -83,7 +86,8 @@ trait AnalysisSuite extends FunSuite {
       rooted,
       resourced,
       unlisted,
-      marked
+      marked,
+      outdated
     )((result, _) => result)
 
   /** As `extract`, with the class directories the build compiled to, which are gone once this returns, for `use` to
@@ -106,7 +110,8 @@ trait AnalysisSuite extends FunSuite {
       rooted: Boolean = false,
       resourced: Seq[(String, String)] = Nil,
       unlisted: Seq[(String, String)] = Nil,
-      marked: Boolean = false
+      marked: Boolean = false,
+      outdated: Seq[(String, String)] = Nil
   )(use: (Extraction.Result, Vector[Path]) => A): A =
     Scratch.using("bonsai-") { directory =>
       val sourceRoot = Option.when(rooted)(directory)
@@ -141,7 +146,8 @@ trait AnalysisSuite extends FunSuite {
       // The twins come first, as a build may list them, so the analysis must not depend on the order.
       val outputs = platforms.map(_._1) ++
         Vector(Output("m", Output.Scope.Main, mainClasses), Output("m", Output.Scope.Test, testClasses))
-      val analysed = external.toVector ++ classpath
+      val dated    = Option.when(outdated.nonEmpty)(compile(directory.resolve("outdated"), outdated, Vector.empty))
+      val analysed = external.toVector ++ dated ++ classpath
       val manifest = Manifest(
         outputs,
         outputs.map(_.module).distinct.map(_ -> analysed).toMap,

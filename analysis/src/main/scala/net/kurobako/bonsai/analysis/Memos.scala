@@ -33,7 +33,8 @@ private class Memos(definitions: collection.Map[Symbol, tpd.DefDef], subtrees: C
 
   private def member(tree: tpd.Tree): Boolean = tree match {
     case select: tpd.Select =>
-      select.symbol.owner.isClass && !select.symbol.is(Flags.Mutable) && outliving(select.qualifier)
+      select.symbol.exists && select.symbol.owner.isClass && !select.symbol.is(Flags.Mutable) &&
+      outliving(select.qualifier)
     case _ => false
   }
 

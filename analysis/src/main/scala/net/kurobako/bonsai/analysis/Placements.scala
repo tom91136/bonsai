@@ -102,7 +102,8 @@ private class Placements(resolver: Symbols, lines: Lines)(using Context) extends
       case select: tpd.Select => select.symbol.isOneOf(Flags.Module | Flags.Package) && path(select.qualifier)
       case _                  => false
     }
-    path(qualifier) && (qualifier.symbol.is(Flags.Package) || selected.owner == qualifier.symbol.moduleClass)
+    selected.exists && path(qualifier) &&
+    (qualifier.symbol.is(Flags.Package) || selected.owner == qualifier.symbol.moduleClass)
   }
 
   private def named(symbol: Symbol, tpe: Type)(using Context): Unit = {
