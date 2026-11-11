@@ -57,6 +57,20 @@ object Health {
   private val phrases = Vector("could not be read", "could not be analysed", "cannot be unpickled")
   private val stops   = Set("timeout", "oom", "killed")
   private val frame   = "^\\s+at net\\.kurobako\\.bonsai\\.".r
+  private val absent  = Vector(
+    "^note: undefined: .+ # -?\\d+: .+ at readTasty$".r,
+    "^note: .+ could not be \\w+: dotty\\.tools\\.dotc\\.core\\.MissingType: .*$".r
+  )
+  private val rerun = "^(\\[\\w+\\]\\s+)?read in \\d+ compiler runs: ".r
+
+  def missingClass(line: String): Boolean = absent.exists(_.matches(line))
+
+  def clash(line: String): Boolean =
+    rerun.findPrefixOf(line).isEmpty &&
+      (line.contains("is a class in") && line.contains("a package in") ||
+        line.contains("is a class and a package on the classpath"))
+
+  def missing(output: Output): Vector[String] = (output.log ++ output.err).distinct.filter(missingClass)
 
   def truncated(line: String): String = {
     val ascii = line.map(c => if (c < ' ' && c != '\t' || c > '~') '?' else c)
@@ -91,8 +105,12 @@ object Health {
 
     Vector(
       hit("analysis-failed", _.contains("bonsai analysis failed")),
-      hit("problem", l => l.startsWith("problem: ") || l.startsWith("note: ") || phrases.exists(l.contains)),
-      hit("clash", l => l.contains("is a class in") && l.contains("a package in")),
+      hit(
+        "problem",
+        l =>
+          l.startsWith("problem: ") || !missingClass(l) && (l.startsWith("note: ") || phrases.exists(l.contains))
+      ),
+      hit("clash", clash),
       Option.when(crash.nonEmpty)(Failure("crash", crash)),
       Option.when(ran && stops.contains(output.status))(
         Failure("stopped", s"status ${output.status} while the analysis was running" +: output.log.takeRight(3))

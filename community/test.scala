@@ -40,9 +40,53 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   check("an sbt note from the plugin is not a finding")(
     kinds(output(log = Vector("[info] note: bonsai analyses Scala 3 only and left out src (Scala 2.12.21)"))).isEmpty
   )
-  check("a bare note line is a problem")(
-    kinds(output(log = Vector(banner, "note: undefined: new io.netty.X # -1: TermRef(..) at readTasty"))) ==
+  val undefined  = "note: undefined: new io.netty.X # -1: TermRef(TypeRef(NoPrefix,X),<init>) at readTasty"
+  val unanalysed =
+    "note: /work/A.tasty could not be analysed: dotty.tools.dotc.core.MissingType: Cannot resolve reference to type a.B."
+  check("a bare note line is a problem")(kinds(output(log = Vector(banner, "note: something else"))) ==
+    Vector("problem"))
+  check("a note on an undefined reference is not a failure")(kinds(output(log = Vector(banner, undefined))).isEmpty)
+  check("a note on a missing type is not a failure")(kinds(output(err = Vector(unanalysed))).isEmpty)
+  check("such notes are listed")(Health.missing(output(log = Vector(banner, undefined, unanalysed, undefined))) ==
+    Vector(undefined, unanalysed))
+  check("an undefined note from another phase is a problem")(
+    kinds(output(log = Vector("note: undefined: x # 3: T at typer"))) == Vector("problem")
+  )
+  check("a note that fails on another error is a problem")(
+    kinds(output(log = Vector("note: /work/A.tasty could not be analysed: java.lang.AssertionError: boom"))) ==
       Vector("problem")
+  )
+  check("a problem line naming a missing type is a problem")(
+    kinds(output(log = Vector("problem: /work/A.tasty could not be analysed: dotty.tools.dotc.core.MissingType: x"))) ==
+      Vector("problem")
+  )
+  check("the read-in-runs line is not a clash")(
+    kinds(output(err =
+      Vector(
+        "read in 2 compiler runs: Foo is a class in a.jar and a package in b.jar, which the compiler cannot read together"
+      )
+    )).isEmpty
+  )
+  check("the read-in-runs line is not a clash with a prefix")(
+    kinds(output(log =
+      Vector("[info] read in 3 compiler runs: Foo is a class in a.jar and a package in b.jar")
+    )).isEmpty
+  )
+  check("a clash that fails the analysis is red")(
+    kinds(
+      output(
+        status = "failed",
+        log = Vector(
+          "Foo is a class in a.jar and a package in b.jar, which the compiler cannot read together, and m, n need both",
+          "[error] bonsai analysis failed"
+        )
+      )
+    ) == Vector("analysis-failed", "clash")
+  )
+  check("an unresolved clash is red")(
+    kinds(output(log =
+      Vector("Foo is a class and a package on the classpath, which the compiler cannot read together")
+    )) == Vector("clash")
   )
   check("a problem line is a problem")(
     kinds(output(err = Vector("problem: class file a.B could not be read: boom"))) == Vector("problem")
@@ -128,6 +172,11 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
     rows(Iterator(output(status = "failed", log = Vector("problem: x") ++ Vector.fill(50)("tail"))), Map.empty).head
   check("rows judge the whole log and keep its tail")(long.failures.map(_.kind) == Vector("problem") &&
     long.output.log.size == 20)
+
+  check("the summary lists missing classes by project")(
+    render(Vector(Row(output(name = "m"), Vector.empty, None, Vector(undefined))), Vector.empty, None, Int.MaxValue)
+      .contains("### m\n\n```text\n" + undefined)
+  )
 
   check("changes see added and removed lines")(
     changes(Vector("a", "b", "c"), Vector("b", "c", "d")) == (Vector("a"), Vector("d"))

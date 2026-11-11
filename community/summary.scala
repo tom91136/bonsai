@@ -8,7 +8,12 @@ import scala.jdk.CollectionConverters.*
 
 case class Before(status: String, findings: Vector[String])
 
-case class Row(output: Output, failures: Vector[Failure], before: Option[Before]) {
+case class Row(
+    output: Output,
+    failures: Vector[Failure],
+    before: Option[Before],
+    missing: Vector[String] = Vector.empty
+) {
   def name: String       = output.name
   def regressed: Boolean = before.exists(_.status == "ok") && output.status != "ok"
   def red: Boolean       = failures.nonEmpty || regressed
@@ -32,7 +37,7 @@ def changes(current: Vector[String], previous: Vector[String]): (Vector[String],
 def rows(outputs: Iterator[Output], previous: Map[String, Before]): Vector[Row] =
   outputs.map { output =>
     val kept = output.copy(log = output.log.takeRight(20), err = Vector.empty, crash = output.crash.takeRight(20))
-    Row(kept, Health.assess(output), previous.get(output.name))
+    Row(kept, Health.assess(output), previous.get(output.name), Health.missing(output))
   }.toVector
 
 def findingChanges(all: Vector[Row]): Vector[Changes] =
@@ -131,6 +136,13 @@ def render(all: Vector[Row], diffs: Vector[Changes], previousRun: Option[String]
   failing.foreach { row =>
     add(s"### ${row.name}\n\nStatus ${row.output.status}; ${row.failures.map(_.kind).mkString(", ")}.\n\n")
     row.failures.foreach(failure => add(s"${failure.kind}\n\n${fenced(failure.evidence)}\n"))
+  }
+
+  val absent = all.filter(_.missing.nonEmpty).sortBy(_.name)
+  add(s"## Classes missing from the project's classpath (${absent.size} projects)\n\n")
+  absent.foreach { row =>
+    val shown = row.missing.take(10) ++ Option.when(row.missing.size > 10)(s"... and ${row.missing.size - 10} more")
+    add(s"### ${row.name}\n\n${fenced(shown)}\n")
   }
 
   add(s"## Regressions (${regressions.size})\n\n")
