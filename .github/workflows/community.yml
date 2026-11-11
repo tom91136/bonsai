@@ -1,27 +1,37 @@
 name: community
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       projects:
-        description: 'Projects as a JSON array or one JSON object per line: {"url": ..., "ref": ..., "java": 17, "sbt": [...], "name": ...}'
-        required: true
+        description: 'Projects as a JSON array or one JSON object per line: {"url": ..., "ref": ..., "java": 17, "sbt": [...], "name": ...}; empty for community/projects.jsonl'
+        required: false
+        default: ''
         type: string
       shards:
-        description: Jobs to spread the projects over, at most 256; 0 for one job per project
-        default: '0'
+        description: Jobs for the projects on the default memory, at most 256; 0 for one job per project, empty for about five projects per job
+        required: false
+        default: ''
         type: string
       project-timeout-minutes:
         description: Wall-clock limit of one project's sbt run
+        required: false
         default: '60'
         type: string
       memory:
-        description: Memory cap of one project's container
+        description: Memory cap of one project's container, for the projects that set none
+        required: false
         default: 12g
         type: string
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
 
 jobs:
   image:
@@ -74,28 +84,48 @@ jobs:
 
   plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
     outputs:
       projects: ${{ steps.plan.outputs.projects }}
       matrix: ${{ steps.plan.outputs.matrix }}
-      shards: ${{ steps.plan.outputs.shards }}
+      count: ${{ steps.plan.outputs.count }}
+      previous: ${{ steps.previous.outputs.run }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-scala-cli
+      - run: community/test.scala
+      - id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=community-baseline&per_page=100" \
+            | community/baseline.scala main "$GITHUB_RUN_ID")
+          if [[ -n $run ]]; then
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --name community-baseline --dir "$RUNNER_TEMP/previous"
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
       - id: plan
         env:
           PROJECTS: ${{ inputs.projects }}
           SHARDS: ${{ inputs.shards }}
+          MEMORY: ${{ inputs.memory }}
+          PREVIOUS: ${{ steps.previous.outputs.run }}
         run: |
           set -euo pipefail
-          projects=$(jq -c -s 'if (.[0] | type) == "array" then .[0] else . end' <<< "$PROJECTS")
-          jq -e 'length > 0 and all(.[]; (.url | type) == "string" and (.ref | type) == "string" and (.java | tostring | test("^(8|11|17|21|25)$")))' \
-            <<< "$projects" > /dev/null
-          count=$(jq length <<< "$projects")
-          shards=$SHARDS
-          if ((shards < 1 || shards > count)); then shards=$count; fi
-          if ((shards > 256)); then shards=256; fi
-          echo "projects=$projects" >> "$GITHUB_OUTPUT"
-          echo "shards=$shards" >> "$GITHUB_OUTPUT"
-          echo "matrix=$(jq -nc --argjson n "$shards" '{shard: [range($n)]}')" >> "$GITHUB_OUTPUT"
+          list=community/projects.jsonl
+          if [[ -n $PROJECTS ]]; then
+            list=$RUNNER_TEMP/projects.json
+            printf '%s' "$PROJECTS" > "$list"
+          fi
+          options=(--projects "$list" --shards "$SHARDS" --memory "$MEMORY")
+          if [[ -n $PREVIOUS ]]; then options+=(--previous "$RUNNER_TEMP/previous"); fi
+          community/plan.scala "${options[@]}" >> "$GITHUB_OUTPUT"
 
   build:
     needs: [image, bonsai, plan]
@@ -103,47 +133,107 @@ jobs:
     timeout-minutes: 355
     strategy:
       fail-fast: false
+      max-parallel: 12
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
+      - name: Enable zram
+        run: |
+          set -euo pipefail
+          sudo swapoff -a
+          sudo rm -f /mnt/swapfile
+          if ! sudo modprobe zram; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)"
+            sudo modprobe zram
+          fi
+          kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+          echo $((kib * 4 * 1024)) | sudo tee /sys/block/zram0/disksize > /dev/null
+          sudo mkswap /dev/zram0
+          sudo swapon -p 5 /dev/zram0
+          swapon --show
+          free -h
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-scala-cli
       - uses: actions/cache/restore@v6
         with:
           path: image.tar.zst
           key: ${{ needs.image.outputs.key }}
           fail-on-cache-miss: true
       - run: zstd -dc image.tar.zst | podman load
+      - run: podman info --format 'cgroups {{.Host.CgroupsVersion}}, manager {{.Host.CgroupManager}}, controllers {{.Host.CgroupControllers}}'
       - uses: actions/download-artifact@v8
         with:
           name: bonsai-ivy
           path: ${{ runner.temp }}
-      - run: |
-          set -euo pipefail
-          url=$(sed -n 's/^ARG SCALA_CLI_URL=//p' community/Containerfile)
-          sha=$(sed -n 's/^ARG SCALA_CLI_SHA256=//p' community/Containerfile)
-          mkdir -p "$RUNNER_TEMP/bin"
-          curl -fsSL -o "$RUNNER_TEMP/scala-cli.gz" "$url"
-          echo "$sha  $RUNNER_TEMP/scala-cli.gz" | sha256sum -c -
-          gunzip -c "$RUNNER_TEMP/scala-cli.gz" > "$RUNNER_TEMP/bin/scala-cli"
-          chmod +x "$RUNNER_TEMP/bin/scala-cli"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - env:
           PROJECTS: ${{ needs.plan.outputs.projects }}
           SHARD: ${{ matrix.shard }}
-          SHARDS: ${{ needs.plan.outputs.shards }}
-          TIMEOUT_MINUTES: ${{ inputs.project-timeout-minutes }}
-          MEMORY: ${{ inputs.memory }}
+          SHARDS: ${{ needs.plan.outputs.count }}
+          TIMEOUT_MINUTES: ${{ inputs.project-timeout-minutes || '60' }}
+          MEMORY: ${{ matrix.memory }}
+          SWAP: ${{ matrix.swap }}
+          HEAP: ${{ matrix.heap }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/ivy"
           zstd -dc "$RUNNER_TEMP/bonsai-ivy.tar.zst" | tar -C "$RUNNER_TEMP/ivy" -xf -
           jq -c '.[]' <<< "$PROJECTS" > "$RUNNER_TEMP/projects.jsonl"
-          community/shard.scala "$RUNNER_TEMP/projects.jsonl" "$SHARD" "$SHARDS" $((345 * 60)) $((TIMEOUT_MINUTES * 60)) \
-            --ivy "$RUNNER_TEMP/ivy" --out "$GITHUB_WORKSPACE/out" --memory "$MEMORY"
+          options=(--ivy "$RUNNER_TEMP/ivy" --out "$GITHUB_WORKSPACE/out" --memory "$MEMORY" --heap "$HEAP")
+          if [[ -n $SWAP ]]; then options+=(--memory-swap "$SWAP"); fi
+          community/shard.scala "$RUNNER_TEMP/projects.jsonl" "$SHARD" "$SHARDS" $((345 * 60)) $((TIMEOUT_MINUTES * 60)) "${options[@]}"
       - if: always()
         uses: actions/upload-artifact@v7
         with:
           name: outputs-${{ matrix.shard }}
           path: out
+          retention-days: 7
           if-no-files-found: warn
+
+  report:
+    needs: [plan, build]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-scala-cli
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: outputs-*
+          path: out
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PROJECTS: ${{ needs.plan.outputs.projects }}
+          PREVIOUS: ${{ needs.plan.outputs.previous }}
+        run: |
+          set -euo pipefail
+          jq -c '.[]' <<< "$PROJECTS" > "$RUNNER_TEMP/projects.jsonl"
+          options=()
+          if [[ -n $PREVIOUS ]]; then
+            gh run download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --name community-baseline --dir "$RUNNER_TEMP/previous"
+            options+=(--previous "$RUNNER_TEMP/previous" --previous-run "$PREVIOUS")
+          fi
+          community/report.scala --out out --projects "$RUNNER_TEMP/projects.jsonl" --summary "$GITHUB_STEP_SUMMARY" \
+            --report report --baseline baseline "${options[@]}"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: community-report
+          path: report
+          retention-days: 30
+          if-no-files-found: warn
+      - if: ${{ !cancelled() && needs.build.result == 'success' && inputs.projects == '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: community-baseline
+          path: baseline
+          retention-days: 30
+          if-no-files-found: error

@@ -1,0 +1,16 @@
+name: setup-scala-cli
+description: scala-cli at the version community/Containerfile pins
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        url=$(sed -n 's/^ARG SCALA_CLI_URL=//p' community/Containerfile)
+        sha=$(sed -n 's/^ARG SCALA_CLI_SHA256=//p' community/Containerfile)
+        mkdir -p "$RUNNER_TEMP/bin"
+        curl -fsSL -o "$RUNNER_TEMP/scala-cli.gz" "$url"
+        echo "$sha  $RUNNER_TEMP/scala-cli.gz" | sha256sum -c -
+        gunzip -c "$RUNNER_TEMP/scala-cli.gz" > "$RUNNER_TEMP/bin/scala-cli"
+        chmod +x "$RUNNER_TEMP/bin/scala-cli"
+        echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"

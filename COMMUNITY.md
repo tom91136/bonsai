@@ -36,8 +36,12 @@ One `Containerfile` serves the workstation and CI, so a run reproduces in either
   archive stays well under the cache's 10 GB limit, since an entry past it is not saved at all.
 - Dependency caches live in a named volume per run.
 - Locally: `podman run` per project, 6 to 8 at a time, each under a memory cap.
-- CI: a `workflow_dispatch` workflow shards the list into a job matrix that runs the same image. Each job stays under the
+- CI: every push to `main` runs the list in `community/projects.jsonl`, as a job matrix of the same image, at most 12 jobs
+  at a time. A newer push cancels a run in progress. `workflow_dispatch` takes an ad-hoc list. Each job stays under the
   6 hour limit; a workflow run takes at most 256 jobs.
+- The shards balance on the per-project timings of the previous run, falling back to list order. A project may set its own
+  `memory`, `memory_swap` and `heap`, and runs in shards of the projects that set the same. `scala/scala3` needs more than
+  a hosted runner's 16 GB, so its shard enables zram swap and the container may use it.
 - Each project gets a wall-clock limit; a timeout is a finding about bonsai, not a skip.
 
 ## Outputs
@@ -48,6 +52,17 @@ Per project: build log, manifest, report, timings, peak heap, and any crash trac
 - crash, timeout, and build-failure rates, with build failures split by whether bonsai caused them;
 - the slowest projects by analysis time;
 - a diff against the previous run by bonsai version, through `scripts/corpus.scala`.
+
+CI turns the outputs into a verdict. The run is red when any project shows a bonsai health failure, or when a project that
+was ok in the previous run on `main` is not ok now. Findings never fail it.
+
+- A health failure is a crash, a `bonsai analysis failed` line, a `problem:` or `note:` line from the analysis, an
+  unreadable, unanalysable or unpicklable class, a clash between a class and a package, or a timeout, out-of-memory kill
+  or kill while the analysis was running. A project whose own build fails before the analysis runs is not one.
+- The previous run is the newest unexpired `community-baseline` artifact of a run on `main`, which holds each project's
+  status, timings and sorted findings. The first run has none, so only health failures apply.
+- The job summary lists the counts per status, each failure and regression with a log excerpt, and the findings added and
+  removed since the previous run. The `community-report` artifact has it whole.
 
 ## Reading the reports
 
