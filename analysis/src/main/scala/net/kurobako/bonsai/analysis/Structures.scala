@@ -253,9 +253,9 @@ object Structures {
           found ++ connected.map(_ -> connected)
         }
       }
-      val groups = declared.groupBy(member => component(member.name)).values.toVector.collect {
-        case group if group.size >= MinimumGroup => (group.map(_.name).distinct.sorted, group.flatMap(_.types).toSet)
-      }.sortBy(_._1.head)
+      val groups = declared.groupBy(member => component(member.name)).values.toVector.map { group =>
+        (group.map(_.name).distinct.sorted, group.flatMap(_.types).toSet)
+      }.filter((names, _) => names.size >= MinimumGroup).sortBy(_._1.head)
       val separate = groups.size >= 2 && groups.combinations(2).forall {
         case Vector((_, left), (_, right)) => (left & right).isEmpty
         case _                             => true

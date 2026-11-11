@@ -217,6 +217,55 @@ class StructuresSuite extends AnalysisSuite {
     )
   }
 
+  test("private vals of different types, each used by its own methods, hold two designs") {
+    val found = findings(Seq(
+      "Kinds.scala"  -> "case class Token(text: String)\ncase class Page(lines: Vector[String])",
+      "Codecs.scala" ->
+        """object Codecs {
+          |  private val tokenDefault = Token("")
+          |  private val pageDefault  = Page(Vector.empty)
+          |  def readToken(text: String): Token = tokenDefault.copy(text = text)
+          |  def readTokens(texts: Vector[String]) = texts.map(readToken)
+          |  def pageSize(page: Page): Int = pageDefault.lines.size + page.lines.size
+          |  def pageSizes(pages: Vector[Page]) = pages.map(pageSize)
+          |}""".stripMargin
+    ))
+    assertEquals(
+      of(found, Finding.Rule.DisjointObject),
+      Vector(
+        "object Codecs holds 2 groups of members that never use each other and use different types " +
+          "({pageDefault, pageSize, pageSizes}, {readToken, readTokens, tokenDefault})"
+      )
+    )
+  }
+
+  test("an enumeration is never split into the values and methods that use each type") {
+    val found = findings(Seq(
+      "Kinds.scala"        -> "case class Token(text: String)\ncase class Page(lines: Vector[String])",
+      "PortProtocol.scala" ->
+        """object PortProtocol extends Enumeration {
+          |  val TCP, UDP = Value
+          |  def parse(text: String): Token = Token(text)
+          |  def parseAll(texts: Vector[String]) = texts.map(parse)
+          |  def render(page: Page): String = page.lines.mkString
+          |  def renderAll(pages: Vector[Page]) = pages.map(render)
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("constants are not groups of members that use different types") {
+    val found = findings(Seq(
+      "Discriminants.scala" ->
+        """object Discriminants {
+          |  val NullDiscriminant     = -1
+          |  val FiniteDiscriminant   = 0
+          |  val InfiniteDiscriminant = 1
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
   test("a type alone in its file that one type uses belongs beside it, as a tiny one two types use does") {
     val found = findings(
       Seq(

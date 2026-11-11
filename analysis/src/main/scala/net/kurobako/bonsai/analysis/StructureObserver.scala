@@ -10,6 +10,7 @@ import dotty.tools.dotc.core.Names.termName
 import dotty.tools.dotc.core.Names.typeName
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
+import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.ConstantType
 import dotty.tools.dotc.core.Types.NamedType
@@ -215,7 +216,10 @@ private[analysis] class StructureObserver(
           key(tree.tpe.typeSymbol).foreach(types += _)
         }
         if (siblings.isEmpty && !types(info.name)) detached += member
-        if (!info.test && !owner.companionClass.exists && !implementing(owner))
+        if (
+          !info.test && !owner.companionClass.exists && !implementing(owner) &&
+          !owner.asClass.derivesFrom(requiredClass("scala.Enumeration"))
+        )
           grouped += Structures.Member(
             member.name.toString,
             qualifiedName(owner),
