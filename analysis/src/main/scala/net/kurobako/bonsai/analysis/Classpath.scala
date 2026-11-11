@@ -26,6 +26,37 @@ private[analysis] object Classpath {
     )
   }
 
+  /** `classpath` with the standard library jars of the build, whatever their version and platform, replaced by the one
+    * the analysis runs on at the position of the first, as the compiler that reads the build's TASTy expects it. A jar
+    * is one by its name and by holding the `Predef` of the library.
+    */
+  def unified(classpath: Vector[Path]): Vector[Path] = running.fold(classpath) { library =>
+    val standards = classpath.map(standard(_))
+    val first     = standards.indexOf(true)
+    if (first < 0) classpath
+    else
+      classpath.zip(standards).zipWithIndex.collect {
+        case (_, index) if index == first => library
+        case ((path, false), _)           => path
+      }
+  }
+
+  private def standard(path: Path): Boolean =
+    StandardLibrary.matches(path.getFileName.toString) && Markers.exists(holds(path.toString, _))
+
+  private val Markers = Seq("scala/Predef.class", "scala/runtime/stdLibPatches/Predef.class")
+
+  /** The entries of `classpath` the compiler reads: the newest of each artifact, against the standard library of the
+    * analysis.
+    */
+  def readable(classpath: Vector[Path]): Vector[Path] = unified(evicted(classpath))
+
+  private val StandardLibrary = """scala3?-library.*\.jar""".r
+
+  private val running: Option[Path] =
+    Try(Path.of(classOf[Predef.type].getProtectionDomain.getCodeSource.getLocation.toURI)).toOption
+      .filter(Files.isRegularFile(_))
+
   /** The first root holding `file`, a class file path as the compiler reports it, in the compiler's search order. */
   def holder(roots: Vector[String], file: String): Option[String] = roots.find(holds(_, file))
 

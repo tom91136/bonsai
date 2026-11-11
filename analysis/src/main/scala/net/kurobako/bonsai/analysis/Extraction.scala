@@ -273,7 +273,7 @@ object Extraction {
       val ordered       = (primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted
       def behindOf(run: Set[Output], unbuilt: Set[String]) = {
         val members = run.map(_.module) ++ unbuilt
-        primary.filter(run).map(_.path) ++ Classpath.evicted(manifest.classpathOf(ordered.filter(members)))
+        primary.filter(run).map(_.path) ++ Classpath.readable(manifest.classpathOf(ordered.filter(members)))
       }
       val linking    = Some((graph: Graph) => Reach.link(manifest, JavaConversion.merge(graph, java), world))
       val everything = manifest.outputs.toSet
@@ -293,7 +293,7 @@ object Extraction {
             _,
             Vector.empty
           ))
-          val classpath = ahead ++ manifest.classpathOf(Seq(twin.module)) ++ behind
+          val classpath = Classpath.unified(ahead ++ manifest.classpathOf(Seq(twin.module))) ++ behind
           val copies    = collector(Vector.empty, Set.empty, None)
           val own       = collector(Vector.empty, Set.empty, linking)
           val found     = reading(copies, twin.replaced, classpath) ++ reading(own, twin.own, classpath)

@@ -123,7 +123,7 @@ private[analysis] object Clashes {
         (modular.flatMap(_._2.classes).toSet.intersect(modular.flatMap(_._2.packages).toSet) ++ known).toVector
       if (names.isEmpty) Vector.empty
       else {
-        val jars = Classpath.evicted(manifest.classpathOf(running.toVector.sorted)).filterNot(owners.contains)
+        val jars = Classpath.readable(manifest.classpathOf(running.toVector.sorted)).filterNot(owners.contains)
         jars.foreach(jar => libraries.getOrElseUpdate(jar, held(jar)))
         val holders    = modular ++ jars.map(jar => Library(jar) -> libraries(jar))
         val classed    = holders.flatMap((holder, contents) => names.filter(contents.classes).map(_ -> holder))

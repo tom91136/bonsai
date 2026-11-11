@@ -23,7 +23,7 @@ private[analysis] object ClassSource {
 
   def of(outputs: Vector[Path], classpath: Vector[Path], jdk: Option[Path]): Either[String, ClassSource] = {
     val target = jdk.fold[Either[String, Option[Target]]](Right(None))(home => targetOf(home).map(Some(_)))
-    target.map(ClassSource(_, outputs, Classpath.evicted(classpath)))
+    target.map(ClassSource(_, outputs, Classpath.readable(classpath)))
   }
 
   private def targetOf(home: Path): Either[String, Target] = {
