@@ -3,29 +3,36 @@ package net.kurobako.bonsai.analysis
 import java.io.OutputStream
 import java.io.PrintStream
 import java.nio.charset.StandardCharsets.UTF_8
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
-/** Holds back what an attempt prints, to show it only when the attempt stands. Scala's console is scoped to the
-  * attempt, and the platform's streams, which the compiler writes stack traces to, are routed by thread, so a thread
-  * the attempt starts is held back too and no other thread is.
+/** Holds back what an attempt prints, to show it only when the attempt stands, or when the process ends first. Scala's
+  * console is scoped to the attempt, and the platform's streams, which the compiler writes stack traces to, are routed
+  * by thread, so a thread the attempt starts is held back too and no other thread is. The text travels as UTF-8 and is
+  * printed through the stream it was written to, which encodes it as that stream does.
   */
 private[analysis] object Quiet {
 
   private class Tape {
-    private val chunks = AtomicReference[Option[Vector[(PrintStream, Array[Byte])]]](Some(Vector.empty))
+    private val chunks = AtomicReference[Option[Vector[(PrintStream, String)]]](Some(Vector.empty))
 
-    def record(target: PrintStream, bytes: Array[Byte]): Boolean =
-      chunks.updateAndGet(_.map(_ :+ (target -> bytes))).isDefined
+    def record(target: PrintStream, text: String): Boolean =
+      chunks.updateAndGet(_.map(_ :+ (target -> text))).isDefined
 
-    def close(): Vector[(PrintStream, Array[Byte])] = chunks.getAndSet(None).getOrElse(Vector.empty)
+    def close(): Vector[(PrintStream, String)] = chunks.getAndSet(None).getOrElse(Vector.empty)
+  }
+
+  private def replay(chunks: Vector[(PrintStream, String)]): Unit = {
+    chunks.foreach((target, text) => target.print(text))
+    chunks.map(_._1).distinct.foreach(_.flush())
   }
 
   private class Gate(tape: () => Option[Tape], target: PrintStream) extends OutputStream {
     def write(byte: Int): Unit = write(Array(byte.toByte))
 
     override def write(bytes: Array[Byte], off: Int, len: Int): Unit = {
-      val copy = bytes.slice(off, off + len)
-      if (!tape().exists(_.record(target, copy))) target.write(copy)
+      val text = String(bytes, off, len, UTF_8)
+      if (!tape().exists(_.record(target, text))) replay(Vector(target -> text))
     }
 
     override def flush(): Unit = target.flush()
@@ -34,6 +41,10 @@ private[analysis] object Quiet {
   private class Routed(target: PrintStream) extends PrintStream(Gate(() => Option(current.get), target), true, UTF_8)
 
   private val current = InheritableThreadLocal[Tape]()
+
+  private val open = ConcurrentHashMap.newKeySet[Tape]()
+
+  sys.addShutdownHook(open.forEach(tape => replay(tape.close()))): Unit
 
   // scalafix:off ForbiddenAPIs.forbidden-api
   private def routing(): Unit = {
@@ -48,6 +59,7 @@ private[analysis] object Quiet {
     val tape     = Tape()
     val previous = current.get
     val held     = () => Option(tape)
+    open.add(tape)
     current.set(tape)
     try {
       val value = Console.withOut(PrintStream(Gate(held, Console.out), true, UTF_8))(
@@ -57,9 +69,8 @@ private[analysis] object Quiet {
       value
     } finally {
       current.set(previous)
-      val chunks = tape.close()
-      chunks.foreach((target, bytes) => target.write(bytes))
-      chunks.map(_._1).distinct.foreach(_.flush())
+      replay(tape.close())
+      open.remove(tape): Unit
     }
   }
 }
