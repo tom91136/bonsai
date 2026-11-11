@@ -285,6 +285,9 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
     projectErrors(parseProjects(s"$project\n$project")).exists(_.contains("2 times"))
   )
 
+  check("projects take about twenty a shard")(shardCount(45, Vector.empty) == 3)
+  check("the projects of other profiles keep their shards")(shardCount(45, Vector(30, 1)) == 3)
+  check("more projects than the jobs allow fill the jobs left")(shardCount(6000, Vector(1)) == 255)
   check("without timings the shards go by index")(spread(Vector("a", "b", "c", "d", "e"), 2, Map.empty) ==
     Vector(0, 1, 0, 1, 0))
   check("timings balance the shards")(

@@ -36,9 +36,9 @@ One `Containerfile` serves the workstation and CI, so a run reproduces in either
   archive stays well under the cache's 10 GB limit, since an entry past it is not saved at all.
 - Dependency caches live in a named volume per run.
 - Locally: `podman run` per project, 6 to 8 at a time, each under a memory cap.
-- CI: every push to `main` runs the list in `community/projects.jsonl`, as a job matrix of the same image, at most 12 jobs
-  at a time. A newer push cancels a run in progress. `workflow_dispatch` takes an ad-hoc list. Each job stays under the
-  6 hour limit; a workflow run takes at most 256 jobs.
+- CI: every push to `main` runs the whole list in `community/projects.jsonl`, as a job matrix of the same image, about
+  twenty projects a job. A newer push cancels a run in progress. `workflow_dispatch` takes an ad-hoc list. Each job stays
+  under the 6 hour limit; a workflow run takes at most 256 jobs.
 - The shards balance on the per-project timings of the previous run, falling back to list order. A project may set its own
   `memory`, `memory_swap` and `heap`, and runs in shards of the projects that set the same. `scala/scala3` needs more than
   a hosted runner's 16 GB, so its shard enables zram swap and the container may use it.
@@ -78,6 +78,7 @@ was ok in the previous run on `main` is not ok now. Findings never fail it.
 2. Pilot of about 20 projects chosen for spread (effect systems, HTTP, small libraries, a Java-heavy build, a Scala.js
    cross-build), run with and without the whole-program model. It measures the time per project the later phases plan on.
 3. The top 200 by stars, then `scala/scala3`.
-4. The full list, then Mill and scala-cli builds.
+4. The full sbt list, about 1960 projects ranked by stars, with `scala/scala3` last.
+5. Mill and scala-cli builds.
 
 Nothing goes upstream and no project is contacted without approval.

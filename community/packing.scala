@@ -1,6 +1,15 @@
 // Spreads projects over shards by the time each took in the previous run.
 
-val Overhead = 120.0
+val Overhead  = 120.0
+val PerShard  = 20
+val MaxShards = 256
+
+def shardsOf(members: Int): Int = (members + PerShard - 1) / PerShard
+
+/** The shards of `members` projects on the default profile when the other profiles hold `others` projects each, about
+  * twenty projects a shard within the jobs the other profiles leave of a workflow run.
+  */
+def shardCount(members: Int, others: Vector[Int]): Int = shardsOf(members).min(MaxShards - others.map(shardsOf).sum)
 
 def estimates(names: Vector[String], known: Map[String, Double]): Option[Vector[Double]] =
   Option.when(names.exists(known.contains)) {

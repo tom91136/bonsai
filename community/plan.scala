@@ -6,7 +6,7 @@
 // Checks the projects, divides them over shards and prints the workflow outputs as key=value lines: projects, matrix, count.
 // usage: plan.scala --projects FILE [--previous DIR] [--shards N] [--memory SIZE] [--heap SIZE]
 //   --previous DIR  the baseline of the previous run; its <name>/timings.tsv balance the shards
-//   --shards N      shards for the projects on the default memory, 0 for one each, none for about five per shard
+//   --shards N      shards for the projects on the default memory, 0 for one each, none for about twenty per shard
 //   --memory, --heap  the default container memory and sbt heap
 // A project with its own "memory", "memory_swap" or "heap" runs in shards of the projects that share them.
 
@@ -17,9 +17,6 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Try
 
 case class Profile(memory: String, swap: String, heap: String)
-
-val PerShard  = 5
-val MaxShards = 256
 
 def fail(message: String): Nothing = {
   System.err.println(s"plan.scala: $message")
@@ -70,8 +67,10 @@ def timings(previous: Option[Path], names: Vector[String]): Map[String, Double] 
   order.foreach { each =>
     val members = projects.indices.filter(profiles(_) == each).toVector
     val wanted  = if (each == default) requested else None
-    val count   =
-      wanted.fold((members.size + PerShard - 1) / PerShard)(n => if (n < 1) members.size else n.min(members.size))
+    val others  = order.filter(_ != each).map(other => profiles.count(_ == other))
+    val count   = wanted.fold(if (each == default) shardCount(members.size, others) else shardsOf(members.size))(n =>
+      if (n < 1) members.size else n.min(members.size)
+    )
     if (members.nonEmpty) {
       val placed = spread(members.map(names), count, known)
       members.zip(placed).foreach((i, shard) => shards(i) = first + shard)
