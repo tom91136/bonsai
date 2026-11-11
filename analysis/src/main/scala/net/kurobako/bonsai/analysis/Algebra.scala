@@ -134,6 +134,15 @@ object Algebra {
       enumerations: Vector[Enumeration],
       expanded: Map[String, Vector[Site]]
   ) {
+
+    /** The model without the products and sums of the types `named`, which another declaration of the name stands for.
+      */
+    def excluding(named: String => Boolean): Model = copy(
+      products = products.filterNot(found => named(found.node)),
+      sums = sums.filterNot(found => named(found.node)),
+      enumerations = enumerations.filterNot(found => named(found.node))
+    )
+
     def joined(other: Model): Model = Model(
       products ++ other.products,
       sums ++ other.sums,

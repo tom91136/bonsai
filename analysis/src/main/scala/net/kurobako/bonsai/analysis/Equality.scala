@@ -31,6 +31,8 @@ object Equality {
   }
 
   case class Model(cases: Vector[Case], comparisons: Vector[Comparison]) {
+    def excluding(named: String => Boolean): Model = copy(cases = cases.filterNot(found => named(found.node)))
+
     def joined(other: Model): Model = Model(cases ++ other.cases, comparisons ++ other.comparisons)
   }
 

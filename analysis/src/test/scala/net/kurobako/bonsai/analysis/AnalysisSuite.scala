@@ -292,9 +292,10 @@ trait AnalysisSuite extends FunSuite {
       directory: Path,
       sources: Seq[(String, String)],
       extra: Vector[Path],
-      sourceRoot: Option[Path] = None
+      sourceRoot: Option[Path] = None,
+      classes: String = "classes"
   ): Path = {
-    val output = Files.createDirectories(directory.resolve("classes"))
+    val output = Files.createDirectories(directory.resolve(classes))
     write(directory, sources)
     val files     = sources.map((name, _) => directory.resolve(name).toString)
     val arguments =

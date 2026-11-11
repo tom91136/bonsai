@@ -368,6 +368,9 @@ private[analysis] class Collector(
 
   def notes: Vector[String] = remarks.toVector
 
+  /** The file and line the node of the given name is declared at. */
+  def positionOf(name: String): Option[(String, Int)] = symbols.described(name).map(node => (node.source, node.line))
+
   def graph: Graph = {
     val own = symbols.graph(entryPoints)
     own.copy(nodes = twinned.nodes ++ own.nodes, roots = own.roots ++ twinned.roots)

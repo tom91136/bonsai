@@ -17,6 +17,9 @@ object Counterparts {
   }
 
   case class Model(mirrors: Vector[Mirror], families: Vector[Family]) {
+    def excluding(named: String => Boolean): Model =
+      Model(mirrors.filterNot(found => named(found.node)), families.filterNot(found => named(found.node)))
+
     def joined(other: Model): Model = Model(mirrors ++ other.mirrors, families ++ other.families)
   }
 

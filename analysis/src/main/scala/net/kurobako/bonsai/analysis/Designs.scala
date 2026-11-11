@@ -38,6 +38,9 @@ object Designs {
   }
 
   case class Model(methods: Vector[Method], aliases: Vector[Alias]) {
+    def excluding(named: String => Boolean): Model =
+      Model(methods.filterNot(found => named(found.node)), aliases.filterNot(found => named(found.node)))
+
     def joined(other: Model): Model = Model(methods ++ other.methods, aliases ++ other.aliases)
   }
 

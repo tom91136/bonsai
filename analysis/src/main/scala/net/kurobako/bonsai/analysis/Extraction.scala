@@ -330,9 +330,17 @@ object Extraction {
         val declared = twins.flatMap(_.reading.declared).toSet
         name => declared(name) || name.indices.exists(index => name(index) == '.' && declared(name.take(index)))
       }
-      val owned = phaseTwins.map(twin => Owned(twin.own, Some(standing(phaseTwins)))) ++
-        groups.map(Owned(_, None)) ++
-        groupRuns.flatMap((_, twins, _) => twins.map(twin => Owned(twin.own, Some(standing(twins)))))
+      // A group reads a class again that an earlier run read from the same position, and what it records of that
+      // class is the earlier run's.
+      def copying(run: Collector, before: Vector[Collector]): String => Boolean =
+        name => run.positionOf(name).exists(position => before.exists(_.positionOf(name).contains(position)))
+      val owned = phaseTwins.map(twin => Owned.Twin(twin.own, standing(phaseTwins))) ++
+        groups.zipWithIndex.map((group, index) =>
+          Owned.Copy(group, copying(group, phase +: groups.take(index)))
+        ) ++
+        groupRuns.flatMap((_, twins, _) =>
+          twins.map(twin => Owned.Twin(twin.own, standing(twins)))
+        )
       val readers                = phase +: (twinRuns.flatMap(twin => Vector(twin.own, twin.copies)) ++ groups)
       val errors                 = reading(phase, together, behind)
       def beside(run: Collector) = (phase +: groups).filterNot(_ eq run).foldLeft(Collector.Evidence.empty)(_ ++
@@ -359,17 +367,21 @@ object Extraction {
           base: A,
           part: Collector => A,
           join: (A, A) => A,
-          excluding: (A, String => Boolean) => A = (model: A, _: String => Boolean) => model
+          excluding: (A, String => Boolean) => A = (model: A, _: String => Boolean) => model,
+          excluded: Owned => Option[String => Boolean] = _.uses
       ): A =
-        owned.foldLeft(base)((all, run) =>
-          join(all, run.stands.fold(part(run.collector))(stands => excluding(part(run.collector), stands)))
-        )
-      val whole      = joined(phase.structures, _.structures, _.joined(_))
+        owned.foldLeft(base) { (all, run) =>
+          join(
+            all,
+            excluded(run).fold(part(run.collector))(excluded => excluding(part(run.collector), excluded))
+          )
+        }
+      val whole      = joined(phase.structures, _.structures, _.joined(_), _.excluding(_), excluded = _.definitions)
       val structures = whole.copy(extents =
         whole.extents.filter((key, _) => graph.nodes.get(key).forall(node => !replaced.exists(_.endsWith(node.source))))
       )
       // The model of the Java code joins the model of the Scala code, so that the rules read both alike.
-      val scala   = joined(phase.algebra, _.algebra, _.joined(_))
+      val scala   = joined(phase.algebra, _.algebra, _.joined(_), _.excluding(_), excluded = _.definitions)
       val algebra = scala.copy(
         products = scala.products ++ java.products,
         sums = scala.sums ++ java.sums,
@@ -402,7 +414,9 @@ object Extraction {
         )
       }
       val members = owned.foldLeft(observed(phase))((all, run) =>
-        all.joined(run.stands.fold(observed(run.collector))(stands => observed(run.collector).excluding(stands)))
+        all.joined(run.uses.fold(observed(run.collector))(excluded =>
+          observed(run.collector).excluding(excluded)
+        ))
       )
         .pinned(name => graph.nodes.get(name).exists(replacedAt(_)))
       val isHot     = Globs.heat(hot)
@@ -429,15 +443,21 @@ object Extraction {
           graph,
           algebra,
           smells,
-          joined(phase.designs, _.designs, _.joined(_)),
+          joined(phase.designs, _.designs, _.joined(_), _.excluding(_), excluded = _.definitions),
           structures,
-          joined(phase.equality, _.equality, _.joined(_)),
+          joined(phase.equality, _.equality, _.joined(_), _.excluding(_), excluded = _.definitions),
           members.copy(calls = java.callers),
           owned.foldLeft(phase.duplicates)(_ ++ _.collector.duplicates) ++
             Clones.groups((phase +: groups).flatMap(_.candidates)) ++
             java.clones,
           bytecode(),
-          owned.foldLeft(phase.complexities)(_ ++ _.collector.complexities),
+          joined[Vector[Complexity.Summary]](
+            phase.complexities,
+            _.complexities,
+            _ ++ _,
+            (summaries, named) => summaries.filterNot(summary => named(summary.node)),
+            excluded = _.definitions
+          ),
           unmatched,
           owned.foldLeft(phase.pipelines)(_ ++ _.collector.pipelines),
           resolved.filterNot(_.site.settled),
@@ -483,7 +503,20 @@ object Extraction {
     )
   }
 
-  private case class Owned(collector: Collector, stands: Option[String => Boolean])
+  private enum Owned(val collector: Collector) {
+    case Twin(own: Collector, stands: String => Boolean)    extends Owned(own)
+    case Copy(group: Collector, repeats: String => Boolean) extends Owned(group)
+
+    def uses: Option[String => Boolean] = this match {
+      case Twin(_, stands) => Some(stands)
+      case Copy(_, _)      => None
+    }
+
+    def definitions: Option[String => Boolean] = this match {
+      case Twin(_, _)       => None
+      case Copy(_, repeats) => Some(repeats)
+    }
+  }
 
   private case class Twinned(
       reading: Twins.Reading,

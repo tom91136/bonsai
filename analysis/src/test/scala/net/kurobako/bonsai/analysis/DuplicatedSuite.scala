@@ -102,4 +102,65 @@ class DuplicatedSuite extends AnalysisSuite {
       assertEquals(groups(both).map(_.runs.size), Right(1))
     }
   }
+
+  private val Shared =
+    """package shared
+      |object Machine {
+      |  case class Created(id: Int, name: String, size: Long)
+      |  case class Failed(code: Int, reason: String, trace: Vector[String])
+      |  case class Done(count: Int, total: Long)
+      |}
+      |object Left { case class Point(x: Int, y: Int, z: Int, w: Int) }
+      |object Right { case class Point(x: Int, y: Int, z: Int, w: Int) }
+      |object Owner {
+      |  def summary(items: List[Int], label: String): String = {
+      |    val kept   = items.filter(_ > 0)
+      |    val scaled = kept.map(value => value * 2 + 1)
+      |    val total  = scaled.foldLeft(0)(_ + _)
+      |    val count  = scaled.size
+      |    if (count == 0) label else s"$label: ${total / count}"
+      |  }
+      |}""".stripMargin
+
+  private def sharing(directory: Path, samePath: Boolean): Vector[Finding] = {
+    val one = compile(directory.resolve("one"), Seq("Shared.scala" -> Shared), Vector.empty)
+    val two =
+      if (samePath) compile(directory.resolve("one"), Seq("Shared.scala" -> Shared), Vector.empty, classes = "again")
+      else compile(directory.resolve("two"), Seq("Other.scala" -> Shared), Vector.empty)
+    val modules = Vector("one" -> one, "two" -> two)
+    val whole   = Manifest(
+      modules.map((module, path) => Output(module, Output.Scope.Main, path)),
+      modules.map((module, _) => module -> classpath).toMap,
+      Set.empty,
+      jdk = targetJdk
+    )
+    val result = Extraction.read(whole).fold(errors => fail(errors.mkString("\n")), identity)
+    assertEquals(result.problems, Vector.empty)
+    assertEquals(groups(whole).map(_.runs.size), Right(2))
+    Report.findings(result)
+  }
+
+  private def named(found: Vector[Finding], rule: String): Vector[String] =
+    found.filter(_.rule.id == rule).map(_.detail)
+
+  test("a source two modules compile is one definition to the rules that compare definitions") {
+    Scratch.using("bonsai-") { directory =>
+      val found = sharing(directory, samePath = true)
+      assertEquals(named(found, "parallel-family"), Vector.empty)
+      assertEquals(named(found, "duplicate-code"), Vector.empty)
+      assertEquals(named(found, "duplicate-shape").map(_.takeWhile(_ != ';')).size, 1, found.mkString("\n"))
+      assert(named(found, "duplicate-shape").head.endsWith("Left.Point, Right.Point"), found.mkString("\n"))
+      assertEquals(
+        found.groupBy(finding => (finding.rule, finding.node.name, finding.detail)).filter(_._2.size > 1),
+        Map.empty
+      )
+    }
+  }
+
+  test("a source two modules compile once each, as different files, is still repeated code") {
+    Scratch.using("bonsai-") { directory =>
+      val found = sharing(directory, samePath = false)
+      assertEquals(named(found, "duplicate-code").size, 1, found.mkString("\n"))
+    }
+  }
 }

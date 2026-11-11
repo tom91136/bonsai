@@ -69,6 +69,21 @@ object Structures {
       bypasses: Vector[Wrappers.Bypass],
       signatures: Vector[Signature]
   ) {
+
+    /** The model without what it records of the types `named`, which another declaration of the name stands for. */
+    def excluding(named: String => Boolean): Model = Model(
+      stutters.filterNot(found => named(found.node)),
+      mentions.filterNot(found => named(found.node)),
+      applied.filterNot(found => named(found.node)),
+      concretes.filterNot(found => named(found.node)),
+      members.filterNot(found => named(found.node)),
+      dispatches.filterNot(found => named(found.node)),
+      extents.filterNot((key, _) => named(key)),
+      counterparts.excluding(named),
+      bypasses.filterNot(found => named(found.node)),
+      signatures.filterNot(found => named(found.owner))
+    )
+
     def joined(other: Model): Model = Model(
       stutters ++ other.stutters,
       mentions ++ other.mentions,
