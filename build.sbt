@@ -520,12 +520,19 @@ lazy val root = project.in(file("."))
       val configured = analysisConfiguration.value
       val fixtures   = Fixtures.fixtures(buildStructure.value)
       val outputs    = Def.task {
-        val _ = Def.sequential(compile, copyResources).value
-        (thisProject.value.id, configuration.value.name == Test.name, classDirectory.value, unmanagedSources.value)
-      }.all(analysedOutputs).value.flatMap { (id, test, classes, sources) =>
+        val _ = (compile.value, resources.value)
+        (
+          thisProject.value.id,
+          configuration.value.name == Test.name,
+          classDirectory.value,
+          unmanagedSources.value,
+          resourceDirectories.value
+        )
+      }.all(analysedOutputs).value.flatMap { (id, test, classes, sources, resourceDirs) =>
         val scope = ManifestLines.scope(fixtures, id, test)
         ManifestLines.outputs(id, scope, configured.library(id).getOrElse(false), classes.toString) ++
-          ManifestLines.sources(id, scope, sources.map(_.toString))
+          ManifestLines.sources(id, scope, sources.map(_.toString)) ++
+          ManifestLines.resources(id, scope, resourceDirs.map(_.toString))
       }
       val managed = Def.task((managedSourceDirectories.value.map(_.toString), managedSources.value.map(_.toString)))
         .all(analysedOutputs).value

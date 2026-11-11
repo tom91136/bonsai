@@ -8,3 +8,7 @@ Compile / compile := Def.uncached {
   IO.delete((Compile / classDirectory).value / "META-INF")
   analysis
 }
+
+Seq(Compile, Test).map { configuration =>
+  configuration / copyResources := Def.uncached[Seq[(File, File)]](sys.error("bonsai must not copy resources"))
+}

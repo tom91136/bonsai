@@ -37,6 +37,21 @@ class ManifestLinesSuite extends munit.FunSuite {
     assertEquals(ManifestLines.options("api", Seq("-deprecation")), Seq("option\tapi\t-deprecation"))
   }
 
+  test("resource lines name the resource directories that exist, once each") {
+    IO.withTemporaryDirectory { directory =>
+      val present = directory / "resources"
+      IO.createDirectory(present)
+      assertEquals(
+        ManifestLines.resources(
+          "api",
+          "main",
+          Seq(present.toString, (directory / "managed").toString, present.toString)
+        ),
+        Seq(s"resource\tapi\tmain\t$present")
+      )
+    }
+  }
+
   test("the jdk line names the target home") {
     assertEquals(ManifestLines.jdk(file("/opt/jdk-25")), Seq("jdk\t/opt/jdk-25"))
   }

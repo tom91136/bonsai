@@ -16,6 +16,12 @@ object ManifestLines {
   def sources(project: String, scope: String, files: Seq[String]): Seq[String] =
     files.map(file => s"source\t$project\t$scope\t$file")
 
+  /** The lines naming the resource directories that exist, which hold the registrations the classes may lack. */
+  def resources(project: String, scope: String, directories: Seq[String]): Seq[String] =
+    directories.filter(Paths.get(_).toFile.isDirectory).distinct.map(directory =>
+      s"resource\t$project\t$scope\t$directory"
+    )
+
   /** The lines naming where the build generates sources: the directory of the managed sources that lie in one of the
     * `directories`, and the file of each that lies in none.
     */

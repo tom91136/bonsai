@@ -453,7 +453,8 @@ object BonsaiPlugin extends AutoPlugin {
       library: Boolean,
       sources: Seq[String],
       managed: Seq[String],
-      managedDirectories: Seq[String]
+      managedDirectories: Seq[String],
+      resourceDirectories: Seq[String]
   )
 
   // A configuration with nothing to compile, or whose classes or sources another one of its project already holds,
@@ -536,7 +537,7 @@ object BonsaiPlugin extends AutoPlugin {
     else Def.task {
       skipped.foreach(streams.value.log.info(_))
       val entries = Def.task {
-        val _     = Def.sequential(compile, copyResources).value
+        val _     = (compile.value, resources.value)
         val id    = thisProject.value.id
         val name  = configuration.value.name
         val scope = ManifestLines.scope(fixtures, id, testNames(name))
@@ -548,7 +549,8 @@ object BonsaiPlugin extends AutoPlugin {
           bonsaiLibrary.value,
           unmanagedSources.value.map(_.toString),
           managedSources.value.map(_.toString),
-          managedSourceDirectories.value.map(_.toString)
+          managedSourceDirectories.value.map(_.toString),
+          resourceDirectories.value.map(_.toString)
         )
       }.all(analysed).value
       val kept    = entries.filterNot(redundant(entries).toSet)
@@ -593,6 +595,8 @@ object BonsaiPlugin extends AutoPlugin {
       }.all(ScopeFilter(inProjects((if (jvm.nonEmpty) jvm else enabled)*), inConfigurations(Compile))).value.flatten
       // Every platform's sources, so copies between the directories of a cross-built project show.
       val sources   = kept.flatMap(entry => ManifestLines.sources(entry.project, entry.scope, entry.sources))
+      val resourced =
+        kept.flatMap(entry => ManifestLines.resources(entry.project, entry.scope, entry.resourceDirectories))
       val generated =
         ManifestLines.generated(kept.flatMap(_.managedDirectories).distinct, kept.flatMap(_.managed).distinct)
       val baseline = bonsaiBaseline.value
@@ -603,7 +607,7 @@ object BonsaiPlugin extends AutoPlugin {
       IO.write(
         manifest,
         ManifestLines.render(
-          outputs ++ platform ++ jdk ++ classpath ++ compilerOptions ++ sources ++ generated ++ text,
+          outputs ++ platform ++ jdk ++ classpath ++ compilerOptions ++ sources ++ resourced ++ generated ++ text,
           (ThisBuild / baseDirectory).value
         )
       )
