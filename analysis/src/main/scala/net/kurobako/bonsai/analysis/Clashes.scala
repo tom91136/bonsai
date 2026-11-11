@@ -15,6 +15,11 @@ import scala.util.Using
   * the read completes all of them; a library is searched only for the names the compiler reports, as it completes the
   * packages it needs alone. Such a build is divided into runs of modules that hold no such pair, each closed under the
   * modules that depend on its members.
+  *
+  * A class that two modules which are not platform twins both define is held apart likewise: the compiler resolves it
+  * to one copy, and a caller compiled against the other loses the calls it makes into it. Libraries are not searched
+  * for such copies, as shaded and split ones are common and the compiler reads them alike. Where one module needs both
+  * copies they are read together, as they cannot be read apart.
   */
 private[analysis] object Clashes {
 
@@ -34,7 +39,7 @@ private[analysis] object Clashes {
     def shown: String = s"library $path"
   }
 
-  private case class Pair(classed: Holder, packaged: Holder, name: String)
+  private case class Pair(classed: Holder, against: Holder, name: String, copied: Boolean = false)
 
   private val Compiled = Set(".class", ".tasty")
 
@@ -79,16 +84,21 @@ private[analysis] object Clashes {
   }.getOrElse(Holding(Set.empty, Set.empty))
 
   private def described(pair: Pair): String =
-    s"${pair.name} is a class in ${pair.classed.shown} and a package in ${pair.packaged.shown}"
+    if (pair.copied) s"${pair.name} is a class in ${pair.classed.shown} and in ${pair.against.shown}"
+    else s"${pair.name} is a class in ${pair.classed.shown} and a package in ${pair.against.shown}"
 
   private def shown(pair: Pair, tail: String): String =
     s"${described(pair)}, which the compiler cannot read together$tail"
 
+  private def classNamed(name: String): Boolean =
+    name.substring(name.lastIndexOf('.') + 1).forall(Character.isJavaIdentifierPart(_))
+
   /** The sets of modules to read in runs of their own, the first being the bulk of the build: where a class of one
-    * module or library is a package of another, the smaller of the two sides, the modules that hold or use it with
-    * those that depend on them and the platform twins that share classes with them, is read apart. `known` names the
-    * clashes the compiler has reported. Fails naming the clash where a module, or a twin and its peers, needs both
-    * sides. `because` names each clash a run was set apart for, as the failure would.
+    * module or library is a package of another, or a class of one module is a class of another that is not its platform
+    * twin, the smaller of the two sides, the modules that hold or use it with those that depend on them and the
+    * platform twins that share classes with them, is read apart. `known` names the clashes the compiler has reported.
+    * Fails naming the clash where a module, or a twin and its peers, needs both sides of a class and a package.
+    * `because` names each clash a run was set apart for, as the failure would.
     */
   def runs(
       manifest: Manifest,
@@ -116,40 +126,49 @@ private[analysis] object Clashes {
     val everything = holdings.keySet ++ fixed
     val owners     = outputs.map((output, _) => output.path -> output.module).toMap
     val libraries  = mutable.Map.empty[Path, Holding]
+    lazy val tasty = outputs.groupMapReduce(_._1.module)((output, files) =>
+      files.map(output.path.relativize(_)).filter(_.getFileName.toString.endsWith(".tasty")).toSet
+    )(_ ++ _)
+    lazy val sharing = tasty.toVector.flatMap((module, paths) => paths.toVector.map(_ -> module)).groupMap(_._1)(_._2)
+      .values.map(_.toSet).filter(_.exists(manifest.platforms)).toVector
+    lazy val mates = sharing.flatMap(group => group.toVector.map(_ -> group)).groupMapReduce(_._1)(_._2)(_ ++ _)
+    def copies(modular: Vector[(Holder, Holding)]): Vector[Pair] = {
+      val named = modular.flatMap((holder, contents) => contents.classes.filter(classNamed(_)).map(_ -> holder))
+      named.groupMap(_._1)(_._2).toVector.filter(_._2.size > 1).flatMap { (name, holders) =>
+        holders.combinations(2).collect {
+          case Vector(first @ Owned(one), second @ Owned(other)) if !mates.getOrElse(one, Set.empty)(other) =>
+            Pair(first, second, name, copied = true)
+        }
+      }.sortBy(pair => (pair.classed.shown, pair.against.shown, pair.name))
+    }
     def clashes(owned: Set[String], running: Set[String]): Vector[Pair] = {
       val modular: Vector[(Holder, Holding)] =
         owned.toVector.sorted.flatMap(module => holdings.get(module).map(Owned(module) -> _))
       val names =
         (modular.flatMap(_._2.classes).toSet.intersect(modular.flatMap(_._2.packages).toSet) ++ known).toVector
-      if (names.isEmpty) Vector.empty
-      else {
-        val jars = Classpath.readable(manifest.classpathOf(running.toVector.sorted)).filterNot(owners.contains)
-        jars.foreach(jar => libraries.getOrElseUpdate(jar, held(jar)))
-        val holders    = modular ++ jars.map(jar => Library(jar) -> libraries(jar))
-        val classed    = holders.flatMap((holder, contents) => names.filter(contents.classes).map(_ -> holder))
-        val packaged   = holders.flatMap((holder, contents) => names.filter(contents.packages).map(_ -> holder))
-        val packagedBy = packaged.groupMap(_._1)(_._2)
-        classed.flatMap((name, holder) => packagedBy.getOrElse(name, Vector.empty).map(Pair(holder, _, name)))
-          .sortBy(pair => (pair.classed.shown, pair.packaged.shown, pair.name))
-      }
+      val mixed =
+        if (names.isEmpty) Vector.empty
+        else {
+          val jars = Classpath.readable(manifest.classpathOf(running.toVector.sorted)).filterNot(owners.contains)
+          jars.foreach(jar => libraries.getOrElseUpdate(jar, held(jar)))
+          val holders    = modular ++ jars.map(jar => Library(jar) -> libraries(jar))
+          val classed    = holders.flatMap((holder, contents) => names.filter(contents.classes).map(_ -> holder))
+          val packaged   = holders.flatMap((holder, contents) => names.filter(contents.packages).map(_ -> holder))
+          val packagedBy = packaged.groupMap(_._1)(_._2)
+          classed.flatMap((name, holder) => packagedBy.getOrElse(name, Vector.empty).map(Pair(holder, _, name)))
+            .sortBy(pair => (pair.classed.shown, pair.against.shown, pair.name))
+        }
+      mixed ++ copies(modular)
     }
     val whole = clashes(holdings.keySet, everything)
     if (whole.isEmpty) Right(Vector(everything) -> Vector.empty)
     else {
-      val uses = everything.map(module =>
-        module -> manifest.classpath.getOrElse(module, Vector.empty).flatMap(owners.get).toSet.excl(module)
-      ).toMap
+      val uses = everything.map(module => module -> manifest.requires.getOrElse(module, Set.empty)).toMap
       def needs(module: String, seen: Set[String] = Set.empty): Set[String] =
         uses(module).diff(seen).foldLeft(seen ++ uses(module))((all, next) => needs(next, all))
       def visible(modules: Set[String]): Set[String] = modules ++ modules.flatMap(needs(_))
       val needing = everything.toVector.flatMap(module => needs(module).map(_ -> module)).groupMap(_._1)(_._2)
-      val tasty   = outputs.groupMapReduce(_._1.module)((output, files) =>
-        files.map(output.path.relativize(_)).filter(_.getFileName.toString.endsWith(".tasty")).toSet
-      )(_ ++ _)
-      val sharing = tasty.toVector.flatMap((module, paths) => paths.toVector.map(_ -> module)).groupMap(_._1)(_._2)
-        .values.map(_.toSet).filter(_.exists(manifest.platforms)).toVector
-      val mates = sharing.flatMap(group => group.toVector.map(_ -> group)).groupMapReduce(_._1)(_._2)(_ ++ _)
-      val near  = everything.map(module =>
+      val near    = everything.map(module =>
         module -> (needing.getOrElse(module, Vector.empty).toSet ++ mates.getOrElse(module, Set.empty) + module)
       ).toMap
       @tailrec def following(modules: Set[String]): Set[String] = {
@@ -163,14 +182,19 @@ private[analysis] object Clashes {
       }
       def movable(side: Set[String], modules: Set[String]): Boolean =
         !side.exists(fixed) && (modules -- side).exists(holdings.contains)
+      def separable(clash: Pair, modules: Set[String]): Boolean = {
+        val classed = holding(clash.classed, modules)
+        val against = holding(clash.against, modules)
+        (classed & against).isEmpty && Vector(classed, against).exists(movable(_, modules))
+      }
       val sizes  = outputs.groupMapReduce(_._1.module)(_._2.size)(_ + _)
       val causes = mutable.LinkedHashSet.empty[String]
       def divide(modules: Set[String]): Either[Vector[String], Vector[Set[String]]] =
-        clashes(visible(modules), modules).headOption match {
+        clashes(visible(modules), modules).find(clash => !clash.copied || separable(clash, modules)) match {
           case None        => Right(Vector(modules))
           case Some(clash) =>
             val classed  = holding(clash.classed, modules)
-            val packaged = holding(clash.packaged, modules)
+            val packaged = holding(clash.against, modules)
             val both     = classed & packaged
             if (both.nonEmpty) Left(Vector(shown(clash, s", and ${both.toVector.sorted.mkString(", ")} need both")))
             else

@@ -558,7 +558,9 @@ object BonsaiPlugin extends AutoPlugin {
         ManifestLines.outputs(entry.project, entry.scope, entry.library, entry.classes)
       )
       val analysedOutputs = kept.map(_.classes).toSet
-      val libraries       = external.all(analysed).value.groupBy(_._1).map { case (id, pairs) =>
+      val dependencies    = external.all(analysed).value
+      val depends         = ManifestLines.depends(dependencies, kept.map(entry => entry.classes -> entry.project).toMap)
+      val libraries       = dependencies.groupBy(_._1).map { case (id, pairs) =>
         id -> pairs.map(_._2)
       }.toSeq.sortBy(_._1).map { case (id, paths) =>
         val kept = paths.flatten.distinct.filterNot(analysedOutputs)
@@ -606,7 +608,8 @@ object BonsaiPlugin extends AutoPlugin {
       IO.write(
         manifest,
         ManifestLines.render(
-          outputs ++ platform ++ jdk ++ classpath ++ compilerOptions ++ sources ++ resourced ++ generated ++ text,
+          outputs ++ platform ++ jdk ++ classpath ++ depends ++ compilerOptions ++ sources ++ resourced ++ generated ++
+            text,
           (ThisBuild / baseDirectory).value
         )
       )

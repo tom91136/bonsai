@@ -57,6 +57,14 @@ object ManifestLines {
   def classpath(project: String, entries: Seq[String]): Seq[String] =
     entries.map(entry => s"classpath\t$project\t$entry")
 
+  /** The lines naming the analysed projects each project depends on, as the classes directories of `owners` that its
+    * `paths` hold.
+    */
+  def depends(paths: Seq[(String, Seq[String])], owners: Map[String, String]): Seq[String] =
+    paths.flatMap { case (project, entries) =>
+      entries.flatMap(owners.get).filter(_ != project).map(project -> _)
+    }.distinct.sorted.map { case (project, other) => s"depends\t$project\t$other" }
+
   /** The line naming a module the compiler plugin compiled in the audit mode, which keeps its findings beside the
     * classes.
     */

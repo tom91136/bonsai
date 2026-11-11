@@ -271,9 +271,17 @@ object Extraction {
       // modules' first, and a class several platforms' copies of a library hold resolves to the first copy.
       val outputModules = manifest.outputs.map(_.module).toSet
       val ordered       = (primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted
+      val requires      = manifest.requires
+      @tailrec def required(modules: Set[String]): Set[String] = {
+        val next = modules ++ modules.flatMap(requires.getOrElse(_, Set.empty))
+        if (next == modules) modules else required(next)
+      }
       def behindOf(run: Set[Output], unbuilt: Set[String]) = {
         val members = run.map(_.module) ++ unbuilt
-        primary.filter(run).map(_.path) ++ Classpath.readable(manifest.classpathOf(ordered.filter(members)))
+        val needed  = required(run.map(_.module))
+        val beside  = primary.filter(output => needed(output.module) && !run(output)).map(_.path)
+        (primary.filter(run).map(_.path) ++ beside).distinct ++
+          Classpath.readable(manifest.classpathOf(ordered.filter(members)))
       }
       val linking    = Some((graph: Graph) => Reach.link(manifest, JavaConversion.merge(graph, java), world))
       val everything = manifest.outputs.toSet

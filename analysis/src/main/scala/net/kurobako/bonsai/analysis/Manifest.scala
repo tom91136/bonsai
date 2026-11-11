@@ -13,9 +13,10 @@ object Manifest {
     Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope")
 
   /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <module> <entry>`, `library <module>`,
-    * `platform <module>`, `recorded <module>`, `option <module> <compiler option>`, `source <module> <scope> <file>`,
-    * `resource <name> <file>`, `resourced <module>`, `model <module> <scope> <file>`, `generated <path>`, `jdk <home>`,
-    * `root <directory>`, `text-exclude <glob>` and `text <rule index> <field> <value>` lines.
+    * `depends <module> <module>`, `platform <module>`, `recorded <module>`, `option <module> <compiler option>`,
+    * `source <module> <scope> <file>`, `resource <name> <file>`, `resourced <module>`, `model <module> <scope> <file>`,
+    * `generated <path>`, `jdk <home>`, `root <directory>`, `text-exclude <glob>` and
+    * `text <rule index> <field> <value>` lines.
     */
   def read(path: Path): Either[String, Manifest] =
     Files.readAllLines(path).asScala.toVector.zipWithIndex.filter(_._1.nonEmpty)
@@ -33,6 +34,10 @@ object Manifest {
                     module,
                     current.classpath.getOrElse(module, Vector.empty) :+ Path.of(location)
                   )
+                ))
+              case List("depends", module, other) =>
+                Right(current.copy(dependencies =
+                  current.dependencies.updated(module, current.dependencies.getOrElse(module, Set.empty) + other)
                 ))
               case List("library", module)        => Right(current.copy(libraries = current.libraries + module))
               case List("platform", module)       => Right(current.copy(platforms = current.platforms + module))
@@ -83,7 +88,8 @@ object Manifest {
   * repository text rule by its index, and `textExclusions` the files no text rule reads. `models` holds the files the
   * javac plugin collected the model of the Java code of each module in, `generated` the directories and files the build
   * generates sources in, `jdk` the home of the JDK the build targets, whose classes are read before the outputs, and
-  * `recorded` the modules the compiler plugin compiled in the audit mode, whose findings it kept beside their classes.
+  * `recorded` the modules the compiler plugin compiled in the audit mode, whose findings it kept beside their classes,
+  * and `dependencies` the modules of the build each module depends on, beside those its classpath holds the outputs of.
   */
 case class Manifest(
     outputs: Vector[Output],
@@ -100,8 +106,19 @@ case class Manifest(
     generated: Vector[Path] = Vector.empty,
     recorded: Set[String] = Set.empty,
     resources: Vector[Resource] = Vector.empty,
-    resourced: Set[String] = Set.empty
+    resourced: Set[String] = Set.empty,
+    dependencies: Map[String, Set[String]] = Map.empty
 ) {
+
+  /** The modules each module depends on: those whose outputs its classpath holds, and those the build names. */
+  def requires: Map[String, Set[String]] = {
+    val owners = outputs.map(output => output.path -> output.module).toMap
+    (classpath.keySet ++ dependencies.keySet).map { module =>
+      module ->
+        (classpath.getOrElse(module, Vector.empty).flatMap(owners.get).toSet ++
+          dependencies.getOrElse(module, Set.empty)).excl(module)
+    }.toMap
+  }
 
   /** Whether a source lies in, or is, one of the directories and files the build generates, named by its path or
     * relative to `root`.

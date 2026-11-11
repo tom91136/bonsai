@@ -81,6 +81,19 @@ class BuildSuite extends FunSuite {
       assert(Manifest.read(unknown).left.exists(_.contains("unrecognised manifest line: mystery")))
   }
 
+  withRoot("a depends line names a module another module is built on, beside those its classpath holds") { root =>
+    val manifest = write(
+      root,
+      "manifest.tsv",
+      s"output\tcore\tmain\t${root.resolve("core")}\noutput\tapp\tmain\t${root.resolve("app")}\n" +
+        s"output\tcli\tmain\t${root.resolve("cli")}\nclasspath\tcli\t${root.resolve("app")}\n" +
+        "depends\tapp\tcore\ndepends\tapp\tapp\nroot\t/x\n"
+    )
+    val read = Manifest.read(manifest)
+    assertEquals(read.map(_.dependencies), Right(Map("app" -> Set("core", "app"))))
+    assertEquals(read.map(_.requires), Right(Map("app" -> Set("core"), "cli" -> Set("app"))))
+  }
+
   withRoot("the jdk line names the target home, and a repeat with the same home is accepted") { root =>
     val home   = root.resolve("jdk-25")
     val once   = write(root, "once.tsv", s"jdk\t$home\nroot\t$root\n")
