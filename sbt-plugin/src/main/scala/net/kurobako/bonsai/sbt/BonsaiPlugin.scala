@@ -550,7 +550,7 @@ object BonsaiPlugin extends AutoPlugin {
           unmanagedSources.value.map(_.toString),
           managedSources.value.map(_.toString),
           managedSourceDirectories.value.map(_.toString),
-          ManifestLines.resources(id, resources.value.map(_.toString), resourceDirectories.value.map(_.toString))
+          ManifestLines.resources(resources.value.map(_.toString), resourceDirectories.value.map(_.toString))
         )
       }.all(analysed).value
       val kept    = entries.filterNot(redundant(entries).toSet)
@@ -595,7 +595,7 @@ object BonsaiPlugin extends AutoPlugin {
       }.all(ScopeFilter(inProjects((if (jvm.nonEmpty) jvm else enabled)*), inConfigurations(Compile))).value.flatten
       // Every platform's sources, so copies between the directories of a cross-built project show.
       val sources   = kept.flatMap(entry => ManifestLines.sources(entry.project, entry.scope, entry.sources))
-      val resourced = entries.flatMap(_.resources).distinct
+      val resourced = entries.flatMap(_.resources).distinct ++ ManifestLines.resourced(entries.map(_.project))
       val generated =
         ManifestLines.generated(kept.flatMap(_.managedDirectories).distinct, kept.flatMap(_.managed).distinct)
       val baseline = bonsaiBaseline.value

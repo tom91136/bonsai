@@ -20,7 +20,7 @@ lazy val root = project.in(file("."))
     inConfig(Plain)(Defaults.testSettings),
     Shared / scalaSource := (IT / scalaSource).value,
     checkResources       := Def.uncached {
-      val named = IO.readLines(target.value / "bonsai" / "manifest.tsv").collect { case s"resource\t$_\t$name\t$_" =>
+      val named = IO.readLines(target.value / "bonsai" / "manifest.tsv").collect { case s"resource\t$name\t$_" =>
         name
       }
       assert(named.sorted == Seq("META-INF/services/demo.Shared", "META-INF/services/demo.Spi"), named.mkString(", "))

@@ -132,7 +132,7 @@ class ReuseSuite extends AnalysisSuite {
     val stray    = services.resolve("a.Spi.orig")
     Files.writeString(listed, "p.A\n")
     Files.writeString(stray, "p.B\n")
-    Files.writeString(f.manifest, s"resource\tm\tMETA-INF/services/a.Spi\t$listed\n", APPEND)
+    Files.writeString(f.manifest, s"resource\tMETA-INF/services/a.Spi\t$listed\n", APPEND)
     assertInvalidated(f)(Files.writeString(listed, "p.C\n"): Unit)
     Files.writeString(stray, "p.D\n")
     Files.writeString(services.resolve(".a.Spi.swp"), "p.E\n")
@@ -229,10 +229,21 @@ class ReuseSuite extends AnalysisSuite {
   test("every manifest field is either hashed through its paths or read by the key by name") {
     val fields = classOf[Manifest].getDeclaredFields.map(_.getName).toSet
     val paths  = Set("outputs", "classpath", "sources", "models", "resources")
-    // options, platforms, libraries, recorded, texts, textExclusions and generated are in the manifest bytes; root is read by the
+    // options, platforms, libraries, recorded, resourced, texts, textExclusions and generated are in the manifest bytes; root is read by the
     // scan, and jdk names the release file that is hashed with the paths
     val named =
-      Set("libraries", "jdk", "options", "root", "platforms", "texts", "textExclusions", "generated", "recorded")
+      Set(
+        "libraries",
+        "jdk",
+        "options",
+        "root",
+        "platforms",
+        "texts",
+        "textExclusions",
+        "generated",
+        "recorded",
+        "resourced"
+      )
     assertEquals(fields, paths ++ named)
     val manifest = Manifest(
       Vector(Output("a", Output.Scope.Main, Path.of("o"))),
@@ -240,7 +251,7 @@ class ReuseSuite extends AnalysisSuite {
       Set.empty,
       sources = Vector(Output("a", Output.Scope.Main, Path.of("s"))),
       models = Vector(Output("a", Output.Scope.Main, Path.of("m"))),
-      resources = Vector(Resource("a", "r", Path.of("r")))
+      resources = Vector(Resource("r", Path.of("r")))
     )
     assertEquals(Reuse.paths(manifest).map(_.toString).toSet, Set("o", "c", "s", "m", "r"))
     assertEquals(

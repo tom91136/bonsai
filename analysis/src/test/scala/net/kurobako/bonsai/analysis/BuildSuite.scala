@@ -34,16 +34,22 @@ class BuildSuite extends FunSuite {
     assertEquals(read.map(_.root), Right(Some(root)))
   }
 
-  withRoot("the manifest names the resource files of each module by their path in the jar") { root =>
+  withRoot("the manifest names the resource files by their path in the jar") { root =>
     val manifest = write(
       root,
       "manifest.tsv",
-      "resource\tcore\tMETA-INF/services/a.Spi\t/core/res/META-INF/services/a.Spi\nroot\t/x\n"
+      "resource\tMETA-INF/services/a.Spi\t/core/res/META-INF/services/a.Spi\nroot\t/x\n"
     )
     assertEquals(
       Manifest.read(manifest).map(_.resources),
-      Right(Vector(Resource("core", "META-INF/services/a.Spi", Path.of("/core/res/META-INF/services/a.Spi"))))
+      Right(Vector(Resource("META-INF/services/a.Spi", Path.of("/core/res/META-INF/services/a.Spi"))))
     )
+  }
+
+  withRoot("the manifest names the modules whose resources it lists") { root =>
+    val manifest = write(root, "manifest.tsv", "resourced\tcore\nresourced\tapp\nroot\t/x\n")
+    assertEquals(Manifest.read(manifest).map(_.resourced), Right(Set("core", "app")))
+    assertEquals(Manifest.read(write(root, "bare.tsv", "root\t/x\n")).map(_.resourced), Right(Set.empty))
   }
 
   withRoot("the manifest names the modules whose compiler findings were recorded") { root =>

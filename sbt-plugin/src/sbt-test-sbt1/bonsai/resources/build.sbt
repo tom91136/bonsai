@@ -19,6 +19,6 @@ stray := {
 
 checkResource := {
   val named = IO.readLines(target.value / "bonsai" / "manifest.tsv").filter(_.startsWith("resource\t"))
-    .map(_.split("\t")(2)).sorted
+    .map(_.split("\t")(1)).sorted
   assert(named == Seq("META-INF/services/demo.Greeter", "META-INF/services/demo.Shout"), named.mkString("\n"))
 }

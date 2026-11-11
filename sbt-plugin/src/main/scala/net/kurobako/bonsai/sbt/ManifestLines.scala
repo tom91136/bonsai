@@ -20,7 +20,7 @@ object ManifestLines {
   /** The lines naming the files among `files`, the resources of a build, that register entry points, each with its path
     * in the jar: below the nearest of `directories` that holds it, or by its name where none does.
     */
-  def resources(project: String, files: Seq[String], directories: Seq[String]): Seq[String] = {
+  def resources(files: Seq[String], directories: Seq[String]): Seq[String] = {
     val roots                                                          = directories.map(Paths.get(_)).toSet
     @tailrec def below(path: Path, tail: List[String]): Option[String] =
       Option(path.getParent) match {
@@ -32,9 +32,12 @@ object ManifestLines {
     files.flatMap { file =>
       val path = Paths.get(file)
       val name = below(path, Nil).getOrElse(path.getFileName.toString)
-      if (registers(name) && path.toFile.isFile) Seq(s"resource\t$project\t$name\t$file") else Nil
+      if (registers(name) && path.toFile.isFile) Seq(s"resource\t$name\t$file") else Nil
     }.distinct
   }
+
+  /** The lines naming the modules whose resources the build lists, however few register entry points. */
+  def resourced(projects: Seq[String]): Seq[String] = projects.distinct.map(project => s"resourced\t$project")
 
   private def registers(name: String): Boolean =
     name.startsWith("META-INF/services/") || name == "plugin.properties" || name == "sbt/sbt.autoplugins"

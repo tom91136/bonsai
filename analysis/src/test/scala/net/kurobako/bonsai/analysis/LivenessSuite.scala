@@ -6,9 +6,10 @@ class LivenessSuite extends AnalysisSuite {
       test: Seq[(String, String)] = Nil,
       resources: Seq[(String, String)] = Nil,
       resourced: Seq[(String, String)] = Nil,
-      unlisted: Seq[(String, String)] = Nil
+      unlisted: Seq[(String, String)] = Nil,
+      marked: Boolean = false
   ): Set[(String, String)] = {
-    val result = extract(main, test, resources, resourced = resourced, unlisted = unlisted)
+    val result = extract(main, test, resources, resourced = resourced, unlisted = unlisted, marked = marked)
     Liveness.findings(result.graph, result.reach).map(finding => finding.rule.id -> finding.node.name).toSet
   }
 
@@ -447,6 +448,15 @@ class LivenessSuite extends AnalysisSuite {
       ),
       resources = Seq("META-INF/services/java.lang.Runnable" -> "p.Old\n"),
       resourced = Seq("META-INF/services/java.lang.Runnable" -> "p.Service\n")
+    )
+    assertEquals(found.map(_._2), Set("p.Old"))
+  }
+
+  test("a registration left in the class directory is not read when the build lists resources and none registers") {
+    val found = findings(
+      Seq("src/main/scala/Old.scala" -> "package p; class Old extends Runnable { def run(): Unit = () }"),
+      resources = Seq("META-INF/services/java.lang.Runnable" -> "p.Old\n"),
+      marked = true
     )
     assertEquals(found.map(_._2), Set("p.Old"))
   }

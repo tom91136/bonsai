@@ -533,9 +533,10 @@ lazy val root = project.in(file("."))
         val scope = ManifestLines.scope(fixtures, id, test)
         ManifestLines.outputs(id, scope, configured.library(id).getOrElse(false), classes.toString) ++
           ManifestLines.sources(id, scope, sources.map(_.toString)) ++
-          ManifestLines.resources(id, resourceFiles.map(_.toString), resourceDirs.map(_.toString))
+          ManifestLines.resources(resourceFiles.map(_.toString), resourceDirs.map(_.toString))
       }
-      val managed = Def.task((managedSourceDirectories.value.map(_.toString), managedSources.value.map(_.toString)))
+      val resourced = ManifestLines.resourced(Def.task(thisProject.value.id).all(analysedOutputs).value)
+      val managed   = Def.task((managedSourceDirectories.value.map(_.toString), managedSources.value.map(_.toString)))
         .all(analysedOutputs).value
       val generated = ManifestLines.generated(managed.flatMap(_._1).distinct, managed.flatMap(_._2).distinct)
       val classpath = Def.task {
@@ -550,7 +551,7 @@ lazy val root = project.in(file("."))
       val manifest = target.value / "bonsai" / "manifest.tsv"
       IO.write(
         manifest,
-        ManifestLines.render(outputs ++ generated ++ jdk ++ classpath ++ options ++ configured.text, base)
+        ManifestLines.render(outputs ++ resourced ++ generated ++ jdk ++ classpath ++ options ++ configured.text, base)
       )
       manifest
     },

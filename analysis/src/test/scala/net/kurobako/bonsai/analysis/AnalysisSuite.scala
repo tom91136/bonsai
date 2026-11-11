@@ -44,7 +44,8 @@ trait AnalysisSuite extends FunSuite {
     * each platform twin, module `t0` and on, compiles beside the main ones, in place of those it names alike. `rooted`
     * compiles the build's sources under the build directory as their source root, and names it the root of the
     * manifest, as a build does. `resourced` are resources the build packages from a resource directory, and `unlisted`
-    * the files of that directory it does not, such as hidden and excluded ones, written in Latin-1.
+    * the files of that directory it does not, such as hidden and excluded ones, written in Latin-1. `marked` has the
+    * manifest name the module as one whose resources are listed, as `resourced` does.
     */
   protected def extract(
       main: Seq[(String, String)],
@@ -62,7 +63,8 @@ trait AnalysisSuite extends FunSuite {
       removed: Seq[String] = Nil,
       rooted: Boolean = false,
       resourced: Seq[(String, String)] = Nil,
-      unlisted: Seq[(String, String)] = Nil
+      unlisted: Seq[(String, String)] = Nil,
+      marked: Boolean = false
   ): Extraction.Result =
     inspect(
       main,
@@ -80,7 +82,8 @@ trait AnalysisSuite extends FunSuite {
       removed,
       rooted,
       resourced,
-      unlisted
+      unlisted,
+      marked
     )((result, _) => result)
 
   /** As `extract`, with the class directories the build compiled to, which are gone once this returns, for `use` to
@@ -102,7 +105,8 @@ trait AnalysisSuite extends FunSuite {
       removed: Seq[String] = Nil,
       rooted: Boolean = false,
       resourced: Seq[(String, String)] = Nil,
-      unlisted: Seq[(String, String)] = Nil
+      unlisted: Seq[(String, String)] = Nil,
+      marked: Boolean = false
   )(use: (Extraction.Result, Vector[Path]) => A): A =
     Scratch.using("bonsai-") { directory =>
       val sourceRoot = Option.when(rooted)(directory)
@@ -148,7 +152,8 @@ trait AnalysisSuite extends FunSuite {
         platforms = platforms.map(_._1.module).toSet,
         jdk = targetJdk,
         resources =
-          resourced.map((name, _) => Resource("m", name, directory.resolve("resources").resolve(name))).toVector
+          resourced.map((name, _) => Resource(name, directory.resolve("resources").resolve(name))).toVector,
+        resourced = if (marked || resourced.nonEmpty) Set("m") else Set.empty
       )
       val result =
         Extraction.read(manifest, generated, concurrent, reflective, hot, bounded).fold(

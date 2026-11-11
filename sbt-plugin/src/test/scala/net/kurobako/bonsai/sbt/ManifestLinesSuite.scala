@@ -53,14 +53,19 @@ class ManifestLinesSuite extends munit.FunSuite {
       IO.createDirectory(main / "META-INF" / "services" / "nested")
       val listed = (files :+ main / "META-INF" / "services" / "nested" :+ main / "plugin.properties").map(_.toString)
       assertEquals(
-        ManifestLines.resources("api", listed, Seq(main, managed).map(_.toString)),
+        ManifestLines.resources(listed, Seq(main, managed).map(_.toString)),
         Seq(
-          s"resource\tapi\tMETA-INF/services/a.Spi\t${files(0)}",
-          s"resource\tapi\tplugin.properties\t${files(1)}",
-          s"resource\tapi\tsbt/sbt.autoplugins\t${files(2)}"
+          s"resource\tMETA-INF/services/a.Spi\t${files(0)}",
+          s"resource\tplugin.properties\t${files(1)}",
+          s"resource\tsbt/sbt.autoplugins\t${files(2)}"
         )
       )
     }
+  }
+
+  test("each module whose resources are listed has one marker line") {
+    assertEquals(ManifestLines.resourced(Seq("b", "a", "b")), Seq("resourced\tb", "resourced\ta"))
+    assertEquals(ManifestLines.resourced(Nil), Nil)
   }
 
   test("a resource outside every resource directory is named by its file name") {
@@ -68,8 +73,8 @@ class ManifestLinesSuite extends munit.FunSuite {
       val loose = directory / "extra" / "plugin.properties"
       IO.write(loose, "x\n")
       assertEquals(
-        ManifestLines.resources("api", Seq(loose.toString), Seq((directory / "main").toString)),
-        Seq(s"resource\tapi\tplugin.properties\t$loose")
+        ManifestLines.resources(Seq(loose.toString), Seq((directory / "main").toString)),
+        Seq(s"resource\tplugin.properties\t$loose")
       )
     }
   }

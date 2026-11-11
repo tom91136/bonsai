@@ -17,4 +17,5 @@ option	root	-Wconf:id=E198:i
 option	root	-Wconf:msg=^(unused|unset)\s.*:i
 option	root	-Wconf:msg=^@nowarn\sannotation\s.*:i
 source	root	main	src/main/scala/demo/Main.scala
+resourced	root
 root
