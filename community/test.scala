@@ -21,8 +21,9 @@ def output(
     crash: Vector[String] = Vector.empty,
     runs: Vector[(String, Int)] = Vector.empty,
     findings: Vector[String] = Vector.empty,
-    name: String = "p"
-): Output = Output(name, status, log, err, crash, runs, findings)
+    name: String = "p",
+    failing: Set[String] = Set.empty
+): Output = Output(name, status, log, err, crash, runs, failing, findings)
 
 def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
 
@@ -132,6 +133,22 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   )
   check("a nonzero analysis exit is a crash")(kinds(output(runs = Vector("m.tsv" -> 1))) == Vector("crash"))
   check("a zero analysis exit is not")(kinds(output(runs = Vector("m.tsv" -> 0))).isEmpty)
+  check("an analysis that fails on its findings is healthy")(
+    kinds(output(
+      status = "failed",
+      log = Vector(banner, "error\tcomplexity\thandwritten\tm\tA\tA.scala:1\tcubic\tk", "[error] bonsai analysis failed"),
+      runs = Vector("m.tsv" -> 1),
+      failing = Set("m.tsv")
+    )).isEmpty
+  )
+  check("a failing finding of another run explains no exit")(
+    kinds(output(
+      status = "failed",
+      log = Vector(banner, "[error] bonsai analysis failed"),
+      runs = Vector("m.tsv" -> 1, "n.tsv" -> 1),
+      failing = Set("m.tsv")
+    )) == Vector("analysis-failed", "crash")
+  )
   check("an uncaught exception after the banner is a crash")(
     kinds(output(log = Vector(banner, "Exception in thread \"main\" java.lang.OutOfMemoryError: Java heap space"))) ==
       Vector("crash")
@@ -209,13 +226,16 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   put("out/a/info/runs.tsv", "m.tsv\t0\t3.2\tpeak_kb=1\n")
   put("out/a/info/m.tsv.err", "problem: y could not be read\n")
   put("out/a/info/m.manifest.tsv.out", "warning\tb\nwarning\ta\n")
+  put("out/a/info/runs.tsv", "m.tsv\t0\t3.2\tpeak_kb=1\nn.manifest.tsv\t1\t1.0\tpeak_kb=1\n")
+  put("out/a/info/n.manifest.tsv.out", "warning\tc\nerror\td\n")
   put("out/b/status", "runner-error:125\n")
   val a = Output.read(root.resolve("out/a"))
   check("a status is read")(a.status == "ok" && Output.read(root.resolve("out/b")).status == "runner-error")
   check("an unreadable directory has no status")(Output.read(root.resolve("out/none")).status == "missing")
   check("ansi codes are dropped")(a.log.head == banner)
-  check("the analysis exit is read")(a.runs == Vector("m.tsv" -> 0))
-  check("findings are read sorted")(a.findings == Vector("warning\ta", "warning\tb"))
+  check("the analysis exit is read")(a.runs == Vector("m.tsv" -> 0, "n.manifest.tsv" -> 1))
+  check("a run that printed a failing finding is read")(a.failing == Set("n.manifest.tsv"))
+  check("findings are read sorted")(a.findings == Vector("error\td", "warning\ta", "warning\tb", "warning\tc"))
   check("both logs are searched")(Health.assess(a).head.evidence.size == 2)
 
   writeBaseline(Vector(a), root.resolve("out"), root.resolve("base"))

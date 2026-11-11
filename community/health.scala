@@ -14,6 +14,7 @@ case class Output(
     err: Vector[String],
     crash: Vector[String],
     runs: Vector[(String, Int)],
+    failing: Set[String],
     findings: Vector[String]
 )
 
@@ -37,6 +38,7 @@ object Output {
       case Array(id, exit, _*) => exit.toIntOption.map(id -> _)
       case _                   => None
     })
+    val outputs = listed(info, "manifest.tsv.out").map(file => file -> lines(file))
     Output(
       name = dir.getFileName.toString,
       status = lines(dir.resolve("status")).headOption.map(_.takeWhile(_ != ':').trim).filter(_.nonEmpty)
@@ -45,7 +47,10 @@ object Output {
       err = listed(info, ".err").flatMap(lines(_)),
       crash = lines(dir.resolve("crash.txt")),
       runs = runs,
-      findings = listed(info, "manifest.tsv.out").flatMap(lines(_)).sorted
+      failing = outputs.collect {
+        case (file, out) if out.exists(_.startsWith("error\t")) => file.getFileName.toString.stripSuffix(".out")
+      }.toSet,
+      findings = outputs.flatMap(_._2).sorted
     )
   }
 }
@@ -99,12 +104,15 @@ object Health {
       Option(all.filter(matching)).filter(_.nonEmpty).map(hits => Failure(kind, limited(hits)))
 
     val uncaught = output.log.dropWhile(banner.findFirstIn(_).isEmpty).filter(_.startsWith("Exception in thread"))
-    val exits    = output.runs.collect { case (id, code) if code != 0 => s"the analysis of $id exited with $code" }
+    val exits    = output.runs.collect {
+      case (id, code) if code != 0 && !output.failing(id) => s"the analysis of $id exited with $code"
+    }
+    val judged   = output.runs.exists(_._2 != 0) && exits.isEmpty
     val jvm      = if (ran) output.crash.filter(l => l.startsWith("== ") && l.contains("hs_err_pid")) else Vector.empty
     val crash    = thrown(output.log) ++ (if (uncaught.isEmpty) Vector.empty else limited(uncaught)) ++ exits ++ jvm
 
     Vector(
-      hit("analysis-failed", _.contains("bonsai analysis failed")),
+      hit("analysis-failed", _.contains("bonsai analysis failed")).filterNot(_ => judged),
       hit(
         "problem",
         l =>

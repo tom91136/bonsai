@@ -36,7 +36,7 @@ import java.nio.file.StandardOpenOption
   val outputs = names.iterator.map { name =>
     val dir = out.resolve(name)
     if (Files.isDirectory(dir)) Output.read(dir)
-    else Output(name, "missing", Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty)
+    else Output(name, "missing", Vector.empty, Vector.empty, Vector.empty, Vector.empty, Set.empty, Vector.empty)
   }
   val all         = rows(outputs, before)
   val diffs       = findingChanges(all)
