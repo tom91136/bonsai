@@ -63,13 +63,13 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   check("the read-in-runs line is not a clash")(
     kinds(output(err =
       Vector(
-        "read in 2 compiler runs: Foo is a class in a.jar and a package in b.jar, which the compiler cannot read together"
+        "read in 2 groups: Foo is a class in a.jar and a package in b.jar, which the compiler cannot read together"
       )
     )).isEmpty
   )
   check("the read-in-runs line is not a clash with a prefix")(
     kinds(output(log =
-      Vector("[info] read in 3 compiler runs: Foo is a class in a.jar and a package in b.jar")
+      Vector("[info] read in 3 groups: Foo is a class in a.jar and a package in b.jar")
     )).isEmpty
   )
   check("a clash that fails the analysis is red")(

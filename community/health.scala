@@ -61,7 +61,7 @@ object Health {
     "^note: undefined: .+ # -?\\d+: .+ at readTasty$".r,
     "^note: .+ could not be \\w+: dotty\\.tools\\.dotc\\.core\\.MissingType: .*$".r
   )
-  private val rerun = "^(\\[\\w+\\]\\s+)?read in \\d+ compiler runs: ".r
+  private val rerun = "^(\\[\\w+\\]\\s+)?read in \\d+ groups: ".r
 
   def missingClass(line: String): Boolean = absent.exists(_.matches(line))
 
