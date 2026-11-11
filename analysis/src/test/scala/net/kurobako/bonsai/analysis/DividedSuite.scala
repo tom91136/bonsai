@@ -600,6 +600,8 @@ class DividedSuite extends AnalysisSuite {
       version
     )
 
+  private val Scale = "object Util { def scale(x: Int, factor: Int): Int = x * factor }"
+  private val Users = "package user\nobject Users { def one: Int = base.Util.scale(lib.implicits.one, 5) }"
   private val Tools = "package tool\nobject Tools { def two: Int = base.Util.scale(new lib.implicits.Tool().two, 5) }"
 
   private def libraries(
@@ -608,18 +610,18 @@ class DividedSuite extends AnalysisSuite {
       onObjects: Path,
       onPackage: Path,
       tools: String = Tools,
-      twinJars: Option[(Path, Path)] = None
+      twinJars: Option[(Path, Path)] = None,
+      userCode: String = Users,
+      core: String = Scale
   ): Manifest = {
     def padding(module: String) =
       Option.when(module == padded)("Padding.scala" -> s"package padding.$module\nclass One\nclass Two\nclass Three")
     val shared = compile(
       directory.resolve("base"),
-      base("object Util { def scale(x: Int, factor: Int): Int = x * factor }"),
+      base(core),
       Vector.empty
     )
-    val userSources =
-      Seq("Users.scala" -> "package user\nobject Users { def one: Int = base.Util.scale(lib.implicits.one, 5) }") ++
-        padding("users")
+    val userSources = Seq("Users.scala" -> userCode) ++ padding("users")
     val toolSources = Seq("Tools.scala" -> tools) ++ padding("tools")
     val users       = compile(directory.resolve("users"), userSources, Vector(shared, onObjects))
     val using       = compile(directory.resolve("tools"), toolSources, Vector(shared, onPackage))
@@ -650,6 +652,93 @@ class DividedSuite extends AnalysisSuite {
       platforms = twinned.map(_._1.module).toSet,
       jdk = targetJdk
     )
+  }
+
+  private val Cache = "trait Cache { def get: Int }\n" + Scale
+
+  private def memo(owner: String): String =
+    s"class $owner extends base.Cache {\n  def get: Int = 1\n  $Stats\n}"
+
+  private def alongside(whole: Manifest, directory: Path, twinned: Boolean): Manifest = {
+    val shared  = whole.outputs.find(_.module == "base").map(_.path).toVector
+    val visible = classpath ++ shared
+    val sources = Seq("Safe.scala" -> s"package safe\n${memo("Safe")}")
+    val modules = Vector("safe" -> sources) ++
+      Option.when(twinned)("safeJs" -> (sources :+ ("Own.scala" -> "package twin\nobject safeJs")))
+    val outputs =
+      modules.map((module, code) => Output(module, Output.Scope.Main, compile(directory.resolve(module), code, shared)))
+    whole.copy(
+      outputs = whole.outputs ++ outputs,
+      classpath = whole.classpath ++ outputs.map(_.module -> visible),
+      platforms = whole.platforms ++ Option.when(twinned)("safeJs")
+    )
+  }
+
+  private def exported(whole: Manifest, directory: Path): Manifest = {
+    val classes = whole.outputs.find(_.module == "base").map(_.path)
+    val jar     = archive(classes.get, directory.resolve("base.jar"), "base", "1.0")
+    whole.copy(classpath =
+      whole.classpath.view.mapValues(_.map(entry => if (classes.contains(entry)) jar else entry)).toMap
+    )
+  }
+
+  test("copies in modules read in different runs are one finding, whether or not their modules have twins") {
+    val flags   = Seq(false, true)
+    val layouts = for {
+      users <- flags
+      safe  <- flags
+      jar   <- flags
+    } yield (users, safe, jar)
+    layouts.foreach { (users, safe, jar) =>
+      Scratch.using("bonsai-") { directory =>
+        val pair = Option.when(users)(
+          (
+            library(directory, "objectsNative", "1.0", objectLibrary),
+            library(directory, "packagedJs", "1.0", packageLibrary)
+          )
+        )
+        val built = alongside(
+          libraries(
+            directory,
+            "tools",
+            library(directory, "objects", "1.0", objectLibrary),
+            library(directory, "packaged", "1.0", packageLibrary),
+            twinJars = pair,
+            userCode = s"$Users\n${memo("Memo")}",
+            core = Cache
+          ),
+          directory,
+          safe
+        )
+        val whole = if (jar) exported(built, directory) else built
+        assertEquals(groups(whole, Set("lib.implicits")), 2)
+        val result = reads(whole)
+        val found  = Clones.findings(result.clones, result.graph.nodes, Intended(), result.graph.edges)
+        assert(
+          found.exists(finding => finding.rule == Finding.Rule.DuplicateCode && finding.detail.contains("Safe.scala")),
+          s"users twin $users, safe twin $safe, jar $jar: ${result.clones}\n${found.mkString("\n")}"
+        )
+      }
+    }
+  }
+
+  test("a call into a module of another run, found in its jar, is a use of its callee") {
+    Seq("users", "tools").foreach { padded =>
+      Scratch.using("bonsai-") { directory =>
+        val whole = exported(
+          libraries(
+            directory,
+            padded,
+            library(directory, "objects", "1.0", objectLibrary),
+            library(directory, "packaged", "1.0", packageLibrary)
+          ),
+          directory
+        )
+        assertEquals(groups(whole, Set("lib.implicits")), 2)
+        val result = reads(whole)
+        assertFinding(smells(result), "constant-argument", "Util.scale(x, factor).factor is always 5 across 2")
+      }
+    }
   }
 
   private val objectLibrary  = "package lib\nobject implicits { def one: Int = 1 }"
@@ -888,7 +977,7 @@ class DividedSuite extends AnalysisSuite {
         Set.empty,
         jdk = targetJdk
       )
-      assertEquals(groups(whole), 2)
+      assertEquals(groups(whole, Set("lib.implicits")), 2)
       assert(reads(whole).graph.nodes.contains("com.foo.Use"))
     }
   }
