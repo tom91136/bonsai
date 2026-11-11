@@ -945,6 +945,49 @@ class PuritySuite extends AnalysisSuite {
     )
   }
 
+  private lazy val deferred = analysed(
+    "Deferred",
+    """import scala.concurrent.ExecutionContext.Implicits.global
+      |import scala.concurrent.Future
+      |object Deferred {
+      |  def double(x: Int): Int = x * 2
+      |  def run(body: => Int): Int = body
+      |  def twice(body: => Int): Int = run(body) + run(body)
+      |  def spawned(): Unit = {
+      |    Future { println("x") }
+      |    Future.apply(println("y"))
+      |    Future { 1 }
+      |  }
+      |  def local(): Unit = {
+      |    run(println("z").hashCode)
+      |    twice(println("w").hashCode)
+      |  }
+      |  def quiet(x: Int): Unit = {
+      |    run(x + 1)
+      |    twice(x + 1)
+      |    double(x)
+      |  }
+      |  def delayed(delay: Long)(body: => Int): Int = {
+      |    val timer = new java.util.Timer()
+      |    timer.schedule(new java.util.TimerTask { def run(): Unit = { val _ = body } }, delay)
+      |    1
+      |  }
+      |  def armed(): Unit = {
+      |    delayed(1)(2)
+      |  }
+      |}""".stripMargin,
+    Seq.empty
+  )
+
+  test(
+    "dropping the result of a call that spawns work, directly or through a callee, or runs a by-name argument with effects, is not reported"
+  ) {
+    val lines = Purity.findings(deferred.purity, deferred.graph.nodes).collect {
+      case finding if finding.rule == Finding.Rule.PureDiscard => finding.node.line
+    }
+    assertEquals(lines.sorted, Vector(17, 18, 19))
+  }
+
   private lazy val asserted = analysed(
     "Checked",
     """import org.scalatest.Assertions

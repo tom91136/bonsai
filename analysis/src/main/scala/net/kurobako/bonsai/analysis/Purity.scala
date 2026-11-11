@@ -691,6 +691,11 @@ object Purity {
       "scala.concurrent.ExecutionContext.execute",
       "java.util.concurrent.Executor.execute",
       "java.util.concurrent.ExecutorService.submit",
+      "java.util.concurrent.ScheduledExecutorService.schedule",
+      "java.util.concurrent.ScheduledExecutorService.scheduleAtFixedRate",
+      "java.util.concurrent.ScheduledExecutorService.scheduleWithFixedDelay",
+      "java.util.Timer.schedule",
+      "java.util.Timer.scheduleAtFixedRate",
       "java.util.concurrent.CompletableFuture.supplyAsync",
       "java.util.concurrent.CompletableFuture.runAsync",
       "java.lang.Thread.<init>",
@@ -1744,6 +1749,7 @@ object Purity {
     private def short(symbol: Symbol): String = shortNames.getOrElseUpdate(symbol, Finding.short(qualified(symbol)))
 
     private val pureOwners = mutable.HashMap.empty[Symbol, Boolean]
+    private val spawners   = mutable.HashMap.empty[Symbol, Boolean]
 
     private def qualified(symbol: Symbol): String = Calls.qualified(symbol)
 
@@ -1917,7 +1923,8 @@ object Purity {
           }
         if (depth == 0 && method.exists && method.owner == defn.BooleanClass && Connectives(method.name.toString))
           connected(tree, method)
-        if (depth == 0 && (method +: method.allOverriddenSymbols.toVector).exists(spawns(_)))
+        if (spawns(method)) effects += Generic(Kind.Writes, "spawns work", via = Some(short(method)), library = true)
+        if (depth == 0 && spawns(method))
           passed.zip(arguments).foreach {
             case (Argument.Function(_), argument) =>
               val body = Calls.lambda(argument).getOrElse(argument)
@@ -2093,10 +2100,13 @@ object Purity {
         case _ => Nil
       }
 
-      private def spawns(method: Symbol): Boolean = {
-        val name = qualified(method)
-        Spawning(name) || concurrent(name) || name.startsWith("scala.collection.parallel.")
-      }
+      private def spawns(method: Symbol): Boolean = spawners.getOrElseUpdate(
+        method,
+        method.exists && (method +: method.allOverriddenSymbols.toVector).exists { overridden =>
+          val name = qualified(overridden)
+          Spawning(name) || concurrent(name) || name.startsWith("scala.collection.parallel.")
+        }
+      )
 
       /** Assignments in `body`, outside synchronized blocks, to variables declared outside it that are not volatile. */
       private def unguarded(body: tpd.Tree): Vector[(Symbol, tpd.Tree)] = {
