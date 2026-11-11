@@ -6,6 +6,7 @@
 // A project is a JSON object per line: {"url": ..., "ref": ..., "java": 17, "sbt": ["bonsaiAnalyse"], "name": ...};
 // "sbt", "name" and "fetch_tag" (a tag, or ALL, to fetch) are optional. A project with a "shard" runs in that shard,
 // and one without belongs to shard i mod <of>, i being its index in the list.
+// A project whose status is clone-failed or runner-error runs once more if the budget allows.
 
 import java.nio.file.Files
 import java.nio.file.Path
@@ -21,6 +22,8 @@ def optional(project: ujson.Value, key: String): String = project.obj.get(key) m
   case None | Some(ujson.Null) | Some(ujson.False) => ""
   case Some(value)                                 => text(value)
 }
+
+def flaky(status: String): Boolean = Set("clone-failed", "runner-error", "").contains(status)
 
 def derivedName(url: String): String =
   url
@@ -69,17 +72,23 @@ def derivedName(url: String): String =
         (if (name.nonEmpty) Vector("--name", name) else Vector.empty) ++
         (if (tag.nonEmpty) Vector("--tag", tag) else Vector.empty) ++
         sbt.flatMap(Vector("--sbt", _))
-      val remaining = budget - seconds - 600
-      val limit     = remaining.min(perProject)
+      val derived                        = if (name.nonEmpty) name else derivedName(url)
+      def limit                          = (budget - seconds - 600).min(perProject)
+      def attempt(timeout: Long): String = {
+        val command = Vector(here.resolve("run.scala").toString) ++ run ++ Vector("--timeout", timeout.toString) ++
+          passed
+        val code = new ProcessBuilder(command.asJava).inheritIO().start().waitFor()
+        if (code != 0) System.err.println(s"$url: runner failed")
+        val status = Path.of(out, derived, "status")
+        if (Files.exists(status)) Files.readString(status).trim.takeWhile(_ != ':') else ""
+      }
       if (limit < 300) {
-        val derived = if (name.nonEmpty) name else derivedName(url)
         Files.createDirectories(Path.of(out, derived))
         Files.writeString(Path.of(out, derived, "status"), "not-run\n")
         println(s"$derived: not-run (shard budget spent)")
-      } else {
-        val command = Vector(here.resolve("run.scala").toString) ++ run ++ Vector("--timeout", limit.toString) ++ passed
-        val code    = new ProcessBuilder(command.asJava).inheritIO().start().waitFor()
-        if (code != 0) System.err.println(s"$url: runner failed")
+      } else if (flaky(attempt(limit)) && limit >= 300) {
+        println(s"$derived: retrying once")
+        attempt(limit)
       }
     }
 }
