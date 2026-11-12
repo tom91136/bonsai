@@ -89,7 +89,6 @@ jobs:
       contents: read
       actions: read
     outputs:
-      projects: ${{ steps.plan.outputs.projects }}
       matrix: ${{ steps.plan.outputs.matrix }}
       count: ${{ steps.plan.outputs.count }}
       previous: ${{ steps.previous.outputs.run }}
@@ -123,9 +122,14 @@ jobs:
             list=$RUNNER_TEMP/projects.json
             printf '%s' "$PROJECTS" > "$list"
           fi
-          options=(--projects "$list" --shards "$SHARDS" --memory "$MEMORY")
+          options=(--projects "$list" --planned planned.jsonl --shards "$SHARDS" --memory "$MEMORY")
           if [[ -n $PREVIOUS ]]; then options+=(--previous "$RUNNER_TEMP/previous"); fi
           community/plan.scala "${options[@]}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: community-plan
+          path: planned.jsonl
+          retention-days: 1
 
   build:
     needs: [image, bonsai, plan]
@@ -166,8 +170,11 @@ jobs:
         with:
           name: bonsai-ivy
           path: ${{ runner.temp }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: community-plan
+          path: ${{ runner.temp }}
       - env:
-          PROJECTS: ${{ needs.plan.outputs.projects }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ needs.plan.outputs.count }}
           TIMEOUT_MINUTES: ${{ inputs.project-timeout-minutes || '60' }}
@@ -178,10 +185,9 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/ivy"
           zstd -dc "$RUNNER_TEMP/bonsai-ivy.tar.zst" | tar -C "$RUNNER_TEMP/ivy" -xf -
-          jq -c '.[]' <<< "$PROJECTS" > "$RUNNER_TEMP/projects.jsonl"
           options=(--ivy "$RUNNER_TEMP/ivy" --out "$GITHUB_WORKSPACE/out" --memory "$MEMORY" --heap "$HEAP")
           if [[ -n $SWAP ]]; then options+=(--memory-swap "$SWAP"); fi
-          community/shard.scala "$RUNNER_TEMP/projects.jsonl" "$SHARD" "$SHARDS" $((345 * 60)) $((TIMEOUT_MINUTES * 60)) "${options[@]}"
+          community/shard.scala "$RUNNER_TEMP/planned.jsonl" "$SHARD" "$SHARDS" $((345 * 60)) $((TIMEOUT_MINUTES * 60)) "${options[@]}"
       - if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -208,19 +214,21 @@ jobs:
           pattern: outputs-*
           path: out
           merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: community-plan
+          path: ${{ runner.temp }}
       - env:
           GH_TOKEN: ${{ github.token }}
-          PROJECTS: ${{ needs.plan.outputs.projects }}
           PREVIOUS: ${{ needs.plan.outputs.previous }}
         run: |
           set -euo pipefail
-          jq -c '.[]' <<< "$PROJECTS" > "$RUNNER_TEMP/projects.jsonl"
           options=()
           if [[ -n $PREVIOUS ]]; then
             gh run download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --name community-baseline --dir "$RUNNER_TEMP/previous"
             options+=(--previous "$RUNNER_TEMP/previous" --previous-run "$PREVIOUS")
           fi
-          community/report.scala --out out --projects "$RUNNER_TEMP/projects.jsonl" --summary "$GITHUB_STEP_SUMMARY" \
+          community/report.scala --out out --projects "$RUNNER_TEMP/planned.jsonl" --summary "$GITHUB_STEP_SUMMARY" \
             --report report --baseline baseline "${options[@]}"
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

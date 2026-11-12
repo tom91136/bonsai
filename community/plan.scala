@@ -3,8 +3,9 @@
 //> using dep com.lihaoyi::ujson:4.4.3
 //> using file projects.scala
 //> using file packing.scala
-// Checks the projects, divides them over shards and prints the workflow outputs as key=value lines: projects, matrix, count.
-// usage: plan.scala --projects FILE [--previous DIR] [--shards N] [--memory SIZE] [--heap SIZE]
+// Checks the projects, divides them over shards, writes them with their shard to the --planned file, one per line, and
+// prints the workflow outputs as key=value lines: matrix, count.
+// usage: plan.scala --projects FILE --planned FILE [--previous DIR] [--shards N] [--memory SIZE] [--heap SIZE]
 //   --previous DIR  the baseline of the previous run; its <name>/timings.tsv balance the shards
 //   --shards N      shards for the projects on the default memory, 0 for one each, none for about twenty per shard
 //   --memory, --heap  the default container memory and sbt heap
@@ -34,6 +35,7 @@ def timings(previous: Option[Path], names: Vector[String]): Map[String, Double] 
 @main def plan(args: String*): Unit = {
   val options = args.grouped(2).collect { case Seq(key, value) => key -> value }.toMap
   val file    = options.getOrElse("--projects", fail("--projects is required"))
+  val planned = options.getOrElse("--planned", fail("--planned is required"))
   val default = Profile(
     options.get("--memory").filter(_.nonEmpty).getOrElse("12g"),
     "",
@@ -83,12 +85,12 @@ def timings(previous: Option[Path], names: Vector[String]): Map[String, Double] 
   }
   if (first > MaxShards) fail(s"$first shards; a workflow run takes at most $MaxShards jobs")
 
-  val stamped = ujson.Arr.from(projects.zipWithIndex.map { (project, i) =>
+  val stamped = projects.zipWithIndex.map { (project, i) =>
     val kept = Seq("name", "url", "ref", "java", "sbt", "fetch_tag").flatMap(key => project.obj.get(key).map(key -> _))
     ujson.Obj.from(("name" -> ujson.Str(names(i))) +: kept.filterNot(_._1 == "name") :+
       ("shard" -> ujson.Num(shards(i))))
-  })
-  println(s"projects=${ujson.write(stamped)}")
+  }
+  Files.writeString(Path.of(planned), stamped.map(ujson.write(_) + "\n").mkString, UTF_8)
   println(s"matrix=${ujson.write(ujson.Obj("include" -> ujson.Arr.from(matrix.result())))}")
   println(s"count=$first")
   System.err.println(
