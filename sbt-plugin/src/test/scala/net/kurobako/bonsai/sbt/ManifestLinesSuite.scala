@@ -33,7 +33,10 @@ class ManifestLinesSuite extends munit.FunSuite {
 
   test("sources, classpath and options name their project or entry") {
     assertEquals(ManifestLines.sources("api", "main", Seq("/api/A.scala")), Seq("source\tapi\tmain\t/api/A.scala"))
-    assertEquals(ManifestLines.classpath("api", Seq("/lib/cats.jar")), Seq("classpath\tapi\t/lib/cats.jar"))
+    assertEquals(
+      ManifestLines.classpath("api", "main", Seq("/lib/cats.jar")),
+      Seq("classpath\tapi\tmain\t/lib/cats.jar")
+    )
     assertEquals(ManifestLines.options("api", Seq("-deprecation")), Seq("option\tapi\t-deprecation"))
   }
 
@@ -98,8 +101,11 @@ class ManifestLinesSuite extends munit.FunSuite {
 
   test("the rendered manifest ends with the root line and a newline") {
     assertEquals(
-      ManifestLines.render(Seq("output\tapi\tmain\t/api/classes", "classpath\tapi\t/lib/cats.jar"), file("/build")),
-      "output\tapi\tmain\t/api/classes\nclasspath\tapi\t/lib/cats.jar\nroot\t/build\n"
+      ManifestLines.render(
+        Seq("output\tapi\tmain\t/api/classes", "classpath\tapi\tmain\t/lib/cats.jar"),
+        file("/build")
+      ),
+      "output\tapi\tmain\t/api/classes\nclasspath\tapi\tmain\t/lib/cats.jar\nroot\t/build\n"
     )
   }
 

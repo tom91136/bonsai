@@ -12,7 +12,7 @@ private[sbt] object Compat {
 
   def dependencyPaths: Def.Initialize[Task[Seq[String]]] = Def.task {
     val converter = fileConverter.value
-    (externalDependencyClasspath.value ++ internalDependencyClasspath.value).map(entry =>
+    dependencyClasspath.value.map(entry =>
       converter.toPath(entry.data).toString
     )
   }

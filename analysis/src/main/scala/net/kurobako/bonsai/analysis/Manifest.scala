@@ -12,11 +12,11 @@ object Manifest {
   private def scopeOf(path: Path, index: Int, scope: String): Either[String, Output.Scope] =
     Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope")
 
-  /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <module> <entry>`, `library <module>`,
-    * `depends <module> <module>`, `platform <module>`, `recorded <module>`, `option <module> <compiler option>`,
-    * `source <module> <scope> <file>`, `product <module> <scope> <file>`, `resource <name> <file>`,
-    * `resourced <module>`, `model <module> <scope> <file>`, `generated <path>`, `jdk <home>`, `root <directory>`,
-    * `text-exclude <glob>` and `text <rule index> <field> <value>` lines.
+  /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <module> <scope> <entry>`,
+    * `library <module>`, `depends <module> <module>`, `platform <module>`, `recorded <module>`,
+    * `option <module> <compiler option>`, `source <module> <scope> <file>`, `product <module> <scope> <file>`,
+    * `resource <name> <file>`, `resourced <module>`, `model <module> <scope> <file>`, `generated <path>`, `jdk <home>`,
+    * `root <directory>`, `text-exclude <glob>` and `text <rule index> <field> <value>` lines.
     */
   def read(path: Path): Either[String, Manifest] =
     Files.readAllLines(path).asScala.toVector.zipWithIndex.filter(_._1.nonEmpty)
@@ -28,13 +28,13 @@ object Manifest {
                 scopeOf(path, index, scope).map {
                   parsed => current.copy(outputs = current.outputs :+ Output(module, parsed, Path.of(location)))
                 }
-              case List("classpath", module, location) =>
-                Right(current.copy(classpath =
-                  current.classpath.updated(
-                    module,
-                    current.classpath.getOrElse(module, Vector.empty) :+ Path.of(location)
+              case List("classpath", module, scope, location) =>
+                scopeOf(path, index, scope).map { parsed =>
+                  val key = module -> parsed
+                  current.copy(classpath =
+                    current.classpath.updated(key, current.classpath.getOrElse(key, Vector.empty) :+ Path.of(location))
                   )
-                ))
+                }
               case List("depends", module, other) =>
                 Right(current.copy(dependencies =
                   current.dependencies.updated(module, current.dependencies.getOrElse(module, Set.empty) + other)
@@ -83,22 +83,22 @@ object Manifest {
       }
 }
 
-/** Compiled outputs of a build and the external classpath of each module needed to read them; the public API of
-  * `libraries`, modules other builds depend on, is used by those builds. `options` holds the compiler options of each
-  * module, `sources` the source files each compile read, `products` the class and TASTy files each compile recorded,
-  * which must exist, and `root` the directory of the build, which reported paths are relative to. `resources` are the
-  * files that register entry points, each with its path in the jar, and `resourced` the modules whose resources the
-  * build lists, which their outputs are not read for. `platforms` are the Scala.js and Scala Native twins of JVM
-  * modules, which compile the shared sources again. `texts` holds the fields of each repository text rule by its index,
-  * and `textExclusions` the files no text rule reads. `models` holds the files the javac plugin collected the model of
-  * the Java code of each module in, `generated` the directories and files the build generates sources in, `jdk` the
-  * home of the JDK the build targets, whose classes are read before the outputs, and `recorded` the modules the
-  * compiler plugin compiled in the audit mode, whose findings it kept beside their classes, and `dependencies` the
+/** Compiled outputs of a build and the external classpath each module's scope compiled with, needed to read them; the
+  * public API of `libraries`, modules other builds depend on, is used by those builds. `options` holds the compiler
+  * options of each module, `sources` the source files each compile read, `products` the class and TASTy files each
+  * compile recorded, which must exist, and `root` the directory of the build, which reported paths are relative to.
+  * `resources` are the files that register entry points, each with its path in the jar, and `resourced` the modules
+  * whose resources the build lists, which their outputs are not read for. `platforms` are the Scala.js and Scala Native
+  * twins of JVM modules, which compile the shared sources again. `texts` holds the fields of each repository text rule
+  * by its index, and `textExclusions` the files no text rule reads. `models` holds the files the javac plugin collected
+  * the model of the Java code of each module in, `generated` the directories and files the build generates sources in,
+  * `jdk` the home of the JDK the build targets, whose classes are read before the outputs, and `recorded` the modules
+  * the compiler plugin compiled in the audit mode, whose findings it kept beside their classes, and `dependencies` the
   * modules of the build each module depends on, beside those its classpath holds the outputs of.
   */
 case class Manifest(
     outputs: Vector[Output],
-    classpath: Map[String, Vector[Path]],
+    classpath: Map[(String, Output.Scope), Vector[Path]],
     libraries: Set[String],
     options: Map[String, Vector[String]] = Map.empty,
     sources: Vector[Output] = Vector.empty,
@@ -119,9 +119,9 @@ case class Manifest(
   /** The modules each module depends on: those whose outputs its classpath holds, and those the build names. */
   def requires: Map[String, Set[String]] = {
     val owners = outputs.map(output => output.path -> output.module).toMap
-    (classpath.keySet ++ dependencies.keySet).map { module =>
+    (classpathModules ++ dependencies.keySet).map { module =>
       module ->
-        (classpath.getOrElse(module, Vector.empty).flatMap(owners.get).toSet ++
+        (classpathOf(Seq(module)).flatMap(owners.get).toSet ++
           dependencies.getOrElse(module, Set.empty)).excl(module)
     }.toMap
   }
@@ -144,7 +144,13 @@ case class Manifest(
 
   def relative(path: Path): Path = root.filter(path.startsWith(_)).fold(path)(_.relativize(path))
 
-  /** The entries of the classpaths of `modules`, in their order, each once. */
+  /** The modules that have a classpath. */
+  def classpathModules: Set[String] = classpath.keySet.map(_._1)
+
+  /** The entries of the classpaths of the scopes of `modules`, in their order, each once. */
   def classpathOf(modules: Seq[String]): Vector[Path] =
-    modules.flatMap(classpath.getOrElse(_, Vector.empty)).distinct.toVector
+    modules.flatMap(module =>
+      Output.Scope.values.toSeq.flatMap(scope => classpath.getOrElse(module -> scope, Vector.empty))
+    )
+      .distinct.toVector
 }

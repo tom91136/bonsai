@@ -35,7 +35,9 @@ object Reach {
     manifest.outputs.filterNot(output => manifest.platforms(output.module))
 
   private def librariesOf(manifest: Manifest): Vector[Path] =
-    manifest.classpath.filterNot((module, _) => manifest.platforms(module)).values.flatten.toVector.distinct
+    manifest.classpath.filterNot { case ((module, _), _) =>
+      manifest.platforms(module)
+    }.values.flatten.toVector.distinct
 
   /** The program of a build as its class files run it: the calls from where the roots of its graph enter it, and the
     * effects of the methods they reach that have no TASTy. The one call graph of a run.

@@ -55,7 +55,7 @@ class DividedSuite extends AnalysisSuite {
         Output("objects", Output.Scope.Main, onObjects),
         Output("packaged", Output.Scope.Main, onPackage)
       ),
-      Map("base" -> classpath, "objects" -> visible, "packaged" -> visible) ++ twinned.map(_.module -> visible),
+      scoped(Map("base" -> classpath, "objects" -> visible, "packaged" -> visible) ++ twinned.map(_.module -> visible)),
       Set.empty,
       platforms = twinned.map(_.module).toSet,
       jdk = targetJdk
@@ -404,7 +404,7 @@ class DividedSuite extends AnalysisSuite {
     )
     val whole = Manifest(
       Vector(Output("coreJs", Output.Scope.Main, twin), Output("core", Output.Scope.Main, jvm)),
-      Map("coreJs" -> classpath, "core" -> classpath),
+      scoped(Map("coreJs" -> classpath, "core" -> classpath)),
       Set.empty,
       platforms = Set("coreJs"),
       jdk = targetJdk
@@ -441,7 +441,7 @@ class DividedSuite extends AnalysisSuite {
       )
       val whole = Manifest(
         Vector(Output("coreJs", Output.Scope.Main, twin), Output("core", Output.Scope.Main, jvm)),
-        Map("coreJs" -> classpath, "core" -> classpath),
+        scoped(Map("coreJs" -> classpath, "core" -> classpath)),
         Set.empty,
         platforms = Set("coreJs"),
         jdk = targetJdk
@@ -505,7 +505,7 @@ class DividedSuite extends AnalysisSuite {
       val whole = Manifest(
         Vector(Output("appJs", Output.Scope.Main, lone), Output("core", Output.Scope.Main, jvm)) ++
           Option.when(redeclared)(Output("coreJs", Output.Scope.Main, peer)),
-        Map("appJs" -> classpath, "core" -> classpath) ++ Option.when(redeclared)("coreJs" -> classpath),
+        scoped(Map("appJs" -> classpath, "core" -> classpath) ++ Option.when(redeclared)("coreJs" -> classpath)),
         Set.empty,
         platforms = Set("appJs") ++ Option.when(redeclared)("coreJs"),
         jdk = targetJdk
@@ -535,7 +535,7 @@ class DividedSuite extends AnalysisSuite {
       )
       val whole = Manifest(
         outputs,
-        Map("core" -> classpath, "lib" -> (classpath :+ coreClasses)),
+        scoped(Map("core" -> classpath, "lib" -> (classpath :+ coreClasses))),
         libraries,
         jdk = targetJdk
       )
@@ -585,7 +585,7 @@ class DividedSuite extends AnalysisSuite {
           Output("objects", Output.Scope.Main, objects),
           Output("packaged", Output.Scope.Main, packaged)
         ),
-        Map("objectsJs" -> classpath, "objects" -> classpath, "packaged" -> classpath),
+        scoped(Map("objectsJs" -> classpath, "objects" -> classpath, "packaged" -> classpath)),
         Set.empty,
         platforms = Set("objectsJs"),
         jdk = targetJdk
@@ -648,11 +648,11 @@ class DividedSuite extends AnalysisSuite {
         Output("users", Output.Scope.Main, users),
         Output("tools", Output.Scope.Main, using)
       ),
-      Map(
+      scoped(Map(
         "base"  -> classpath,
         "users" -> (classpath ++ Vector(shared, onObjects)),
         "tools" -> (classpath ++ Vector(shared, onPackage))
-      ) ++ twinned.map((output, jar) => output.module -> (classpath ++ Vector(shared, jar))),
+      ) ++ twinned.map((output, jar) => output.module -> (classpath ++ Vector(shared, jar)))),
       Set.empty,
       platforms = twinned.map(_._1.module).toSet,
       jdk = targetJdk
@@ -674,7 +674,7 @@ class DividedSuite extends AnalysisSuite {
       modules.map((module, code) => Output(module, Output.Scope.Main, compile(directory.resolve(module), code, shared)))
     whole.copy(
       outputs = whole.outputs ++ outputs,
-      classpath = whole.classpath ++ outputs.map(_.module -> visible),
+      classpath = whole.classpath ++ scoped(outputs.map(_.module -> visible).toMap),
       platforms = whole.platforms ++ Option.when(twinned)("safeJs")
     )
   }
@@ -773,13 +773,15 @@ class DividedSuite extends AnalysisSuite {
       jars: Vector[Path] = Vector.empty
   ): Manifest = Manifest(
     Vector(Output(module, Output.Scope.Main, compile(directory.resolve(module), sources, jars))),
-    Map(module -> (classpath ++ jars)),
+    scoped(Map(module -> (classpath ++ jars))),
     Set.empty,
     jdk = targetJdk
   )
 
   private def withJars(whole: Manifest, module: String, jars: Path*): Manifest =
-    whole.copy(classpath = whole.classpath.updated(module, whole.classpath(module) ++ jars))
+    whole.copy(classpath =
+      whole.classpath.updated(module -> Output.Scope.Main, whole.classpath(module -> Output.Scope.Main) ++ jars)
+    )
 
   test("an object in one library and a package of its name in another, each on an unrelated module, are read apart") {
     Seq("users", "tools").foreach { padded =>
@@ -860,8 +862,9 @@ class DividedSuite extends AnalysisSuite {
       val objects  = library(directory, "objects", "1.0", objectLibrary)
       val packaged = library(directory, "packaged", "1.0", packageLibrary)
       val whole    = libraries(directory, "tools", objects, packaged)
-      val both     = whole.classpath("users") ++ whole.classpath("tools").takeRight(1)
-      val error    = fails(whole.copy(classpath = whole.classpath.updated("users", both)))
+      val both     = whole.classpath("users" -> Output.Scope.Main) ++
+        whole.classpath("tools" -> Output.Scope.Main).takeRight(1)
+      val error = fails(whole.copy(classpath = whole.classpath.updated("users" -> Output.Scope.Main, both)))
       assert(
         error.startsWith(s"lib.implicits is a class in library $objects and a package in library $packaged"),
         error
@@ -879,8 +882,9 @@ class DividedSuite extends AnalysisSuite {
       val objects  = jar("one", "objects", objectLibrary)
       val packaged = jar("two", "packaged", packageLibrary)
       val whole    = libraries(directory, "tools", objects, packaged)
-      val both     = whole.classpath("users") ++ whole.classpath("tools").takeRight(1)
-      val error    = fails(whole.copy(classpath = whole.classpath.updated("users", both)))
+      val both     = whole.classpath("users" -> Output.Scope.Main) ++
+        whole.classpath("tools" -> Output.Scope.Main).takeRight(1)
+      val error = fails(whole.copy(classpath = whole.classpath.updated("users" -> Output.Scope.Main, both)))
       assert(
         error.startsWith(s"lib.implicits is a class in library $objects and a package in library $packaged"),
         error
@@ -901,7 +905,7 @@ class DividedSuite extends AnalysisSuite {
       val deep  = compile(directory.resolve("deep"), Seq("C.scala" -> "package a.b\nclass C"), Vector.empty)
       val whole = Manifest(
         Vector(Output("root", Output.Scope.Main, root), Output("deep", Output.Scope.Main, deep)),
-        Map("root" -> classpath, "deep" -> classpath),
+        scoped(Map("root" -> classpath, "deep" -> classpath)),
         Set.empty,
         jdk = targetJdk
       )
@@ -936,7 +940,7 @@ class DividedSuite extends AnalysisSuite {
       val classes = resourced(directory, "m", "com/foo/MyTest/input.json")
       val whole   = Manifest(
         Vector(Output("m", Output.Scope.Main, classes)),
-        Map("m" -> classpath),
+        scoped(Map("m" -> classpath)),
         Set.empty,
         jdk = targetJdk
       )
@@ -949,7 +953,7 @@ class DividedSuite extends AnalysisSuite {
       val classes = resourced(directory, "m", "com/foo/MyTest/data/input.json")
       val whole   = Manifest(
         Vector(Output("m", Output.Scope.Main, classes)),
-        Map("m" -> classpath),
+        scoped(Map("m" -> classpath)),
         Set.empty,
         jdk = targetJdk
       )
@@ -978,7 +982,7 @@ class DividedSuite extends AnalysisSuite {
           Output("data", Output.Scope.Main, data),
           Output("padding", Output.Scope.Main, padding)
         ),
-        Map("classes" -> classpath, "data" -> classpath, "padding" -> classpath),
+        scoped(Map("classes" -> classpath, "data" -> classpath, "padding" -> classpath)),
         Set.empty,
         jdk = targetJdk
       )
@@ -1029,10 +1033,13 @@ class DividedSuite extends AnalysisSuite {
         library(directory, "objects", "1.0", objectLibrary),
         library(directory, "packaged", "1.0", packageLibrary)
       )
-      val objects = whole.classpath("users").last
+      val objects = whole.classpath("users" -> Output.Scope.Main).last
       val only    = whole.copy(
         outputs = whole.outputs.filterNot(_.module == "users"),
-        classpath = whole.classpath.removed("users").updated("ghost", classpath :+ objects)
+        classpath = whole.classpath.removed("users" -> Output.Scope.Main).updated(
+          "ghost" -> Output.Scope.Main,
+          classpath :+ objects
+        )
       )
       val result = Extraction.read(only).fold(errors => fail(errors.mkString("\n")), identity)
       assertEquals(result.problems, Vector.empty)
@@ -1046,7 +1053,7 @@ class DividedSuite extends AnalysisSuite {
       compile(directory.resolve(module), Seq("Extra.scala" -> s"package $qualified\nclass Extra"), Vector.empty)
     Manifest(
       Vector(Output(module, Output.Scope.Main, classes)),
-      Map(module -> (classpath :+ jar)),
+      scoped(Map(module -> (classpath :+ jar))),
       Set.empty,
       jdk = targetJdk
     )
@@ -1086,8 +1093,11 @@ class DividedSuite extends AnalysisSuite {
       )
       val only = whole.copy(
         outputs = whole.outputs.filterNot(_.module == "users"),
-        classpath = whole.classpath.removed("users").updated("ghost", classpath :+ whole.classpath("users").last)
-          .updated("shadow", classpath :+ whole.classpath("tools").last)
+        classpath = whole.classpath.removed("users" -> Output.Scope.Main).updated(
+          "ghost" -> Output.Scope.Main,
+          classpath :+ whole.classpath("users" -> Output.Scope.Main).last
+        )
+          .updated("shadow" -> Output.Scope.Main, classpath :+ whole.classpath("tools" -> Output.Scope.Main).last)
       )
       val error = fails(only)
       assert(error.startsWith("lib.implicits is a class in library"), error)
@@ -1165,9 +1175,9 @@ class DividedSuite extends AnalysisSuite {
   private def ran(whole: Manifest, directory: Path, mode: String = "relaxed"): Ran = {
     val file  = Files.createDirectories(directory.resolve("target/bonsai")).resolve("manifest.tsv")
     val lines = whole.outputs.map(o => s"output\t${o.module}\t${o.scope.id}\t${o.path}") ++
-      whole.classpath.toVector.sortBy(_._1).flatMap((module, entries) =>
-        entries.map(entry => s"classpath\t$module\t$entry")
-      ) ++
+      whole.classpath.toVector.sortBy((key, _) => (key._1, key._2.ordinal)).flatMap { case ((module, scope), entries) =>
+        entries.map(entry => s"classpath\t$module\t${scope.id}\t$entry")
+      } ++
       whole.libraries.toVector.sorted.map(module => s"library\t$module") ++
       whole.platforms.toVector.sorted.map(module => s"platform\t$module") ++
       whole.jdk.map(home => s"jdk\t$home") :+ s"root\t$directory"

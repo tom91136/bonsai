@@ -63,7 +63,7 @@ class ReuseSuite extends AnalysisSuite {
         s"jdk\t$home",
         s"root\t$dir"
       ) ++ jars.map(jar =>
-        s"classpath\tm\t${if (jar.getFileName.toString.startsWith("scala3-library")) library else jar}"
+        s"classpath\tm\tmain\t${if (jar.getFileName.toString.startsWith("scala3-library")) library else jar}"
       ) ++ texts).mkString("", "\n", "\n")
     )
 
@@ -229,8 +229,8 @@ class ReuseSuite extends AnalysisSuite {
   test("every manifest field is either hashed through its paths or read by the key by name") {
     val fields = classOf[Manifest].getDeclaredFields.map(_.getName).toSet
     val paths  = Set("outputs", "classpath", "sources", "models", "resources")
-    // options, platforms, libraries, recorded, resourced, dependencies, texts, textExclusions and generated are in the
-    // manifest bytes; root is read by the scan, and jdk names the release file that is hashed with the paths
+    // options, platforms, libraries, recorded, resourced, dependencies, products, texts, textExclusions and generated
+    // are in the manifest bytes; root is read by the scan, and jdk names the release file that is hashed with the paths
     val named =
       Set(
         "libraries",
@@ -243,12 +243,13 @@ class ReuseSuite extends AnalysisSuite {
         "generated",
         "recorded",
         "resourced",
-        "dependencies"
+        "dependencies",
+        "products"
       )
     assertEquals(fields, paths ++ named)
     val manifest = Manifest(
       Vector(Output("a", Output.Scope.Main, Path.of("o"))),
-      Map("a" -> Vector(Path.of("c"))),
+      scoped(Map("a" -> Vector(Path.of("c")))),
       Set.empty,
       sources = Vector(Output("a", Output.Scope.Main, Path.of("s"))),
       models = Vector(Output("a", Output.Scope.Main, Path.of("m"))),

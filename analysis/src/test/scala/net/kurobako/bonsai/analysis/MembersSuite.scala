@@ -100,7 +100,7 @@ class MembersSuite extends AnalysisSuite {
       )
       val manifest = Manifest(
         Vector(Output("m", Output.Scope.Main, scala), Output("j", Output.Scope.Main, classes)),
-        Map("m" -> classpath, "j" -> (classpath :+ scala)),
+        scoped(Map("m" -> classpath, "j" -> (classpath :+ scala))),
         Set.empty,
         models = Vector(Output("j", Output.Scope.Main, model)),
         jdk = targetJdk

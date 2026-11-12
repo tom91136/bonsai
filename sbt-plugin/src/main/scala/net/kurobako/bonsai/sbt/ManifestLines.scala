@@ -58,8 +58,8 @@ object ManifestLines {
   private def enclosing(path: Path, known: Set[Path]): Option[Path] =
     if (known(path)) Some(path) else Option(path.getParent).flatMap(enclosing(_, known))
 
-  def classpath(project: String, entries: Seq[String]): Seq[String] =
-    entries.map(entry => s"classpath\t$project\t$entry")
+  def classpath(project: String, scope: String, entries: Seq[String]): Seq[String] =
+    entries.map(entry => s"classpath\t$project\t$scope\t$entry")
 
   /** The lines naming the analysed projects each project depends on, as the `required` projects the build gives each of
     * its configurations, the analysed projects being those named.

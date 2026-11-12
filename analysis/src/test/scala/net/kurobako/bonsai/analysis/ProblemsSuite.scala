@@ -36,7 +36,7 @@ class ProblemsSuite extends AnalysisSuite {
     Files.writeString(
       manifest,
       (Seq(s"output\tm\tmain\t$classes", s"jdk\t${targetJdk.get}", s"root\t$dir") ++
-        classpath.filter(Files.isRegularFile(_)).map(jar => s"classpath\tm\t$jar") ++ extra(dir)).mkString(
+        classpath.filter(Files.isRegularFile(_)).map(jar => s"classpath\tm\tmain\t$jar") ++ extra(dir)).mkString(
         "",
         "\n",
         "\n"

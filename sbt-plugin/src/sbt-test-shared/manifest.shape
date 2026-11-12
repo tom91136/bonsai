@@ -1,8 +1,10 @@
 output	root	main	classes
 output	root	test	test-classes
 jdk
-classpath	root	scala3-library_3-3.10.0.jar
-classpath	root	scala-library-3.10.0.jar
+classpath	root	main	scala3-library_3-3.10.0.jar
+classpath	root	main	scala-library-3.10.0.jar
+classpath	root	test	scala3-library_3-3.10.0.jar
+classpath	root	test	scala-library-3.10.0.jar
 option	root	-Xplugin:bonsai-plugin_3.10.jar
 option	root	-Xsemanticdb
 option	root	-semanticdb-target

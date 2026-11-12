@@ -1241,7 +1241,7 @@ object Callers {
       val output   = Output("m", Output.Scope.Main, classes)
       val manifest = Manifest(
         Vector(output),
-        Map("m" -> classpath),
+        scoped(Map("m" -> classpath)),
         Set.empty,
         sources = Vector(Output("m", Output.Scope.Main, directory.resolve("main/Callers.scala"))),
         jdk = targetJdk
@@ -1265,7 +1265,7 @@ object Uses {
       val classes  = compile(directory.resolve("scala"), Seq("Uses.scala" -> source), Vector(javaClasses))
       val manifest = Manifest(
         Vector(Output("j", Output.Scope.Main, javaClasses), Output("m", Output.Scope.Main, classes)),
-        Map("m" -> classpath),
+        scoped(Map("m" -> classpath)),
         Set.empty,
         sources = Vector(Output("m", Output.Scope.Main, directory.resolve("scala/Uses.scala"))),
         jdk = targetJdk

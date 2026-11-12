@@ -454,6 +454,7 @@ object BonsaiPlugin extends AutoPlugin {
       required: Seq[String],
       sources: Seq[String],
       products: Seq[String],
+      classpath: Seq[String],
       managed: Seq[String],
       managedDirectories: Seq[String],
       resources: Seq[String]
@@ -529,8 +530,6 @@ object BonsaiPlugin extends AutoPlugin {
     val configurations = Compile +: Test +: tests
     val analysed       = ScopeFilter(inProjects(enabled*), inConfigurations(configurations*))
     val fixtures       = Fixtures.fixtures(buildStructure.value)
-    // The projects an analysed project depends on, analysed or not, are read from the classpath.
-    val external = Def.task(thisProject.value.id -> Compat.dependencyPaths.value)
     if (enabled.isEmpty)
       Def.task {
         skipped.foreach(streams.value.log.info(_))
@@ -554,6 +553,7 @@ object BonsaiPlugin extends AutoPlugin {
             .map(_._1.project),
           compiled,
           products,
+          Compat.dependencyPaths.value,
           managedSources.value.map(_.toString),
           managedSourceDirectories.value.map(_.toString),
           ManifestLines.resources(resources.value.map(_.toString), resourceDirectories.value.map(_.toString))
@@ -564,13 +564,11 @@ object BonsaiPlugin extends AutoPlugin {
         ManifestLines.outputs(entry.project, entry.scope, entry.library, entry.classes)
       )
       val analysedOutputs = kept.map(_.classes).toSet
-      val dependencies    = external.all(analysed).value
       val depends         = ManifestLines.depends(kept.map(entry => entry.project -> entry.required))
-      val libraries       = dependencies.groupBy(_._1).map { case (id, pairs) =>
-        id -> pairs.map(_._2)
-      }.toSeq.sortBy(_._1).map { case (id, paths) =>
-        val kept = paths.flatten.distinct.filterNot(analysedOutputs)
-        (id, kept, kept.collect { case Javalib(version) => version })
+      val libraries       = kept.groupBy(entry => entry.project -> entry.scope).toSeq.sortBy(_._1).map {
+        case ((id, scope), group) =>
+          val jars = group.flatMap(_.classpath).distinct.filterNot(analysedOutputs)
+          (id, scope, jars, jars.collect { case Javalib(version) => version })
       }
       val log = streams.value.log
       // a Scala 2 project excludes the Scala 3 library, which the analysis needs, and the pins, exclusions and conflict
@@ -580,12 +578,13 @@ object BonsaiPlugin extends AutoPlugin {
           .withExcludeDependencies(Vector.empty).withReconciliation(Vector.empty)
       )
       val directory  = target.value
-      val interfaces = libraries.flatMap(_._3).distinct.map { version =>
+      val interfaces = libraries.flatMap(_._4).distinct.map { version =>
         version -> javalibInterface(version, resolution, directory, log)
       }.toMap
-      val classpath = libraries.flatMap { case (id, jars, versions) =>
+      val classpath = libraries.flatMap { case (id, scope, jars, versions) =>
         ManifestLines.classpath(
           id,
+          scope,
           jars ++ versions.headOption.map(interfaces).getOrElse(Vector.empty)
         )
       }

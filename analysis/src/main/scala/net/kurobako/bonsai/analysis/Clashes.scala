@@ -122,7 +122,7 @@ private[analysis] object Clashes {
       known: Set[String]
   ): Either[Vector[String], (Vector[Set[String]], Vector[String])] = {
     val holdings   = outputs.groupMapReduce(_._1.module)((output, _) => held(output.path))(_ ++ _)
-    val fixed      = manifest.classpath.keySet -- holdings.keySet
+    val fixed      = manifest.classpathModules -- holdings.keySet
     val everything = holdings.keySet ++ fixed
     val owners     = outputs.map((output, _) => output.path -> output.module).toMap
     val libraries  = mutable.Map.empty[Path, Holding]
@@ -178,7 +178,7 @@ private[analysis] object Clashes {
       def holding(holder: Holder, modules: Set[String]): Set[String] = holder match {
         case Owned(module) => following(Set(module)) & modules
         case Library(path) =>
-          following(modules.filter(manifest.classpath.getOrElse(_, Vector.empty).contains(path))) & modules
+          following(modules.filter(module => manifest.classpathOf(Seq(module)).contains(path))) & modules
       }
       def movable(side: Set[String], modules: Set[String]): Boolean =
         !side.exists(fixed) && (modules -- side).exists(holdings.contains)

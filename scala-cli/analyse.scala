@@ -135,10 +135,10 @@ def unzipEntry(jar: String, entry: String): String = {
     if (Files.exists(configuration)) Files.readAllLines(configuration, ISO_8859_1).asScala.toVector
     else fail(2, s"awk: cannot open $configuration")
   if (settings.contains("library\ttrue")) library = true
-  val entries = classpath.split(":", -1).toVector.map {
-    case entry if entry.endsWith("/classes/main") => s"output\t$name\tmain\t$entry"
-    case entry if entry.endsWith("/classes/test") => s"output\t$name\ttest\t$entry"
-    case entry                                    => s"classpath\t$name\t$entry"
+  val entries = classpath.split(":", -1).toVector.flatMap {
+    case entry if entry.endsWith("/classes/main") => Seq(s"output\t$name\tmain\t$entry")
+    case entry if entry.endsWith("/classes/test") => Seq(s"output\t$name\ttest\t$entry")
+    case entry                                    => Seq(s"classpath\t$name\tmain\t$entry", s"classpath\t$name\ttest\t$entry")
   }
   val lines = Vector(s"root\t$project", s"jdk\t$javaHome") ++ entries ++
     (if (library) Vector(s"library\t$name") else Vector.empty) ++

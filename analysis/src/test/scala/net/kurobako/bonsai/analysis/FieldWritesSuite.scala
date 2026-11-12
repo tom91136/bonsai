@@ -94,7 +94,7 @@ object Callers {
       compile(directory.resolve("scala"), Seq("Callers.scala" -> callers), Vector(classes)): Unit
       val manifest = Manifest(
         Vector(Output("m", Output.Scope.Main, classes)),
-        Map("m" -> classpath),
+        scoped(Map("m" -> classpath)),
         Set.empty,
         sources = Vector(Output("m", Output.Scope.Main, directory.resolve("scala/Callers.scala"))),
         jdk = targetJdk

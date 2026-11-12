@@ -262,7 +262,7 @@ object Extraction {
       // The compiler resolves a class once per run, so the run reads the classpaths of the modules in turn, the JVM
       // modules' first, and a class several platforms' copies of a library hold resolves to the first copy.
       val outputModules = manifest.outputs.map(_.module).toSet
-      val ordered       = (primary ++ twins).map(_.module).distinct ++ manifest.classpath.keys.toVector.sorted
+      val ordered       = (primary ++ twins).map(_.module).distinct ++ manifest.classpathModules.toVector.sorted
       val requires      = manifest.requires
       @tailrec def required(modules: Set[String]): Set[String] = {
         val next = modules ++ modules.flatMap(requires.getOrElse(_, Set.empty))
@@ -303,7 +303,7 @@ object Extraction {
         }
       }
       val leading    = manifest.outputs.filterNot(separate).toSet
-      val behind     = behindOf(leading, manifest.classpath.keySet.diff(outputModules))
+      val behind     = behindOf(leading, manifest.classpathModules.diff(outputModules))
       val phaseTwins = twinning(leading, phase, behind)
       val groupRuns  = apart.map { group =>
         val own    = collector(Vector.empty, Set.empty, linking, everything -- group, deferred = true)

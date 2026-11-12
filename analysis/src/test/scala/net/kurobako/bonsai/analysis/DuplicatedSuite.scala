@@ -21,7 +21,7 @@ class DuplicatedSuite extends AnalysisSuite {
     val ahead   = Map("curried" -> core, "caller" -> flat)
     Manifest(
       modules.map((module, path) => Output(module, Output.Scope.Main, path)),
-      modules.map((module, _) => module -> (classpath ++ Option.when(!named)(ahead.get(module)).flatten)).toMap,
+      scoped(modules.map((module, _) => module -> (classpath ++ Option.when(!named)(ahead.get(module)).flatten)).toMap),
       Set.empty,
       jdk = targetJdk,
       dependencies = if (named) Map("curried" -> Set("core"), "caller" -> Set("flat")) else Map.empty
@@ -65,7 +65,7 @@ class DuplicatedSuite extends AnalysisSuite {
       val whole = build(directory)
       val alone = whole.copy(
         outputs = whole.outputs.filterNot(_.module == "curried"),
-        classpath = whole.classpath - "curried"
+        classpath = whole.classpath - ("curried" -> Output.Scope.Main)
       )
       assertEquals(groups(alone).map(_.runs.size), Right(1))
       val result = Extraction.read(alone).fold(errors => fail(errors.mkString("\n")), identity)
@@ -81,7 +81,7 @@ class DuplicatedSuite extends AnalysisSuite {
         outputs = whole.outputs.map(output =>
           if (output.module == "curried") output.copy(module = "flatJs") else output
         ),
-        classpath = whole.classpath - "curried" + ("flatJs" -> classpath),
+        classpath = whole.classpath - ("curried" -> Output.Scope.Main) + (("flatJs" -> Output.Scope.Main) -> classpath),
         platforms = Set("flatJs")
       )
       assertEquals(groups(twins).map(_.runs.size), Right(1))
@@ -93,8 +93,8 @@ class DuplicatedSuite extends AnalysisSuite {
       val whole = build(directory)
       val both  = whole.copy(classpath =
         whole.classpath.updated(
-          "caller",
-          whole.classpath("caller") ++ Vector(
+          "caller" -> Output.Scope.Main,
+          whole.classpath("caller" -> Output.Scope.Main) ++ Vector(
             whole.outputs.find(_.module == "curried").get.path
           )
         )
@@ -130,7 +130,7 @@ class DuplicatedSuite extends AnalysisSuite {
     val modules = Vector("one" -> one, "two" -> two)
     val whole   = Manifest(
       modules.map((module, path) => Output(module, Output.Scope.Main, path)),
-      modules.map((module, _) => module -> classpath).toMap,
+      scoped(modules.map((module, _) => module -> classpath).toMap),
       Set.empty,
       jdk = targetJdk
     )

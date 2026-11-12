@@ -30,7 +30,7 @@ class BuildRootSuite extends AnalysisSuite {
     Files.writeString(
       manifest,
       (Seq(s"output\tm\tmain\t$classes", s"jdk\t${targetJdk.get}", s"root\t$dir") ++
-        classpath.filter(Files.isRegularFile(_)).map(jar => s"classpath\tm\t$jar")).mkString("", "\n", "\n")
+        classpath.filter(Files.isRegularFile(_)).map(jar => s"classpath\tm\tmain\t$jar")).mkString("", "\n", "\n")
     ): Unit
     val baseline = dir.resolve("bonsai-baseline.tsv")
     val printed  = ByteArrayOutputStream()

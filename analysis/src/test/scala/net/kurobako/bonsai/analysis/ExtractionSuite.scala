@@ -157,13 +157,13 @@ class ExtractionSuite extends AnalysisSuite {
         Output("usingObjects", Output.Scope.Main, usingObjects),
         Output("usingPackaged", Output.Scope.Main, usingPackaged)
       ),
-      Map(
+      scoped(Map(
         "base"          -> classpath,
         "objects"       -> (classpath :+ base),
         "packaged"      -> (classpath :+ base),
         "usingObjects"  -> (classpath ++ Vector(base, objects)),
         "usingPackaged" -> (classpath ++ Vector(base, packaged))
-      ),
+      )),
       Set.empty,
       jdk = targetJdk
     )
@@ -225,7 +225,8 @@ class ExtractionSuite extends AnalysisSuite {
       val packaged = whole.outputs.filter(_.module == "packaged").map(_.path)
       val manifest = whole.copy(
         outputs = whole.outputs ++ needing,
-        classpath = whole.classpath + ("both" -> (whole.classpath("usingObjects") ++ packaged))
+        classpath = whole.classpath +
+          (("both" -> Output.Scope.Main) -> (whole.classpath("usingObjects" -> Output.Scope.Main) ++ packaged))
       )
       val errors = Extraction.read(manifest).fold(identity, result => fail(s"read: ${result.notes}"))
       assertEquals(errors.size, 1)
@@ -257,7 +258,7 @@ class ExtractionSuite extends AnalysisSuite {
             Output("zlib", Output.Scope.Main, zlib),
             Output("other", Output.Scope.Main, other)
           ),
-          Map("app" -> (classpath :+ zlib), "zlib" -> classpath, "other" -> classpath),
+          scoped(Map("app" -> (classpath :+ zlib), "zlib" -> classpath, "other" -> classpath)),
           Set.empty,
           jdk = targetJdk
         )
@@ -279,7 +280,12 @@ class ExtractionSuite extends AnalysisSuite {
         "1.0"
       )
       val manifest =
-        whole.copy(classpath = whole.classpath.updated("usingObjects", whole.classpath("usingObjects") :+ library))
+        whole.copy(classpath =
+          whole.classpath.updated(
+            "usingObjects" -> Output.Scope.Main,
+            whole.classpath("usingObjects" -> Output.Scope.Main) :+ library
+          )
+        )
       val errors = Extraction.read(manifest).fold(identity, result => fail(s"read: ${result.notes}"))
       assertEquals(errors.size, 1)
       assert(errors.head.contains("lib.jar"), errors.head)
@@ -294,7 +300,7 @@ class ExtractionSuite extends AnalysisSuite {
         compile(directory.resolve("b"), Seq("C.scala" -> "package a.b\nclass C { def two: Int = 2 }"), Vector.empty)
       val manifest = Manifest(
         Vector(Output("first", Output.Scope.Main, first), Output("second", Output.Scope.Main, second)),
-        Map("first" -> classpath, "second" -> classpath),
+        scoped(Map("first" -> classpath, "second" -> classpath)),
         Set.empty,
         jdk = targetJdk
       )
@@ -313,7 +319,7 @@ class ExtractionSuite extends AnalysisSuite {
         compile(directory.resolve("b"), Seq("C.scala" -> "package a.c\nclass C { def two: Int = 2 }"), Vector.empty)
       val manifest = Manifest(
         Vector(Output("first", Output.Scope.Main, first), Output("second", Output.Scope.Main, second)),
-        Map("first" -> classpath, "second" -> classpath),
+        scoped(Map("first" -> classpath, "second" -> classpath)),
         Set.empty,
         jdk = targetJdk
       )
@@ -340,8 +346,9 @@ class ExtractionSuite extends AnalysisSuite {
         val sources = Seq("Use.scala" -> s"object Use$name { val value = lib.$name() }")
         Output(module, Output.Scope.Main, compile(directory.resolve(s"$module-use"), sources, Vector(jar)))
       }
-      val manifest = Manifest(outputs, libraries.view.mapValues(_ +: classpath).toMap, Set.empty, jdk = targetJdk)
-      val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      val manifest =
+        Manifest(outputs, scoped(libraries.view.mapValues(_ +: classpath).toMap), Set.empty, jdk = targetJdk)
+      val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       assertEquals(result.problems, Vector.empty)
       assertEquals(result.graph.nodes.keySet.count(node => node.contains("UseJvm") || node.contains("UseNative")), 2)
     }
@@ -373,7 +380,7 @@ class ExtractionSuite extends AnalysisSuite {
       val manifest =
         Manifest(
           outputs,
-          Map("first" -> (older +: classpath), "second" -> (newer +: classpath)),
+          scoped(Map("first" -> (older +: classpath), "second" -> (newer +: classpath))),
           Set.empty,
           jdk = targetJdk
         )
@@ -402,7 +409,7 @@ class ExtractionSuite extends AnalysisSuite {
       val manifest =
         Manifest(
           outputs,
-          Map("Config" -> (config +: classpath), "Format" -> (format +: classpath)),
+          scoped(Map("Config" -> (config +: classpath), "Format" -> (format +: classpath))),
           Set.empty,
           jdk = targetJdk
         )
@@ -458,7 +465,7 @@ class ExtractionSuite extends AnalysisSuite {
           |}""".stripMargin
       )
       val output   = Output("m", Output.Scope.Main, compile(directory.resolve("use"), sources, Vector(helper, missing)))
-      val manifest = Manifest(Vector(output), Map("m" -> (helper +: classpath)), Set.empty, jdk = targetJdk)
+      val manifest = Manifest(Vector(output), scoped(Map("m" -> (helper +: classpath))), Set.empty, jdk = targetJdk)
       val result   = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       assert(result.graph.nodes.keySet.exists(_.contains("Use")), result.graph.nodes.keySet.toString)
       assertEquals(
@@ -503,7 +510,7 @@ class ExtractionSuite extends AnalysisSuite {
       )
       val output   = Output("m", Output.Scope.Main, compile(directory.resolve("use"), sources, Vector(old, wrapper)))
       val manifest =
-        Manifest(Vector(output), Map("m" -> (wrapper +: newer +: old +: classpath)), Set.empty, jdk = targetJdk)
+        Manifest(Vector(output), scoped(Map("m" -> (wrapper +: newer +: old +: classpath))), Set.empty, jdk = targetJdk)
       val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
       assert(result.problems.exists(_.contains("Use.run could not be inferred")), result.problems.toString)
       assertEquals(

@@ -1,0 +1,3 @@
+# each scope records the dependency classpath its compile used, including a build's own override of it
+> bonsaiAnalyse
+> checkClasspaths

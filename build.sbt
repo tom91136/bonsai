@@ -548,10 +548,17 @@ lazy val root = project.in(file("."))
       val generated = ManifestLines.generated(managed.flatMap(_._1).distinct, managed.flatMap(_._2).distinct)
       val classpath = Def.task {
         val converter = fileConverter.value
-        thisProject.value.id -> externalDependencyClasspath.value.map(entry => converter.toPath(entry.data).toString)
-      }.all(analysedOutputs).value.groupMap(_._1)(_._2).toSeq.flatMap((id, entries) =>
-        ManifestLines.classpath(id, entries.flatten.distinct)
-      )
+        val id        = thisProject.value.id
+        (
+          id,
+          configuration.value.name == Test.name,
+          dependencyClasspath.value.map(entry => converter.toPath(entry.data).toString)
+        )
+      }.all(
+        analysedOutputs
+      ).value.groupMap(entry => entry._1 -> ManifestLines.scope(fixtures, entry._1, entry._2))(_._3).toSeq.flatMap {
+        case ((id, scope), entries) => ManifestLines.classpath(id, scope, entries.flatten.distinct)
+      }
       val options = Def.task((thisProject.value.id, scalacOptions.value)).all(analysedOutputs).value
         .flatMap((id, flags) => ManifestLines.options(id, flags)).distinct
       val jdk      = ManifestLines.jdk(bonsaiJdk.value)

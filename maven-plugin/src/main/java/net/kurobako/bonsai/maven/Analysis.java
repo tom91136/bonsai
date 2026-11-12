@@ -61,7 +61,10 @@ public final class Analysis {
         manifest.add("option\t" + module.id() + "\t" + option);
       }
       for (String entry : module.classpath()) {
-        manifest.add("classpath\t" + module.id() + "\t" + entry);
+        manifest.add("classpath\t" + module.id() + "\tmain\t" + entry);
+        if (module.testClasses() != null) {
+          manifest.add("classpath\t" + module.id() + "\ttest\t" + entry);
+        }
       }
     }
     manifest.addAll(text);

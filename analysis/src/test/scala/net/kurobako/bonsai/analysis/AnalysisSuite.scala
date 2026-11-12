@@ -33,7 +33,10 @@ trait AnalysisSuite extends FunSuite {
   protected val classpath: Vector[Path] =
     sys.props("bonsai.analysis.classpath").split(File.pathSeparator).toVector.map(Path.of(_))
 
-  protected val classpaths: Map[String, Vector[Path]] = Map("m" -> classpath)
+  protected def scoped(classpaths: Map[String, Vector[Path]]): Map[(String, Output.Scope), Vector[Path]] =
+    classpaths.map((module, entries) => (module, Output.Scope.Main) -> entries)
+
+  protected val classpaths: Map[(String, Output.Scope), Vector[Path]] = scoped(Map("m" -> classpath))
 
   protected val targetJdk: Option[Path] = Some(Path.of(sys.props("java.home")))
 
@@ -150,7 +153,7 @@ trait AnalysisSuite extends FunSuite {
       val analysed = external.toVector ++ dated ++ classpath
       val manifest = Manifest(
         outputs,
-        outputs.map(_.module).distinct.map(_ -> analysed).toMap,
+        scoped(outputs.map(_.module).distinct.map(_ -> analysed).toMap),
         libraries,
         sources = located("m", Output.Scope.Main, "main", main) ++ located("m", Output.Scope.Test, "test", test) ++
           platforms.flatMap(_._2),

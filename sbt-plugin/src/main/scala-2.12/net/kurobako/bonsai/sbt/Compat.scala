@@ -11,7 +11,7 @@ private[sbt] object Compat {
   def fail(message: String): Nothing = throw new MessageOnlyException(message)
 
   def dependencyPaths: Def.Initialize[Task[Seq[String]]] = Def.task {
-    (externalDependencyClasspath.value ++ internalDependencyClasspath.value).map(_.data.toString)
+    dependencyClasspath.value.map(_.data.toString)
   }
 
   def compiled: Def.Initialize[Task[(Seq[String], Seq[String])]] = Def.task {

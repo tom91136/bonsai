@@ -13,8 +13,8 @@ object ManifestShape {
         case "jdk" :: home :: Nil                           =>
           assert(new File(home, "bin/java").exists, s"no JDK at $home")
           Seq("jdk")
-        case "classpath" :: project :: entry :: Nil =>
-          if (entry.startsWith(base)) Nil else Seq(s"classpath\t$project\t${last(entry)}")
+        case "classpath" :: project :: scope :: entry :: Nil =>
+          if (entry.startsWith(base)) Nil else Seq(s"classpath\t$project\t$scope\t${last(entry)}")
         case "source" :: project :: scope :: source :: Nil =>
           Seq(s"source\t$project\t$scope\t${source.stripPrefix(base + "/")}")
         case "product" :: project :: scope :: product :: Nil => Seq(s"product\t$project\t$scope\t${last(product)}")

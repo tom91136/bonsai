@@ -32,7 +32,7 @@ class StandardLibrarySuite extends AnalysisSuite {
       )
       val manifest = Manifest(
         Vector(Output("m", Output.Scope.Main, main)),
-        Map("m" -> (records +: older)),
+        scoped(Map("m" -> (records +: older))),
         Set.empty,
         sources = Vector(
           Output("m", Output.Scope.Main, directory.resolve("main/Use.scala")),

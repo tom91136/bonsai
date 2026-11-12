@@ -69,10 +69,10 @@ class BuildSuite extends FunSuite {
         root,
         "complete.tsv",
         s"output\tcore\tmain\t${root.resolve("classes")}\n" +
-          s"classpath\tcore\t${root.resolve("lib.jar")}\nlibrary\tcore\nroot\t$root\n"
+          s"classpath\tcore\tmain\t${root.resolve("lib.jar")}\nlibrary\tcore\nroot\t$root\n"
       )
       val read = Manifest.read(complete)
-      assertEquals(read.map(_.classpath), Right(Map("core" -> Vector(root.resolve("lib.jar")))))
+      assertEquals(read.map(_.classpath), Right(Map(("core", Output.Scope.Main) -> Vector(root.resolve("lib.jar")))))
       assertEquals(read.map(_.libraries), Right(Set("core")))
       assertEquals(read.map(_.root), Right(Some(root)))
       val scoped  = write(root, "scoped.tsv", "output\tcore\tclasses\t/x\n")
@@ -86,7 +86,7 @@ class BuildSuite extends FunSuite {
       root,
       "manifest.tsv",
       s"output\tcore\tmain\t${root.resolve("core")}\noutput\tapp\tmain\t${root.resolve("app")}\n" +
-        s"output\tcli\tmain\t${root.resolve("cli")}\nclasspath\tcli\t${root.resolve("app")}\n" +
+        s"output\tcli\tmain\t${root.resolve("cli")}\nclasspath\tcli\tmain\t${root.resolve("app")}\n" +
         "depends\tapp\tcore\ndepends\tapp\tapp\nroot\t/x\n"
     )
     val read = Manifest.read(manifest)
