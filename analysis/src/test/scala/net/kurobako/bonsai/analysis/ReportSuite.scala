@@ -194,6 +194,14 @@ class ReportSuite extends AnalysisSuite {
     assertEquals(first.id, other.id)
   }
 
+  test("a finding the copies of one definition both found is reported once") {
+    val finding = Finding(Finding.Rule.UnusedReturnValue, toolsNode, "Tools.run returns a value no caller reads")
+    assertEquals(
+      Report(Vector(finding, finding), Map(toolsNode.name -> toolsNode), defaults).map(_.id),
+      Vector(finding.id)
+    )
+  }
+
   test("a baseline keeps a finding whose positions moved, and not one with other words") {
     def finding(detail: String)                   = Finding(Finding.Rule.DuplicateCode, toolsNode, detail)
     def levels(recorded: String, current: String) = {

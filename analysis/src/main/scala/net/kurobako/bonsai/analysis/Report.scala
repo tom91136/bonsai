@@ -87,7 +87,7 @@ object Report {
 
   def apply(findings: Vector[Finding], nodes: Map[String, Node], options: Options): Vector[Line] = {
     // numbered over every finding, so hiding some does not renumber the others
-    val sorted    = findings.sorted
+    val sorted    = findings.distinct.sorted
     val baselined = options.baseline.map(Finding.positionless)
     val numbering = sorted.foldLeft((Map.empty[String, Int], Vector.empty[(Finding, Int)])) {
       case ((seen, numbered), finding) =>
