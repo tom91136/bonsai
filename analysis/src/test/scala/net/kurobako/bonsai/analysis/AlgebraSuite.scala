@@ -7,6 +7,10 @@ class AlgebraSuite extends AnalysisSuite {
   private val b = atom("B")
   private val c = atom("C")
 
+  private def nested(depth: Int): Polynomial = (1 to depth).foldLeft(a) { (inner, level) =>
+    power(inner * atom(s"X$level") + inner * atom(s"Y$level"), atom(s"E$level"))
+  }
+
   private def findings(sources: (String, String)*): Vector[Finding] = findingsWithTests(sources, Nil)
 
   private def findingsWithTests(main: Seq[(String, String)], test: Seq[(String, String)]): Vector[Finding] = {
@@ -45,10 +49,34 @@ class AlgebraSuite extends AnalysisSuite {
   }
 
   test("keys of nested powers over sums stay bounded as the nesting grows") {
-    def nested(depth: Int): Polynomial = (1 to depth).foldLeft(a) { (inner, level) =>
-      power(inner * atom(s"X$level") + inner * atom(s"Y$level"), atom(s"E$level"))
-    }
     assert(nested(16).key.length < 4 * nested(8).key.length, (nested(8).key.length, nested(16).key.length))
+  }
+
+  test("messages of nested powers over sums stay bounded as the nesting grows") {
+    assert(
+      nested(16).toString.length < 4 * nested(8).toString.length,
+      (nested(8).toString.length, nested(16).toString.length)
+    )
+  }
+
+  test("a power over a sum of atoms shows the sum as its base") {
+    assertEquals(power(a + b, c).toString, "(A + B)^(C)")
+  }
+
+  test("an opaque atom shows its first eight digits in messages and its full digest in keys") {
+    val wide      = sum((1 to 17).map(index => atom(s"pkg.X$index")))
+    val collapsed = wide * wide
+    assert(collapsed.toString.matches("<[0-9a-f]{8}>"), collapsed.toString)
+    assert(collapsed.key.matches("<[0-9a-f]{64}>"), collapsed.key)
+  }
+
+  test("distinct opaque atoms in one message keep distinct short forms") {
+    val wide  = sum((1 to 17).map(index => atom(s"pkg.X$index")))
+    val other = sum((1 to 17).map(index => atom(s"pkg.Y$index")))
+    val parts = (wide * wide + wide * other).toString.split(" \\+ ").toVector
+    assertEquals(parts.size, 2)
+    assert(parts.forall(_.matches("<[0-9a-f]{8}>")), parts)
+    assertNotEquals(parts(0), parts(1))
   }
 
   test("equal operands built in different orders give equal keys") {

@@ -64,21 +64,39 @@ object Polynomial {
   private def digest(text: String): String =
     java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(UTF_8)))
 
-  private def show(factor: Factor, full: Boolean): String = factor match {
-    case Factor.Named(Naming.Atom, name)      => if (full) name else brief(name)
-    case Factor.Named(Naming.Variable, name)  => name
-    case Factor.Power(base, exponent) if full => s"(${digest(base.key)})^(${digest(exponent.key)})"
-    case Factor.Power(base, exponent)         => s"(${base.render(full)})^(${exponent.render(full)})"
+  private def keyed(factor: Factor): String = factor match {
+    case Factor.Named(_, name)        => name
+    case Factor.Power(base, exponent) => s"(${digest(base.key)})^(${digest(exponent.key)})"
   }
 
   // Strips package prefixes from every qualified name inside a possibly applied type, keeping the types that hold it.
   private val Qualifier = java.util.regex.Pattern.compile("""\b[a-z][\w$]*\.""")
 
+  private val OpaqueName = "<([0-9a-f]{64})>".r
+
+  private def briefed(factor: Factor): String = factor match {
+    case Factor.Named(Naming.Atom, OpaqueName(hex)) => short(hex)
+    case Factor.Named(Naming.Atom, name)            => brief(name)
+    case Factor.Named(Naming.Variable, name)        => name
+    case Factor.Power(base, exponent)               => s"(${operand(base)})^(${operand(exponent)})"
+  }
+
   private def brief(name: String): String = Qualifier.matcher(name).replaceAll("")
 
-  private def show(monomial: Monomial, full: Boolean): String =
+  private def short(hex: String): String = s"<${hex.take(8)}>"
+
+  private def nests(polynomial: Polynomial): Boolean =
+    polynomial.terms.keys.exists(_.keys.exists {
+      case Factor.Power(_, _) => true
+      case _                  => false
+    })
+
+  private def operand(polynomial: Polynomial): String =
+    if (nests(polynomial)) short(digest(polynomial.key)) else polynomial.render(briefed(_))
+
+  private def show(monomial: Monomial, factorText: Factor => String): String =
     monomial.toVector.map { (factor, times) =>
-      val shown = show(factor, full)
+      val shown = factorText(factor)
       if (times == 1) shown else s"$shown^$times"
     }.sorted.mkString("*")
 }
@@ -120,14 +138,14 @@ case class Polynomial(terms: Map[Polynomial.Monomial, BigInt]) {
   /** Number of atom and variable occurrences in the largest term, a rough measure of structural weight. */
   def weight: Int = terms.keys.map(_.values.sum).maxOption.getOrElse(0)
 
-  lazy val key: String = render(full = true)
+  lazy val key: String = render(keyed(_))
 
-  private def render(full: Boolean): String =
+  private def render(factorText: Factor => String): String =
     if (terms.isEmpty) "0"
     else terms.toVector.map { (monomial, count) =>
-      val shown = show(monomial, full)
+      val shown = show(monomial, factorText)
       if (monomial.isEmpty) count.toString else if (count == 1) shown else s"$count*$shown"
     }.sorted.mkString(" + ")
 
-  override def toString: String = render(full = false)
+  override def toString: String = render(briefed(_))
 }
