@@ -1670,7 +1670,7 @@ object Purity {
                 val result     =
                   try evaluate(
                       definition.rhs,
-                      Frame(target, key.receiver, frame(target, key.receiver).bindings ++ parameters.zip(arguments))
+                      Frame(target, key.receiver, frame(target, key.receiver).bindings ++ parameters.zip(key.arguments))
                     )
                   finally scratch.evaluating -= key
                 returning(key) = result
