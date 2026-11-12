@@ -195,9 +195,9 @@ class StructuresSuite extends AnalysisSuite {
       "Kinds.scala" -> "case class Token(text: String)\ncase class Page(lines: Vector[String])",
       "Util.scala"  ->
         """object Util {
-          |  def parse(text: String): Token        = Token(text)
-          |  def parseAll(texts: Vector[String])  = texts.map(parse)
-          |  def render(page: Page): String       = page.lines.mkString
+          |  def parse(text: String): Token       = Token(text)
+          |  def parseAgain(text: String): Token  = parse(text)
+          |  def render(page: Page): Int          = page.lines.size
           |  def renderAll(pages: Vector[Page])   = pages.map(render)
           |  def lone: Int                        = 1
           |}
@@ -212,7 +212,7 @@ class StructuresSuite extends AnalysisSuite {
       of(found, Finding.Rule.DisjointObject),
       Vector(
         "object Util holds 2 groups of members that never use each other and use different types " +
-          "({parse, parseAll}, {render, renderAll})"
+          "({parse, parseAgain}, {render, renderAll})"
       )
     )
   }
@@ -223,9 +223,9 @@ class StructuresSuite extends AnalysisSuite {
       "Codecs.scala" ->
         """object Codecs {
           |  private val tokenDefault = Token("")
-          |  private val pageDefault  = Page(Vector.empty)
+          |  private val pageDefault  = Page(Vector.empty[Nothing])
           |  def readToken(text: String): Token = tokenDefault.copy(text = text)
-          |  def readTokens(texts: Vector[String]) = texts.map(readToken)
+          |  def readTokenAgain(text: String): Token = readToken(text)
           |  def pageSize(page: Page): Int = pageDefault.lines.size + page.lines.size
           |  def pageSizes(pages: Vector[Page]) = pages.map(pageSize)
           |}""".stripMargin
@@ -234,7 +234,7 @@ class StructuresSuite extends AnalysisSuite {
       of(found, Finding.Rule.DisjointObject),
       Vector(
         "object Codecs holds 2 groups of members that never use each other and use different types " +
-          "({pageDefault, pageSize, pageSizes}, {readToken, readTokens, tokenDefault})"
+          "({pageDefault, pageSize, pageSizes}, {readToken, readTokenAgain, tokenDefault})"
       )
     )
   }
@@ -261,6 +261,54 @@ class StructuresSuite extends AnalysisSuite {
           |  val NullDiscriminant     = -1
           |  val FiniteDiscriminant   = 0
           |  val InfiniteDiscriminant = 1
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("groups of methods that take and return String, without calling each other, are not split") {
+    val found = findings(Seq(
+      "Text.scala" ->
+        """object Text {
+          |  def trimmed(text: String): String = text.trim
+          |  def padded(text: String): String  = trimmed(text) + " "
+          |  def upper(text: String): String   = text.toUpperCase
+          |  def loud(text: String): String    = upper(text) + "!"
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("groups that each use a different library type hold two designs") {
+    val found = findings(Seq(
+      "Scanning.scala" ->
+        """import java.nio.file.Path
+          |import java.util.regex.Pattern
+          |
+          |object Scanning {
+          |  def keep(regex: Pattern): Pattern   = regex
+          |  def retain(regex: Pattern): Pattern = keep(regex)
+          |  def locate(path: Path): Path        = path
+          |  def resolve(path: Path): Path       = locate(path)
+          |}""".stripMargin
+    ))
+    assertEquals(
+      of(found, Finding.Rule.DisjointObject),
+      Vector(
+        "object Scanning holds 2 groups of members that never use each other and use different types " +
+          "({keep, retain}, {locate, resolve})"
+      )
+    )
+  }
+
+  test("a type spelled through the Predef alias and as its target is one type") {
+    val found = findings(Seq(
+      "Spellings.scala" ->
+        """object Spellings {
+          |  def same(text: String): String = text
+          |  def again(text: String): String = same(text)
+          |  def spelled(text: java.lang.String): java.lang.String = text
+          |  def respelled(text: java.lang.String): java.lang.String = spelled(text)
           |}""".stripMargin
     ))
     assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)

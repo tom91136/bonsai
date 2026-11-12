@@ -213,7 +213,7 @@ private[analysis] class StructureObserver(
         definition.foreachSubTree { tree =>
           if (tree.symbol.exists && tree.symbol.owner == owner && tree.symbol != member)
             siblings += tree.symbol.name.toString
-          key(tree.tpe.typeSymbol).foreach(types += _)
+          usedType(tree.tpe).foreach(types += _)
         }
         if (siblings.isEmpty && !types(info.name)) detached += member
         if (
@@ -229,6 +229,21 @@ private[analysis] class StructureObserver(
           )
       }
   }
+
+  private def usedType(tpe: Type)(using Context): Option[String] = {
+    val symbol = tpe.typeSymbol
+    val target =
+      if (symbol.isAliasType && predefined(symbol.owner)) tpe.dealias.typeSymbol
+      else symbol
+    key(target).orElse(Option.when(target.isClass && !unnamed(target))(qualifiedName(target)))
+  }
+
+  private def predefined(owner: Symbol)(using Context): Boolean =
+    owner == defn.ScalaPredefModuleClass || owner == defn.ScalaPackageObject.moduleClass
+
+  private def unnamed(symbol: Symbol)(using Context): Boolean =
+    Set[Symbol](defn.AnyClass, defn.AnyValClass, defn.ObjectClass, defn.NothingClass, defn.NullClass, defn.UnitClass)
+      .contains(symbol)
 
   /** Records an alias of `scope` that fills a type constructor with literal arguments. */
   def alias(symbol: Symbol, scope: Symbol, target: AppliedType)(using Context): Unit =
