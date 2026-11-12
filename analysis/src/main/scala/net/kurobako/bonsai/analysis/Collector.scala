@@ -450,7 +450,7 @@ private[analysis] class Collector(
           identified(method) ->
             Purity.Method(
               node,
-              Keys.signed(method, qualifiedName(method)),
+              Keys.shown(method, qualifiedName(method)),
               lineOf(method),
               effects.verdict(method),
               effects.observed(method),

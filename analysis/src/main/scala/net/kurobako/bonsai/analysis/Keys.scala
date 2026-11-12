@@ -27,6 +27,11 @@ private object Keys {
     if (shared) name + symbol.info.paramInfoss.map(_.map(_.show).mkString("(", ", ", ")")).mkString else name
   }
 
+  /** The name of the method for display: signed when overloaded, and `#class` when the companion of its class also
+    * declares it.
+    */
+  def shown(symbol: Symbol, name: String)(using Context): String = signed(symbol, name) + companioned(symbol)
+
   /** The key of the method, unless a class its signature names is missing from the classpath. */
   def of(method: Symbol)(using Context): Option[String] = at(method, Calls.owner(method))
 

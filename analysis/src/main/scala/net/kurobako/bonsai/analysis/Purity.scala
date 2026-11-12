@@ -1278,8 +1278,7 @@ object Purity {
       views.get(key).filter(_._1 eq part).fold {
         val target  = key.method
         val library = !bodies.contains(target) && !templates.contains(target.owner)
-        val name    = short(target)
-        val via     = Some(name)
+        val via     = Some(if (library) short(target) else Finding.short(Keys.shown(target, qualified(target))))
         // A summary that lost nothing needs viewing only for what it gained.
         val (before, gained) = views.get(key).flatMap((earlier, view) =>
           Ids.gained(earlier.effects, part.effects).map(view.effects -> _)

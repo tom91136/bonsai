@@ -569,9 +569,31 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(
       regressed.map(finding => finding.node.line -> finding.detail.takeWhile(_ != ';')).toSet,
       Set(
-        5 -> "Store.home was pure and now calls scala.Predef.println",
+        5 -> "Store.home#class was pure and now calls scala.Predef.println",
         9 -> "Over.over(String) was pure and now calls scala.Predef.println"
       )
+    )
+  }
+
+  private lazy val echoes = extract(Seq(
+    "Main.scala" -> "object Main { def main(args: Array[String]): Unit = println(Echo.equals(new Echo, new Echo)) }",
+    "Echo.scala" ->
+      """class Echo {
+        |  override def equals(other: Any): Boolean = other match {
+        |    case other: Echo => Echo.equals(this, other)
+        |    case _           => false
+        |  }
+        |}
+        |object Echo {
+        |  def equals(x: Echo, y: Echo): Boolean = { println(x); x eq y }
+        |}""".stripMargin
+  ))
+
+  test("an instance method calling the companion method of its name is told apart from it") {
+    val reported = Purity.findings(echoes.purity, echoes.graph.nodes).filter(_.rule == Finding.Rule.ImpureContract)
+    assertEquals(
+      reported.map(_.detail.takeWhile(_ != ';')),
+      Vector("Echo.equals#class calls Echo.equals, which performs output")
     )
   }
 
