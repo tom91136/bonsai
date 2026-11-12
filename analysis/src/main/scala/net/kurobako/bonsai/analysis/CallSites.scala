@@ -192,7 +192,7 @@ private[analysis] class CallSites(symbols: Symbols, lines: Lines) {
 
   /** The key under which the calls of `callee` are recorded. */
   def calleeKey(callee: Symbol)(using Context): String =
-    if (callee.isClass) qualifiedName(callee) + Keys.localised(callee) else methodKey(callee, fieldsOf(callee))
+    if (callee.isClass) identified(callee) else methodKey(callee, fieldsOf(callee))
 
   /** Classifies the calls of `evidence` to `callees`, and notes the defaults no call overrides. */
   def conclude(evidence: Evidence, callees: collection.Map[Symbol, Callee])(using Context): Unit = {

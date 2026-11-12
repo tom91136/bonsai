@@ -533,6 +533,82 @@ class PuritySuite extends AnalysisSuite {
     assert(!locked("Pure.logged"))
   }
 
+  private lazy val shared = extract(Seq(
+    "Main.scala"  -> "object Main { def main(args: Array[String]): Unit = println(Store) }",
+    "Store.scala" ->
+      """object Store {
+        |  def home(x: Int): Int = x * 2
+        |}
+        |class Store {
+        |  def home(x: Int): Int = { println(x); Store.home(x) }
+        |}
+        |object Over {
+        |  def over(x: Int): Int = x
+        |  def over(x: String): Int = { println(x); 1 }
+        |}""".stripMargin
+  ))
+
+  test("companion and class members of one name, and overloads, have separate verdicts and records") {
+    val verdicts = shared.purity.verdicts
+    assertEquals(verdicts.get("Store.home"), Some(Purity.Verdict.Pure))
+    assertEquals(verdicts.get("Store.home#class").map(isImpure(_)), Some(true))
+    assertEquals(verdicts.get("Over.over(Int)"), Some(Purity.Verdict.Pure))
+    assertEquals(verdicts.get("Over.over(String)").map(isImpure(_)), Some(true))
+    assertEquals(
+      Report.keys(Purity.lock(shared.purity, shared.graph.nodes)).filter(_.startsWith("Over.over")),
+      Set("Over.over(Int)")
+    )
+  }
+
+  test("a regression names the method and the line it is declared at") {
+    val regressed = Purity.regressions(
+      shared.purity,
+      shared.graph.nodes,
+      Set("Store.home", "Store.home#class", "Over.over(Int)", "Over.over(String)")
+    )
+    assertEquals(
+      regressed.map(finding => finding.node.line -> finding.detail.takeWhile(_ != ';')).toSet,
+      Set(
+        5 -> "Store.home was pure and now calls scala.Predef.println",
+        9 -> "Over.over(String) was pure and now calls scala.Predef.println"
+      )
+    )
+  }
+
+  private def boxes(prefix: String) = extract(Seq(
+    "Main.scala" ->
+      s"""${prefix}object Main
+          |class Suite {
+          |  def check(body: => Any): Any = body
+          |  check {
+          |    class Box { def get: Int = 1 }
+          |    new Box().get
+          |  }
+          |  check {
+          |    class Box { def get: Int = { println(1); 1 } }
+          |    new Box().get
+          |  }
+          |}""".stripMargin
+  ))
+
+  test("local classes of one name in one class body keep separate purity records and nodes") {
+    val local = boxes("")
+    val named = local.purity.methods.filter((name, _) => name.contains("Box.get"))
+    assertEquals(named.size, 2)
+    assertEquals(named.values.map(_.verdict == Purity.Verdict.Pure).toSet, Set(true, false))
+    val nodes = local.graph.nodes.values.filter(_.name.contains("Box"))
+    assertEquals(nodes.map(_.line).toSet, Set(5, 9))
+    assertEquals(nodes.map(_.name).toSet.size, 2)
+  }
+
+  test("local class nodes all carry their position in the member around them, wherever they are registered or sit") {
+    def nodeNames(prefix: String) = boxes(prefix).graph.nodes.values.filter(_.name.contains("Box")).map(_.name).toSet
+    val plain                     = nodeNames("")
+    assertEquals(plain.size, 2)
+    assert(plain.forall(_.contains("@")), plain.toString)
+    assertEquals(nodeNames("// shifts every offset\n"), plain)
+  }
+
   test("effects policies hold packages and classes to the kinds they allow, the most specific one deciding") {
     val violated = Purity.violations(
       result.purity,

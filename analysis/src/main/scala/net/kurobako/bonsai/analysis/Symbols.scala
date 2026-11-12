@@ -232,7 +232,7 @@ private[analysis] class Symbols(
       case Some(name) => name
       case None       =>
         val name = output(symbol).map { output =>
-          val name   = qualifiedName(symbol)
+          val name   = identified(symbol)
           val source = sourcePath(symbol)
           val outer  = register(node(symbol.owner))
           val line   = lineOf(symbol)
@@ -306,6 +306,12 @@ private[analysis] class Symbols(
   private def sourcePath(symbol: Symbol)(using Context): String =
     if (symbol.source.exists) symbol.source.path
     else Option(symbol.compilationUnitInfo).flatMap(_.tastyInfo).flatMap(_.attributes.sourceFile).getOrElse("")
+
+  /** The name that tells `symbol` from every other definition: the qualified name, with the parameter types of an
+    * overloaded method, and what tells a member from its companion's and a local definition from its namesakes.
+    */
+  def identified(symbol: Symbol)(using Context): String =
+    Placements.signed(symbol, qualifiedName(symbol)) + Keys.qualifier(symbol)
 
   def qualifiedName(symbol: Symbol)(using Context): String = names.get(symbol) match {
     case Some(name) => name

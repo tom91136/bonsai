@@ -108,14 +108,14 @@ private[analysis] class Derivations(symbols: Symbols, foreign: Set[Output]) {
   def receive(others: Set[String]): Unit = received = others
 
   def derived(cls: Symbol)(using Context): Boolean =
-    spread.headOption.getOrElse(spreading()).contains(cls) || received(symbols.qualifiedName(cls))
+    spread.headOption.getOrElse(spreading()).contains(cls) || received(symbols.identified(cls))
 
   /** The classes this run did not read that its code derives, by name. */
   def evidence(using Context): Set[String] =
     if (foreign.isEmpty) Set.empty
     else spread.headOption.getOrElse(
       spreading()
-    ).filter(cls => symbols.output(cls).exists(foreign)).map(symbols.qualifiedName(_))
+    ).filter(cls => symbols.output(cls).exists(foreign)).map(symbols.identified(_))
 
   private def spreading()(using Context): Set[Symbol] = {
     val visited = mutable.Set.empty[Symbol]

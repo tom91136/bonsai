@@ -124,7 +124,7 @@ private[analysis] class StructureObserver(
   private def elsewhere(symbol: Symbol)(using Context): Boolean = foreign.nonEmpty && output(symbol).exists(foreign)
 
   private def construct(symbol: Symbol, change: Int)(using Context): Unit =
-    if (elsewhere(symbol)) apartBuilt(qualifiedName(symbol)) = apartBuilt.getOrElse(qualifiedName(symbol), 0) + change
+    if (elsewhere(symbol)) apartBuilt(identified(symbol)) = apartBuilt.getOrElse(identified(symbol), 0) + change
     else built(symbol) = built.getOrElse(symbol, 0) + change
 
   /** What this run records for the runs beside it, which hold the definitions or the strings it concerns. */
@@ -409,7 +409,7 @@ private[analysis] class StructureObserver(
           qualifiedName(cls),
           info.name,
           !cls.isOneOf(Flags.Abstract | Flags.ModuleClass | Flags.Enum | Flags.Case) &&
-            built.getOrElse(cls, 0) + others.built.getOrElse(qualifiedName(cls), 0) <= 0,
+            built.getOrElse(cls, 0) + others.built.getOrElse(identified(cls), 0) <= 0,
           cls.asClass.parentSyms.collect {
             case parent if !parent.is(Flags.Trait) && key(parent).isDefined => qualifiedName(parent)
           }.toVector

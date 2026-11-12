@@ -17,6 +17,8 @@ private[analysis] object BytecodePurity {
           val ordered = Purity.ranked(entry.summary.certain)
           entry.key -> Purity.Method(
             owner,
+            entry.key,
+            0,
             Purity.verdictOf(ordered),
             Purity.observedOf(ordered),
             entry.role,

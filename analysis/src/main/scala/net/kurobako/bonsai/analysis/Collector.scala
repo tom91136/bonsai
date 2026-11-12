@@ -382,7 +382,7 @@ private[analysis] class Collector(
   def algebra: Algebra.Model =
     Algebra.Model(
       products.values.toVector.sortBy(_.name),
-      sums.values.toVector.sortBy(_.name),
+      sums.values.toVector.sortBy(sum => (sum.name, sum.node)),
       callSites.recorded,
       required.values.toMap,
       enumerations.toVector,
@@ -447,9 +447,11 @@ private[analysis] class Collector(
       ),
       bodies.keys.view.filter(ownMethod(_)).flatMap(method =>
         key(method).map(node =>
-          qualifiedName(method) ->
+          identified(method) ->
             Purity.Method(
               node,
+              Placements.signed(method, qualifiedName(method)),
+              lineOf(method),
               effects.verdict(method),
               effects.observed(method),
               effects.role(method),
@@ -535,7 +537,7 @@ private[analysis] class Collector(
       val name = qualifiedName(cls)
       if (cls.is(Flags.CaseClass)) {
         val parents = cls.asClass.parentSyms.view.collect {
-          case parent if parent.is(Flags.Sealed) => qualifiedName(parent)
+          case parent if parent.is(Flags.Sealed) => identified(parent)
         }.toSet
         val fields    = fieldsOf(cls)
         val invariant = Predicates.required(cls, requirements(template.body), fields)
@@ -561,7 +563,7 @@ private[analysis] class Collector(
         val accessors = cls.info.decls.toList.view.collect {
           case member if member.is(Flags.Method) && member.is(Flags.Deferred) => member.name.toString
         }.toSet
-        sums(name) = Algebra.Sum(name, key, variants.toVector, accessors)
+        sums(key) = Algebra.Sum(name, key, variants.toVector, accessors)
         if (!cls.is(Flags.Enum)) hierarchies += ((cls, name, key))
       }
       nodes.get(key).foreach(dispatching.classify(cls, name, key, _))

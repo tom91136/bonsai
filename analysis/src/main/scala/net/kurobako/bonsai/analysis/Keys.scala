@@ -25,20 +25,33 @@ private object Keys {
   /** The key of the method, told apart from a method of the same name and signature in the companion of its class or in
     * another local class, which `of` gives the same key as class files do.
     */
-  def unique(method: Symbol)(using Context): Option[String] =
-    of(method).map(_ + companioned(method) + localised(method))
+  def unique(method: Symbol)(using Context): Option[String] = of(method).map(_ + qualifier(method))
 
-  private def companioned(method: Symbol)(using Context): String = {
-    val owner = method.owner
-    if (owner.isClass && !owner.is(Flags.Module) && owner.companionModule.moduleClass.info.decl(method.name).exists)
+  /** What tells a symbol from one of the same qualified name: `#class` for a member the companion of its class also
+    * declares, and the position of a local definition within the member or class around it, which does not move when
+    * code outside that member does.
+    */
+  def qualifier(symbol: Symbol)(using Context): String = companioned(symbol) + localised(symbol)
+
+  private def companioned(symbol: Symbol)(using Context): String = {
+    val owner = symbol.owner
+    if (
+      symbol.isTerm && owner.isClass && !owner.is(Flags.Module) &&
+      owner.companionModule.moduleClass.info.decl(symbol.name).alternatives.exists(!_.symbol.is(Flags.Synthetic))
+    )
       "#class"
     else ""
   }
 
-  def localised(symbol: Symbol)(using Context): String =
-    if (symbol.ownersIterator.drop(1).exists(owner => owner.isTerm && !owner.is(Flags.Package)))
-      s"@${symbol.span.start}"
-    else ""
+  private def local(symbol: Symbol)(using Context): Boolean =
+    symbol.ownersIterator.drop(1).exists(owner => owner.isTerm && !owner.is(Flags.Package))
+
+  private def localised(symbol: Symbol)(using Context): String =
+    if (local(symbol)) {
+      val anchor = symbol.ownersIterator.drop(1).find(owner => owner.span.exists && !local(owner))
+      val label  = anchor.fold("")(owner => Placements.signed(owner, owner.name.toString) + companioned(owner))
+      s"@$label:${symbol.span.start - anchor.fold(0)(_.span.start)}"
+    } else ""
 
   /** The key of a call of the method on a receiver of class `owner`, which is how class files name the callee. */
   def at(method: Symbol, owner: Symbol)(using Context): Option[String] =

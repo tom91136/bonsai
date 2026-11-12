@@ -73,11 +73,14 @@ object Purity {
     */
   case class Observed(kind: Kind, shown: String, receiver: Boolean, library: Boolean)
 
-  /** An authored method: the node it belongs to, what is known of its effects, each kind of effect it has, and the
-    * contract it fulfils for collections, sorting and pattern matching, such as `equals`, if any.
+  /** An authored method: the node it belongs to, its name for display and the line it is declared at, what is known of
+    * its effects, each kind of effect it has, and the contract it fulfils for collections, sorting and pattern
+    * matching, such as `equals`, if any.
     */
   case class Method(
       node: String,
+      name: String,
+      line: Int,
       verdict: Verdict,
       effects: Vector[Observed],
       role: Option[String],
@@ -141,7 +144,7 @@ object Purity {
     val empty: Model = Model(Vector.empty, Vector.empty, Vector.empty, Map.empty, library = 0)
   }
 
-  /** `methods` holds the authored methods of the build by qualified name; `library` counts the library bodies read and
+  /** `methods` holds the authored methods of the build by identity; `library` counts the library bodies read and
     * `returns` the call results evaluated, one for each distinct receiver and arguments, and `resolved` the function
     * bodies and method summaries evaluated in a frame.
     */
@@ -266,7 +269,7 @@ object Purity {
         suppressed = probe.suppressed,
         line = probe.line
       )
-    ) ++ model.methods.toVector.sortBy(_._1).flatMap((name, method) =>
+    ) ++ model.methods.toVector.sortBy(_._1).flatMap((_, method) =>
       method.role.flatMap(role =>
         method.effects.find(effect =>
           // Writes on the receiver or in library bodies are caches far more often than not.
@@ -277,9 +280,10 @@ object Purity {
             nodes,
             method.node,
             Finding.Rule.ImpureContract,
-            s"${Finding.short(name)} ${effect.shown}; collections, sorting and pattern matching call $role any " +
+            s"${Finding.short(method.name)} ${effect.shown}; collections, sorting and pattern matching call $role any " +
               "number of times and assume it has no effects",
-            suppressed = method.suppressed
+            suppressed = method.suppressed,
+            line = method.line
           )
         )
       )
@@ -306,9 +310,10 @@ object Purity {
             nodes,
             method.node,
             Finding.Rule.PurityRegression,
-            s"${Finding.short(name)} was pure and now $cause; restore it, or record the change with " +
+            s"${Finding.short(method.name)} was pure and now $cause; restore it, or record the change with " +
               "bonsaiPurityWrite",
-            suppressed = method.suppressed
+            suppressed = method.suppressed,
+            line = method.line
           )
         )
       )
@@ -324,19 +329,20 @@ object Purity {
     */
   def violations(model: Model, nodes: Map[String, Node], policies: Vector[Policy]): Vector[Finding] =
     model.methods.toVector.sortBy(_._1).view.filter((_, method) => nodes.get(method.node).exists(!_.test)).flatMap {
-      (name, method) =>
-        policies.flatMap(policy => policy.covers(name).map(_ -> policy)).maxByOption(_._1).flatMap((_, policy) =>
+      (_, method) =>
+        policies.flatMap(policy => policy.covers(method.name).map(_ -> policy)).maxByOption(_._1).flatMap((_, policy) =>
           method.effects.find(effect => effect.kind != Kind.Throws && !policy.allowed(effect.kind)).flatMap(effect =>
             Finding.at(
               nodes,
               method.node,
               Finding.Rule.EffectPolicy,
-              s"${Finding.short(name)} ${effect.shown}; the effects policy for ${policy.prefix} allows " +
+              s"${Finding.short(method.name)} ${effect.shown}; the effects policy for ${policy.prefix} allows " +
                 (if (policy.allowed.isEmpty) "no effects"
                  else
                    s"only ${Policy.Kinds.collect { case (id, kind) if policy.allowed(kind) => id }.toSeq.sorted
                        .mkString(", ")}"),
-              suppressed = method.suppressed
+              suppressed = method.suppressed,
+              line = method.line
             )
           )
         )
