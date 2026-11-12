@@ -1,5 +1,7 @@
 package net.kurobako.bonsai.analysis
 
+import java.nio.charset.StandardCharsets.UTF_8
+import java.security.MessageDigest
 import scala.annotation.targetName
 
 /** Exponential polynomials with natural coefficients over uninterpreted atoms, kept in a canonical form.
@@ -57,12 +59,16 @@ object Polynomial {
   private def repeat(base: Polynomial, count: BigInt): Polynomial =
     if (count > MaxTerms) opaque(s"(${base.key})^$count") else product(Vector.fill(count.toInt)(base))
 
-  private def opaque(name: String): Polynomial = atom(s"<$name>")
+  private def opaque(identity: String): Polynomial = atom(s"<${digest(identity)}>")
+
+  private def digest(text: String): String =
+    java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(UTF_8)))
 
   private def show(factor: Factor, full: Boolean): String = factor match {
-    case Factor.Named(Naming.Atom, name)     => if (full) name else brief(name)
-    case Factor.Named(Naming.Variable, name) => name
-    case Factor.Power(base, exponent)        => s"(${base.render(full)})^(${exponent.render(full)})"
+    case Factor.Named(Naming.Atom, name)      => if (full) name else brief(name)
+    case Factor.Named(Naming.Variable, name)  => name
+    case Factor.Power(base, exponent) if full => s"(${digest(base.key)})^(${digest(exponent.key)})"
+    case Factor.Power(base, exponent)         => s"(${base.render(full)})^(${exponent.render(full)})"
   }
 
   // Strips package prefixes from every qualified name inside a possibly applied type, keeping the types that hold it.

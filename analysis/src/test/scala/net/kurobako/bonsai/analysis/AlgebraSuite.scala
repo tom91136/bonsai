@@ -37,6 +37,29 @@ class AlgebraSuite extends AnalysisSuite {
     assert((wide * wide * wide).key.contains("<"), (wide * wide * wide).key)
   }
 
+  test("keys of many-field products stay bounded as the fields grow") {
+    val field = sum((1 to 3).map(index => atom(s"scala.collection.immutable.Option$index")))
+
+    def keyLength(fields: Int): Int = product(Vector.fill(fields)(field)).key.length
+    assert(keyLength(28) < 4 * keyLength(20), (keyLength(20), keyLength(28)))
+  }
+
+  test("keys of nested powers over sums stay bounded as the nesting grows") {
+    def nested(depth: Int): Polynomial = (1 to depth).foldLeft(a) { (inner, level) =>
+      power(inner * atom(s"X$level") + inner * atom(s"Y$level"), atom(s"E$level"))
+    }
+    assert(nested(16).key.length < 4 * nested(8).key.length, (nested(8).key.length, nested(16).key.length))
+  }
+
+  test("equal operands built in different orders give equal keys") {
+    val fields   = (1 to 4).map(index => sum((1 to 3).map(j => atom(s"pkg$index.Option$j"))))
+    val forward  = product(fields)
+    val backward = product(fields.reverse)
+    assertEquals(forward, backward)
+    assertEquals((forward * forward).key, (backward * backward).key)
+    assertEquals((forward * forward * forward).key, (backward * backward * backward).key)
+  }
+
   test("products with the same fields and shape are duplicates regardless of order, tupling and currying") {
     val found = findings(
       "P.scala" -> "case class P(x: Int, y: String, f: (Long, Char) => Byte)",
