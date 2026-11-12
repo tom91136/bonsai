@@ -184,4 +184,20 @@ class BuildSuite extends FunSuite {
         )
       )
   }
+
+  withRoot("a copy directly under the build root names the root as its directory") { root =>
+    val top      = write(root, "Build.scala", "object Build")
+    val nested   = write(root, "api/Build.scala", "object Build")
+    val manifest = Manifest(
+      Vector.empty,
+      Map.empty,
+      Set.empty,
+      sources = Vector(top, nested).map(Output("api", Output.Scope.Main, _)),
+      root = Some(root)
+    )
+    assertEquals(
+      Build.duplicates(manifest).map(_.detail),
+      Vector("Build.scala is identical in ., api; move it to a directory every platform compiles")
+    )
+  }
 }

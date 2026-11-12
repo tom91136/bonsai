@@ -48,7 +48,9 @@ object Build {
         Finding(
           Finding.Rule.PlatformDuplicate,
           node(first.path.toString, first.module, first.scope, first.path.toString),
-          s"${first.path.getFileName} is identical in ${copies.map(_.path.getParent.toString).mkString(", ")}; move " +
+          s"${first.path.getFileName} is identical in ${copies.map(copy =>
+              Option(copy.path.getParent).fold(".")(_.toString)
+            ).mkString(", ")}; move " +
             "it to a directory every platform compiles",
           if (copies.forall(_.scope == Output.Scope.Test)) Finding.Level.Info else Finding.Level.Warning
         )
