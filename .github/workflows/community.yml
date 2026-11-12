@@ -140,6 +140,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Enable zram
+        if: matrix.swap != ''
         run: |
           set -euo pipefail
           sudo swapoff -a
@@ -150,9 +151,9 @@ jobs:
             sudo modprobe zram
           fi
           kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
-          echo $((kib * 4 * 1024)) | sudo tee /sys/block/zram0/disksize > /dev/null
-          sudo mkswap /dev/zram0
-          sudo swapon -p 5 /dev/zram0
+          device=$(sudo zramctl --find --size "$((kib * 4))KiB")
+          sudo mkswap "$device"
+          sudo swapon -p 5 "$device"
           swapon --show
           free -h
       - uses: actions/checkout@v7
