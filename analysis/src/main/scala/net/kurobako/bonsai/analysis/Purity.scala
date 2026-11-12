@@ -540,6 +540,12 @@ object Purity {
         intern(effectTable(id).copy(onThis = false, target = target))
       )
 
+    private def onto(id: Int, place: Receiver[Symbol], keepFresh: Boolean): Option[Int] = place match {
+      case Receiver.Fresh         => Option.when(keepFresh)(id)
+      case Receiver.Other(target) => Some(retarget(id, target))
+      case Receiver.This          => Some(intern(effectTable(id).copy(onThis = true, target = None)))
+    }
+
     private enum Form {
       case Opaque, Plain
     }
@@ -547,7 +553,7 @@ object Purity {
     private enum Argument {
       case Function(facts: Facts)
       case Parameter(index: Int)
-      case Expression(tree: tpd.Tree, form: Form)
+      case Expression(tree: tpd.Tree, form: Form, place: Receiver[Symbol])
     }
 
     /** What a call runs: the bodies of `targets`, code an axiom describes, the method with the key whose bytecode shows
@@ -1144,19 +1150,14 @@ object Purity {
         val invokes  = mutable.Set.from(facts.invokes)
         val captures = mutable.Set.empty[Symbol]
         facts.calls.foreach { call =>
-          val called = ran(call.resolution, call.arguments, frame)
+          val called = ran(call.resolution, call.arguments, frame, keepFresh)
           captures ++= called.captures
           call.receiver match {
             case Receiver.This => effects.addAll(called.effects)
             case receiver      =>
               called.effects.foreach { id =>
                 if (!effectTable(id).onThis) effects.add(id)
-                else
-                  receiver match {
-                    case Receiver.Fresh         => if (keepFresh) effects.add(id)
-                    case Receiver.Other(target) => effects.add(retarget(id, target))
-                    case Receiver.This          => ()
-                  }
+                else onto(id, receiver, keepFresh).foreach(effects.add(_))
               }
           }
           // A function value's invocations are already this frame's, where a callee's name its own parameters.
@@ -1168,8 +1169,8 @@ object Purity {
                 effects.addAll(nested.effects)
                 invokes ++= nested.invokes
                 captures ++= nested.captures
-              case Some(Argument.Parameter(parameter))          => invokes += parameter
-              case Some(Argument.Expression(tree, Form.Opaque)) =>
+              case Some(Argument.Parameter(parameter))             => invokes += parameter
+              case Some(Argument.Expression(tree, Form.Opaque, _)) =>
                 val ran = invoke(evaluate(tree, frame), frame)
                 effects.addAll(ran.effects)
                 invokes ++= ran.invokes
@@ -1241,15 +1242,21 @@ object Purity {
       }
     }
 
-    private def ran(resolution: Resolution, arguments: Vector[Argument], frame: Frame): Summary = resolution match {
-      case Resolution.Bodies(targets) =>
-        joined(targets.map(target => Key(target, None, bound(target, target, arguments, frame))))
-      case Resolution.Axiom(summary)                         => summary
-      case Resolution.Bytecode(key, via)                     => read(key, via)
-      case Resolution.Dispatch(method, reference, otherwise) =>
-        dispatched(method, Some(reference), arguments, frame).getOrElse(ran(otherwise, arguments, frame))
-      case Resolution.Invocation(function) => invoke(evaluate(function, frame), frame)
-    }
+    private def ran(resolution: Resolution, arguments: Vector[Argument], frame: Frame, keepFresh: Boolean): Summary =
+      resolution match {
+        case Resolution.Bodies(targets) =>
+          joined(
+            targets.map(target => Key(target, None, bound(target, target, arguments, frame))),
+            arguments,
+            keepFresh
+          )
+        case Resolution.Axiom(summary)                         => summary
+        case Resolution.Bytecode(key, via)                     => read(key, via)
+        case Resolution.Dispatch(method, reference, otherwise) =>
+          dispatched(method, Some(reference), arguments, frame, keepFresh)
+            .getOrElse(ran(otherwise, arguments, frame, keepFresh))
+        case Resolution.Invocation(function) => invoke(evaluate(function, frame), frame)
+      }
 
     private val readings = mutable.HashMap.empty[(String, String), Summary]
 
@@ -1274,7 +1281,8 @@ object Purity {
         method: Symbol,
         reference: Option[tpd.Tree],
         arguments: Vector[Argument],
-        frame: Frame
+        frame: Frame,
+        keepFresh: Boolean
     ): Option[Summary] =
       objects(reference.fold(frame.self)(holder(_, frame)).getOrElse(Value.Opaque)).orElse(reference.flatMap(typed(_)))
         .flatMap { candidates =>
@@ -1289,7 +1297,7 @@ object Purity {
           }
           Option.when(targets.nonEmpty &&
             targets.forall(key => key.method.exists && (field(key.method) || factsOf(key.method).isDefined)))(
-            joined(targets)
+            joined(targets, arguments, keepFresh)
           )
         }
 
@@ -1305,8 +1313,9 @@ object Purity {
         val (before, gained) = views.get(key).flatMap((earlier, view) =>
           Ids.gained(earlier.effects, part.effects).map(view.effects -> _)
         ).getOrElse(Ids.Empty -> part.effects)
+        val own                                     = positions(target)
         def visible(effect: Effect): Option[Symbol] =
-          effect.target.filter(local => ownedBy(target.owner, local.owner))
+          effect.target.filter(local => own.contains(local) || ownedBy(target.owner, local.owner))
         val firsts               = mutable.HashMap.empty[Group, Effect]
         def offer(id: Int): Unit = {
           val effect = effectTable(id)
@@ -1329,6 +1338,28 @@ object Purity {
       }(_._2)
     }
 
+    private def applied(view: Summary, method: Symbol, arguments: Vector[Argument], keepFresh: Boolean): Summary = {
+      val own = positions(method)
+      if (own.isEmpty || !view.effects.exists(id => targeted.get(id) && own.contains(effectTable(id).target.get))) view
+      else {
+        val moved = builder()
+        view.effects.foreach { id =>
+          effectTable(id).target.flatMap(own.get) match {
+            case None        => moved.add(id)
+            case Some(index) =>
+              val place = arguments.lift(index) match {
+                case Some(Argument.Expression(_, _, place)) => place
+                case _                                      => Receiver.Other(None)
+              }
+              onto(id, place, keepFresh).foreach(moved.add(_))
+          }
+        }
+        val found = moved.result()
+        spare(moved)
+        Summary(found, view.invokes, view.captures)
+      }
+    }
+
     private type Group = (Kind, Boolean, Option[Symbol], Boolean, Boolean)
 
     private def group(effect: Effect): Group =
@@ -1337,10 +1368,10 @@ object Purity {
     private val possibles = mutable.LongMap.empty[Int]
 
     // The summaries of the bodies a call may run.
-    private def joined(keys: Vector[Key]): Summary = keys match {
-      case Vector(key) => viewed(key)
+    private def joined(keys: Vector[Key], arguments: Vector[Argument], keepFresh: Boolean): Summary = keys match {
+      case Vector(key) => applied(viewed(key), key.method, arguments, keepFresh)
       case _           =>
-        val parts   = keys.map(viewed(_))
+        val parts   = keys.map(key => applied(viewed(key), key.method, arguments, keepFresh))
         val all     = combined(parts)
         val running = keys.zip(parts).collect { case (key, part) if !key.method.is(Flags.Deferred) => part }
         if (running.size < 2) all
@@ -1383,7 +1414,7 @@ object Purity {
           val declared = terms(method)
           val own      = terms(target)
           arguments.zipWithIndex.collect {
-            case (Argument.Expression(tree, Form.Plain), index)
+            case (Argument.Expression(tree, Form.Plain, _), index)
                 if own.isDefinedAt(index) && declared.lift(index).exists(_.isOneOf(Flags.Given | Flags.Implicit)) =>
               own(index) -> evaluate(tree, frame)
           }.filter((_, value) => exact(value)).toMap
@@ -1475,7 +1506,8 @@ object Purity {
           requiredClass("scala.Function1").requiredMethod("apply"),
           None,
           Vector.empty,
-          frame.copy(self = Some(candidate))
+          frame.copy(self = Some(candidate)),
+          keepFresh = false
         )
           .getOrElse(invoke(Value.Opaque, frame))
       case Value.Opaque => Summary(Set(plain(Kind.Unknown, "runs a function value")), Set.empty)
@@ -1593,10 +1625,10 @@ object Purity {
               tracing += parameter
               try several(calls.toVector.flatMap((root, arguments) =>
                   (arguments.lift(index) match {
-                    case Some(Argument.Function(body))      => Some(Value.Function(body, frame(root, None)))
-                    case Some(Argument.Parameter(other))    => terms(root).lift(other).map(Value.Parameter(_))
-                    case Some(Argument.Expression(tree, _)) => Some(evaluate(tree, frame(root, None)))
-                    case _                                  => Some(Value.Opaque)
+                    case Some(Argument.Function(body))         => Some(Value.Function(body, frame(root, None)))
+                    case Some(Argument.Parameter(other))       => terms(root).lift(other).map(Value.Parameter(_))
+                    case Some(Argument.Expression(tree, _, _)) => Some(evaluate(tree, frame(root, None)))
+                    case _                                     => Some(Value.Opaque)
                   }).collect { case value if value != Value.Parameter(parameter) => followed(value) }
                 ))
               finally tracing -= parameter
@@ -2057,6 +2089,11 @@ object Purity {
       private def receiver(qualifier: Option[tpd.Tree]): Receiver[Symbol] =
         Calls.receiver(qualifier, allocated(_))
 
+      private def placed(argument: tpd.Tree): Receiver[Symbol] = receiver(Some(argument)) match {
+        case Receiver.Other(Some(variable)) if variable.is(Flags.Mutable) => Receiver.Other(None)
+        case place                                                        => place
+      }
+
       private def allocated(symbol: Symbol): Boolean = fresh(symbol) && within(symbol, scope)
 
       private def call(tree: tpd.Tree): Unit = {
@@ -2168,7 +2205,11 @@ object Purity {
                 Argument.Parameter(parameters(reference.symbol))
               case _ =>
                 traverse(argument)
-                Argument.Expression(argument, if (callable(argument.tpe)) Form.Opaque else Form.Plain)
+                Argument.Expression(
+                  argument,
+                  if (callable(argument.tpe)) Form.Opaque else Form.Plain,
+                  placed(argument)
+                )
             }
         }
 

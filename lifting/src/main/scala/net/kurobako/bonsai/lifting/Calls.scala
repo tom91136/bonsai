@@ -84,18 +84,21 @@ object Calls {
   private val MutablePackages = Vector("scala.collection.mutable.", "java.util.", "java.nio.")
 
   /** Whether `tree` builds a new object, mutable collection, array or iterator, which no one else holds yet. */
-  def allocates(tree: tpd.Tree)(using Context): Boolean = {
-    val function = spine(peel(tree)).function
-    val method   = function.symbol
-    val name     = method.name.toString
-    val factory  = selected(function).map(_.qualifier.symbol).exists(module =>
-      module.is(Flags.Module) &&
-        (module == defn.ArrayModule || MutablePackages.exists(qualified(module).startsWith(_)))
-    )
-    method.isConstructor || Set("iterator", "toArray", "toBuffer", "clone")(name) ||
-    factory &&
-    Set("apply", "empty", "from", "ofDim", "fill", "tabulate", "newBuilder", "allocate", "allocateDirect")(name) ||
-    configures(function)
+  @annotation.tailrec
+  def allocates(tree: tpd.Tree)(using Context): Boolean = peel(tree) match {
+    case tpd.Block(classes, expression) if classes.forall(_.isInstanceOf[tpd.TypeDef]) => allocates(expression)
+    case peeled                                                                        =>
+      val function = spine(peeled).function
+      val method   = function.symbol
+      val name     = method.name.toString
+      val factory  = selected(function).map(_.qualifier.symbol).exists(module =>
+        module.is(Flags.Module) &&
+          (module == defn.ArrayModule || MutablePackages.exists(qualified(module).startsWith(_)))
+      )
+      method.isConstructor || Set("iterator", "toArray", "toBuffer", "clone")(name) ||
+      factory &&
+      Set("apply", "empty", "from", "ofDim", "fill", "tabulate", "newBuilder", "allocate", "allocateDirect")(name) ||
+      configures(function)
   }
 
   // A buffer is configured and filled by chained calls on itself.

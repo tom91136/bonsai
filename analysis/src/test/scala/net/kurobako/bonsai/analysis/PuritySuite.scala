@@ -1439,6 +1439,48 @@ class PuritySuite extends AnalysisSuite {
     assert(joined.purity.verdicts("Held.run") != Purity.Verdict.Pure)
   }
 
+  test("an effect on a parameter is an effect on the argument the caller passes") {
+    val passed = extract(
+      Seq(
+        "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Passed) }",
+        "Passed.scala" ->
+          """trait Sink { def put(x: Int): Unit }
+            |class Source { def drain(sink: Sink): Unit = sink.put(1) }
+            |class Tally extends Sink {
+            |  private[this] var seen = 0
+            |  def put(x: Int): Unit = seen += x
+            |}
+            |object Passed {
+            |  def fill(source: Source, sink: Sink): Unit = source.drain(sink)
+            |  def fresh(source: Source): Unit = { val sink = new Tally; source.drain(sink) }
+            |  def allocated(source: Source): Unit = source.drain(new Tally)
+            |  def anonymous(source: Source): Unit = {
+            |    val sink = new Sink {
+            |      private[this] var seen = 0
+            |      def put(x: Int): Unit = seen += x
+            |    }
+            |    source.drain(sink)
+            |  }
+            |  def chained(source: Source, sink: Sink): Unit = fill(source, sink)
+            |  def forwarded(source: Source): Unit = { val sink = new Tally; fill(source, sink) }
+            |  def aliased(source: Source, sink: Sink): Unit = { var held = sink; source.drain(held) }
+            |  def returned(source: Source): Sink = { val sink = new Tally; source.drain(sink); sink }
+            |}
+            |class Keeper {
+            |  var sink: Sink = null
+            |  def kept(source: Source): Unit = { val held = new Tally; sink = held; source.drain(held) }
+            |}""".stripMargin
+      )
+    )
+    val verdicts = passed.purity.verdicts
+    Vector("Passed.fresh", "Passed.allocated", "Passed.anonymous", "Passed.forwarded", "Passed.returned").foreach(
+      name => assertEquals(verdicts(name), Purity.Verdict.Pure, name)
+    )
+    Vector("Passed.fill", "Passed.chained", "Passed.aliased", "Keeper.kept").foreach(name =>
+      assert(isImpure(verdicts(name)), name)
+    )
+  }
+
   test("callers of a chain give the same verdicts whatever the order they are written in") {
     def verdicts(source: String) =
       extract(Seq("Chain.scala" -> source)).purity.verdicts.filter(_._1.startsWith("Chain."))
