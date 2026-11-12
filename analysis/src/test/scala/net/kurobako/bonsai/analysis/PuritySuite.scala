@@ -1379,4 +1379,93 @@ class PuritySuite extends AnalysisSuite {
     assert(claimed(certain, "Callers.one").endsWith(", which performs output"), claimed(certain, "Callers.one"))
     assert(claimed(certain, "Callers.three").endsWith(", which performs output"), claimed(certain, "Callers.three"))
   }
+
+  private def chain(depth: Int, last: String, reversed: Boolean = false, extra: String = ""): String = {
+    val links = (0 until depth).map { level =>
+      s"""  def m$level(f: Int => Int, g: Int => Int, h: Int => Int, n: Int): Int => Int =
+         |    if (n > 0) m${level + 1}(x => f(x) + 1, g, h, n)
+         |    else if (n < 0) m${level + 1}(f, x => g(x) + 2, h, n)
+         |    else if (n == 0) m${level + 1}(f, g, x => h(x) + 3, n)
+         |    else if (n > 5) m${level + 1}(x => g(f(x)), x => h(g(x)), x => f(h(x)), n)
+         |    else m${level + 1}(h, f, g, n)""".stripMargin
+    }
+    val members = links :+
+      s"  def m$depth(f: Int => Int, g: Int => Int, h: Int => Int, n: Int): Int => Int = x => g(f(h(x)))" :+
+      s"  def run(): Int = m0($last, x => x, x => x, 1)(1)" :+ extra
+    s"""object Chain {
+       |${(if (reversed) members.reverse else members).mkString("\n")}
+       |}""".stripMargin
+  }
+
+  test("a chain of methods passing a choice of functions on is evaluated a bounded number of times") {
+    val depth = 10
+    val loud  = extract(Seq("Chain.scala" -> chain(depth, "x => { println(x); x }")))
+    assert(loud.purity.verdicts.get("Chain.run").exists(_ != Purity.Verdict.Pure))
+    assert(loud.purity.returns <= depth * 100, loud.purity.returns)
+  }
+
+  test("functions of one lambda that capture different functions keep the effects of each") {
+    val joined = extract(
+      Seq(
+        "Main.scala"   -> "object Main { def main(args: Array[String]): Unit = println(Joined) }",
+        "Joined.scala" ->
+          """object Joined {
+            |  def wrap(g: Int => Int): Int => Int = x => g(x)
+            |  def pick(n: Int): Int => Int = if (n > 0) wrap(x => x + 1) else wrap(x => { println(x); x })
+            |  def run(n: Int): Int = pick(n)(1)
+            |  def quiet(n: Int): Int = wrap(x => x + 1)(n)
+            |}""".stripMargin
+      )
+    )
+    assertEquals(joined.purity.verdicts("Joined.quiet"), Purity.Verdict.Pure)
+    assertEquals(
+      joined.purity.verdicts("Joined.run"),
+      Purity.Verdict.Effectful("calls scala.Predef.println", Purity.Certainty.Known)
+    )
+  }
+
+  test("objects of one class holding different functions keep the effects of each") {
+    val joined = extract(
+      Seq(
+        "Main.scala" -> "object Main { def main(args: Array[String]): Unit = println(Held) }",
+        "Held.scala" ->
+          """class Box(f: Int => Int) { def run(x: Int): Int = f(x) }
+            |object Held {
+            |  def pick(n: Int): Box = if (n > 0) Box(x => x + 1) else Box(x => { println(x); x })
+            |  def run(n: Int): Int = pick(n).run(1)
+            |}""".stripMargin
+      )
+    )
+    assert(joined.purity.verdicts("Held.run") != Purity.Verdict.Pure)
+  }
+
+  test("callers of a chain give the same verdicts whatever the order they are written in") {
+    def verdicts(source: String) =
+      extract(Seq("Chain.scala" -> source)).purity.verdicts.filter(_._1.startsWith("Chain."))
+    val last      = "x => { println(x); x }"
+    val forwards  = verdicts(chain(10, last))
+    val backwards = verdicts(chain(10, last, reversed = true))
+    val extended  = verdicts(chain(10, last, extra = "  def other(): Int = m3(x => x, x => x, x => x, 1)(2)"))
+    assert(forwards("Chain.run") != Purity.Verdict.Pure)
+    assertEquals(backwards, forwards)
+    assertEquals(extended - "Chain.other", forwards)
+  }
+
+  test("a method called with more functions than the bound keeps the cause of each") {
+    val callers = (0 until 80).map(n => s"  def quiet$n: Int = apply(x => x + $n)(1)")
+    val many    = extract(
+      Seq(
+        "Many.scala" ->
+          s"""object Many {
+             |  def apply(f: Int => Int): Int => Int = x => f(x)
+             |  def first: Int = apply(x => { println(x); x })(1)
+             |${callers.mkString("\n")}
+             |  def loud: Int = apply(x => { println(x); x })(1)
+             |}""".stripMargin
+      )
+    )
+    val println = Purity.Verdict.Effectful("calls scala.Predef.println", Purity.Certainty.Known)
+    assertEquals(many.purity.verdicts("Many.first"), println)
+    assertEquals(many.purity.verdicts("Many.loud"), println)
+  }
 }

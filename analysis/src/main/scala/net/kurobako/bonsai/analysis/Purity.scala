@@ -591,19 +591,31 @@ object Purity {
       case Inert
       case Opaque
 
+      private var hash   = 0  // scalafix:ok DisableSyntax.var
+      private var height = -1 // scalafix:ok DisableSyntax.var
+
       // Values nest, and are hashed whole at every lookup of a frame or a key that holds them.
-      override lazy val hashCode: Int = this match {
-        case product: (Object | Function | Parameter | Several) => ScalaRunTime._hashCode(product)
-        case _                                                  => ordinal
+      override def hashCode: Int = {
+        if (hash == 0) {
+          val found = this match {
+            case product: (Object | Function | Parameter | Several) => ScalaRunTime._hashCode(product)
+            case _                                                  => ordinal
+          }
+          hash = if (found == 0) 1 else found
+        }
+        hash
       }
 
       // How many objects and functions deep the value goes.
-      lazy val levels: Int = this match {
-        case Object(_, bindings)                   => 1 + bindings.values.view.map(_.levels).maxOption.getOrElse(0)
-        case Function(_, Frame(_, self, bindings)) =>
-          1 + (self.toList ++ bindings.values).view.map(_.levels).maxOption.getOrElse(0)
-        case Several(values) => values.view.map(_.levels).maxOption.getOrElse(0)
-        case _               => 0
+      def levels: Int = {
+        if (height < 0) height = this match {
+          case Object(_, bindings)                   => 1 + bindings.values.view.map(_.levels).maxOption.getOrElse(0)
+          case Function(_, Frame(_, self, bindings)) =>
+            1 + (self.toList ++ bindings.values).view.map(_.levels).maxOption.getOrElse(0)
+          case Several(values) => values.view.map(_.levels).maxOption.getOrElse(0)
+          case _               => 0
+        }
+        height
       }
     }
 
@@ -611,7 +623,15 @@ object Purity {
       * of parameters and captured symbols.
       */
     private case class Frame(root: Symbol, self: Option[Value], bindings: Map[Symbol, Value]) {
-      override lazy val hashCode: Int = ScalaRunTime._hashCode(this)
+      private var hash = 0 // scalafix:ok DisableSyntax.var
+
+      override def hashCode: Int = {
+        if (hash == 0) {
+          val found = ScalaRunTime._hashCode(this)
+          hash = if (found == 0) 1 else found
+        }
+        hash
+      }
     }
 
     /** A method summarised for one receiver, or for any when `self` is empty, and for the objects bound to its context
@@ -639,6 +659,8 @@ object Purity {
     private case class Returned(target: Symbol, receiver: Option[Value], arguments: Vector[Value]) {
       override val hashCode: Int = ScalaRunTime._hashCode(this)
     }
+
+    private case class Shape(anchor: AnyRef, root: Option[Symbol], selfed: Boolean, symbols: Set[Symbol])
 
     private case class Resolving(facts: Facts, frame: Frame, method: Option[Symbol]) {
       override val hashCode: Int = ScalaRunTime._hashCode(this)
@@ -788,7 +810,7 @@ object Purity {
               Facts(Vector(plain(Kind.Unknown, s"could not be read: $error")), Set.empty, Vector.empty)
           }
       }
-      facts.keys.toVector.foreach(method => solve(Key(method, None)))
+      settle(facts.keys.toVector)
     }
 
     /** Where a key stands in the search for strongly connected components of the keys that read each other: `index` is
@@ -1459,7 +1481,15 @@ object Purity {
       case Value.Opaque => Summary(Set(plain(Kind.Unknown, "runs a function value")), Set.empty)
     }
 
-    private val MaximumNesting = 3
+    private val MaximumNesting  = 3
+    private val MaximumContexts = 32
+    private val MaximumPasses   = 8
+    private val contexts        = mutable.HashMap.empty[Symbol, mutable.HashSet[Returned]]
+    private val observed        = mutable.HashMap.empty[Symbol, Wide]
+    private val overflowed      = mutable.LinkedHashSet.empty[Symbol]
+    private var widened         = Map.empty[Symbol, Wide] // scalafix:ok DisableSyntax.var
+    private var flowing         = false                   // scalafix:ok DisableSyntax.var
+    private var aborting        = false                   // scalafix:ok DisableSyntax.var
 
     /** What `tree` evaluates to in `frame`, memoised so the same tree in the same frame always gives the same value; a
       * value defined in terms of itself is opaque.
@@ -1656,7 +1686,7 @@ object Purity {
         // A mutable collection may have been written to since it was built, however it is seen later.
         if (carries(result) && !knowledge.growable(result)) several(carrying) else Value.Opaque
       else {
-        val key = Returned(target, receiver.filter(_.isInstanceOf[Value.Object]), arguments)
+        val key = admitted(Returned(target, receiver.filter(_.isInstanceOf[Value.Object]), arguments))
         if (scratch.evaluating(key) || scratch.evaluating.size > MaximumNesting * 4) Value.Opaque
         else
           returning.getOrElse(
@@ -1682,18 +1712,164 @@ object Purity {
       }
     }
 
+    // A call keeps the receiver and arguments it was made with until a method is called in more than
+    // `MaximumContexts` ways, which `settle` answers by giving the method one context, the join of every call to it.
+    private def admitted(call: Returned): Returned = {
+      if (flowing || widened.contains(call.target) || overflowed(call.target)) observe(call)
+      widened.get(call.target) match {
+        case Some(wide)      => Returned(call.target, wide.receiver, wide.arguments)
+        case None if flowing => Returned(call.target, None, call.arguments.map(_ => Value.Inert))
+        case None            =>
+          val held = contexts.getOrElseUpdate(call.target, mutable.HashSet.empty)
+          if (held(call) || held.size < MaximumContexts) {
+            held += call
+            call
+          } else if (aborting) throw Overflow()
+          else {
+            if (overflowed.add(call.target)) observe(call)
+            Returned(call.target, None, call.arguments.map(_ => Value.Opaque))
+          }
+      }
+    }
+
+    private def observe(call: Returned): Unit = observed(call.target) =
+      observed.get(call.target).fold(Wide(call.receiver, call.arguments))(_.joined(call.receiver, call.arguments))
+
+    private case class Wide(receiver: Option[Value], arguments: Vector[Value]) {
+      def joined(other: Option[Value], rest: Vector[Value]): Wide = Wide(
+        for {
+          one     <- receiver
+          another <- other
+          both    <- Some(several(Vector(one, another))).filter(_.isInstanceOf[Value.Object])
+        } yield both,
+        if (rest.sizeIs == arguments.size)
+          arguments.zip(rest).map((one, another) => shallow(several(Vector(one, another)), MaximumNesting))
+        else arguments.map(_ => Value.Opaque)
+      )
+
+      // how many functions and classes the arguments may be at once
+      def width: Long = arguments.view.map(members(_).toLong).product
+
+      def top: Boolean = arguments.nonEmpty && arguments.forall(_ == Value.Opaque)
+
+      private def members(value: Value): Int = value match {
+        case Value.Several(values) => values.view.map(members(_)).sum
+        case _                     => 1
+      }
+    }
+
+    private class Overflow extends scala.util.control.ControlThrowable
+
+    private def reset(): Unit = {
+      evaluated.clear()
+      returning.clear()
+      contexts.clear()
+      observed.clear()
+      overflowed.clear()
+      summaries.clear()
+      views.clear()
+      states.clear()
+      open.clear()
+      dirtied.clear()
+      readers.clear()
+      computing.clear()
+      reached.clear()
+      tracing.clear()
+      ranked.clear()
+      scratch = Scratch()
+    }
+
+    // Every call to a method is analysed in its own context, unless a method is called in more ways than the bound,
+    // when the program is analysed again with one context for each such method: the join of every call to it, found
+    // by iterating calls from none to the least solution, so which methods are joined and what they are joined to
+    // follows from the program alone and not from the order the calls are met in. Joined contexts only gain
+    // members, so the passes that check the joins still hold end. A method that never settles is given arguments
+    // nothing is known of.
+    private def settle(roots: Vector[Symbol]): Unit = {
+      def pass(): Boolean = {
+        reset()
+        try { roots.foreach(method => solve(Key(method, None))); true }
+        catch { case _: Overflow => false }
+      }
+      def grown(): (Map[Symbol, Wide], Set[Symbol]) = {
+        val next = observed.foldLeft(widened) { case (seed, (target, seen)) =>
+          seed.updated(target, seed.get(target).fold(seen)(_.joined(seen.receiver, seen.arguments)))
+        }
+        (next, next.keySet.filter(target => widened.get(target) != next.get(target)))
+      }
+      def unknown(next: Map[Symbol, Wide], targets: Set[Symbol]): Map[Symbol, Wide] =
+        next ++ targets.map(target => target -> Wide(None, next(target).arguments.map(_ => Value.Opaque)))
+      @annotation.tailrec
+      def iterate(round: Int, joined: () => Unit): Unit = {
+        pass(): Unit
+        joined()
+        val (next, changed) = grown()
+        if (changed.isEmpty) ()
+        else if (round < MaximumPasses) { widened = next; iterate(round + 1, joined) }
+        else { widened = unknown(next, changed); pass(): Unit }
+      }
+      aborting = true
+      if (!pass()) {
+        aborting = false
+        flowing = true
+        iterate(0, () => ())
+        flowing = false
+        widened = widened.filter((_, wide) => wide.top || wide.width > MaximumContexts)
+        iterate(0, () => overflowed.foreach(target => contexts.getOrElse(target, Nil).foreach(observe(_))))
+      }
+    }
+
     // Whether a result type may hold a function: a function itself, or a type applied to one.
     private def carries(tpe: Type): Boolean = defn.isFunctionType(tpe.dealias) ||
       tpe.dealias.argInfos.exists(carries(_))
 
-    private def several(values: Vector[Value]): Value = values.flatMap {
-      case Value.Several(inner) => inner.toVector
-      case other                => Vector(other)
-    }.distinct match {
-      case Vector(single)                      => single
-      case none if none.isEmpty                => Value.Inert
-      case many if many.contains(Value.Opaque) => Value.Opaque
-      case many                                => Value.Several(many.toSet)
+    private def several(values: Vector[Value]): Value = {
+      val flat = values.flatMap {
+        case Value.Several(inner) => inner.toVector
+        case other                => Vector(other)
+      }.distinct
+      if (flat.contains(Value.Opaque)) Value.Opaque
+      else
+        merged(flat) match {
+          case Vector(single)       => single
+          case none if none.isEmpty => Value.Inert
+          case many                 => Value.Several(many.toSet)
+        }
+    }
+
+    // Objects of a class and functions of a lambda that hold the same symbols are one value, each of whose symbols
+    // holds any of the values the members held it as.
+    private def merged(values: Vector[Value]): Vector[Value] = if (values.sizeIs < 2) values
+    else {
+      val shapes = mutable.LinkedHashMap.empty[Shape, Vector[Value]]
+      val others = Vector.newBuilder[Value]
+      values.foreach {
+        case value @ Value.Object(cls, bindings) =>
+          shapes.updateWith(Shape(cls, None, selfed = false, bindings.keySet))(held =>
+            Some(held.getOrElse(Vector.empty) :+ value)
+          )
+        case value @ Value.Function(body, Frame(root, self, bindings)) =>
+          shapes.updateWith(Shape(body, Some(root), selfed = self.isDefined, bindings.keySet))(held =>
+            Some(held.getOrElse(Vector.empty) :+ value)
+          )
+        case other => others += other
+      }
+      shapes.values.view.map(_.reduceLeft(joinedPair(_, _))).toVector ++ others.result()
+    }
+
+    private def joinedPair(left: Value, right: Value): Value = (left, right) match {
+      case (Value.Object(cls, one), Value.Object(_, other)) =>
+        Value.Object(cls, one.map((symbol, value) => symbol -> several(Vector(value, other(symbol)))))
+      case (Value.Function(body, Frame(root, one, ours)), Value.Function(_, Frame(_, other, theirs))) =>
+        Value.Function(
+          body,
+          Frame(
+            root,
+            one.zip(other).map((first, second) => several(Vector(first, second))),
+            ours.map((symbol, value) => symbol -> several(Vector(value, theirs(symbol))))
+          )
+        )
+      case _ => Value.Opaque
     }
 
     // A value no deeper than `depth` objects, so values stay finite as evaluation repeats; a value that is already so
@@ -1702,7 +1878,7 @@ object Purity {
       if (value.levels <= depth) value
       else
         value match {
-          case Value.Several(values)       => Value.Several(values.map(shallow(_, depth)))
+          case Value.Several(values)       => several(values.toVector.map(shallow(_, depth)))
           case _ if depth <= 0             => Value.Opaque
           case Value.Object(cls, bindings) => Value.Object(cls, bindings.view.mapValues(shallow(_, depth - 1)).toMap)
           case Value.Function(body, Frame(root, self, bindings)) =>
