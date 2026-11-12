@@ -44,7 +44,7 @@ private[analysis] object Compiled {
   ): Either[Vector[String], Vector[Finding]] = {
     val files      = directories.flatMap(Recorded.all)
     val unreadable = files.collect { case (file, None) =>
-      s"$module has a record of compiler findings that cannot be read: $file"
+      s"$module has a record of compiler findings that cannot be read: ${manifest.relative(file)}"
     }
     val records  = files.flatMap(_._2).groupBy(_.source)
     val expected = sources.filter(_.toString.endsWith(".scala")).map(path => Recorded.key(root, path) -> path).toMap

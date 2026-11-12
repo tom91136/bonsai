@@ -41,7 +41,7 @@ object Build {
       .groupBy(source => (source.path.getFileName.toString, digest(source))).values.view
       .collect {
         case copies if copies.size > 1 =>
-          copies.map(source => source.copy(path = relative(manifest, source.path))).sortBy(_.path.toString)
+          copies.map(source => source.copy(path = manifest.relative(source.path))).sortBy(_.path.toString)
       }
       .toVector.sortBy(_.head.path.toString).map { copies =>
         val first = copies.head
@@ -53,9 +53,6 @@ object Build {
           if (copies.forall(_.scope == Output.Scope.Test)) Finding.Level.Info else Finding.Level.Warning
         )
       }
-
-  private def relative(manifest: Manifest, path: java.nio.file.Path): java.nio.file.Path =
-    manifest.root.filter(path.startsWith(_)).fold(path)(_.relativize(path))
 
   private def node(name: String, module: String, scope: Output.Scope, source: String): Node =
     Node(name, module, scope, source, line = 1, generated = false, exported = false, outer = None)

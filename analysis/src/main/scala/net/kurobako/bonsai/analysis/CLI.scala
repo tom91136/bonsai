@@ -157,14 +157,15 @@ object CLI {
         )
         val (scannedTexts, excluded) = scanned()
         val texts                    = scannedTexts.getOrElse(Vector.empty)
-        val findings                 = Report.findings(result, Intended(options.intended), options.nesting, parallel) ++
-          compiled ++
-          Build.duplicates(manifest) ++
-          Build.unused(result.unusedBounds) ++ texts ++
-          excluded ++
-          (if (options.mode.strict) Build.fatal(manifest) else Vector.empty) ++
-          Purity.regressions(result.purity, result.graph.nodes, locked) ++
-          Purity.violations(result.purity, result.graph.nodes, options.policies)
+        val findings                 =
+          (Report.findings(result, Intended(options.intended), options.nesting, parallel) ++
+            compiled ++
+            Build.duplicates(manifest) ++
+            Build.unused(result.unusedBounds) ++ texts ++
+            excluded ++
+            (if (options.mode.strict) Build.fatal(manifest) else Vector.empty) ++
+            Purity.regressions(result.purity, result.graph.nodes, locked) ++
+            Purity.violations(result.purity, result.graph.nodes, options.policies)).map(relocated(manifest, _))
         options.relock.foreach(file => Files.writeString(file, Purity.lock(result.purity, result.graph.nodes)): Unit)
         val baseline = options.baseline.filter(Files.exists(_)).fold(Set.empty[String])(file =>
           Report.keys(Files.readString(file))
@@ -184,6 +185,9 @@ object CLI {
           Report(findings, result.graph.nodes, report).map(line => Reuse.Shown(line.failing, line.show))
         )
     }
+
+  private def relocated(manifest: Manifest, finding: Finding): Finding =
+    finding.copy(node = finding.node.copy(source = manifest.relative(Path.of(finding.node.source)).toString))
 
   private def recorded(manifest: Manifest, options: Options): Either[String, Vector[Finding]] =
     if (options.mode == Mode.Audit) Compiled.findings(manifest).left.map(_.mkString("\n")) else Right(Vector.empty)

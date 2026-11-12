@@ -14,14 +14,14 @@ object JavaFragments {
 
   /** The groups of copies the fragments of the Java code make, which the rules read alike with those of the Scala code.
     */
-  def groups(fragments: Seq[(JavaModel.Fragment, Boolean)]): Vector[Clones.Group] =
-    Clones.groups(fragments.toVector.map((fragment, test) => candidate(fragment, test)))
+  def groups(fragments: Seq[(JavaModel.Fragment, Boolean)], path: String => String): Vector[Clones.Group] =
+    Clones.groups(fragments.toVector.map((fragment, test) => candidate(fragment, test, path)))
 
-  private def candidate(fragment: JavaModel.Fragment, test: Boolean): Clones.Candidate = {
+  private def candidate(fragment: JavaModel.Fragment, test: Boolean, path: String => String): Clones.Candidate = {
     def has(role: Int): Boolean = (fragment.roles & role) != 0
     val whole                   = has(JavaModel.Roles.Whole)
     Clones.Candidate(
-      Clones.Fragment(fragment.node, fragment.path, fragment.start, fragment.end, test, member = fragment.member),
+      Clones.Fragment(fragment.node, path(fragment.path), fragment.start, fragment.end, test, member = fragment.member),
       (fragment.from, fragment.to),
       fragment.cost,
       exact = fragment.exact,

@@ -203,7 +203,7 @@ private[analysis] class Collector(
         structure.enter(unit.tpdTree)
         references(components, fragments).traverse(unit.tpdTree)
         placing.traverse(unit.tpdTree)
-      } catch { case NonFatal(error) => failed(s"${unit.source.path} could not be analysed", error) }
+      } catch { case NonFatal(error) => failed(s"${lines.path(unit.source.path)} could not be analysed", error) }
     }
     callees ++= products.view.map((cls, product) =>
       cls -> Callee(product.key, product.fields.size, Finding.simple(product.name), product.node, Set.empty, 0)
@@ -422,7 +422,7 @@ private[analysis] class Collector(
   private def inference(library: Library, bytecode: BytecodeEffects.Summaries)(using Context): Purity.Inference = {
     val effects = Purity.Inference(bodies, templates, dispatching.implementations(_, _), concurrent, library, bytecode)
     effects.run()
-    effects.unreadable.foreach(note(_))
+    effects.unreadable(lines.path).foreach(note(_))
     effects
   }
 

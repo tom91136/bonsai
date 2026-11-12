@@ -226,7 +226,7 @@ object Extraction {
     } else {
       // The class files are read beside the compiler, and joined where the result needs them.
       val bytecode = Bytecode.reading(primary.map(_.path), parallel)
-      val lines    = Lines()
+      val lines    = Lines(manifest.relative)
       def collector(
           costs: Vector[JavaModel.Cost],
           entry: Set[Root],

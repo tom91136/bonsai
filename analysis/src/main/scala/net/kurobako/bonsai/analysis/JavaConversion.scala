@@ -1,5 +1,6 @@
 package net.kurobako.bonsai.analysis
 
+import java.nio.file.Path
 import java.nio.file.PathMatcher
 import net.kurobako.bonsai.java.{Model => JavaModel}
 import net.kurobako.bonsai.lifting.*
@@ -296,7 +297,7 @@ private[analysis] object JavaConversion {
       resolved,
       // The copies of the code of the Java code are of the whole build, as the same block of code written in two
       // modules of it is as much a copy as one written twice in one.
-      JavaFragments.groups(fragments),
+      JavaFragments.groups(fragments, file => manifest.relative(Path.of(file)).toString),
       lints.toVector,
       reflections.toVector,
       costs.values.toVector,

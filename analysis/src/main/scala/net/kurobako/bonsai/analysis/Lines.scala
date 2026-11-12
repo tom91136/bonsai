@@ -2,6 +2,7 @@ package net.kurobako.bonsai.analysis
 
 import dotty.tools.dotc.util.SourceFile
 import dotty.tools.dotc.util.SourcePosition
+import java.nio.file.Path
 import scala.annotation.tailrec
 import scala.collection.mutable
 
@@ -9,7 +10,7 @@ import scala.collection.mutable
   * TASTy is replaced by that of the last class read from it, so the lines it gives depend on the order classes were
   * read in.
   */
-private[analysis] class Lines {
+private[analysis] class Lines(relative: Path => Path = identity) {
   private val starts = mutable.Map.empty[SourceFile, Array[Int]]
 
   /** The one-based line `position` is on, or 0 when it does not exist. */
@@ -20,7 +21,9 @@ private[analysis] class Lines {
 
   /** The `path:line` `position` is on, or `unknown` when it does not exist. */
   def location(position: SourcePosition): String =
-    if (position.exists) s"${position.source.path}:${line(position)}" else "unknown"
+    if (position.exists) s"${path(position.source.path)}:${line(position)}" else "unknown"
+
+  def path(file: String): String = relative(Path.of(file)).toString
 
   /** The zero-based line `offset` is on. */
   def at(source: SourceFile, offset: Int): Int = starts.get(source) match {

@@ -709,7 +709,7 @@ class Fragments(lines: Lines)(using Context) {
     Option.when(first.span.exists && last.span.exists && first.source.exists) {
       val fragment = Clones.Fragment(
         piece.origin.node,
-        first.source.path,
+        lines.path(first.source.path),
         lines.line(first.source, first.span.start),
         lines.line(last.source, last.span.end),
         piece.origin.test,

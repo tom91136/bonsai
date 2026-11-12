@@ -749,8 +749,8 @@ object Purity {
     def resolved: Int = resolutions
 
     /** The library bodies that could not be read, one line per classpath entry. */
-    def unreadable(using Context): Vector[String] =
-      unread.toVector.groupBy(entry(_)).toVector.sortBy(_._1).map { (origin, symbols) =>
+    def unreadable(path: String => String)(using Context): Vector[String] =
+      unread.toVector.groupBy(entry(_, path)).toVector.sortBy(_._1).map { (origin, symbols) =>
         s"could not read library bodies of ${symbols.map(enclosing(_)).distinct.sorted.mkString(", ")} in $origin"
       }
 
@@ -1761,10 +1761,10 @@ object Purity {
 
     private def enclosing(symbol: Symbol): String = qualified(symbol.owner)
 
-    private def entry(symbol: Symbol)(using context: Context): String = {
+    private def entry(symbol: Symbol, path: String => String)(using context: Context): String = {
       val file  = Option[dotty.tools.io.AbstractFile](symbol.associatedFile).fold("")(_.path)
       val roots = context.settings.classpath.value.split(java.io.File.pathSeparator).toVector
-      Classpath.holder(roots, file).orElse(Option.when(file.nonEmpty)(file)).getOrElse("an unknown classpath entry")
+      Classpath.holder(roots, file).orElse(Option.when(file.nonEmpty)(file)).fold("an unknown classpath entry")(path)
     }
 
     // A library body is unpickled on first read, and a reference in it to a class the classpath lacks can fail that.

@@ -136,6 +136,8 @@ case class Manifest(
     }
   }
 
+  def relative(path: Path): Path = root.filter(path.startsWith(_)).fold(path)(_.relativize(path))
+
   /** The entries of the classpaths of `modules`, in their order, each once. */
   def classpathOf(modules: Seq[String]): Vector[Path] =
     modules.flatMap(classpath.getOrElse(_, Vector.empty)).distinct.toVector
