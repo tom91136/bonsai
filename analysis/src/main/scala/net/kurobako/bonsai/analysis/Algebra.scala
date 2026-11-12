@@ -64,6 +64,7 @@ object Algebra {
   /** A case class, or a method whose parameters stand in for fields when it has a precondition. */
   case class Product(
       name: String,
+      key: String,
       node: String,
       fields: Vector[Field],
       parents: Set[String],
@@ -264,14 +265,14 @@ object Algebra {
     // Other builds construct a library's public products, so the constructions here do not settle their shape.
     val written       = model.products.filter(_.origin == Origin.Written)
     val constructions = written.view.flatMap { product =>
-      model.sites.get(product.name).toVector.flatMap { sites =>
+      model.sites.get(product.key).toVector.flatMap { sites =>
         construction(product, sites).flatMap((rule, detail) =>
           Finding.at(nodes, product.node, rule, detail, onlyTests = onlyTests(sites))
         )
       }
     }.toVector
     val determined = written.view.flatMap { product =>
-      model.expanded.get(product.name).toVector.filterNot(onlyTests(_)).flatMap { sites =>
+      model.expanded.get(product.key).toVector.filterNot(onlyTests(_)).flatMap { sites =>
         determinedFields(product, sites).flatMap(
           Finding.at(
             nodes,
@@ -284,7 +285,7 @@ object Algebra {
       }
     }.toVector
     val derived = written.view.flatMap { product =>
-      model.sites.get(product.name).toVector.flatMap(derivedFields(product, _)).flatMap(
+      model.sites.get(product.key).toVector.flatMap(derivedFields(product, _)).flatMap(
         Finding.at(nodes, product.node, Finding.Rule.DerivedField, _, Finding.Level.Info)
       )
     }.toVector

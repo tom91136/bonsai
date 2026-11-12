@@ -67,7 +67,7 @@ object Invariants {
   def findings(model: Algebra.Model, nodes: Map[String, Node]): Vector[Finding] = {
     val subjects =
       model.products.map(product =>
-        Subject(product, product.name, Finding.simple(product.name), "invariant", "constructions")
+        Subject(product, product.key, Finding.simple(product.name), "invariant", "constructions")
       ) ++
         model.preconditions.map((siteKey, product) =>
           Subject(product, siteKey, Finding.short(product.name), "precondition", "calls")

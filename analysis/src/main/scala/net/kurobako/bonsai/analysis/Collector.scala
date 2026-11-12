@@ -206,7 +206,7 @@ private[analysis] class Collector(
       } catch { case NonFatal(error) => failed(s"${unit.source.path} could not be analysed", error) }
     }
     callees ++= products.view.map((cls, product) =>
-      cls -> Callee(product.name, product.fields.size, Finding.simple(product.name), product.node, Set.empty, 0)
+      cls -> Callee(product.key, product.fields.size, Finding.simple(product.name), product.node, Set.empty, 0)
     ).toMap ++ methods.view.map((symbol, method) =>
       symbol -> Callee(method.key, method.fields.size, method.short, method.node, method.suppressed, method.line)
     )
@@ -544,6 +544,7 @@ private[analysis] class Collector(
         }.toSet
         products(cls) = Algebra.Product(
           name,
+          callSites.calleeKey(cls),
           key,
           fields,
           parents,
@@ -903,8 +904,10 @@ private[analysis] class Collector(
       val fields    = fieldsOf(method)
       val condition = Predicates.required(method, conditions, fields)
       if (condition != Algebra.Predicate.Known(true)) {
-        required(method) = methodKey(method, fields) -> Algebra.Product(
+        val requiredKey = methodKey(method, fields)
+        required(method) = requiredKey -> Algebra.Product(
           methodName(method, fields),
+          requiredKey,
           key,
           fields,
           Set.empty,

@@ -35,9 +35,9 @@ private object Keys {
     else ""
   }
 
-  private def localised(method: Symbol)(using Context): String =
-    if (method.ownersIterator.drop(1).exists(owner => owner.isTerm && !owner.is(Flags.Package)))
-      s"@${method.span.start}"
+  def localised(symbol: Symbol)(using Context): String =
+    if (symbol.ownersIterator.drop(1).exists(owner => owner.isTerm && !owner.is(Flags.Package)))
+      s"@${symbol.span.start}"
     else ""
 
   /** The key of a call of the method on a receiver of class `owner`, which is how class files name the callee. */

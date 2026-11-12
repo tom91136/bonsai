@@ -1649,6 +1649,7 @@ class SmellsSuite extends AnalysisSuite {
     val product    = Algebra.Product(
       "lib.Row",
       "lib.Row",
+      "lib.Row",
       fields,
       Set.empty,
       Algebra.Predicate.Known(true),
@@ -1690,6 +1691,7 @@ class SmellsSuite extends AnalysisSuite {
     val methods  = group("take", "a", "b", "c", "d")("one.Alpha", "two.Beta", "three.Gamma")
     val products = Vector("lib.Metadata", "lib.UploadSession", "lib.Session").map { name =>
       Algebra.Product(
+        name,
         name,
         name,
         fields :+ field(name.takeRight(4)),

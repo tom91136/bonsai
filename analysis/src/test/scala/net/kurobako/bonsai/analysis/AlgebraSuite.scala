@@ -567,7 +567,7 @@ class AlgebraSuite extends AnalysisSuite {
       parents: Set[String] = Set.empty,
       access: Algebra.Access = Algebra.Access.Open
   ): Algebra.Product =
-    Algebra.Product(name, name, fields, parents, Algebra.Predicate.Known(true), access, Algebra.Origin.Written)
+    Algebra.Product(name, name, name, fields, parents, Algebra.Predicate.Known(true), access, Algebra.Origin.Written)
 
   private def model(
       products: Vector[Algebra.Product] = Vector.empty,
@@ -995,5 +995,25 @@ class AlgebraSuite extends AnalysisSuite {
       ).filter(_.rule.id == "derived-field"),
       Vector.empty
     )
+  }
+
+  test("local case classes of one name and different arities in different bodies are told apart") {
+    val found = findings(
+      "Main.scala" -> """class Suite {
+        |  def check(name: String)(body: => Any): Any = body
+        |  check("a") {
+        |    val name = "a"
+        |    case class Person(name: String, age: Int, active: Boolean, email: Option[String])
+        |    List(new Person(name, 1, true, Some(name)), new Person(name, 2, false, None))
+        |  }
+        |  check("b") {
+        |    val name = "b"
+        |    case class Person(name: String, age: Int, active: Boolean)
+        |    new Person(name, 3, true)
+        |  }
+        |}
+        |object Main""".stripMargin
+    )
+    assertFinding(found, "redundant-flag", "Person.active", "Person.email")
   }
 }

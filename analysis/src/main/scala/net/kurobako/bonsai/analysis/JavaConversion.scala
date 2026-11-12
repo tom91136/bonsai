@@ -347,6 +347,7 @@ private[analysis] object JavaConversion {
     constructed(
       Algebra.Product(
         name,
+        name,
         node,
         fields,
         parents,
