@@ -35,10 +35,7 @@ class ExtractionSuite extends AnalysisSuite {
       )
     }
 
-  private val scalaJs = Path.of(
-    sys.props("user.home"),
-    ".cache/coursier/v1/https/repo1.maven.org/maven2/org/scala-js/scalajs-library_2.13/1.21.0/scalajs-library_2.13-1.21.0.jar"
-  )
+  private val scalaJs = Path.of(sys.props("bonsai.analysis.scalajs"))
 
   private def compiled(directory: Path, sources: Seq[(String, String)], options: Array[String]): Path = {
     val classes = Files.createDirectories(directory.resolve("classes"))

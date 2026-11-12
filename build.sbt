@@ -352,7 +352,8 @@ def analysed(module: Project): Project = linted(module)
   .dependsOn(plugin % "plugin->compile")
   .settings(commonSettings, scalacOptions += "-P:bonsai:error=*")
 
-lazy val OldLibrary = config("oldlibrary").hide
+lazy val OldLibrary     = config("oldlibrary").hide
+lazy val ScalaJsLibrary = config("scalajslibrary").hide
 
 lazy val analysis = analysed(project.in(file("analysis")))
   .dependsOn(javaPlugin, collections, effects, lifting, bonsaiConfig, testSupport % Test)
@@ -363,6 +364,8 @@ lazy val analysis = analysed(project.in(file("analysis")))
     // The standard library of the oldest line, which builds on it hand the analysis in place of its own.
     ivyConfigurations += OldLibrary,
     libraryDependencies += "org.scala-lang" % "scala3-library_3" % scala3Versions.head % OldLibrary,
+    ivyConfigurations += ScalaJsLibrary,
+    libraryDependencies += ("org.scala-js" % "scalajs-library_2.13" % "1.21.0" % ScalaJsLibrary).intransitive(),
     // The newest TASTy the analysis reads is the one of its own compiler.
     idResource("scala", Def.task(Seq(scalaVersion.value))),
     // The lints of the Java code are reported as findings of their own, so their ids are published alike.
@@ -388,6 +391,8 @@ lazy val analysis = analysed(project.in(file("analysis")))
       "-Dbonsai.analysis.classpath=" + classpathOf((Test / fullClasspath).value, fileConverter.value),
     Test / javaOptions += "-Dbonsai.analysis.oldlibrary=" +
       update.value.select(configurationFilter(OldLibrary.name)).mkString(java.io.File.pathSeparator),
+    Test / javaOptions += "-Dbonsai.analysis.scalajs=" +
+      update.value.select(configurationFilter(ScalaJsLibrary.name)).mkString(java.io.File.pathSeparator),
     analysisClasspath := Def.uncached(println(classpathOf((Runtime / fullClasspath).value, fileConverter.value)))
   )
 
