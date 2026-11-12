@@ -338,7 +338,7 @@ class StructuresSuite extends AnalysisSuite {
     )
   }
 
-  test("groups whose only common types are Int, String and a Map of them hold two designs") {
+  test("groups whose types are only Int, String and a Map of them are not split") {
     val found = findings(Seq(
       "Counting.scala" ->
         """object Counting {
@@ -348,11 +348,59 @@ class StructuresSuite extends AnalysisSuite {
           |  def tallies(counts: Map[String, Int]): Int = tally(counts) + 1
           |}""".stripMargin
     ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("a group of only String and primitive types beside a group of a domain type is not split") {
+    val found = findings(Seq(
+      "Kinds.scala" -> "case class Token(text: String)",
+      "Util.scala"  ->
+        """object Util {
+          |  def width(text: String): Int           = text.length
+          |  def widths(texts: Vector[String]): Int = texts.size + width(texts.head)
+          |  def parse(text: String): Token         = Token(text)
+          |  def parseAll(texts: Vector[String])    = texts.map(parse)
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("groups that share only a tuple of distinct domain types hold two designs") {
+    val found = findings(Seq(
+      "Kinds.scala" -> "case class Token(text: String)\ncase class Page(lines: Vector[String])",
+      "Pairs.scala" ->
+        """object Pairs {
+          |  def first(pair: (Token, Int)): Token   = pair._1
+          |  def firsts(pairs: Vector[(Token, Int)]) = pairs.map(first)
+          |  def second(pair: (Page, Int)): Page    = pair._1
+          |  def seconds(pairs: Vector[(Page, Int)]) = pairs.map(second)
+          |}""".stripMargin
+    ))
     assertEquals(
       of(found, Finding.Rule.DisjointObject),
       Vector(
-        "object Counting holds 2 groups of members that never use each other and use different types " +
-          "({tallies, tally}, {width, widths})"
+        "object Pairs holds 2 groups of members that never use each other and use different types " +
+          "({first, firsts}, {second, seconds})"
+      )
+    )
+  }
+
+  test("string interpolation shared by groups of different domain types does not join them") {
+    val found = findings(Seq(
+      "Kinds.scala"  -> "case class Token(text: String)\ncase class Page(lines: Vector[String])",
+      "Labels.scala" ->
+        """object Labels {
+          |  def label(token: Token): String = s"token ${token.text}"
+          |  def labels(tokens: Vector[Token]) = tokens.map(label)
+          |  def title(page: Page): String   = s"page ${page.lines.size}"
+          |  def titles(pages: Vector[Page]) = pages.map(title)
+          |}""".stripMargin
+    ))
+    assertEquals(
+      of(found, Finding.Rule.DisjointObject),
+      Vector(
+        "object Labels holds 2 groups of members that never use each other and use different types " +
+          "({label, labels}, {title, titles})"
       )
     )
   }

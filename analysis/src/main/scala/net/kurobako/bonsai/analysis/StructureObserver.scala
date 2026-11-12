@@ -259,7 +259,13 @@ private[analysis] class StructureObserver(
     }
 
   private def wrapper(symbol: Symbol)(using Context): Boolean =
-    symbol.isAliasType && predefined(symbol.owner) || symbol.isClass && key(symbol).isEmpty
+    symbol.isAliasType && predefined(symbol.owner) || symbol.isClass && (key(symbol).isEmpty || structural(symbol))
+
+  private def structural(symbol: Symbol)(using Context): Boolean =
+    !symbol.isDefinedInCurrentRun &&
+      (defn.isTupleClass(symbol) || defn.isFunctionClass(symbol) ||
+        symbol.asClass.derivesFrom(defn.OptionClass) ||
+        symbol.asClass.derivesFrom(Classes.required("scala.collection.IterableOnce")))
 
   private def named(symbol: Symbol)(using Context): Option[String] =
     key(symbol).orElse(Option.when(symbol.isClass)(qualifiedName(symbol)))
@@ -268,11 +274,13 @@ private[analysis] class StructureObserver(
     owner == defn.ScalaPredefModuleClass || owner == defn.ScalaPackageObject.moduleClass
 
   private def unnamed(symbol: Symbol)(using Context): Boolean =
-    Set[Symbol](defn.AnyClass, defn.AnyValClass, defn.ObjectClass, defn.NothingClass, defn.NullClass, defn.UnitClass)
-      .contains(symbol)
+    symbol.is(Flags.Package) ||
+      Set[Symbol](defn.AnyClass, defn.AnyValClass, defn.ObjectClass, defn.NothingClass, defn.NullClass, defn.UnitClass)
+        .contains(symbol)
 
   private def valueType(symbol: Symbol)(using Context): Boolean =
-    symbol == defn.StringClass || symbol.isPrimitiveValueClass || symbol.isClass && ValueTypes(qualifiedName(symbol))
+    symbol == defn.StringClass || symbol == defn.StringContextClass || symbol == defn.StringContextModule.moduleClass ||
+      symbol.isPrimitiveValueClass || symbol.isClass && ValueTypes(qualifiedName(symbol))
 
   /** Records an alias of `scope` that fills a type constructor with literal arguments. */
   def alias(symbol: Symbol, scope: Symbol, target: AppliedType)(using Context): Unit =
