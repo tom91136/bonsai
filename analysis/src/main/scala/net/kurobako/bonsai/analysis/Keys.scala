@@ -19,6 +19,14 @@ import scala.reflect.NameTransformer
   */
 private object Keys {
 
+  // Overloads, and a method named like a type beside it, are told apart by their parameter types.
+  def signed(symbol: Symbol, name: String)(using Context): String = {
+    val decls  = symbol.owner.info.decls
+    val shared = symbol.is(Flags.Method) &&
+      (decls.lookupAll(symbol.name).exists(_ != symbol) || decls.lookup(symbol.name.toTypeName).exists)
+    if (shared) name + symbol.info.paramInfoss.map(_.map(_.show).mkString("(", ", ", ")")).mkString else name
+  }
+
   /** The key of the method, unless a class its signature names is missing from the classpath. */
   def of(method: Symbol)(using Context): Option[String] = at(method, Calls.owner(method))
 
@@ -49,7 +57,7 @@ private object Keys {
   private def localised(symbol: Symbol)(using Context): String =
     if (local(symbol)) {
       val anchor = symbol.ownersIterator.drop(1).find(owner => owner.span.exists && !local(owner))
-      val label  = anchor.fold("")(owner => Placements.signed(owner, owner.name.toString) + companioned(owner))
+      val label  = anchor.fold("")(owner => signed(owner, owner.name.toString) + companioned(owner))
       s"@$label:${symbol.span.start - anchor.fold(0)(_.span.start)}"
     } else ""
 

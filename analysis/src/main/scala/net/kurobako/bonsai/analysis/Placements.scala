@@ -22,14 +22,6 @@ object Placements {
     finally stack.pop(): Unit
   }
 
-  // Overloads, and a method named like a type beside it, are told apart by their parameter types.
-  def signed(symbol: Symbol, name: String)(using Context): String = {
-    val decls  = symbol.owner.info.decls
-    val shared = symbol.is(Flags.Method) &&
-      (decls.lookupAll(symbol.name).exists(_ != symbol) || decls.lookup(symbol.name.toTypeName).exists)
-    if (shared) name + symbol.info.paramInfoss.map(_.map(_.show).mkString("(", ", ", ")")).mkString else name
-  }
-
   private case class Held(node: Node, lines: Int, inside: Boolean, movable: Boolean, owner: Boolean, bare: Boolean)
 }
 
@@ -171,8 +163,8 @@ private class Placements(resolver: Symbols, lines: Lines)(using Context) extends
       else !symbol.isAliasType || symbol.isOneOf(Flags.Opaque | Flags.Synthetic | Flags.Deferred | Flags.Exported)
     if (!symbol.exists || symbol.isClass || !owner.is(Flags.ModuleClass) || !static(owner.owner) || tied) None
     else if (owner.isTopLevelDefinitionsObject)
-      resolver.key(symbol).collect { case key if described(key).exists(!_.test) => Placements.signed(symbol, key) }
-    else unit(owner).map(name => Placements.signed(symbol, s"$name.${symbol.name}"))
+      resolver.key(symbol).collect { case key if described(key).exists(!_.test) => Keys.signed(symbol, key) }
+    else unit(owner).map(name => Keys.signed(symbol, s"$name.${symbol.name}"))
   }
 
   private def receivesOpaque(symbol: Symbol)(using Context): Boolean =

@@ -311,7 +311,7 @@ private[analysis] class Symbols(
     * overloaded method, and what tells a member from its companion's and a local definition from its namesakes.
     */
   def identified(symbol: Symbol)(using Context): String =
-    Placements.signed(symbol, qualifiedName(symbol)) + Keys.qualifier(symbol)
+    Keys.signed(symbol, qualifiedName(symbol)) + Keys.qualifier(symbol)
 
   def qualifiedName(symbol: Symbol)(using Context): String = names.get(symbol) match {
     case Some(name) => name

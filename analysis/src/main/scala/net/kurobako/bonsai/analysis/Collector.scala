@@ -450,7 +450,7 @@ private[analysis] class Collector(
           identified(method) ->
             Purity.Method(
               node,
-              Placements.signed(method, qualifiedName(method)),
+              Keys.signed(method, qualifiedName(method)),
               lineOf(method),
               effects.verdict(method),
               effects.observed(method),
@@ -966,7 +966,7 @@ private[analysis] class Collector(
       (cls.privateWithin.exists || cls.isOneOf(Flags.Private | Flags.Protected) ||
         cls.is(Flags.ModuleClass) && cls.sourceModule.isOneOf(Flags.Private | Flags.Protected))
 
-  private def memberName(symbol: Symbol)(using Context): String = Placements.signed(symbol, qualifiedName(symbol))
+  private def memberName(symbol: Symbol)(using Context): String = Keys.signed(symbol, qualifiedName(symbol))
 
   /** Records the fields of a case class that a pattern on it binds or tests, which read them. */
   def matched(unapply: tpd.UnApply, from: Option[Use])(using Context): Unit = {
