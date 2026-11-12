@@ -10,9 +10,9 @@ private[analysis] object BytecodePurity {
       Vector.empty,
       Vector.empty,
       summaries.owned((method, synthetic) =>
-        !synthetic && method.name != "<clinit>" && nodes.contains(ownerOf(method))
+        !synthetic && method.name != "<clinit>" && nodes.contains(Keys.dotted(method.owner))
       ).flatMap { entry =>
-        val owner = ownerOf(entry.method)
+        val owner = Keys.dotted(entry.method.owner)
         nodes.get(owner).map { node =>
           val ordered = Purity.ranked(entry.summary.certain)
           entry.key -> Purity.Method(
@@ -26,7 +26,4 @@ private[analysis] object BytecodePurity {
       }.toMap,
       library = 0
     )
-
-  private def ownerOf(method: ClassFiles.Reference): String =
-    method.owner.replace('/', '.').replace('$', '.').stripSuffix(".")
 }

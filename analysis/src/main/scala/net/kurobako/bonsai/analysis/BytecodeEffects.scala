@@ -94,8 +94,6 @@ private[analysis] object BytecodeEffects {
   private val Comparing   = Set("compare", "compareTo")
   private val Contracts   = Map("equals" -> "(Ljava/lang/Object;)Z", "hashCode" -> "()I")
 
-  private def qualified(internal: String): String = internal.replace('/', '.').replace('$', '.').stripSuffix(".")
-
   private def receiverOf(origin: Origin): Receiver[Nothing] = origin match {
     case Origin.This                  => Receiver.This
     case Origin.Fresh                 => Receiver.Fresh
@@ -267,17 +265,17 @@ private[analysis] object BytecodeEffects {
       )
 
     private def lineage(owner: String): Set[String] =
-      lineages.getOrElseUpdate(owner, (owner +: world.ancestors(owner)).map(qualified(_)).toSet)
+      lineages.getOrElseUpdate(owner, (owner +: world.ancestors(owner)).map(Keys.dotted).toSet)
 
     private def short(owner: String, name: String): String =
-      shorts.getOrElseUpdate((owner, name), Finding.short(s"${qualified(owner)}.${NameTransformer.decode(name)}"))
+      shorts.getOrElseUpdate((owner, name), Finding.short(s"${Keys.dotted(owner)}.${NameTransformer.decode(name)}"))
 
     private def covered(owner: String, name: String, instance: Boolean, receiver: String): Option[Set[Fact[Nothing]]] =
       coverings.getOrElseUpdate(
         (owner, name, instance, receiver),
         Option.when(name != "<init>" && name != "<clinit>") {
           val operand = Option.when(instance)(Axioms.Operand(lineage(receiver)))
-          Axioms.effects(Axioms.Call(qualified(owner), NameTransformer.decode(name), receiver = operand))
+          Axioms.effects(Axioms.Call(Keys.dotted(owner), NameTransformer.decode(name), receiver = operand))
         }.filterNot(_.exists(_.kind == EffectKind.Unknown))
       )
 
@@ -310,7 +308,7 @@ private[analysis] object BytecodeEffects {
             if (access.static) found += Fact(EffectKind.Writes, cause) else on(holder, EffectKind.Writes, cause)
           } else if (!isFinal(declared, access)) {
             if (access.static) found += Fact(EffectKind.Reads, cause) else on(holder, EffectKind.Reads, cause)
-          } else if (declared.exists(owner => s"${qualified(owner)}.${access.name}" == Axioms.Console))
+          } else if (declared.exists(owner => s"${Keys.dotted(owner)}.${access.name}" == Axioms.Console))
             found += Fact(EffectKind.Input, cause)
         }
       }

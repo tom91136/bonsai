@@ -80,11 +80,30 @@ private object Keys {
     }
   }
 
-  private def binary(cls: Symbol)(using Context): String = {
+  private[analysis] def binary(cls: Symbol)(using Context): String = {
     val owner = cls.owner
     val name  = NameTransformer.encode(cls.name.toString)
     if (owner.is(Flags.Package)) { if (owner.isEffectiveRoot) name else s"${binary(owner)}.$name" }
     else if (owner.isClass) { if (owner.is(Flags.Module)) binary(owner) + name else s"${binary(owner)}$$$name" }
     else name
+  }
+
+  private[analysis] def dotted(name: String): String = {
+    @annotation.tailrec
+    def go(index: Int, code: Boolean, operator: Boolean, out: String): String =
+      if (index == name.length) out
+      else
+        name(index) match {
+          case '/' | '.' => go(index + 1, code = true, operator = false, out = out + '.')
+          case '$'       =>
+            val prefix  = name.drop(index + 1).takeWhile(c => c != '$' && c != '.' && c != '/')
+            val decoded = NameTransformer.decode(s"$$$prefix")
+            if (index + 1 == name.length) out
+            else if ((code || operator) && prefix.nonEmpty && decoded.length == 1)
+              go(index + 1 + prefix.length, code = false, operator = true, out = out + decoded)
+            else go(index + 1, code = true, operator = false, out = out + '.')
+          case c => go(index + 1, code = false, operator = false, out = out + c)
+        }
+    go(0, code = true, operator = false, out = "")
   }
 }

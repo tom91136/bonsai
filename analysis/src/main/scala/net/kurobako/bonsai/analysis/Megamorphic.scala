@@ -119,7 +119,7 @@ object Megamorphic {
   }
 
   private def counts(receiver: Receiver, site: Site, nodes: Map[String, Node]): Boolean =
-    !site.unreaching(normal(receiver.owner)) &&
+    !site.unreaching(Keys.dotted(receiver.owner)) &&
       !(located(receiver.owner, nodes).exists(_.test) && !nodes.get(site.node).exists(_.test))
 
   // A member every build class implements by reading a field costs a load, not a dispatch.
@@ -129,8 +129,6 @@ object Megamorphic {
       case Receiver.Closure(_)     => false
     }
 
-  private def normal(internal: String): String = internal.replace('/', '.').replace('$', '.').stripSuffix(".")
-
   private def located(internal: String, nodes: Map[String, Node]): Option[Node] = {
     @annotation.tailrec
     def climb(name: String): Option[Node] = nodes.get(name) match {
@@ -139,15 +137,15 @@ object Megamorphic {
         val at = name.lastIndexOf('.')
         if (at < 0) None else climb(name.take(at))
     }
-    climb(normal(internal))
+    climb(Keys.dotted(internal))
   }
 
   private def names(receivers: Vector[Receiver]): Vector[String] = {
-    val classes = receivers.collect { case Receiver.Instance(name) => normal(name) }.distinct
+    val classes = receivers.collect { case Receiver.Instance(name) => Keys.dotted(name) }.distinct
     val simple  = classes.map(Finding.simple(_))
     val shown   = if (simple.distinct.size == simple.size) simple else classes.map(Finding.short(_))
     val lambdas = receivers.collect { case Receiver.Closure(site) =>
-      s"lambda in ${Finding.simple(normal(site.holder.owner))}"
+      s"lambda in ${Finding.simple(Keys.dotted(site.holder.owner))}"
     }
     shown ++ lambdas.distinct
   }

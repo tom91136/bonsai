@@ -42,7 +42,7 @@ private[analysis] object Outputs {
       } ++
       lines(autoplugins).map(_.trim)
     names.collect {
-      case name if name.nonEmpty => Root(name.stripSuffix("$").replace('$', '.'), Root.Kind.Provided)
+      case name if name.nonEmpty => Root(Keys.dotted(name), Root.Kind.Provided)
     }
   }
 }

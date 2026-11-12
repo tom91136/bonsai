@@ -74,6 +74,21 @@ object Sym {
 }
 """
 
+  private val nested = """package fixture
+
+object \&/ {
+  class This(aa: Int) {
+    def twice(): Int = aa * 2
+  }
+}
+
+object Words {
+  object plus {
+    def go(): Int = 1
+  }
+}
+"""
+
   private def capture(directory: Path, source: String): (Vector[tpd.DefDef], Context) = {
     val captured = mutable.ArrayBuffer.empty[(tpd.Tree, Context)]
     object Capture extends Phase {
@@ -172,5 +187,45 @@ object Sym {
       assertEquals(methods.find(_.name.toString == "take").flatMap(method => Keys.of(method.symbol)), Some(key))
       assert(keyed(directory).exists(_._2 == key))
     }
+  }
+
+  test("a class nested in an object with a symbolic name round-trips through its binary name") {
+    Scratch.using("bonsai-class-keys-") { directory =>
+      val (methods, context) = capture(directory, nested)
+      given Context          = context
+      val owner = methods.collectFirst { case method if method.name.toString == "twice" => method.symbol.owner }
+      assertEquals(owner.map(Keys.binary), Some("fixture.$bslash$amp$div$This"))
+      assertEquals(owner.map(Keys.binary).map(Keys.dotted), Some("fixture.\\&/.This"))
+    }
+  }
+
+  test("a method of a class nested in an object with a symbolic name has the key of its class file method") {
+    Scratch.using("bonsai-class-keys-") { directory =>
+      val (methods, context) = capture(directory, nested)
+      given Context          = context
+      val key                = "fixture.\\&/.This.twice()I"
+      assertEquals(methods.find(_.name.toString == "twice").flatMap(method => Keys.of(method.symbol)), Some(key))
+      assertEquals(keyed(directory).toMap.get(Reference("fixture/$bslash$amp$div$This", "twice", "()I")), Some(key))
+    }
+  }
+
+  test("a class nested in an object named like an operator keeps its dotted name") {
+    Scratch.using("bonsai-class-keys-") { directory =>
+      val (methods, context) = capture(directory, nested)
+      given Context          = context
+      val key                = "fixture.Words.plus.go()I"
+      assertEquals(methods.find(_.name.toString == "go").flatMap(method => Keys.of(method.symbol)), Some(key))
+      assertEquals(keyed(directory).toMap.get(Reference("fixture/Words$plus$", "go", "()I")), Some(key))
+    }
+  }
+
+  test("dotted restores operator codes and keeps the names of plain nested classes") {
+    assertEquals(Keys.dotted("fixture/$bslash$amp$div$This"), "fixture.\\&/.This")
+    assertEquals(Keys.dotted("fixture.Holder$$bslash$amp$div$This"), "fixture.Holder.\\&/.This")
+    assertEquals(Keys.dotted("fixture/$bslash$amp$div$"), "fixture.\\&/")
+    assertEquals(Keys.dotted("fixture/$plus$"), "fixture.+")
+    assertEquals(Keys.dotted("fixture/Op$plus"), "fixture.Op.plus")
+    assertEquals(Keys.dotted("fixture/Words$plus$"), "fixture.Words.plus")
+    assertEquals(Keys.dotted("fixture/Outer$at$Inner"), "fixture.Outer.at.Inner")
   }
 }

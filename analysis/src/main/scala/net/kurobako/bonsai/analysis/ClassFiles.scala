@@ -139,7 +139,7 @@ private[analysis] object ClassFiles {
     * passes first and the source does not name.
     */
   def key(reference: Reference, enclosingInstance: Option[String]): String = {
-    val binary  = reference.owner.replace('/', '.').replace('$', '.').stripSuffix(".")
+    val binary  = Keys.dotted(reference.owner)
     val simple  = if (reference.name == "<init>") reference.name else NameTransformer.decode(reference.name)
     val outer   = enclosingInstance.map(name => s"(L$name;").filter(_ => reference.name == "<init>")
     val dropped = outer.filter(reference.descriptor.startsWith(_)).fold(reference.descriptor)(prefix =>
