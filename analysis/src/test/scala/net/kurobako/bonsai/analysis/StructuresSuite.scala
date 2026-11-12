@@ -440,6 +440,129 @@ class StructuresSuite extends AnalysisSuite {
     assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
   }
 
+  test("constants and methods over String, Boolean and Char make no group of a nested object") {
+    val found = findings(Seq(
+      "Trace.scala" ->
+        """class TraceState(val entries: Vector[(String, String)])
+          |object TraceState {
+          |  private object Validation {
+          |    final val MaxEntries = 32
+          |    private final val KeyMaxSize   = 256
+          |    private final val ValueMaxSize = 256
+          |    private final val VendorIdSize = 13
+          |    def isKeyValid(key: String): Boolean = {
+          |      @scala.annotation.tailrec
+          |      def loop(idx: Int, multi: Boolean): (Boolean, Boolean) =
+          |        if (idx < key.length) { if (key.charAt(idx) == '@') (false, multi) else loop(idx + 1, multi) }
+          |        else (true, multi)
+          |      key.length > 0 && key.length <= KeyMaxSize && loop(1, false)._1 && key.length - 1 < VendorIdSize
+          |    }
+          |    def isValueValid(value: String): Boolean =
+          |      value.length > 0 && value.length <= ValueMaxSize && value.forall(char => char >= 0x20 && char != ',')
+          |  }
+          |  def entries(state: TraceState): Int = Validation.MaxEntries + state.entries.size
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("a group of Int constants beside a group of a domain class is not split") {
+    val found = findings(Seq(
+      "Pools.scala" ->
+        """import java.nio.ByteBuffer
+          |
+          |object Sizes { val initSize = 1024; val expandSize = 4096 }
+          |object BufferPool {
+          |  private final val poolEntrySize1 = Sizes.expandSize + 16
+          |  private final val maxBufferSize  = poolEntrySize1 * 2
+          |  final class Pool { var misses = 0 }
+          |  def allocate(pool: Pool, size: Int): Option[ByteBuffer] = { pool.misses += 1; Some(ByteBuffer.allocate(size)) }
+          |  def allocateDirect(pool: Pool, size: Int): Option[ByteBuffer] = allocate(pool, size).map(identity)
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("a group that only calls library objects beside a group of domain types is not split") {
+    val found = findings(Seq(
+      "Kinds.scala"   -> "case class Span(content: String)\ncase class Block(spans: Vector[Span])",
+      "Headers.scala" ->
+        """object BlockNames {
+          |  def encode(text: String)   = java.net.URLEncoder.encode(text.trim, "utf-8")
+          |  def fragment(text: String) = "#" + encode(text)
+          |  def textOf(spans: Seq[Span]) = spans.map(_.content).mkString
+          |  def name(blocks: Seq[Block]) = blocks.headOption.map(block => textOf(block.spans)).getOrElse("Untitled")
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("groups over Set, Math and Double beside a group of a domain class are not split") {
+    val found = findings(Seq(
+      "Kinds.scala"    -> "case class Genome(values: Vector[Double])",
+      "Breeding.scala" ->
+        """object Breeding {
+          |  val Primitives: Set[String] = Set("scala.Int", "scala.Long")
+          |  def isPrimitive(name: String): Boolean = Primitives.contains(name)
+          |  def log2(x: Int): Int = (math.log(x) / math.log(2)).toInt
+          |  def logOf(size: Int): Int = math.max(log2(size) - 2, 1)
+          |  def crossover(left: Genome, right: Genome): Genome = Genome(left.values.zip(right.values).map(Math.max(_, _)))
+          |  def mutate(genome: Genome): Genome = crossover(genome, genome)
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("groups whose extension methods share a receiver type use a common type") {
+    val found = findings(Seq(
+      "Kinds.scala"  -> "class Bin[A](val value: A)\nclass Zippable[A]\nclass Unzippable[A]",
+      "Tupled.scala" ->
+        """opaque type Tupled[A] = Bin[A]
+          |object Tupled {
+          |  def atom[A](value: A): Tupled[A]  = Bin(value)
+          |  def unzip[A](unzippable: Unzippable[A], value: A): Bin[A] = atom(value)
+          |  extension [A](tupled: Tupled[A]) {
+          |    def fold(zippable: Zippable[A]): A = tupled.value
+          |    def foldWith(zippable: Zippable[A], other: A): A = fold(zippable)
+          |  }
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("a member whose type is an alias of another member uses it") {
+    val found = findings(Seq(
+      "Kinds.scala" ->
+        "trait Algebra\ntrait Svg\ntrait Module { type Alg <: Algebra; def instance: Alg }\ntrait Writer[A, F, S]\nclass FrameImpl(name: String)\nobject FrameImpl { def apply(name: String) = new FrameImpl(name) }",
+      "Svgs.scala" ->
+        """object Svgs {
+          |  val jvm: Module                = new Module { type Alg = Algebra; def instance: Alg = new Algebra {} }
+          |  type Alg                       = jvm.Alg
+          |  val instance                   = jvm.instance
+          |  type Frame                     = FrameImpl
+          |  val Frame                      = FrameImpl
+          |  implicit val writer: Writer[Alg, Frame, Svg] = new Writer[Alg, Frame, Svg] {}
+          |  def frame: Frame               = Frame("dummy")
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("a member that calls a class nested in its object uses what the class uses") {
+    val found = findings(Seq(
+      "Kinds.scala" -> "trait Scribe\ntrait Clock",
+      "Cats.scala"  ->
+        """object cats {
+          |  lazy val io: Scribe = apply(new Scribe {})
+          |  def apply(scribe: Scribe): Scribe = scribe
+          |  case class Timer(clock: Clock) { def log(label: String): Scribe = io }
+          |  def timer(clock: Clock): Timer = Timer(clock)
+          |  def timed(clock: Clock): Timer = timer(clock)
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
   test("a type alone in its file that one type uses belongs beside it, as a tiny one two types use does") {
     val found = findings(
       Seq(

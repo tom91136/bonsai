@@ -6,6 +6,7 @@ import dotty.tools.dotc.core.Constants
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.NameKinds.DefaultGetterName
+import dotty.tools.dotc.core.NameOps.stripModuleClassSuffix
 import dotty.tools.dotc.core.Names.termName
 import dotty.tools.dotc.core.Names.typeName
 import dotty.tools.dotc.core.Symbols.Symbol
@@ -76,7 +77,16 @@ private[analysis] object StructureObserver {
     "scala.math.BigInt",
     "scala.math.BigDecimal",
     "java.math.BigInteger",
-    "java.math.BigDecimal"
+    "java.math.BigDecimal",
+    "scala.collection.StringOps",
+    "scala.runtime.RichBoolean",
+    "scala.runtime.RichByte",
+    "scala.runtime.RichChar",
+    "scala.runtime.RichDouble",
+    "scala.runtime.RichFloat",
+    "scala.runtime.RichInt",
+    "scala.runtime.RichLong",
+    "scala.runtime.RichShort"
   )
 
   // An object implementing a trait, as a type-class instance does, is more than a holder of functions.
@@ -94,6 +104,22 @@ private[analysis] object StructureObserver {
     def traverse(tpe: Type): Unit = tpe match {
       case named: NamedType => record(named.symbol)
       case _                => traverseChildren(tpe)
+    }
+  }
+
+  // The symbols of `owner` a type names, following the aliases of `owner` to what they stand for.
+  private class OwnedTypes(owner: Symbol, record: Symbol => Unit)(using Context) extends TypeTraverser {
+    private val seen = mutable.Set.empty[Symbol]
+
+    def traverse(tpe: Type): Unit = tpe match {
+      case named: NamedType =>
+        val symbol = named.symbol
+        if (symbol.exists && symbol.owner == owner && seen.add(symbol)) {
+          record(symbol)
+          if (symbol.isAliasType) traverse(symbol.info)
+        }
+        traverseChildren(tpe)
+      case _ => traverseChildren(tpe)
     }
   }
 
@@ -125,6 +151,7 @@ private[analysis] class StructureObserver(
   private val built       = mutable.Map.empty[Symbol, Int]
   private val grouped     = mutable.ArrayBuffer.empty[Structures.Member]
   private val detached    = mutable.Set.empty[Symbol]
+  private val nested      = mutable.Map.empty[(String, String), Set[String]]
   private val dispatched  = mutable.ArrayBuffer.empty[Structures.Dispatch]
   private val extents     = mutable.Map.empty[String, (Int, Int)]
   private val named       = mutable.ArrayBuffer.empty[(String, String, String, String, Node)]
@@ -205,6 +232,10 @@ private[analysis] class StructureObserver(
           val (start, end) = extents.getOrElse(info.name, (first, last))
           extents(info.name) = (start.min(first), end.max(last))
         }
+        if (cls.owner.is(Flags.ModuleClass)) {
+          val within = (qualifiedName(cls.owner), cls.name.stripModuleClassSuffix.toString)
+          nested(within) = nested.getOrElse(within, Set.empty) ++ reached(template, cls.owner).map(_.name.toString)
+        }
         if (!cls.is(Flags.ModuleClass))
           cls.asClass.paramAccessors.filter(field =>
             !field.is(Flags.Private) && stutters(cls.name.toString, field.name.toString)
@@ -223,12 +254,17 @@ private[analysis] class StructureObserver(
       !member.name.is(DefaultGetterName) && !member.allOverriddenSymbols.hasNext
     )
       nodeOf(member).foreach { info =>
-        val siblings = mutable.Set.empty[String]
-        val types    = mutable.Set.empty[String]
+        val siblings   = reached(definition, owner).filter(_ != member).map(_.name.toString)
+        val types      = mutable.Set.empty[String]
+        val qualifiers = mutable.Set.empty[tpd.Tree]
         definition.foreachSubTree { tree =>
-          if (tree.symbol.exists && tree.symbol.owner == owner && tree.symbol != member)
-            siblings += tree.symbol.name.toString
-          usedTypes(tree.tpe)(types += _)
+          tree match {
+            case tpd.Select(qualifier, _) if qualifier.tpe.widen.typeSymbol.is(Flags.ModuleClass) =>
+              qualifiers += qualifier
+            case _ => ()
+          }
+          if (!qualifiers(tree))
+            usedTypes(tree.tpe)(used => if (used != owner) named(used).foreach(types += _))
         }
         if (siblings.isEmpty && !types(info.name)) detached += member
         if (
@@ -239,22 +275,41 @@ private[analysis] class StructureObserver(
             member.name.toString,
             qualifiedName(owner),
             info.name,
-            siblings.toSet,
-            types.toSet - info.name
+            siblings,
+            types.toSet
           )
       }
   }
 
-  private def usedTypes(tpe: Type)(record: String => Unit)(using Context): Unit =
+  private def reached(tree: tpd.Tree, owner: Symbol)(using Context): Set[Symbol] = {
+    val symbols   = mutable.Set.empty[Symbol]
+    val traverser = OwnedTypes(owner, symbols += _)
+    tree.foreachSubTree { sub =>
+      if (sub.symbol.exists && sub.symbol.owner == owner) symbols += sub.symbol
+      traverser.traverse(sub.tpe)
+    }
+    symbols.toSet
+  }
+
+  private def nestedUses(owner: String, names: Set[String]): Set[String] = {
+    @annotation.tailrec
+    def close(found: Set[String]): Set[String] = {
+      val more = found.flatMap(name => nested.getOrElse((owner, name), Set.empty))
+      if (more.subsetOf(found)) found else close(found ++ more)
+    }
+    close(names)
+  }
+
+  private def usedTypes(tpe: Type)(record: Symbol => Unit)(using Context): Unit =
     tpe.widen match {
       case applied: AppliedType if wrapper(applied.tycon.typeSymbol) =>
         applied.args.foreach(usedTypes(_)(record))
       case applied: AppliedType =>
-        named(applied.tycon.typeSymbol).foreach(record)
+        record(applied.tycon.typeSymbol)
       case widened if widened.hasSimpleKind =>
         val symbol = widened.typeSymbol
         val target = if (symbol.isAliasType && predefined(symbol.owner)) widened.dealias.typeSymbol else symbol
-        if (!unnamed(target) && !valueType(target)) named(target).foreach(record)
+        if (!unnamed(target) && !valueType(target)) record(target)
       case _ =>
     }
 
@@ -494,7 +549,7 @@ private[analysis] class StructureObserver(
       mentions,
       applied.toVector,
       concretes,
-      grouped.toVector,
+      grouped.toVector.map(member => member.copy(siblings = nestedUses(member.owner, member.siblings))),
       dispatched.toVector,
       extents.view.mapValues((start, end) => end - start + 1).toMap,
       Counterparts.Model(mirrors.toVector, families),
