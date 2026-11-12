@@ -645,6 +645,25 @@ class MembersSuite extends AnalysisSuite {
     )
   }
 
+  test("a member that refers to its own object through this stays in it") {
+    val found = findings(Seq(
+      entry("println(Worker().run + Pair().run)"),
+      "Tools.scala" ->
+        """trait Base { def label: String = "base"; def column(name: String): String = label + name }
+          |object Table extends Base {
+          |  def bare: String = column("bare")
+          |  def qualified: String = this.column("qualified")
+          |  def plain: Int = 1
+          |}
+          |class Worker { def run: Int = Table.bare.length + Table.qualified.length }
+          |class Pair { def run: Int = Table.plain }""".stripMargin
+    ))
+    assertFinding(found, "misplaced-member", "Table.plain is used only by Pair")(using Finding.Level.Info)
+    assertNoFinding(found)(finding =>
+      finding.rule == Finding.Rule.MisplacedMember && !finding.detail.startsWith("Table.plain")
+    )
+  }
+
   test("members sharing a name are told apart by their parameter types") {
     val found = findings(Seq(
       entry("val bound: Tools.>[Int, 0] = Tools.twice(1); println(bound)"),

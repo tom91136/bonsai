@@ -15,6 +15,7 @@ import dotty.tools.dotc.core.Symbols.requiredClass
 import dotty.tools.dotc.core.Types.AppliedType
 import dotty.tools.dotc.core.Types.ConstantType
 import dotty.tools.dotc.core.Types.NamedType
+import dotty.tools.dotc.core.Types.ThisType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeTraverser
 import dotty.tools.dotc.util.Spans.Span
@@ -96,6 +97,16 @@ private[analysis] object StructureObserver {
         }
         traverseChildren(tpe)
       case _ => traverseChildren(tpe)
+    }
+  }
+
+  private class ThisTypes(record: Symbol => Unit)(using Context) extends TypeTraverser {
+    def traverse(tpe: Type): Unit = {
+      tpe match {
+        case ThisType(cls) => record(cls.symbol)
+        case _             => ()
+      }
+      traverseChildren(tpe)
     }
   }
 
@@ -231,18 +242,23 @@ private[analysis] class StructureObserver(
     )
       nodeOf(member).foreach { info =>
         val siblings   = reached(definition, owner).filter(_ != member).map(_.name.toString)
+        val uses       = mutable.Set.empty[Symbol]
         val types      = mutable.Set.empty[String]
         val qualifiers = mutable.Set.empty[tpd.Tree]
+        val selves     = ThisTypes(uses += _)
         definition.foreachSubTree { tree =>
           tree match {
             case tpd.Select(qualifier, _) if qualifier.tpe.widen.typeSymbol.is(Flags.ModuleClass) =>
               qualifiers += qualifier
             case _ => ()
           }
-          if (!qualifiers(tree))
-            usedTypes(tree.tpe)(used => if (used != owner) named(used).foreach(types += _))
+          usedTypes(tree.tpe) { used =>
+            uses += used
+            if (!qualifiers(tree) && used != owner) named(used).foreach(types += _)
+          }
+          selves.traverse(tree.tpe)
         }
-        if (siblings.isEmpty && !types(info.name)) detached += member
+        if (siblings.isEmpty && !uses(owner)) detached += member
         if (
           !info.test && !owner.companionClass.exists && !implementing(owner) &&
           !owner.asClass.derivesFrom(requiredClass("scala.Enumeration"))
