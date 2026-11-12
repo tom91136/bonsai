@@ -530,6 +530,46 @@ class StructuresSuite extends AnalysisSuite {
     assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
   }
 
+  test("a group that matches on lists of characters beside a group of a library type is not split") {
+    val found = findings(Seq(
+      "Conversions.scala" ->
+        """import scala.util.matching.Regex
+          |
+          |object Conversions {
+          |  private val FirstPass = "([A-Z]+)([A-Z][a-z])".r
+          |  def toSnake(name: String): String = FirstPass.replaceAllIn(name, "$1_$2").toLowerCase
+          |  def toPascal(name: String): String = {
+          |    def loop(x: List[Char]): List[Char] = (x: @unchecked) match {
+          |      case '_' :: c :: rest => Character.toUpperCase(c) :: loop(rest)
+          |      case '_' :: Nil       => Nil
+          |      case c :: rest        => c :: loop(rest)
+          |      case Nil              => Nil
+          |    }
+          |    loop('_' :: name.toList).mkString
+          |  }
+          |  def toCamel(name: String): String = toPascal(name).take(1).toLowerCase
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("a group over arrays of String beside a group of a domain type is not split") {
+    val found = findings(Seq(
+      "Kinds.scala" -> "case class Cpg(path: String)",
+      "Tool.scala"  ->
+        """object Tool {
+          |  val Delimiter = "--frontend-args"
+          |  def splitArgs(args: Array[String]): (List[String], List[String]) = {
+          |    val index = args.indexOf(Delimiter)
+          |    if (index == -1) (args.toList, Nil) else args.toList.splitAt(index)
+          |  }
+          |  def load(path: String): Cpg = Cpg(path)
+          |  def reload(path: String): Cpg = load(path)
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
   test("a member whose type is an alias of another member uses it") {
     val found = findings(Seq(
       "Kinds.scala" ->

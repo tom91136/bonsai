@@ -309,7 +309,7 @@ private[analysis] class StructureObserver(
       case widened if widened.hasSimpleKind =>
         val symbol = widened.typeSymbol
         val target = if (symbol.isAliasType && predefined(symbol.owner)) widened.dealias.typeSymbol else symbol
-        if (!unnamed(target) && !valueType(target)) record(target)
+        if (!unnamed(target) && !valueType(target) && !(target.isClass && structural(target))) record(target)
       case _ =>
     }
 
@@ -319,6 +319,7 @@ private[analysis] class StructureObserver(
   private def structural(symbol: Symbol)(using Context): Boolean =
     !symbol.isDefinedInCurrentRun &&
       (defn.isTupleClass(symbol) || defn.isFunctionClass(symbol) ||
+        symbol == defn.ArrayClass || symbol == Classes.required("scala.collection.ArrayOps") ||
         symbol.asClass.derivesFrom(defn.OptionClass) ||
         symbol.asClass.derivesFrom(Classes.required("scala.collection.IterableOnce")))
 
