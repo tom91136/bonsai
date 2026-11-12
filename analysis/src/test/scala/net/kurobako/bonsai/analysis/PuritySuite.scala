@@ -1520,4 +1520,72 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(many.purity.verdicts("Many.first"), println)
     assertEquals(many.purity.verdicts("Many.loud"), println)
   }
+
+  test("a caller passing a pure function to a method called in many ways stays pure whatever the others pass") {
+    val callers = (0 until 40).map(n => s"  def quiet$n: Int = apply(x => x + $n)(1)")
+    val many    = extract(
+      Seq(
+        "Many.scala" ->
+          s"""trait Source { def handler: Int => Int }
+             |final class Fixed extends Source { def handler: Int => Int = x => x }
+             |object Many {
+             |  def apply(f: Int => Int): Int => Int = x => f(x)
+             |  def unknown(source: Source): Int = apply(source.handler)(1)
+             |${callers.mkString("\n")}
+             |  def loud: Int = apply(x => { println(x); x })(1)
+             |}""".stripMargin
+      )
+    )
+    val verdicts = many.purity.verdicts
+    (0 until 40).foreach(n => assertEquals(verdicts(s"Many.quiet$n"), Purity.Verdict.Pure, n))
+    assert(isUnknown(verdicts("Many.unknown")), verdicts("Many.unknown"))
+    assertEquals(verdicts("Many.loud"), impure("calls scala.Predef.println"))
+  }
+
+  test("a caller using syntax with a pure instance stays pure whatever instances other callers use") {
+    val callers = (0 until 40).map(n => s"""  def option$n(o: Option[Int]): Option[String] = o.as("x$n")""")
+    val syntax  = analysed(
+      "Callers",
+      s"""import lib.Functor.*
+         |final case class Box[A](value: A)
+         |object Loud {
+         |  val functor: lib.Functor[Box] = new lib.Functor[Box] {
+         |    def map[A, B](fa: Box[A])(f: A => B): Box[B] = { println(fa); Box(f(fa.value)) }
+         |  }
+         |}
+         |trait Instances { def functor: lib.Functor[Option] }
+         |object Callers {
+         |${callers.mkString("\n")}
+         |  def unknown(o: Option[Int], instances: Instances): Option[String] = toFunctorOps(o)(instances.functor).as("u")
+         |  def loud(b: Box[Int]): Box[String] = toFunctorOps(b)(Loud.functor).as("l")
+         |}""".stripMargin,
+      Seq(
+        "Functor.scala" ->
+          """package lib
+            |import scala.language.implicitConversions
+            |trait Functor[F[_]] {
+            |  def map[A, B](fa: F[A])(f: A => B): F[B]
+            |  def as[A, B](fa: F[A], b: B): F[B] = map(fa)(_ => b)
+            |}
+            |object Functor {
+            |  trait Ops[F[_], A] {
+            |    def typeClassInstance: Functor[F]
+            |    def self: F[A]
+            |    def as[B](b: B): F[B] = typeClassInstance.as(self, b)
+            |  }
+            |  implicit def toFunctorOps[F[_], A](target: F[A])(implicit tc: Functor[F]): Ops[F, A] = new Ops[F, A] {
+            |    val self              = target
+            |    val typeClassInstance = tc
+            |  }
+            |  implicit val optionFunctor: Functor[Option] = new Functor[Option] {
+            |    def map[A, B](fa: Option[A])(f: A => B): Option[B] = fa.map(f)
+            |  }
+            |}""".stripMargin
+      )
+    )
+    val verdicts = syntax.purity.verdicts
+    (0 until 40).foreach(n => assertEquals(verdicts(s"Callers.option$n"), Purity.Verdict.Pure, n))
+    assert(isUnknown(verdicts("Callers.unknown")), verdicts("Callers.unknown"))
+    assertEquals(verdicts("Callers.loud"), impure("calls Ops.as, which performs output"))
+  }
 }
