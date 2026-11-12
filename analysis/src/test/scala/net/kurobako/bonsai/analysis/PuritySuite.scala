@@ -988,6 +988,64 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(lines.sorted, Vector(17, 18, 19))
   }
 
+  private lazy val fluent = analysed(
+    "Fluent",
+    """object Fluent {
+      |  def appended(): Unit = {
+      |    val buffer = new lib.Nodes
+      |    buffer &+ "a"
+      |    buffer &+ "b"
+      |    ()
+      |  }
+      |  def chained(): Unit = {
+      |    val builder = new lib.Builder
+      |    builder.add(1)
+      |    builder.add(2)
+      |    ()
+      |  }
+      |  def memoised(): Unit = {
+      |    val memo = new lib.Memo
+      |    memo.size
+      |    ()
+      |  }
+      |  def counted(): Unit = {
+      |    val memo = new lib.Memo
+      |    memo.count
+      |    ()
+      |  }
+      |}""".stripMargin,
+    Seq(
+      "Nodes.scala" ->
+        """package lib
+          |final class Nodes extends scala.collection.mutable.ArrayBuffer[String] {
+          |  def &+(other: Any): Nodes = {
+          |    other match {
+          |      case null      => ()
+          |      case s: String => super.addOne(s)
+          |      case _         => super.addOne(other.toString)
+          |    }
+          |    this
+          |  }
+          |}
+          |final class Builder {
+          |  private val items = scala.collection.mutable.ArrayBuffer.empty[Int]
+          |  def add(item: Int): Builder = { items += item; this }
+          |}
+          |final class Memo {
+          |  private var cached = -1
+          |  lazy val size: Int = 41 + 1
+          |  def count: Int = { if (cached < 0) cached = 1; cached }
+          |}""".stripMargin
+    )
+  )
+
+  test("dropping the result of a method that writes its receiver and returns it is not reported, a cache is") {
+    val lines = Purity.findings(fluent.purity, fluent.graph.nodes).collect {
+      case finding if finding.rule == Finding.Rule.PureDiscard => finding.node.line
+    }
+    assertEquals(lines.sorted, Vector.empty)
+  }
+
   private lazy val asserted = analysed(
     "Checked",
     """import org.scalatest.Assertions

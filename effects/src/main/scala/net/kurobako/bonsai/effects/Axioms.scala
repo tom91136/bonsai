@@ -318,6 +318,9 @@ object Axioms {
     "scala.Array"
   )
 
+  // Owners of the methods the receiver decides for; a subclass's own methods have effects of their own.
+  private val Declaring: Vector[String] = Vector("scala.collection.", "scala.Array", "java.")
+
   /** Classes that write to a stream. */
   private val Outputs: Vector[String] = Vector("java.io.OutputStream", "java.io.Writer")
 
@@ -354,7 +357,7 @@ object Axioms {
       effect(if (Changing.exists(name.startsWith(_))) Kind.Output else Kind.Input)
     else if (Hosts.exists(owner.startsWith(_)) || derives(Views)) effect(Kind.Input)
     else if (Reading.exists(owner.startsWith(_)) && !received.exists(!_.module)) none
-    else if (derives(Stateful) || owner.startsWith(Atomics))
+    else if (derives(Stateful) && (Declaring.exists(owner.startsWith(_)) || mutates(name)) || owner.startsWith(Atomics))
       if (name == "length" && received.exists(_.derives("scala.Array"))) none
       else if (Filling(name)) effect(Kind.Writes)
       else stateful(if (mutates(name) || owner.startsWith(Atomics) && updates(name)) Kind.Writes else Kind.Reads)
