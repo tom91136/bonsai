@@ -924,4 +924,28 @@ class ExtractionSuite extends AnalysisSuite {
       assert(problems.head.startsWith("extraction failed: java.lang.IllegalArgumentException"), problems.toString)
     }
   }
+
+  test("a generated source the manifest does not list reads under its absolute path") {
+    Scratch.using("bonsai-") { directory =>
+      val managed = directory.resolve("main").resolve("src_managed")
+      val classes = compile(
+        directory.resolve("main"),
+        Seq("src_managed/Gen.scala" -> "package gen\nclass Gen { def value: Int = 1 }"),
+        Vector.empty,
+        Some(directory)
+      )
+      val result = Extraction.read(Manifest(
+        Vector(Output("m", Output.Scope.Main, classes)),
+        classpaths,
+        Set.empty,
+        root = Some(directory),
+        generated = Vector(managed),
+        jdk = targetJdk
+      ))
+      assertEquals(
+        result.map(_.graph.nodes("gen.Gen").source),
+        Right(managed.resolve("Gen.scala").toAbsolutePath.normalize.toString)
+      )
+    }
+  }
 }

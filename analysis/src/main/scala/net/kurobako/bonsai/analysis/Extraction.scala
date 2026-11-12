@@ -497,8 +497,10 @@ object Extraction {
 
   // TASTy names sources relative to the build root, which the reader resolves against the working directory.
   private def relativePaths(manifest: Manifest): Vector[(String, Path)] = manifest.root.toVector.flatMap { root =>
-    val base = root.toAbsolutePath.normalize
-    manifest.sources.map(_.path.toAbsolutePath.normalize).filter(_.startsWith(base)).map(file =>
+    val base      = root.toAbsolutePath.normalize
+    val generated =
+      manifest.generated.flatMap(path => if (Files.isDirectory(path)) Outputs.files(path) else Vector(path))
+    (manifest.sources.map(_.path) ++ generated).map(_.toAbsolutePath.normalize).filter(_.startsWith(base)).map(file =>
       base.relativize(file).toString.replace(File.separatorChar, '/') -> file
     )
   }
