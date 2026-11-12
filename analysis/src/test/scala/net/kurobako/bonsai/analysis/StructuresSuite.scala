@@ -195,9 +195,9 @@ class StructuresSuite extends AnalysisSuite {
       "Kinds.scala" -> "case class Token(text: String)\ncase class Page(lines: Vector[String])",
       "Util.scala"  ->
         """object Util {
-          |  def parse(text: String): Token       = Token(text)
-          |  def parseAgain(text: String): Token  = parse(text)
-          |  def render(page: Page): Int          = page.lines.size
+          |  def parse(text: String): Token        = Token(text)
+          |  def parseAll(texts: Vector[String])  = texts.map(parse)
+          |  def render(page: Page): String       = page.lines.mkString
           |  def renderAll(pages: Vector[Page])   = pages.map(render)
           |  def lone: Int                        = 1
           |}
@@ -212,7 +212,7 @@ class StructuresSuite extends AnalysisSuite {
       of(found, Finding.Rule.DisjointObject),
       Vector(
         "object Util holds 2 groups of members that never use each other and use different types " +
-          "({parse, parseAgain}, {render, renderAll})"
+          "({parse, parseAll}, {render, renderAll})"
       )
     )
   }
@@ -223,9 +223,9 @@ class StructuresSuite extends AnalysisSuite {
       "Codecs.scala" ->
         """object Codecs {
           |  private val tokenDefault = Token("")
-          |  private val pageDefault  = Page(Vector.empty[Nothing])
+          |  private val pageDefault  = Page(Vector.empty)
           |  def readToken(text: String): Token = tokenDefault.copy(text = text)
-          |  def readTokenAgain(text: String): Token = readToken(text)
+          |  def readTokens(texts: Vector[String]) = texts.map(readToken)
           |  def pageSize(page: Page): Int = pageDefault.lines.size + page.lines.size
           |  def pageSizes(pages: Vector[Page]) = pages.map(pageSize)
           |}""".stripMargin
@@ -234,7 +234,7 @@ class StructuresSuite extends AnalysisSuite {
       of(found, Finding.Rule.DisjointObject),
       Vector(
         "object Codecs holds 2 groups of members that never use each other and use different types " +
-          "({pageDefault, pageSize, pageSizes}, {readToken, readTokenAgain, tokenDefault})"
+          "({pageDefault, pageSize, pageSizes}, {readToken, readTokens, tokenDefault})"
       )
     )
   }
@@ -270,10 +270,10 @@ class StructuresSuite extends AnalysisSuite {
     val found = findings(Seq(
       "Text.scala" ->
         """object Text {
-          |  def trimmed(text: String): String = text.trim
-          |  def padded(text: String): String  = trimmed(text) + " "
-          |  def upper(text: String): String   = text.toUpperCase
-          |  def loud(text: String): String    = upper(text) + "!"
+          |  def trimmed(text: String): String = text.take(3)
+          |  def padded(text: String): String  = trimmed(text).reverse
+          |  def upper(text: String): String   = text.capitalize
+          |  def loud(text: String): String    = upper(text).reverse
           |}""".stripMargin
     ))
     assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
@@ -301,14 +301,70 @@ class StructuresSuite extends AnalysisSuite {
     )
   }
 
+  test("groups that share a library type only through a collection of it are not split") {
+    val found = findings(Seq(
+      "Gathering.scala" ->
+        """import java.nio.file.Path
+          |
+          |object Gathering {
+          |  def locate(path: Path): Path         = path
+          |  def resolve(path: Path): Path        = locate(path)
+          |  def gather(paths: Vector[Path]): Int = paths.size
+          |  def count(paths: Vector[Path]): Int  = gather(paths) + 1
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("groups that share only a collection, but of different types, hold two designs") {
+    val found = findings(Seq(
+      "Batches.scala" ->
+        """import java.nio.file.Path
+          |import java.util.regex.Pattern
+          |
+          |object Batches {
+          |  def keep(paths: Vector[Path]): Int          = paths.size
+          |  def retain(paths: Vector[Path]): Int        = keep(paths) + 1
+          |  def scan(patterns: Vector[Pattern]): Int    = patterns.size
+          |  def scanAll(patterns: Vector[Pattern]): Int = scan(patterns) + 1
+          |}""".stripMargin
+    ))
+    assertEquals(
+      of(found, Finding.Rule.DisjointObject),
+      Vector(
+        "object Batches holds 2 groups of members that never use each other and use different types " +
+          "({keep, retain}, {scan, scanAll})"
+      )
+    )
+  }
+
+  test("groups whose only common types are Int, String and a Map of them hold two designs") {
+    val found = findings(Seq(
+      "Counting.scala" ->
+        """object Counting {
+          |  def width(text: String): Int               = text.length
+          |  def widths(texts: Vector[String]): Int     = texts.size + width(texts.head)
+          |  def tally(counts: Map[String, Int]): Int   = counts.size
+          |  def tallies(counts: Map[String, Int]): Int = tally(counts) + 1
+          |}""".stripMargin
+    ))
+    assertEquals(
+      of(found, Finding.Rule.DisjointObject),
+      Vector(
+        "object Counting holds 2 groups of members that never use each other and use different types " +
+          "({tallies, tally}, {width, widths})"
+      )
+    )
+  }
+
   test("a type spelled through the Predef alias and as its target is one type") {
     val found = findings(Seq(
       "Spellings.scala" ->
         """object Spellings {
-          |  def same(text: String): String = text
-          |  def again(text: String): String = same(text)
-          |  def spelled(text: java.lang.String): java.lang.String = text
-          |  def respelled(text: java.lang.String): java.lang.String = spelled(text)
+          |  def same(text: String): String = text.take(1)
+          |  def again(text: String): String = same(text).reverse
+          |  def spelled(text: java.lang.String): java.lang.String = text.capitalize
+          |  def respelled(text: java.lang.String): java.lang.String = spelled(text).reverse
           |}""".stripMargin
     ))
     assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)

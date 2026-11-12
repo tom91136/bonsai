@@ -64,6 +64,21 @@ private[analysis] object StructureObserver {
   // Traits the compiler gives case classes and objects, which say nothing of what they implement.
   private val Markers = Set("scala.Product", "scala.Equals", "java.io.Serializable")
 
+  private val ValueTypes = Set(
+    "java.lang.Boolean",
+    "java.lang.Byte",
+    "java.lang.Character",
+    "java.lang.Short",
+    "java.lang.Integer",
+    "java.lang.Long",
+    "java.lang.Float",
+    "java.lang.Double",
+    "scala.math.BigInt",
+    "scala.math.BigDecimal",
+    "java.math.BigInteger",
+    "java.math.BigDecimal"
+  )
+
   // An object implementing a trait, as a type-class instance does, is more than a holder of functions.
   def implementing(cls: Symbol)(using Context): Boolean = cls.asClass.parentSyms.exists { parent =>
     val name = parent.fullName.toString
@@ -213,7 +228,7 @@ private[analysis] class StructureObserver(
         definition.foreachSubTree { tree =>
           if (tree.symbol.exists && tree.symbol.owner == owner && tree.symbol != member)
             siblings += tree.symbol.name.toString
-          usedType(tree.tpe).foreach(types += _)
+          usedTypes(tree.tpe)(types += _)
         }
         if (siblings.isEmpty && !types(info.name)) detached += member
         if (
@@ -230,13 +245,24 @@ private[analysis] class StructureObserver(
       }
   }
 
-  private def usedType(tpe: Type)(using Context): Option[String] = {
-    val symbol = tpe.typeSymbol
-    val target =
-      if (symbol.isAliasType && predefined(symbol.owner)) tpe.dealias.typeSymbol
-      else symbol
-    key(target).orElse(Option.when(target.isClass && !unnamed(target))(qualifiedName(target)))
-  }
+  private def usedTypes(tpe: Type)(record: String => Unit)(using Context): Unit =
+    tpe.widen match {
+      case applied: AppliedType if wrapper(applied.tycon.typeSymbol) =>
+        applied.args.foreach(usedTypes(_)(record))
+      case applied: AppliedType =>
+        named(applied.tycon.typeSymbol).foreach(record)
+      case widened if widened.hasSimpleKind =>
+        val symbol = widened.typeSymbol
+        val target = if (symbol.isAliasType && predefined(symbol.owner)) widened.dealias.typeSymbol else symbol
+        if (!unnamed(target) && !valueType(target)) named(target).foreach(record)
+      case _ =>
+    }
+
+  private def wrapper(symbol: Symbol)(using Context): Boolean =
+    symbol.isAliasType && predefined(symbol.owner) || symbol.isClass && key(symbol).isEmpty
+
+  private def named(symbol: Symbol)(using Context): Option[String] =
+    key(symbol).orElse(Option.when(symbol.isClass)(qualifiedName(symbol)))
 
   private def predefined(owner: Symbol)(using Context): Boolean =
     owner == defn.ScalaPredefModuleClass || owner == defn.ScalaPackageObject.moduleClass
@@ -244,6 +270,9 @@ private[analysis] class StructureObserver(
   private def unnamed(symbol: Symbol)(using Context): Boolean =
     Set[Symbol](defn.AnyClass, defn.AnyValClass, defn.ObjectClass, defn.NothingClass, defn.NullClass, defn.UnitClass)
       .contains(symbol)
+
+  private def valueType(symbol: Symbol)(using Context): Boolean =
+    symbol == defn.StringClass || symbol.isPrimitiveValueClass || symbol.isClass && ValueTypes(qualifiedName(symbol))
 
   /** Records an alias of `scope` that fills a type constructor with literal arguments. */
   def alias(symbol: Symbol, scope: Symbol, target: AppliedType)(using Context): Unit =
