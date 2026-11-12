@@ -256,7 +256,7 @@ object Extraction {
           Int.MaxValue.toString,
           "-classpath",
           classpath.mkString(File.pathSeparator)
-        ) ++ files.map(_.toString),
+        ) ++ Option.when(Classpath.scalaJs(classpath))("-scalajs") ++ files.map(_.toString),
         StoreReporter()
       ).allErrors.map(_.message).distinct
       // The compiler resolves a class once per run, so the run reads the classpaths of the modules in turn, the JVM

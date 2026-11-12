@@ -35,6 +35,20 @@ class ExtractionSuite extends AnalysisSuite {
       )
     }
 
+  private val scalaJs = Path.of(
+    sys.props("user.home"),
+    ".cache/coursier/v1/https/repo1.maven.org/maven2/org/scala-js/scalajs-library_2.13/1.21.0/scalajs-library_2.13-1.21.0.jar"
+  )
+
+  private def compiled(directory: Path, sources: Seq[(String, String)], options: Array[String]): Path = {
+    val classes = Files.createDirectories(directory.resolve("classes"))
+    write(directory, sources)
+    val paths    = sources.map((name, _) => directory.resolve(name).toString)
+    val reporter = Driver().process(options ++ Array("-d", classes.toString) ++ paths, StoreReporter())
+    assert(!reporter.hasErrors, reporter.allErrors.map(_.message).mkString("\n"))
+    classes
+  }
+
   test("a call chain deeper than the default recursion fuel is read") {
     val chain  = (1 to 600).map(index => s".append(\"$index\")").mkString
     val result =
@@ -48,6 +62,51 @@ class ExtractionSuite extends AnalysisSuite {
       readBroken(Seq("A.scala" -> "class A", "B.scala" -> "class B"), "A"),
       Right(Vector("B", "class file A could not be read"))
     )
+  }
+
+  test("a Scala.js library call with a js.| parameter reads without undefined notes") {
+    Scratch.using("bonsai-") { directory =>
+      val source =
+        """import scala.scalajs.js
+          |class Caller { def render(value: js.Any): String = js.JSON.stringify(value, null.asInstanceOf[js.Array[js.Any]], 2) }""".stripMargin
+      val classes = compiled(
+        directory,
+        Seq("Caller.scala" -> source),
+        Array("-scalajs", "-classpath", (scalaJs +: classpath).mkString(File.pathSeparator))
+      )
+      val result = Extraction.read(Manifest(
+        Vector(Output("m", Output.Scope.Main, classes)),
+        scoped(Map("m" -> (scalaJs +: classpath))),
+        Set.empty,
+        jdk = targetJdk
+      )).fold(problems => fail(problems.mkString("\n")), identity)
+      assert(!result.notes.exists(_.contains("undefined:")), result.notes.mkString("\n"))
+    }
+  }
+
+  test("a class whose parent is missing fails alone, while the other classes keep their findings") {
+    Scratch.using("bonsai-") { directory =>
+      val classes = compiled(
+        directory,
+        Seq(
+          "Parent.scala" -> "class Parent[A]",
+          "Child.scala"  -> "class Child extends Parent[Int]",
+          "Other.scala"  -> "class Other { def value: Int = 1 }"
+        ),
+        Array("-classpath", classpath.mkString(File.pathSeparator))
+      )
+      Files.delete(classes.resolve("Parent.tasty"))
+      Files.delete(classes.resolve("Parent.class"))
+      val result = Extraction.read(Manifest(
+        Vector(Output("m", Output.Scope.Main, classes)),
+        classpaths,
+        Set.empty,
+        jdk = targetJdk
+      )).fold(errors => fail(errors.mkString("\n")), identity)
+      assert(result.graph.nodes.contains("Other"), result.graph.nodes.keySet.toString)
+      assertEquals(result.problems.size, 1)
+      assert(result.problems.head.contains("Child.tasty could not be analysed"), result.problems.head)
+    }
   }
 
   test("a manifest without a jdk is refused, with the way to regenerate it") {

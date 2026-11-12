@@ -61,6 +61,9 @@ private[analysis] object Classpath {
     */
   def readable(classpath: Vector[Path]): Vector[Path] = unified(shadowed(classpath))
 
+  def scalaJs(classpath: Vector[Path]): Boolean =
+    classpath.exists(path => holds(path.toString, "scala/scalajs/js/Any.class"))
+
   private val StandardLibrary = """scala3?-library.*\.jar""".r
 
   private val JvmLibrary = """scala-library-.*\.jar|scala3-library_3-.*\.jar""".r
