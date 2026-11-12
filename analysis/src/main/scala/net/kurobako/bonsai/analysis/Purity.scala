@@ -1852,6 +1852,9 @@ object Purity {
           if (symbol.exists && s"${qualified(symbol.owner)}.${symbol.name}" == Axioms.Console)
             effects += plain(Kind.Input, s"reads ${Axioms.Console}")
           traverseChildren(tree)
+        case tpd.Splice(_) =>
+          effects += plain(Kind.Unknown, "expands a macro")
+          invokes ++= parameters.collect { case (parameter, index) if callable(parameter.info) => index }
         case _ => traverseChildren(tree)
       }
 

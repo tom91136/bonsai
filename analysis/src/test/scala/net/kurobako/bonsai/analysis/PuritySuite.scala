@@ -1046,6 +1046,67 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(lines.sorted, Vector.empty)
   }
 
+  private lazy val evaluated = analysed(
+    "Evaluated",
+    """import scala.language.implicitConversions
+      |object Evaluated {
+      |  def caught(): Unit = {
+      |    lib.Checks.intercept[RuntimeException](println("x"))
+      |    ()
+      |  }
+      |  def retried(): Unit = {
+      |    lib.Eventually.eventually(println("x"))
+      |    ()
+      |  }
+      |  def inspected(x: Int): Unit = {
+      |    lib.Inside.inside(x) { case 1 => println("x") }
+      |    ()
+      |  }
+      |  def expanded(): Unit = {
+      |    lib.Macros.attempt(println("x"))
+      |    lib.Macros.attempt(1 + 1)
+      |    ()
+      |  }
+      |  def quietly(x: Int): Unit = {
+      |    lib.Checks.intercept[RuntimeException](x + 1)
+      |    lib.Eventually.eventually(x + 1)
+      |    lib.Inside.inside(x) { case 1 => x }
+      |    lib.Checks.ignore(println("x"))
+      |    ()
+      |  }
+      |}""".stripMargin,
+    Seq(
+      "Checks.scala" ->
+        """package lib
+          |import scala.quoted.*
+          |import scala.reflect.ClassTag
+          |object Checks {
+          |  def intercept[E <: Throwable](body: => Any)(using tag: ClassTag[E]): E =
+          |    try { body; throw new IllegalStateException("none") }
+          |    catch { case e: Throwable if tag.runtimeClass.isInstance(e) => e.asInstanceOf[E] }
+          |  def ignore(body: => Any): Int = 1
+          |}
+          |trait Retrying { def retry[T](body: => T): T }
+          |object Retrying { given Retrying = new Retrying { def retry[T](body: => T): T = body } }
+          |object Eventually { def eventually[T](body: => T)(using retrying: Retrying): T = retrying.retry(body) }
+          |object Macros {
+          |  inline def attempt(body: => Any): Int = ${ attemptImpl('body) }
+          |  def attemptImpl(body: Expr[Any])(using Quotes): Expr[Int] = '{ try { $body; 1 } catch { case _: Throwable => 0 } }
+          |}
+          |object Inside {
+          |  def inside[T, U](value: T)(pf: PartialFunction[T, U]): U =
+          |    if (pf.isDefinedAt(value)) pf(value) else throw new IllegalStateException("none")
+          |}""".stripMargin
+    )
+  )
+
+  test("dropping the result of a library call that may evaluate a by-name argument with effects is not reported") {
+    val lines = Purity.findings(evaluated.purity, evaluated.graph.nodes).collect {
+      case finding if finding.rule == Finding.Rule.PureDiscard => finding.node.line
+    }
+    assertEquals(lines.sorted, Vector(22, 24))
+  }
+
   private lazy val asserted = analysed(
     "Checked",
     """import org.scalatest.Assertions
