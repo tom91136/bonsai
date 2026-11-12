@@ -2089,11 +2089,6 @@ object Purity {
       private def receiver(qualifier: Option[tpd.Tree]): Receiver[Symbol] =
         Calls.receiver(qualifier, allocated(_))
 
-      private def placed(argument: tpd.Tree): Receiver[Symbol] = receiver(Some(argument)) match {
-        case Receiver.Other(Some(variable)) if variable.is(Flags.Mutable) => Receiver.Other(None)
-        case place                                                        => place
-      }
-
       private def allocated(symbol: Symbol): Boolean = fresh(symbol) && within(symbol, scope)
 
       private def call(tree: tpd.Tree): Unit = {
@@ -2208,7 +2203,7 @@ object Purity {
                 Argument.Expression(
                   argument,
                   if (callable(argument.tpe)) Form.Opaque else Form.Plain,
-                  placed(argument)
+                  receiver(Some(argument))
                 )
             }
         }

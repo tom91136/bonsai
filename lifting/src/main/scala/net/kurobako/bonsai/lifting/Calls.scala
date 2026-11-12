@@ -110,11 +110,12 @@ object Calls {
   /** What a call on `qualifier` acts on; `fresh` holds for the locals of the method that hold a value it allocated. */
   def receiver(qualifier: Option[tpd.Tree], fresh: Symbol => Boolean)(using Context): Receiver[Symbol] =
     qualifier.map(unconverted(_)) match {
-      case None | Some(tpd.This(_))                              => Receiver.This
-      case Some(reference: tpd.Ident) if fresh(reference.symbol) => Receiver.Fresh
-      case Some(reference: tpd.Ident)                            => Receiver.Other(Some(reference.symbol))
-      case Some(allocation) if allocates(allocation)             => Receiver.Fresh
-      case Some(_)                                               => Receiver.Other(None)
+      case None | Some(tpd.This(_))                                         => Receiver.This
+      case Some(reference: tpd.Ident) if fresh(reference.symbol)            => Receiver.Fresh
+      case Some(reference: tpd.Ident) if reference.symbol.is(Flags.Mutable) => Receiver.Other(None)
+      case Some(reference: tpd.Ident)                                       => Receiver.Other(Some(reference.symbol))
+      case Some(allocation) if allocates(allocation)                        => Receiver.Fresh
+      case Some(_)                                                          => Receiver.Other(None)
     }
 
   /** `kind` for an access to a field `target`: acting on the object it is selected from, which no one else sees when

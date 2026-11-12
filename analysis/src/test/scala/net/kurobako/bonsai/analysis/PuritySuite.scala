@@ -1464,8 +1464,11 @@ class PuritySuite extends AnalysisSuite {
             |  def chained(source: Source, sink: Sink): Unit = fill(source, sink)
             |  def forwarded(source: Source): Unit = { val sink = new Tally; fill(source, sink) }
             |  def aliased(source: Source, sink: Sink): Unit = { var held = sink; source.drain(held) }
+            |  def rebound(counter: Bumper): Int = { var held = counter; held.bump() }
+            |  def reassigned(counter: Bumper): Int = { var held = Bumper(); held = counter; held.bump() }
             |  def returned(source: Source): Sink = { val sink = new Tally; source.drain(sink); sink }
             |}
+            |class Bumper { var n = 0; def bump(): Int = { n += 1; n } }
             |class Keeper {
             |  var sink: Sink = null
             |  def kept(source: Source): Unit = { val held = new Tally; sink = held; source.drain(held) }
@@ -1476,7 +1479,14 @@ class PuritySuite extends AnalysisSuite {
     Vector("Passed.fresh", "Passed.allocated", "Passed.anonymous", "Passed.forwarded", "Passed.returned").foreach(
       name => assertEquals(verdicts(name), Purity.Verdict.Pure, name)
     )
-    Vector("Passed.fill", "Passed.chained", "Passed.aliased", "Keeper.kept").foreach(name =>
+    Vector(
+      "Passed.fill",
+      "Passed.chained",
+      "Passed.aliased",
+      "Passed.rebound",
+      "Passed.reassigned",
+      "Keeper.kept"
+    ).foreach(name =>
       assert(isImpure(verdicts(name)), name)
     )
   }
