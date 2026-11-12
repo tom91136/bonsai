@@ -48,7 +48,12 @@ object InstallLocal {
     Command.single(Stage) { (state, stage) =>
       val extracted = Project.extract(state)
       val paths     = IvyPaths(extracted.get(ThisBuild / baseDirectory).toString, Some(stage))
-      extracted.appendWithSession(extracted.structure.allProjectRefs.map(ref => (ref / ivyPaths) := paths), state)
+      extracted.appendWithSession(
+        extracted.structure.allProjectRefs.flatMap { ref =>
+          Seq((ref / ivyPaths) := paths, (ref / csrCacheDirectory) := extracted.get(ref / csrCacheDirectory))
+        },
+        state
+      )
     },
     Command.single(Exchange) { (state, stage) =>
       val log       = state.log
