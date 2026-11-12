@@ -227,8 +227,8 @@ private[lifting] object Argument {
         !assigns(expression) && !uses.exists(interpolated(_))
       ordered = uses.sortBy(_.span.start)
       if ordered.zip(ordered.tail).forall((before, after) => before.span.end <= after.span.start)
+      text <- Texts.source(expression)
     } yield {
-      val text   = Texts.of(expression)
       val start  = expression.span.start
       val bounds = ordered.map(use => (use.span.start - start, use.span.end - start))
       val cuts   = (0 +: bounds.flatMap((from, until) => Vector(from, until)) :+ text.length).grouped(2).toVector

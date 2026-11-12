@@ -1,0 +1,19 @@
+package fix
+
+object Inlining {
+  inline def doubled(values: List[Int]): List[Int] =
+    values.map { value =>
+      value +
+        value
+    }
+
+  inline def doubler: Int => Int =
+    value =>
+      value +
+        value
+
+  inline def scaled(factor: Int): Int => Int =
+    value =>
+      value *
+        factor
+}

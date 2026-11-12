@@ -13,7 +13,7 @@ import net.kurobako.bonsai.testing.*
 import scala.collection.mutable
 
 /** A source compiled up to the typed trees the plugin sees, with the context that holds them. */
-class Compiled(val source: String) {
+class Compiled(val source: String, library: Option[String] = None) {
   private val captured = mutable.ArrayBuffer.empty[(tpd.Tree, Context)]
 
   private object Capture extends Phase {
@@ -25,7 +25,7 @@ class Compiled(val source: String) {
   private class Capturing extends Compiler {
     override def phases: List[List[Phase]] = {
       val all = super.phases
-      val at  = all.indexWhere(_.exists(_.phaseName == "posttyper"))
+      val at  = all.indexWhere(_.exists(_.phaseName == "inlining"))
       all.patch(at + 1, List(List(Capture)), 0)
     }
   }
@@ -34,14 +34,28 @@ class Compiled(val source: String) {
     override protected def newCompiler(using Context): Compiler = Capturing()
   }
 
+  private object Plain extends Driver
+
   private val reporter = StoreReporter()
   Scratch.using("bonsai-lifting-") { directory =>
+    val classpath        = sys.props("bonsai.lifting.classpath")
+    val libraryClasspath = library.map { text =>
+      val classes = directory.resolve("classes")
+      val other   = directory.resolve("Library.scala")
+      Files.createDirectories(classes)
+      Files.writeString(other, text)
+      Plain.process(
+        Array("-classpath", classpath, "-d", classes.toString, "-color:never", other.toString),
+        StoreReporter()
+      ): Unit
+      classes.toString
+    }
     val file = directory.resolve("Fixture.scala")
     Files.writeString(file, source)
     Fixture.process(
       Array(
         "-classpath",
-        sys.props("bonsai.lifting.classpath"),
+        (classpath +: libraryClasspath.toList).mkString(java.io.File.pathSeparator),
         "-d",
         directory.toString,
         "-color:never",

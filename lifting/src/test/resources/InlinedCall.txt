@@ -1,0 +1,7 @@
+package fix
+
+object InlinedCall {
+  val chained = Inlining.doubled(List(1, 2)).map(item => item * 2)
+  val passed  = List(1, 2).map(Inlining.doubler)
+  val scaled  = List(1, 2).map(Inlining.scaled(3))
+}

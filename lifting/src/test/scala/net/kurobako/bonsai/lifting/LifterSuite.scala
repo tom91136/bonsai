@@ -512,4 +512,14 @@ class LifterSuite extends FunSuite {
       assertEquals(found.ends.size, found.chain.steps.size)
     }
   }
+
+  test("a lambda inlined from another file lifts without indexing its foreign source") {
+    val inlined = Compiled(
+      Source.fromResource("InlinedCall.txt").mkString,
+      Some(Source.fromResource("InlinedLibrary.txt").mkString)
+    )
+    assertEquals(inlined.lifted("passed").chain.steps.map(_.args.map(_.text)), Vector(Vector("Inlining.doubler")))
+    assertEquals(inlined.lifted("scaled").chain.steps.map(_.args.map(_.text)), Vector(Vector("Inlining.scaled(3)")))
+    assertEquals(inlined.lifted("chained").chain.steps.map(_.args.map(_.text)), Vector(Vector("item => item * 2")))
+  }
 }
