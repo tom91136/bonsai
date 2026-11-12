@@ -14,9 +14,9 @@ object Manifest {
 
   /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <module> <entry>`, `library <module>`,
     * `depends <module> <module>`, `platform <module>`, `recorded <module>`, `option <module> <compiler option>`,
-    * `source <module> <scope> <file>`, `resource <name> <file>`, `resourced <module>`, `model <module> <scope> <file>`,
-    * `generated <path>`, `jdk <home>`, `root <directory>`, `text-exclude <glob>` and
-    * `text <rule index> <field> <value>` lines.
+    * `source <module> <scope> <file>`, `product <module> <scope> <file>`, `resource <name> <file>`,
+    * `resourced <module>`, `model <module> <scope> <file>`, `generated <path>`, `jdk <home>`, `root <directory>`,
+    * `text-exclude <glob>` and `text <rule index> <field> <value>` lines.
     */
   def read(path: Path): Either[String, Manifest] =
     Files.readAllLines(path).asScala.toVector.zipWithIndex.filter(_._1.nonEmpty)
@@ -51,6 +51,10 @@ object Manifest {
                 scopeOf(path, index, scope).map {
                   parsed => current.copy(sources = current.sources :+ Output(module, parsed, Path.of(location)))
                 }
+              case List("product", module, scope, location) =>
+                scopeOf(path, index, scope).map {
+                  parsed => current.copy(products = current.products :+ Output(module, parsed, Path.of(location)))
+                }
               case List("resource", name, location) =>
                 Right(current.copy(resources = current.resources :+ Resource(name, Path.of(location))))
               case List("model", module, scope, location) =>
@@ -81,15 +85,16 @@ object Manifest {
 
 /** Compiled outputs of a build and the external classpath of each module needed to read them; the public API of
   * `libraries`, modules other builds depend on, is used by those builds. `options` holds the compiler options of each
-  * module, `sources` the source files written by hand, and `root` the directory of the build, which reported paths are
-  * relative to. `resources` are the files that register entry points, each with its path in the jar, and `resourced`
-  * the modules whose resources the build lists, which their outputs are not read for. `platforms` are the Scala.js and
-  * Scala Native twins of JVM modules, which compile the shared sources again. `texts` holds the fields of each
-  * repository text rule by its index, and `textExclusions` the files no text rule reads. `models` holds the files the
-  * javac plugin collected the model of the Java code of each module in, `generated` the directories and files the build
-  * generates sources in, `jdk` the home of the JDK the build targets, whose classes are read before the outputs, and
-  * `recorded` the modules the compiler plugin compiled in the audit mode, whose findings it kept beside their classes,
-  * and `dependencies` the modules of the build each module depends on, beside those its classpath holds the outputs of.
+  * module, `sources` the source files each compile read, `products` the class and TASTy files each compile recorded,
+  * which must exist, and `root` the directory of the build, which reported paths are relative to. `resources` are the
+  * files that register entry points, each with its path in the jar, and `resourced` the modules whose resources the
+  * build lists, which their outputs are not read for. `platforms` are the Scala.js and Scala Native twins of JVM
+  * modules, which compile the shared sources again. `texts` holds the fields of each repository text rule by its index,
+  * and `textExclusions` the files no text rule reads. `models` holds the files the javac plugin collected the model of
+  * the Java code of each module in, `generated` the directories and files the build generates sources in, `jdk` the
+  * home of the JDK the build targets, whose classes are read before the outputs, and `recorded` the modules the
+  * compiler plugin compiled in the audit mode, whose findings it kept beside their classes, and `dependencies` the
+  * modules of the build each module depends on, beside those its classpath holds the outputs of.
   */
 case class Manifest(
     outputs: Vector[Output],
@@ -107,7 +112,8 @@ case class Manifest(
     recorded: Set[String] = Set.empty,
     resources: Vector[Resource] = Vector.empty,
     resourced: Set[String] = Set.empty,
-    dependencies: Map[String, Set[String]] = Map.empty
+    dependencies: Map[String, Set[String]] = Map.empty,
+    products: Vector[Output] = Vector.empty
 ) {
 
   /** The modules each module depends on: those whose outputs its classpath holds, and those the build names. */

@@ -1,0 +1,3 @@
+# a project that sets its sources aside, skips a scope or compiles a unit that defines nothing is not refused, and the unit is not listed
+> bonsaiAnalyse
+> checkSources

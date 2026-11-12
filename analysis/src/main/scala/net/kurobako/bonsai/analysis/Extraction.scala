@@ -149,20 +149,12 @@ object Extraction {
     // come first and the shared classes resolve to their copies.
     val (twins, primary) = manifest.outputs.partition(output => manifest.platforms(output.module))
     val listed           = (primary ++ twins).map(output => output -> Outputs.files(output.path))
-    // Test support compiles its main sources in the test scope, so one scope can hold an empty output beside a full one.
-    val sourced  = manifest.sources.map(source => (source.module, source.scope)).toSet
-    val compiled = listed.collect {
-      case (output, files) if files.exists(compiledFile(_)) =>
-        (output.module, output.scope)
-    }.toSet
-    val uncompiled = (sourced -- compiled).filter(listed.map((output, _) =>
-      (output.module, output.scope)
-    ).toSet).toVector
-      .map((module, scope) =>
-        s"$module has ${scope.id} sources but no classes; a failed compile can leave them empty and a cached compile " +
-          "does not restore them, so run clean and compile again"
-      )
-      .sorted
+    val uncompiled       = manifest.products.filterNot(product => Files.exists(product.path)).groupBy(product =>
+      (product.module, product.scope)
+    ).toVector.map { case ((module, scope), missing) =>
+      s"$module has ${scope.id} classes the compile recorded but the disk lacks, such as ${missing.head.path}; a " +
+        "failed compile can leave them empty and a cached compile does not restore them, so run clean and compile again"
+    }.sorted
     val shared = listed.collect {
       case (output, files) if !manifest.platforms(output.module) => files.map(output.path.relativize(_))
     }.flatten.toSet

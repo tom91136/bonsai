@@ -61,34 +61,33 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
-  test("sources without classes fail rather than read as a clean build") {
+  test("a product the compile recorded that is missing from the disk fails rather than reads as a clean build") {
     Scratch.using("bonsai-") { directory =>
-      val classes                       = Files.createDirectories(directory.resolve("classes"))
-      val source                        = Files.writeString(directory.resolve("A.scala"), "class A")
-      def read(sources: Vector[Output]) = Extraction.read(
+      val classes = Files.createDirectories(directory.resolve("classes"))
+      val source  = Files.writeString(directory.resolve("A.scala"), "class A")
+      val product = classes.resolve("A.class")
+      def read(sources: Vector[Output], products: Vector[Output]) = Extraction.read(
         Manifest(
           Vector(Output("m", Output.Scope.Main, classes)),
           classpaths,
           Set.empty,
           sources = sources,
+          products = products,
           jdk = targetJdk
         )
       )
-      assert(read(Vector(Output("m", Output.Scope.Main, source))).left.exists(_.exists(_.contains("no classes"))))
-      assert(read(Vector.empty).isRight)
-      assert(read(Vector(Output("m", Output.Scope.Test, source))).isRight)
-      val full = Files.createDirectories(directory.resolve("full"))
-      Files.writeString(full.resolve("A.class"), ""): Unit
-      val outputs = Vector(Output("m", Output.Scope.Main, classes), Output("m", Output.Scope.Main, full))
-      assert(Extraction.read(
-        Manifest(
-          outputs,
-          classpaths,
-          Set.empty,
-          sources = Vector(Output("m", Output.Scope.Main, source)),
-          jdk = targetJdk
-        )
-      ).left.forall(!_.exists(_.contains("no classes"))))
+      val sourced = Vector(Output("m", Output.Scope.Main, source))
+      val missing = read(sourced, Vector(Output("m", Output.Scope.Main, product)))
+      assert(missing.left.exists(_.exists(error =>
+        error.startsWith("m has main classes") && error.contains("A.class")
+      )))
+      assert(read(sourced, Vector.empty).left.forall(!_.exists(_.contains("recorded"))))
+      assert(read(Vector.empty, Vector.empty).left.forall(!_.exists(_.contains("recorded"))))
+      Files.writeString(product, ""): Unit
+      assert(read(
+        sourced,
+        Vector(Output("m", Output.Scope.Main, product))
+      ).left.forall(!_.exists(_.contains("recorded"))))
     }
   }
 

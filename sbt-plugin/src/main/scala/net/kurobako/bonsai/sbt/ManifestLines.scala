@@ -17,6 +17,10 @@ object ManifestLines {
   def sources(project: String, scope: String, files: Seq[String]): Seq[String] =
     files.map(file => s"source\t$project\t$scope\t$file")
 
+  /** The lines naming the files the compile of a scope recorded as its products. */
+  def products(project: String, scope: String, files: Seq[String]): Seq[String] =
+    files.map(file => s"product\t$project\t$scope\t$file")
+
   /** The lines naming the files among `files`, the resources of a build, that register entry points, each with its path
     * in the jar: below the nearest of `directories` that holds it, or by its name where none does.
     */

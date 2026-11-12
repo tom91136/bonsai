@@ -453,6 +453,7 @@ object BonsaiPlugin extends AutoPlugin {
       library: Boolean,
       required: Seq[String],
       sources: Seq[String],
+      products: Seq[String],
       managed: Seq[String],
       managedDirectories: Seq[String],
       resources: Seq[String]
@@ -538,10 +539,11 @@ object BonsaiPlugin extends AutoPlugin {
     else Def.task {
       skipped.foreach(streams.value.log.info(_))
       val entries = Def.task {
-        val _     = (compile.value, resources.value)
-        val id    = thisProject.value.id
-        val name  = configuration.value.name
-        val scope = ManifestLines.scope(fixtures, id, testNames(name))
+        val (compiled, products) = Compat.compiled.value
+        val _                    = resources.value
+        val id                   = thisProject.value.id
+        val name                 = configuration.value.name
+        val scope                = ManifestLines.scope(fixtures, id, testNames(name))
         Analysed(
           id,
           name,
@@ -550,7 +552,8 @@ object BonsaiPlugin extends AutoPlugin {
           bonsaiLibrary.value,
           Classpaths.interSort(thisProjectRef.value, configuration.value, settingsData.value, buildDependencies.value)
             .map(_._1.project),
-          unmanagedSources.value.map(_.toString),
+          compiled,
+          products,
           managedSources.value.map(_.toString),
           managedSourceDirectories.value.map(_.toString),
           ManifestLines.resources(resources.value.map(_.toString), resourceDirectories.value.map(_.toString))
@@ -600,6 +603,7 @@ object BonsaiPlugin extends AutoPlugin {
       }.all(ScopeFilter(inProjects((if (jvm.nonEmpty) jvm else enabled)*), inConfigurations(Compile))).value.flatten
       // Every platform's sources, so copies between the directories of a cross-built project show.
       val sources   = kept.flatMap(entry => ManifestLines.sources(entry.project, entry.scope, entry.sources))
+      val products  = kept.flatMap(entry => ManifestLines.products(entry.project, entry.scope, entry.products))
       val resourced = entries.flatMap(_.resources).distinct ++ ManifestLines.resourced(entries.map(_.project))
       val generated =
         ManifestLines.generated(kept.flatMap(_.managedDirectories).distinct, kept.flatMap(_.managed).distinct)
@@ -611,7 +615,8 @@ object BonsaiPlugin extends AutoPlugin {
       IO.write(
         manifest,
         ManifestLines.render(
-          outputs ++ platform ++ jdk ++ classpath ++ depends ++ compilerOptions ++ sources ++ resourced ++ generated ++
+          outputs ++ platform ++ jdk ++ classpath ++ depends ++ compilerOptions ++ sources ++ products ++ resourced ++
+            generated ++
             text,
           (ThisBuild / baseDirectory).value
         )

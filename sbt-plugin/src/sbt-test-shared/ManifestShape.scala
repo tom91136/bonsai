@@ -17,6 +17,7 @@ object ManifestShape {
           if (entry.startsWith(base)) Nil else Seq(s"classpath\t$project\t${last(entry)}")
         case "source" :: project :: scope :: source :: Nil =>
           Seq(s"source\t$project\t$scope\t${source.stripPrefix(base + "/")}")
+        case "product" :: project :: scope :: product :: Nil => Seq(s"product\t$project\t$scope\t${last(product)}")
         case "root" :: directory :: Nil =>
           assert(new File(directory).getCanonicalPath == base, s"root $directory is not $base")
           Seq("root")
