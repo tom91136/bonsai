@@ -119,7 +119,7 @@ case class Manifest(
   /** The modules each module depends on: those whose outputs its classpath holds, and those the build names. */
   def requires: Map[String, Set[String]] = {
     val owners = outputs.map(output => output.path -> output.module).toMap
-    (classpathModules ++ dependencies.keySet).map { module =>
+    (classpath.keySet.map(_._1) ++ dependencies.keySet).map { module =>
       module ->
         (classpathOf(Seq(module)).flatMap(owners.get).toSet ++
           dependencies.getOrElse(module, Set.empty)).excl(module)
@@ -144,8 +144,14 @@ case class Manifest(
 
   def relative(path: Path): Path = root.filter(path.startsWith(_)).fold(path)(_.relativize(path))
 
-  /** The modules that have a classpath. */
-  def classpathModules: Set[String] = classpath.keySet.map(_._1)
+  /** The compiles, each a scope of a module, that have outputs. */
+  def parts: Vector[Output.Part] = outputs.map(_.part).distinct
+
+  /** The compiles of the modules that have a classpath but no outputs, which are not read. */
+  def unbuilt: Set[Output.Part] = {
+    val built = outputs.map(_.module).toSet
+    classpath.keySet.filterNot(part => built(part._1))
+  }
 
   /** The entries of the classpaths of the scopes of `modules`, in their order, each once. */
   def classpathOf(modules: Seq[String]): Vector[Path] =

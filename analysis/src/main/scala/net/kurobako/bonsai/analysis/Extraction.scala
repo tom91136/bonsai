@@ -261,19 +261,16 @@ object Extraction {
       ).allErrors.map(_.message).distinct
       // The compiler resolves a class once per run, so the run reads the classpaths of the modules in turn, the JVM
       // modules' first, and a class several platforms' copies of a library hold resolves to the first copy.
-      val outputModules = manifest.outputs.map(_.module).toSet
-      val ordered       = (primary ++ twins).map(_.module).distinct ++ manifest.classpathModules.toVector.sorted
-      val requires      = manifest.requires
+      val requires                                             = manifest.requires
+      val readings                                             = Readings(manifest)
       @tailrec def required(modules: Set[String]): Set[String] = {
         val next = modules ++ modules.flatMap(requires.getOrElse(_, Set.empty))
         if (next == modules) modules else required(next)
       }
-      def behindOf(run: Set[Output], unbuilt: Set[String]) = {
-        val members = run.map(_.module) ++ unbuilt
-        val needed  = required(run.map(_.module))
-        val beside  = primary.filter(output => needed(output.module) && !run(output)).map(_.path)
-        (primary.filter(run).map(_.path) ++ beside).distinct ++
-          Classpath.readable(manifest.classpathOf(ordered.filter(members)))
+      def behindOf(run: Set[Output], unbuilt: Set[Output.Part]) = {
+        val needed = required(run.map(_.module))
+        val beside = primary.filter(output => needed(output.module) && !run(output)).map(_.path)
+        (primary.filter(run).map(_.path) ++ beside).distinct ++ readings.of(run.map(_.part) ++ unbuilt)
       }
       val linking    = Some((graph: Graph) => Reach.link(manifest, JavaConversion.merge(graph, java), world))
       val everything = manifest.outputs.toSet
@@ -293,7 +290,7 @@ object Extraction {
             _,
             Vector.empty
           ))
-          val classpath = Classpath.unified(ahead ++ manifest.classpathOf(Seq(twin.module))) ++ behind
+          val classpath = readings.twin(twin.module, ahead, behind)
           val copies    = collector(Vector.empty, Set.empty, None)
           val own       = collector(Vector.empty, Set.empty, linking)
           val found     = reading(copies, twin.replaced, classpath) ++ reading(own, twin.own, classpath)
@@ -303,7 +300,7 @@ object Extraction {
         }
       }
       val leading    = manifest.outputs.filterNot(separate).toSet
-      val behind     = behindOf(leading, manifest.classpathModules.diff(outputModules))
+      val behind     = behindOf(leading, manifest.unbuilt)
       val phaseTwins = twinning(leading, phase, behind)
       val groupRuns  = apart.map { group =>
         val own    = collector(Vector.empty, Set.empty, linking, everything -- group, deferred = true)

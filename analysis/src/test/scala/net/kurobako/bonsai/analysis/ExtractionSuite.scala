@@ -520,15 +520,15 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
-  test("eviction keeps the newest version of an artifact where its first copy was") {
+  test("shadowing keeps the first version of an artifact") {
     val older  = Path.of("/cache/org/example/tool/1.9.0/tool-1.9.0.jar")
     val other  = Path.of("/cache/org/example/other/2.0.0/other-2.0.0.jar")
     val newest = Path.of("/cache/org/example/tool/1.10.0/tool-1.10.0.jar")
     val output = Path.of("/work/classes")
-    assertEquals(Classpath.evicted(Vector(older, other, newest, output)), Vector(newest, other, output))
+    assertEquals(Classpath.shadowed(Vector(older, other, newest, output)), Vector(older, other, output))
   }
 
-  test("eviction identifies a jar outside a repository layout by its manifest and unversioned name") {
+  test("shadowing identifies a jar outside a repository layout by its manifest and unversioned name") {
     Scratch.using("bonsai-") { directory =>
       def jar(path: String, version: String) = {
         val file = directory.resolve(path)
@@ -538,8 +538,12 @@ class ExtractionSuite extends AnalysisSuite {
       val boot  = jar("boot/scala-3.8.4/lib/scala-library.jar", "3.8.4")
       val rules = jar("cache/org/scala-lang/scala-library/3.9.0/scala-library-3.9.0.jar", "3.9.0")
       val rest  = jar("cache/org/scala-lang/scala-library/3.10.0/scala-library-3.10.0.jar", "3.10.0")
-      for order <- Seq(Vector(boot, rules, rest), Vector(rest, boot, rules), Vector(rules, rest, boot))
-      do assertEquals(Classpath.evicted(order), Vector(rest))
+      for (order, first) <- Seq(
+          Vector(boot, rules, rest) -> boot,
+          Vector(rest, boot, rules) -> rest,
+          Vector(rules, rest, boot) -> rules
+        )
+      do assertEquals(Classpath.shadowed(order), Vector(first))
     }
   }
 

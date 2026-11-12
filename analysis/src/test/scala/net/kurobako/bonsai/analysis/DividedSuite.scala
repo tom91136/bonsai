@@ -824,7 +824,7 @@ class DividedSuite extends AnalysisSuite {
     }
   }
 
-  test("two versions of one artifact are read as the newest alone") {
+  test("unrelated modules on two versions of one artifact are read apart") {
     Scratch.using("bonsai-") { directory =>
       val whole = libraries(
         directory,
@@ -835,11 +835,11 @@ class DividedSuite extends AnalysisSuite {
       )
       val result = reads(whole)
       assert(Seq("user.Users", "tool.Tools").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
-      assertEquals(groups(whole, Set("lib.implicits")), 1)
+      assertEquals(groups(whole, Set("lib.implicits")), 2)
     }
   }
 
-  test("two versions of one artifact on a module are read as the newest alone") {
+  test("two versions of one artifact on a module are read as the first alone") {
     Scratch.using("bonsai-") { directory =>
       val newer = library(directory, "lib", "3.0", objectLibrary)
       val older = library(directory, "lib", "2.0", packageLibrary)
@@ -854,6 +854,137 @@ class DividedSuite extends AnalysisSuite {
         older
       )
       assert(reads(whole).graph.nodes.contains("user.Users"))
+    }
+  }
+
+  private def versioned(directory: Path, module: String, scope: Output.Scope, code: String, jar: Path): Output =
+    Output(
+      module,
+      scope,
+      compile(directory.resolve(s"$module-${scope.id}"), Seq(s"$module.scala" -> code), Vector(jar))
+    )
+
+  test("modules on two versions of a library with no clash are read apart, each against its own") {
+    Scratch.using("bonsai-") { directory =>
+      val one   = library(directory, "dep", "1.0", "package dep\nobject Dep { def old: Int = 1 }")
+      val two   = library(directory, "dep", "2.0", "package dep\nobject Dep { def fresh: Int = 2 }")
+      val first =
+        versioned(directory, "first", Output.Scope.Main, "package a\nobject First { def go: Int = dep.Dep.old }", one)
+      val other =
+        versioned(directory, "other", Output.Scope.Main, "package b\nobject Other { def go: Int = dep.Dep.fresh }", two)
+      val whole = Manifest(
+        Vector(first, other),
+        scoped(Map("first" -> (classpath :+ one), "other" -> (classpath :+ two))),
+        Set.empty,
+        jdk = targetJdk
+      )
+      assertEquals(groups(whole), 2)
+      val result = reads(whole)
+      assert(Seq("a.First", "b.Other").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
+    }
+  }
+
+  test("the main and test scopes of a module resolving different versions of a library are read apart") {
+    Scratch.using("bonsai-") { directory =>
+      val one  = library(directory, "dep", "1.0", "package dep\nobject Dep { def old: Int = 1 }")
+      val two  = library(directory, "dep", "2.0", "package dep\nobject Dep { def fresh: Int = 2 }")
+      val main =
+        versioned(directory, "m", Output.Scope.Main, "package a\nobject Main { def go: Int = dep.Dep.old }", one)
+      val test =
+        versioned(directory, "m", Output.Scope.Test, "package b\nobject Spec { def go: Int = dep.Dep.fresh }", two)
+      val whole = Manifest(
+        Vector(main, test),
+        Map(("m", Output.Scope.Main) -> (classpath :+ one), ("m", Output.Scope.Test) -> (classpath :+ two)),
+        Set.empty,
+        jdk = targetJdk
+      )
+      assertEquals(groups(whole), 2)
+      val result = reads(whole)
+      assert(Seq("a.Main", "b.Spec").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
+    }
+  }
+
+  test("modules on one version of a library are read in one run") {
+    Scratch.using("bonsai-") { directory =>
+      val one   = library(directory, "dep", "1.0", "package dep\nobject Dep { def old: Int = 1 }")
+      val first =
+        versioned(directory, "first", Output.Scope.Main, "package a\nobject First { def go: Int = dep.Dep.old }", one)
+      val other =
+        versioned(directory, "other", Output.Scope.Main, "package b\nobject Other { def go: Int = dep.Dep.old }", one)
+      val whole = Manifest(
+        Vector(first, other),
+        scoped(Map("first" -> (classpath :+ one), "other" -> (classpath :+ one))),
+        Set.empty,
+        jdk = targetJdk
+      )
+      assertEquals(groups(whole), 1)
+    }
+  }
+
+  test("platform twins of a class and of a package that share their sources and no read holds both are read together") {
+    Scratch.using("bonsai-") { directory =>
+      val shared = Seq("Peer.scala" -> "package porcupine\nobject Peer { def go: Int = 1 }")
+      val native = compile(
+        directory.resolve("coreNative"),
+        shared :+ ("Binding.scala" -> "package porcupine\nobject sqlite3 { def open: Int = 2 }"),
+        Vector.empty
+      )
+      val js = compile(
+        directory.resolve("coreJs"),
+        shared :+ ("Facade.scala" -> "package porcupine.sqlite3\nclass Facade { def open: Int = 3 }"),
+        Vector.empty
+      )
+      val core  = compile(directory.resolve("core"), shared, Vector.empty)
+      val whole = Manifest(
+        Vector(
+          Output("core", Output.Scope.Main, core),
+          Output("coreJs", Output.Scope.Main, js),
+          Output("coreNative", Output.Scope.Main, native)
+        ),
+        scoped(Map("core" -> classpath, "coreJs" -> classpath, "coreNative" -> classpath)),
+        Set.empty,
+        platforms = Set("coreJs", "coreNative"),
+        jdk = targetJdk
+      )
+      assertEquals(groups(whole), 1)
+    }
+  }
+
+  test("a platform twin on another version of a library than its peers reads against its own") {
+    Scratch.using("bonsai-") { directory =>
+      val objects  = library(directory, "lib", "3.0", objectLibrary)
+      val packaged = library(directory, "lib", "2.0", packageLibrary)
+      val peer     = "Peer.scala" -> "package peer\nobject Peer { def go: Int = 1 }"
+      val app      = compile(
+        directory.resolve("app"),
+        Seq(peer, "App.scala" -> "package user\nobject App { def one: Int = lib.implicits.one }"),
+        Vector(objects)
+      )
+      val appJs = compile(
+        directory.resolve("appJs"),
+        Seq(peer, "Js.scala" -> "package user\nobject Js { def two: Int = new lib.implicits.Tool().two }"),
+        Vector(packaged)
+      )
+      val other = versioned(
+        directory,
+        "other",
+        Output.Scope.Main,
+        "package o\nobject Other { def one: Int = lib.implicits.one }",
+        objects
+      )
+      val whole = Manifest(
+        Vector(Output("app", Output.Scope.Main, app), Output("appJs", Output.Scope.Main, appJs), other),
+        scoped(Map(
+          "app"   -> (classpath :+ objects),
+          "appJs" -> (classpath :+ packaged),
+          "other" -> (classpath :+ objects)
+        )),
+        Set.empty,
+        platforms = Set("appJs"),
+        jdk = targetJdk
+      )
+      val result = reads(whole)
+      assert(Seq("user.App", "o.Other").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
     }
   }
 

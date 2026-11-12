@@ -9,21 +9,21 @@ import scala.util.Using
 /** The artifacts a classpath names. */
 private[analysis] object Classpath {
 
-  private given Ordering[Vector[BigInt]] = Ordering.Implicits.seqOrdering[Vector, BigInt]
-
-  /** Keeps the newest version of each artifact, at the position its first copy held. */
-  def evicted(classpath: Vector[Path]): Vector[Path] = {
+  /** Keeps the first version of each artifact, at the positions its copies held. */
+  def shadowed(classpath: Vector[Path]): Vector[Path] = {
     val versioned = classpath.flatMap(path => artifact(path).map(path -> _)).toMap
-    val newest    = versioned.groupMapReduce(_._2._1)(_._2._2)(Ordering[Vector[BigInt]].max)
-    val copies    = classpath.filter(versioned.contains).groupBy(path => versioned(path)._1)
-    val winners   =
-      copies.map((identity, paths) => identity -> paths.filter(path => versioned(path)._2 == newest(identity)))
-    classpath.flatMap(path =>
-      versioned.get(path) match {
-        case None                => Vector(path)
-        case Some((identity, _)) => if (copies(identity).head == path) winners(identity) else Vector.empty
-      }
-    )
+    val first     = classpath.flatMap(versioned.get(_)).foldLeft(Map.empty[String, Vector[BigInt]]) {
+      case (seen, (identity, version)) => seen.updatedWith(identity)(_.orElse(Some(version)))
+    }
+    classpath.filter(path => versioned.get(path).forall((identity, version) => first(identity) == version))
+  }
+
+  /** The version of each artifact of every classpath in `classpaths`, the standard library aside, which every read
+    * replaces with the one the analysis runs on.
+    */
+  def versions(classpaths: Vector[Vector[Path]]): Vector[Map[String, Vector[BigInt]]] = {
+    val known = classpaths.flatten.distinct.filter(kind(_).isEmpty).flatMap(path => artifact(path).map(path -> _)).toMap
+    classpaths.map(_.flatMap(path => known.get(path)).toMap)
   }
 
   /** `classpath` with the JVM standard library jars of the build, whatever their version, replaced by the one the
@@ -56,10 +56,10 @@ private[analysis] object Classpath {
 
   private val Markers = Seq("scala/Predef.class", "scala/runtime/stdLibPatches/Predef.class")
 
-  /** The entries of `classpath` the compiler reads: the newest of each artifact, against the standard library of the
-    * analysis.
+  /** The entries of `classpath` the compiler reads: the first version of each artifact, against the standard library of
+    * the analysis.
     */
-  def readable(classpath: Vector[Path]): Vector[Path] = unified(evicted(classpath))
+  def readable(classpath: Vector[Path]): Vector[Path] = unified(shadowed(classpath))
 
   private val StandardLibrary = """scala3?-library.*\.jar""".r
 

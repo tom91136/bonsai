@@ -31,8 +31,8 @@ private[analysis] object Clashes {
     def shown: String
   }
 
-  private case class Owned(module: String) extends Holder {
-    def shown: String = s"module $module"
+  private case class Owned(part: Output.Part) extends Holder {
+    def shown: String = s"module ${label(part)}"
   }
 
   private case class Library(path: Path) extends Holder {
@@ -93,21 +93,23 @@ private[analysis] object Clashes {
   private def classNamed(name: String): Boolean =
     name.substring(name.lastIndexOf('.') + 1).forall(Character.isJavaIdentifierPart(_))
 
-  /** The sets of modules to read in runs of their own, the first being the bulk of the build: where a class of one
-    * module or library is a package of another, or a class of one module is a class of another that is not its platform
-    * twin, the smaller of the two sides, the modules that hold or use it with those that depend on them and the
-    * platform twins that share classes with them, is read apart. `known` names the clashes the compiler has reported.
-    * Fails naming the clash where a module, or a twin and its peers, needs both sides of a class and a package.
-    * `because` names each clash a run was set apart for, as the failure would.
+  /** The sets of compiles, each a scope of a module, to read in runs of their own, the first being the bulk of the
+    * build. Compiles whose classpaths hold different versions of an artifact are read apart, as no read can hold both,
+    * except platform twins and the modules they share classes with, which are read together. Within these, where a
+    * class of one compile or library is a package of another, or a class of one compile is a class of another that is
+    * not its platform twin, the smaller of the two sides, the compiles that hold or use it with those that depend on
+    * them and the platform twins that share classes with them, is read apart. `known` names the clashes the compiler
+    * has reported. Fails naming the clash where a compile, or a twin and its peers, needs both sides of a class and a
+    * package. `because` names each version and clash a run was set apart for, as the failure would.
     */
   def runs(
       manifest: Manifest,
       outputs: Vector[(Output, Vector[Path])],
       known: Set[String]
   ): Either[Vector[String], Divided] =
-    modules(manifest, outputs, known).map((groups, because) =>
+    parts(manifest, outputs, known).map((groups, because) =>
       Divided(
-        groups.map(group => outputs.collect { case (output, _) if group(output.module) => output }.toSet),
+        groups.map(group => outputs.collect { case (output, _) if group(output.part) => output }.toSet),
         because
       )
     )
@@ -116,22 +118,76 @@ private[analysis] object Clashes {
 
   type Division = (Manifest, Vector[(Output, Vector[Path])], Set[String]) => Either[Vector[String], Divided]
 
-  private def modules(
+  private given Ordering[Output.Part] = Ordering.by(part => (part._1, part._2.ordinal))
+
+  private def label(part: Output.Part): String = if (part._2 == Output.Scope.Main) part._1 else s"${part._1} tests"
+
+  private def named(identity: String): String = identity.split("[/:]").last
+
+  private type Versions = Map[String, Set[Vector[BigInt]]]
+
+  /** The compiles in groups whose classpaths hold one version of each artifact, the compiles in `tied` kept together
+    * and those without outputs, `fixed`, in the first, which the compiles that agree with the most others join first.
+    */
+  private def apartByVersion(
+      readings: Readings,
+      everything: Set[Output.Part],
+      fixed: Set[Output.Part],
+      tied: Map[Output.Part, Set[Output.Part]]
+  ): (Vector[Set[Output.Part]], Vector[String]) = {
+    val members = everything.toVector.sorted
+    val perPart = members.zip(Classpath.versions(members.map(part => readings.of(Set(part))))).toMap
+    def versionsOf(parts: Set[Output.Part]): Versions =
+      parts.toVector.flatMap(perPart(_).toVector).groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap
+    val nodes = Option.when(fixed.nonEmpty)(fixed).toVector ++
+      members.filterNot(fixed).map(part => tied.getOrElse(part, Set.empty) + part).distinct
+    val seen    = nodes.map(versionsOf(_))
+    val holders = seen.zipWithIndex.flatMap((versions, node) =>
+      versions.toVector.flatMap((identity, all) => all.toVector.map(version => (identity, version, node)))
+    ).groupMap(_._1)(entry => entry._2 -> entry._3).view.mapValues(_.groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap)
+      .toMap
+    val rivals = seen.zipWithIndex.map((versions, node) =>
+      versions.toVector.flatMap((identity, all) =>
+        holders(identity).collect { case (version, others) if all != Set(version) => others }.flatten
+      ).toSet - node
+    )
+    val first = if (fixed.nonEmpty) Vector(0) else Vector.empty
+    val order = nodes.indices.drop(first.size).sortBy(node => (rivals(node).size, nodes(node).min))
+    val runs  = order.foldLeft(first.map(_ -> 0).toMap) { (runs, node) =>
+      val taken = rivals(node).flatMap(runs.get)
+      runs.updated(node, Iterator.from(0).find(!taken(_)).getOrElse(0))
+    }
+    val groups = runs.toVector.groupMap(_._2)(entry => nodes(entry._1)).toVector.sortBy(_._1).map(_._2.flatten.toSet)
+    val across =
+      groups.flatMap(group => versionsOf(group).toVector).groupMap(_._1)(_._2).view.mapValues(_.flatten.toSet)
+    val because = across.toVector.filter(_._2.size > 1).sortBy(_._1).map { (identity, all) =>
+      val shown = all.toVector.sorted(using Ordering.Implicits.seqOrdering[Vector, BigInt]).map(_.mkString("."))
+      s"${named(identity)} is on versions ${shown.mkString(" and ")}"
+    }
+    (groups, because)
+  }
+
+  private def parts(
       manifest: Manifest,
       outputs: Vector[(Output, Vector[Path])],
       known: Set[String]
-  ): Either[Vector[String], (Vector[Set[String]], Vector[String])] = {
-    val holdings   = outputs.groupMapReduce(_._1.module)((output, _) => held(output.path))(_ ++ _)
-    val fixed      = manifest.classpathModules -- holdings.keySet
+  ): Either[Vector[String], (Vector[Set[Output.Part]], Vector[String])] = {
+    val readings   = Readings(manifest)
+    val holdings   = outputs.groupMapReduce(_._1.part)((output, _) => held(output.path))(_ ++ _)
+    val fixed      = manifest.unbuilt
     val everything = holdings.keySet ++ fixed
     val owners     = outputs.map((output, _) => output.path -> output.module).toMap
+    val jvm        = outputs.view.map(_._1.module).filterNot(manifest.platforms).toSet
     val libraries  = mutable.Map.empty[Path, Holding]
-    lazy val tasty = outputs.groupMapReduce(_._1.module)((output, files) =>
+    lazy val tasty = outputs.groupMapReduce(_._1.part)((output, files) =>
       files.map(output.path.relativize(_)).filter(_.getFileName.toString.endsWith(".tasty")).toSet
     )(_ ++ _)
-    lazy val sharing = tasty.toVector.flatMap((module, paths) => paths.toVector.map(_ -> module)).groupMap(_._1)(_._2)
-      .values.map(_.toSet).filter(_.exists(manifest.platforms)).toVector
+    lazy val sharing = tasty.toVector.flatMap((part, paths) => paths.toVector.map(_ -> part)).groupMap(_._1)(_._2)
+      .values.map(_.toSet).filter(_.exists(part => manifest.platforms(part._1))).toVector
     lazy val mates = sharing.flatMap(group => group.toVector.map(_ -> group)).groupMapReduce(_._1)(_._2)(_ ++ _)
+    lazy val peers = mutable.Map.empty[String, Set[String]]
+    def seeing(twin: String): Set[String] =
+      peers.getOrElseUpdate(twin, Twins.peers(manifest, jvm, twin).toSet + twin)
     def copies(modular: Vector[(Holder, Holding)]): Vector[Pair] = {
       val named = modular.flatMap((holder, contents) => contents.classes.filter(classNamed(_)).map(_ -> holder))
       named.groupMap(_._1)(_._2).toVector.filter(_._2.size > 1).flatMap { (name, holders) =>
@@ -141,76 +197,94 @@ private[analysis] object Clashes {
         }
       }.sortBy(pair => (pair.classed.shown, pair.against.shown, pair.name))
     }
-    def clashes(owned: Set[String], running: Set[String]): Vector[Pair] = {
-      val modular: Vector[(Holder, Holding)] =
-        owned.toVector.sorted.flatMap(module => holdings.get(module).map(Owned(module) -> _))
-      val names =
+    def clashes(owned: Set[Output.Part], running: Set[Output.Part]): Vector[Pair] = {
+      val parted                             = owned.toVector.sorted.flatMap(part => holdings.get(part).map(part -> _))
+      val modular: Vector[(Holder, Holding)] = parted.map((part, contents) => Owned(part) -> contents)
+      val names                              =
         (modular.flatMap(_._2.classes).toSet.intersect(modular.flatMap(_._2.packages).toSet) ++ known).toVector
-      val mixed =
+      def mixed(seen: Vector[(Holder, Holding)], jars: Vector[Path]): Vector[Pair] = {
+        jars.foreach(jar => libraries.getOrElseUpdate(jar, held(jar)))
+        val holders    = seen ++ jars.map(jar => Library(jar) -> libraries(jar))
+        val classed    = holders.flatMap((holder, contents) => names.filter(contents.classes).map(_ -> holder))
+        val packaged   = holders.flatMap((holder, contents) => names.filter(contents.packages).map(_ -> holder))
+        val packagedBy = packaged.groupMap(_._1)(_._2)
+        classed.flatMap((name, holder) => packagedBy.getOrElse(name, Vector.empty).map(Pair(holder, _, name)))
+      }
+      val mixes =
         if (names.isEmpty) Vector.empty
         else {
-          val jars = Classpath.readable(manifest.classpathOf(running.toVector.sorted)).filterNot(owners.contains)
-          jars.foreach(jar => libraries.getOrElseUpdate(jar, held(jar)))
-          val holders    = modular ++ jars.map(jar => Library(jar) -> libraries(jar))
-          val classed    = holders.flatMap((holder, contents) => names.filter(contents.classes).map(_ -> holder))
-          val packaged   = holders.flatMap((holder, contents) => names.filter(contents.packages).map(_ -> holder))
-          val packagedBy = packaged.groupMap(_._1)(_._2)
-          classed.flatMap((name, holder) => packagedBy.getOrElse(name, Vector.empty).map(Pair(holder, _, name)))
-            .sortBy(pair => (pair.classed.shown, pair.against.shown, pair.name))
+          val read  = readings.of(running)
+          val twins = running.view.map(_._1).filter(manifest.platforms).toVector.distinct.sorted
+          def seen(visible: String => Boolean) = parted.collect {
+            case (part, contents) if visible(part._1) => Owned(part) -> contents
+          }
+          mixed(seen(!manifest.platforms(_)), read.filterNot(owners.contains)) ++ twins.flatMap { twin =>
+            mixed(
+              seen(module => !manifest.platforms(module) || seeing(twin)(module)),
+              readings.twin(twin, Vector.empty, read).filterNot(owners.contains)
+            )
+          }
         }
-      mixed ++ copies(modular)
+      mixes.distinct.sortBy(pair => (pair.classed.shown, pair.against.shown, pair.name)) ++ copies(modular)
     }
-    val whole = clashes(holdings.keySet, everything)
-    if (whole.isEmpty) Right(Vector(everything) -> Vector.empty)
-    else {
-      val uses = everything.map(module => module -> manifest.requires.getOrElse(module, Set.empty)).toMap
-      def needs(module: String, seen: Set[String] = Set.empty): Set[String] =
-        uses(module).diff(seen).foldLeft(seen ++ uses(module))((all, next) => needs(next, all))
-      def visible(modules: Set[String]): Set[String] = modules ++ modules.flatMap(needs(_))
-      val needing = everything.toVector.flatMap(module => needs(module).map(_ -> module)).groupMap(_._1)(_._2)
-      val near    = everything.map(module =>
-        module -> (needing.getOrElse(module, Vector.empty).toSet ++ mates.getOrElse(module, Set.empty) + module)
-      ).toMap
-      @tailrec def following(modules: Set[String]): Set[String] = {
-        val next = modules.flatMap(near)
-        if (next.subsetOf(modules)) modules else following(modules ++ next)
-      }
-      def holding(holder: Holder, modules: Set[String]): Set[String] = holder match {
-        case Owned(module) => following(Set(module)) & modules
-        case Library(path) =>
-          following(modules.filter(module => manifest.classpathOf(Seq(module)).contains(path))) & modules
-      }
-      def movable(side: Set[String], modules: Set[String]): Boolean =
-        !side.exists(fixed) && (modules -- side).exists(holdings.contains)
-      def separable(clash: Pair, modules: Set[String]): Boolean = {
-        val classed = holding(clash.classed, modules)
-        val against = holding(clash.against, modules)
-        (classed & against).isEmpty && Vector(classed, against).exists(movable(_, modules))
-      }
-      val sizes  = outputs.groupMapReduce(_._1.module)(_._2.size)(_ + _)
-      val causes = mutable.LinkedHashSet.empty[String]
-      def divide(modules: Set[String]): Either[Vector[String], Vector[Set[String]]] =
-        clashes(visible(modules), modules).find(clash => !clash.copied || separable(clash, modules)) match {
-          case None        => Right(Vector(modules))
-          case Some(clash) =>
-            val classed  = holding(clash.classed, modules)
-            val packaged = holding(clash.against, modules)
-            val both     = classed & packaged
-            if (both.nonEmpty) Left(Vector(shown(clash, s", and ${both.toVector.sorted.mkString(", ")} need both")))
-            else
-              Vector(classed, packaged).filter(movable(_, modules)).minByOption(_.toVector.map(sizes).sum) match {
-                case None =>
-                  val stuck = (classed ++ packaged).toVector.sorted.mkString(", ")
-                  Left(Vector(shown(clash, s", and $stuck cannot be read apart")))
-                case Some(apart) =>
-                  causes += described(clash)
-                  for {
-                    rest  <- divide(modules -- apart)
-                    extra <- divide(apart)
-                  } yield rest ++ extra
-              }
-        }
-      divide(everything).map(_ -> causes.toVector)
+    val inside = everything.groupBy(_._1)
+    val uses   = everything.map { part =>
+      val modules = manifest.requires.getOrElse(part._1, Set.empty)
+      part ->
+        (modules.flatMap(inside.getOrElse(_, Set.empty)) ++
+          Option.when(part._2 == Output.Scope.Test)(part._1 -> Output.Scope.Main).filter(everything))
+    }.toMap
+    def needs(part: Output.Part, seen: Set[Output.Part] = Set.empty): Set[Output.Part] =
+      uses(part).diff(seen).foldLeft(seen ++ uses(part))((all, next) => needs(next, all))
+    def visible(members: Set[Output.Part]): Set[Output.Part] = members ++ members.flatMap(needs(_))
+    val needing = everything.toVector.flatMap(part => needs(part).map(_ -> part)).groupMap(_._1)(_._2)
+    val near    = everything.map(part =>
+      part -> (needing.getOrElse(part, Vector.empty).toSet ++ mates.getOrElse(part, Set.empty) + part)
+    ).toMap
+    @tailrec def following(members: Set[Output.Part]): Set[Output.Part] = {
+      val next = members.flatMap(near)
+      if (next.subsetOf(members)) members else following(members ++ next)
     }
+    def holding(holder: Holder, members: Set[Output.Part]): Set[Output.Part] = holder match {
+      case Owned(part)   => following(Set(part)) & members
+      case Library(path) =>
+        following(members.filter(part => manifest.classpath.getOrElse(part, Vector.empty).contains(path))) & members
+    }
+    def movable(side: Set[Output.Part], members: Set[Output.Part]): Boolean =
+      !side.exists(fixed) && (members -- side).exists(holdings.contains)
+    def separable(clash: Pair, members: Set[Output.Part]): Boolean = {
+      val classed = holding(clash.classed, members)
+      val against = holding(clash.against, members)
+      (classed & against).isEmpty && Vector(classed, against).exists(movable(_, members))
+    }
+    def listed(members: Set[Output.Part]) = members.toVector.sorted.map(label(_)).mkString(", ")
+    val sizes                             = outputs.groupMapReduce(_._1.part)(_._2.size)(_ + _)
+    val causes                            = mutable.LinkedHashSet.empty[String]
+    def divide(members: Set[Output.Part]): Either[Vector[String], Vector[Set[Output.Part]]] =
+      clashes(visible(members), members).find(clash => !clash.copied || separable(clash, members)) match {
+        case None        => Right(Vector(members))
+        case Some(clash) =>
+          val classed  = holding(clash.classed, members)
+          val packaged = holding(clash.against, members)
+          val both     = classed & packaged
+          if (both.nonEmpty) Left(Vector(shown(clash, s", and ${listed(both)} need both")))
+          else
+            Vector(classed, packaged).filter(movable(_, members)).minByOption(_.toVector.map(sizes).sum) match {
+              case None => Left(Vector(shown(clash, s", and ${listed(classed ++ packaged)} cannot be read apart")))
+              case Some(apart) =>
+                causes += described(clash)
+                for {
+                  rest  <- divide(members -- apart)
+                  extra <- divide(apart)
+                } yield rest ++ extra
+            }
+      }
+    val (versioned, differing) = apartByVersion(readings, everything, fixed, mates)
+    versioned.foldLeft[Either[Vector[String], Vector[Set[Output.Part]]]](Right(Vector.empty))((all, group) =>
+      for {
+        done <- all
+        next <- divide(group)
+      } yield done ++ next
+    ).map(_ -> (differing ++ causes))
   }
 }
