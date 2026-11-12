@@ -4,6 +4,7 @@ import net.kurobako.bonsai.analysis.CallGraph.*
 import net.kurobako.bonsai.analysis.ClassFiles.*
 import org.objectweb.asm.Opcodes
 import scala.collection.mutable
+import scala.reflect.NameTransformer
 
 private[analysis] object CallGraph {
 
@@ -50,7 +51,7 @@ private[analysis] object CallGraph {
   } yield reference
 
   private def classes(name: String, world: ClassWorld): Vector[ClassFile] = {
-    val parts = name.split('.').toVector
+    val parts = name.split('.').toVector.map(NameTransformer.encode)
     parts.indices.view.map { nested =>
       val (packages, types) = parts.splitAt(parts.size - nested - 1)
       val binary            = (packages :+ types.mkString("$")).mkString("/")

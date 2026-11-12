@@ -12,6 +12,7 @@ import dotty.tools.dotc.core.Types.PolyType
 import dotty.tools.dotc.core.Types.Type
 import net.kurobako.bonsai.java.*
 import net.kurobako.bonsai.lifting.*
+import scala.reflect.NameTransformer
 
 /** The key of a method as the javac plugin writes it: the qualified owner, the name and the erased JVM descriptor, so
   * that overloads do not collide and a Java caller and a Scala callee agree on a method.
@@ -81,8 +82,8 @@ private object Keys {
 
   private def binary(cls: Symbol)(using Context): String = {
     val owner = cls.owner
-    val name  = cls.name.toString
-    if (owner.is(Flags.Package)) { if (owner.isEffectiveRoot) name else s"${owner.fullName}.$name" }
+    val name  = NameTransformer.encode(cls.name.toString)
+    if (owner.is(Flags.Package)) { if (owner.isEffectiveRoot) name else s"${binary(owner)}.$name" }
     else if (owner.isClass) { if (owner.is(Flags.Module)) binary(owner) + name else s"${binary(owner)}$$$name" }
     else name
   }

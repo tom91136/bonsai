@@ -498,23 +498,33 @@ public class Cross {
 }
 """
 
+  private val symbolic = """package fixture;
+
+public class $bslash$amp$div {
+  public static class This {
+    public static void main(String[] args) { }
+  }
+}
+"""
+
   private lazy val built: Vector[Path] = {
     val directory = Scratch.directory("bonsai-call-graph-")
     val first     = Files.createDirectories(directory.resolve("java-first"))
     write(
       directory.resolve("src-first"),
       Seq(
-        "fixture/Mark.java"     -> mark,
-        "fixture/JBase.java"    -> base,
-        "fixture/Provider.java" -> provider,
-        "fixture/Api.java"      -> api,
-        "fixture/Shapes.java"   -> shapes,
-        "fixture/Hosted.java"   -> hosted,
-        "fixture/Hosting.java"  -> hosting
+        "fixture/Mark.java"            -> mark,
+        "fixture/JBase.java"           -> base,
+        "fixture/Provider.java"        -> provider,
+        "fixture/Api.java"             -> api,
+        "fixture/Shapes.java"          -> shapes,
+        "fixture/Hosted.java"          -> hosted,
+        "fixture/Hosting.java"         -> hosting,
+        "fixture/$bslash$amp$div.java" -> symbolic
       )
     )
     javac(
-      Seq("Mark", "JBase", "Provider", "Api", "Shapes", "Hosted", "Hosting").map(name =>
+      Seq("Mark", "JBase", "Provider", "Api", "Shapes", "Hosted", "Hosting", "$bslash$amp$div").map(name =>
         directory.resolve("src-first").resolve(s"fixture/$name.java")
       ),
       first,
@@ -536,8 +546,8 @@ public class Cross {
   private def jdk(name: String): Option[Array[Byte]] =
     Option(platform.getResourceAsStream(s"$name.class")).map(stream => Using.resource(stream)(_.readAllBytes()))
 
-  private def withWorld[A](absent: Set[String] = Set.empty)(body: ClassWorld => A): A =
-    ClassSource.of(built, classpath, None) match {
+  private def withWorld[A](absent: Set[String] = Set.empty, home: Option[Path] = None)(body: ClassWorld => A): A =
+    ClassSource.of(built, classpath, home) match {
       case Left(error)   => fail(error)
       case Right(source) =>
         Using.resource(source) { source =>
@@ -784,8 +794,10 @@ public class Cross {
     }
   }
 
-  private def rootsOf(roots: (String, Root.Kind)*): Set[Reference] =
-    withWorld() { world =>
+  private def rootsOf(roots: (String, Root.Kind)*): Set[Reference] = rootsIn(None, roots*)
+
+  private def rootsIn(home: Option[Path], roots: (String, Root.Kind)*): Set[Reference] =
+    withWorld(home = home) { world =>
       val nodes = roots.map { (name, _) =>
         name -> Node(name, "m", Output.Scope.Main, "f", 1, generated = false, exported = false, outer = None)
       }
@@ -797,6 +809,13 @@ public class Cross {
     assertEquals(rootsOf("fixture.Entry" -> Root.Kind.Main), Set(Reference("fixture/Entry", "main", main)))
     assertEquals(rootsOf("fixture.Launcher" -> Root.Kind.Main).map(_.name), Set("main"))
     assertEquals(rootsOf("fixture.Api" -> Root.Kind.Main), Set.empty[Reference])
+  }
+
+  test("a root in a class with a symbolic name enters the class its name is encoded to, read through the jdk") {
+    assertEquals(
+      rootsIn(targetJdk, "fixture.\\&/.This" -> Root.Kind.Main),
+      Set(Reference("fixture/$bslash$amp$div$This", "main", "([Ljava/lang/String;)V"))
+    )
   }
 
   test("a provided root enters the public constructor without arguments, the overrides and the provider method") {

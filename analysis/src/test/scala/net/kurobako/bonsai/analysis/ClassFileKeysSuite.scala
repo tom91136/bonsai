@@ -63,6 +63,17 @@ object Holder {
 }
 """
 
+  private val symbolic = """package fixture
+
+object \&/ {
+  case class This(aa: Int)
+}
+
+object Sym {
+  def take(t: \&/.This): Int = t.aa
+}
+"""
+
   private def capture(directory: Path, source: String): (Vector[tpd.DefDef], Context) = {
     val captured = mutable.ArrayBuffer.empty[(tpd.Tree, Context)]
     object Capture extends Phase {
@@ -150,6 +161,16 @@ object Holder {
         sharing,
         Set(Reference("fixture/Companion", "m", "(I)I"), Reference("fixture/Companion$", "m", "(I)I"))
       )
+    }
+  }
+
+  test("a parameter of a class in an object with a symbolic name is keyed by the class file name") {
+    Scratch.using("bonsai-class-keys-") { directory =>
+      val (methods, context) = capture(directory, symbolic)
+      given Context          = context
+      val key                = "fixture.Sym.take(Lfixture/$bslash$amp$div$This;)I"
+      assertEquals(methods.find(_.name.toString == "take").flatMap(method => Keys.of(method.symbol)), Some(key))
+      assert(keyed(directory).exists(_._2 == key))
     }
   }
 }
