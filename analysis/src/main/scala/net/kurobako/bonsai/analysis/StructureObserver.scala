@@ -65,30 +65,6 @@ private[analysis] object StructureObserver {
   // Traits the compiler gives case classes and objects, which say nothing of what they implement.
   private val Markers = Set("scala.Product", "scala.Equals", "java.io.Serializable")
 
-  private val ValueTypes = Set(
-    "java.lang.Boolean",
-    "java.lang.Byte",
-    "java.lang.Character",
-    "java.lang.Short",
-    "java.lang.Integer",
-    "java.lang.Long",
-    "java.lang.Float",
-    "java.lang.Double",
-    "scala.math.BigInt",
-    "scala.math.BigDecimal",
-    "java.math.BigInteger",
-    "java.math.BigDecimal",
-    "scala.collection.StringOps",
-    "scala.runtime.RichBoolean",
-    "scala.runtime.RichByte",
-    "scala.runtime.RichChar",
-    "scala.runtime.RichDouble",
-    "scala.runtime.RichFloat",
-    "scala.runtime.RichInt",
-    "scala.runtime.RichLong",
-    "scala.runtime.RichShort"
-  )
-
   // An object implementing a trait, as a type-class instance does, is more than a holder of functions.
   def implementing(cls: Symbol)(using Context): Boolean = cls.asClass.parentSyms.exists { parent =>
     val name = parent.fullName.toString
@@ -309,7 +285,8 @@ private[analysis] class StructureObserver(
       case widened if widened.hasSimpleKind =>
         val symbol = widened.typeSymbol
         val target = if (symbol.isAliasType && predefined(symbol.owner)) widened.dealias.typeSymbol else symbol
-        if (!unnamed(target) && !valueType(target) && !(target.isClass && structural(target))) record(target)
+        if (wrapping(target)) usedTypes(target.asClass.paramAccessors.head.info)(record)
+        else if (!unnamed(target) && !valueType(target) && !(target.isClass && structural(target))) record(target)
       case _ =>
     }
 
@@ -319,7 +296,7 @@ private[analysis] class StructureObserver(
   private def structural(symbol: Symbol)(using Context): Boolean =
     !symbol.isDefinedInCurrentRun &&
       (defn.isTupleClass(symbol) || defn.isFunctionClass(symbol) ||
-        symbol == defn.ArrayClass || symbol == Classes.required("scala.collection.ArrayOps") ||
+        symbol == defn.ArrayClass ||
         symbol.asClass.derivesFrom(defn.OptionClass) ||
         symbol.asClass.derivesFrom(Classes.required("scala.collection.IterableOnce")))
 
@@ -331,12 +308,23 @@ private[analysis] class StructureObserver(
 
   private def unnamed(symbol: Symbol)(using Context): Boolean =
     symbol.is(Flags.Package) ||
+      symbol.isClass && symbol.asClass.derivesFrom(defn.AnnotationClass) ||
       Set[Symbol](defn.AnyClass, defn.AnyValClass, defn.ObjectClass, defn.NothingClass, defn.NullClass, defn.UnitClass)
         .contains(symbol)
 
   private def valueType(symbol: Symbol)(using Context): Boolean =
     symbol == defn.StringClass || symbol == defn.StringContextClass || symbol == defn.StringContextModule.moduleClass ||
-      symbol.isPrimitiveValueClass || symbol.isClass && ValueTypes(qualifiedName(symbol))
+      symbol.isPrimitiveValueClass || symbol.isClass && (boxed(symbol) || immutableNumber(symbol))
+
+  private def boxed(symbol: Symbol)(using Context): Boolean = defn.ScalaBoxedClasses().contains(symbol)
+
+  private def immutableNumber(symbol: Symbol)(using Context): Boolean =
+    symbol.asClass.derivesFrom(Classes.required("java.lang.Number")) &&
+      symbol.asClass.derivesFrom(Classes.required("java.lang.Comparable"))
+
+  private def wrapping(symbol: Symbol)(using Context): Boolean =
+    symbol.isClass && !symbol.isDefinedInCurrentRun && !symbol.isPrimitiveValueClass && symbol != defn.AnyValClass &&
+      symbol.asClass.derivesFrom(defn.AnyValClass) && symbol.asClass.paramAccessors.nonEmpty
 
   /** Records an alias of `scope` that fills a type constructor with literal arguments. */
   def alias(symbol: Symbol, scope: Symbol, target: AppliedType)(using Context): Unit =

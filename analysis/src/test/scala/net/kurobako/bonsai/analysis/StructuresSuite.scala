@@ -909,4 +909,19 @@ class StructuresSuite extends AnalysisSuite {
     )
     assertEquals(satellites(found), Vector.empty)
   }
+
+  test("a group over repeated String parameters and wrapped numbers beside a group of a domain type is not split") {
+    val found = findings(Seq(
+      "Kinds.scala"   -> "case class Pixel(x: Int)",
+      "Windows.scala" ->
+        """object Windows {
+          |  def draw(pixel: Pixel): Pixel = repaint(pixel)
+          |  def repaint(pixel: Pixel): Pixel = Pixel(pixel.x + 1)
+          |  def isOS(name: String): Boolean = name.toLowerCase.startsWith("win") && isInProc("windows", "wsl")
+          |  @inline private def isInProc(parts: String*): Boolean =
+          |    parts.map(_.toLowerCase).exists(part => part.nonEmpty && 3.max(part.length) > 2 && BigInt(1) < BigInt(2))
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
 }
