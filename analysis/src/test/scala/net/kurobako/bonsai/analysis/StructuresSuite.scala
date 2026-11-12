@@ -924,4 +924,60 @@ class StructuresSuite extends AnalysisSuite {
     ))
     assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
   }
+
+  test("a group whose only type is an exception it throws, catches or rethrows beside a domain group is not split") {
+    val found = findings(Seq(
+      "Kinds.scala"   -> "case class Pixel(x: Int)",
+      "Parsing.scala" ->
+        """object Parsing {
+          |  def draw(pixel: Pixel): Pixel = repaint(pixel)
+          |  def repaint(pixel: Pixel): Pixel = Pixel(pixel.x + 1)
+          |  def parseNat(str: String, base: Int): Double = parseDigit(str, base)
+          |  def parseDigit(str: String, base: Int): Double =
+          |    try {
+          |      if (str.isEmpty) throw new IllegalArgumentException("empty")
+          |      java.lang.Long.parseLong(str, base).toDouble
+          |    } catch {
+          |      case _: NumberFormatException => new java.math.BigInteger(str, base).doubleValue()
+          |      case e: java.io.IOException   => throw e
+          |    }
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
+  }
+
+  test("a group that builds and returns its own exception class beside a domain group is still split") {
+    val found = findings(Seq(
+      "Kinds.scala"  -> "case class Pixel(x: Int)\ncase class Failure(message: String) extends Exception(message)",
+      "Checks.scala" ->
+        """object Checks {
+          |  def draw(pixel: Pixel): Pixel = repaint(pixel)
+          |  def repaint(pixel: Pixel): Pixel = Pixel(pixel.x + 1)
+          |  def failure(text: String): Failure = Failure(text)
+          |  def failures(texts: Vector[String]): Vector[Failure] = texts.map(failure)
+          |}""".stripMargin
+    ))
+    assertEquals(
+      of(found, Finding.Rule.DisjointObject),
+      Vector(
+        "object Checks holds 2 groups of members that never use each other and use different types " +
+          "({draw, repaint}, {failure, failures})"
+      )
+    )
+  }
+
+  test("a group that passes a caught exception on still counts its type") {
+    val found = findings(Seq(
+      "Kinds.scala"   -> "case class Pixel(x: Int)",
+      "Reports.scala" ->
+        """object Reports {
+          |  def draw(pixel: Pixel): Pixel = repaint(pixel)
+          |  def repaint(pixel: Pixel): Pixel = Pixel(pixel.x + 1)
+          |  def read(path: String): Option[String] = try Some(path.trim) catch { case e: java.io.IOException => report(e) }
+          |  def report(e: java.io.IOException): Option[String] = Option(e.getMessage)
+          |  def readAll(paths: Vector[String]): Vector[Option[String]] = paths.map(read)
+          |}""".stripMargin
+    ))
+    assertEquals(of(found, Finding.Rule.DisjointObject).size, 1)
+  }
 }

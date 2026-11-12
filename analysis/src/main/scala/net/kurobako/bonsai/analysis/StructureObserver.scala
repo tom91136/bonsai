@@ -250,7 +250,9 @@ private[analysis] class StructureObserver(
           tree match {
             case tpd.Select(qualifier, _) if qualifier.tpe.widen.typeSymbol.is(Flags.ModuleClass) =>
               qualifiers += qualifier
-            case _ => ()
+            case Thrown(thrown)                => qualifiers ++= created(thrown)
+            case tpd.CaseDef(pattern, _, body) => qualifiers ++= caught(pattern, body)
+            case _                             => ()
           }
           usedTypes(tree.tpe) { used =>
             uses += used
@@ -271,6 +273,42 @@ private[analysis] class StructureObserver(
             types.toSet
           )
       }
+  }
+
+  private object Thrown {
+    def unapply(tree: tpd.Tree)(using Context): Option[tpd.Tree] = tree match {
+      case tpd.Apply(function, List(thrown)) if function.symbol == defn.throwMethod => Some(thrown)
+      case _                                                                        => None
+    }
+  }
+
+  private def created(tree: tpd.Tree): List[tpd.Tree] = tree match {
+    case tpd.Apply(function, _)                => tree :: created(function)
+    case tpd.TypeApply(function, _)            => tree :: created(function)
+    case tpd.Select(qualifier @ tpd.New(_), _) => tree :: created(qualifier)
+    case tpd.Select(_, _)                      => List(tree)
+    case tpd.New(tpt)                          => List(tree, tpt)
+    case _                                     => Nil
+  }
+
+  private def caught(pattern: tpd.Tree, body: tpd.Tree)(using Context): List[tpd.Tree] = {
+    val (binding, test) = pattern match {
+      case tpd.Bind(_, inner) => (Some(pattern.symbol), inner)
+      case other              => (None, other)
+    }
+    test match {
+      case tpd.Typed(tpd.Ident(_), tpt) if tpt.tpe.derivesFrom(defn.ThrowableClass) =>
+        val rethrown = mutable.Set.empty[tpd.Tree]
+        body.foreachSubTree {
+          case Thrown(thrown) => rethrown += thrown
+          case _              => ()
+        }
+        val uses = binding.toList.flatMap(symbol =>
+          body.filterSubTrees(_.symbol == symbol)
+        )
+        if (uses.forall(rethrown)) pattern.filterSubTrees(_ => true) ++ uses else Nil
+      case _ => Nil
+    }
   }
 
   private def reached(tree: tpd.Tree, owner: Symbol)(using Context): Set[Symbol] = {
