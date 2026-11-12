@@ -365,6 +365,28 @@ class StructuresSuite extends AnalysisSuite {
     assertEquals(of(found, Finding.Rule.DisjointObject), Vector.empty)
   }
 
+  test("a group of only String and primitive types does not hold back two groups of different domain types") {
+    val found = findings(Seq(
+      "Kinds.scala" -> "case class Token(text: String)\ncase class Page(lines: Vector[String])",
+      "Util.scala"  ->
+        """object Util {
+          |  def width(text: String): Int        = text.length
+          |  def widths(texts: Vector[String])   = texts.map(width)
+          |  def parse(text: String): Token      = Token(text)
+          |  def parseAll(texts: Vector[String]) = texts.map(parse)
+          |  def render(page: Page): String      = page.lines.mkString
+          |  def renderAll(pages: Vector[Page])  = pages.map(render)
+          |}""".stripMargin
+    ))
+    assertEquals(
+      of(found, Finding.Rule.DisjointObject),
+      Vector(
+        "object Util holds 2 groups of members that never use each other and use different types " +
+          "({parse, parseAll}, {render, renderAll})"
+      )
+    )
+  }
+
   test("groups that share only a tuple of distinct domain types hold two designs") {
     val found = findings(Seq(
       "Kinds.scala" -> "case class Token(text: String)\ncase class Page(lines: Vector[String])",

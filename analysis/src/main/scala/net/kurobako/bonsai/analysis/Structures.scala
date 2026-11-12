@@ -270,9 +270,9 @@ object Structures {
       }
       val groups = declared.groupBy(member => component(member.name)).values.toVector.map { group =>
         (group.map(_.name).distinct.sorted, group.flatMap(_.types).toSet)
-      }.filter((names, _) => names.size >= MinimumGroup).sortBy(_._1.head)
+      }.filter((names, types) => names.size >= MinimumGroup && types.nonEmpty).sortBy(_._1.head)
       val separate = groups.size >= 2 && groups.combinations(2).forall {
-        case Vector((_, left), (_, right)) => left.nonEmpty && right.nonEmpty && (left & right).isEmpty
+        case Vector((_, left), (_, right)) => (left & right).isEmpty
         case _                             => true
       }
       Option.when(separate)(()).flatMap(_ =>
