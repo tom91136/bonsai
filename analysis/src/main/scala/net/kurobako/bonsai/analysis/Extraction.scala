@@ -149,11 +149,10 @@ object Extraction {
     // come first and the shared classes resolve to their copies.
     val (twins, primary) = manifest.outputs.partition(output => manifest.platforms(output.module))
     val listed           = (primary ++ twins).map(output => output -> Outputs.files(output.path))
-    val uncompiled       = manifest.products.filterNot(product => Files.exists(product.path)).groupBy(product =>
-      (product.module, product.scope)
-    ).toVector.map { case ((module, scope), missing) =>
-      s"$module has ${scope.id} classes the compile recorded but the disk lacks, such as ${missing.head.path}; a " +
-        "failed compile can leave them empty and a cached compile does not restore them, so run clean and compile again"
+    val uncompiled       = lost(manifest, listed).groupBy(product => (product.module, product.scope)).toVector.map {
+      case ((module, scope), missing) =>
+        s"$module has ${scope.id} classes the compile recorded but the disk lacks, such as ${missing.head.path}; a " +
+          "failed compile can leave them empty and a cached compile does not restore them, so run clean and compile again"
     }.sorted
     val shared = listed.collect {
       case (output, files) if !manifest.platforms(output.module) => files.map(output.path.relativize(_))
@@ -462,6 +461,25 @@ object Extraction {
           status
         ))
       }
+    }
+  }
+
+  /** The products the compiles recorded that the disk lacks and the read needs: those a class left on the disk refers
+    * to, and all of a compile that kept none, as a build may delete classes it compiles and refers to nowhere.
+    */
+  private def lost(manifest: Manifest, listed: Vector[(Output, Vector[Path])]): Vector[Output] = {
+    val missing = manifest.products.filterNot(product => Files.exists(product.path))
+    if (missing.isEmpty) missing
+    else {
+      val absent  = missing.toSet
+      val emptied = manifest.products.groupBy(_.part).collect {
+        case (part, products) if products.forall(absent) => part
+      }.toSet
+      val directories            = manifest.outputs.groupMap(_.part)(_.path)
+      lazy val referenced        = Linkage.of(listed.flatMap(_._2)).classes
+      def named(product: Output) = directories.getOrElse(product.part, Vector.empty).find(product.path.startsWith(_))
+        .map(_.relativize(product.path).toString.replace(File.separatorChar, '/').replaceFirst("\\.(class|tasty)$", ""))
+      missing.filter(product => emptied(product.part) || named(product).exists(referenced))
     }
   }
 

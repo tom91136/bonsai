@@ -147,6 +147,27 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
+  test("a product the build deletes after its compile fails the read only where the classes left refer to it") {
+    Seq("class Kept { def size: Int = 1 }" -> true, "class Kept { def made: Any = new Gone }" -> false).foreach {
+      (kept, read) =>
+        Scratch.using("bonsai-") { directory =>
+          val classes  = compile(directory, Seq("Kept.scala" -> kept, "Gone.scala" -> "class Gone"), Vector.empty)
+          val products = Outputs.files(classes).map(Output("m", Output.Scope.Main, _))
+          Vector("Gone.class", "Gone.tasty").foreach(name => Files.delete(classes.resolve(name)))
+          val result = Extraction.read(Manifest(
+            Vector(Output("m", Output.Scope.Main, classes)),
+            classpaths,
+            Set.empty,
+            products = products,
+            jdk = targetJdk
+          ))
+          assertEquals(result.isRight, read, result.toString)
+          if (read) assert(result.exists(_.graph.nodes.contains("Kept")), result.toString)
+          else assert(result.left.exists(_.exists(_.contains("Gone.class"))), result.toString)
+        }
+    }
+  }
+
   private def divided(directory: Path, padded: String): Manifest = {
     def padding(module: String) =
       Option.when(module == padded)("Padding.scala" -> s"package padding.$module\nclass One\nclass Two\nclass Three")
