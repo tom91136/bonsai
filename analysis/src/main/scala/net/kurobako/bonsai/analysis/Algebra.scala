@@ -144,14 +144,22 @@ object Algebra {
       enumerations = enumerations.filterNot(found => named(found.node))
     )
 
-    def joined(other: Model): Model = Model(
-      products ++ other.products,
-      sums ++ other.sums,
-      Maps.join(sites, other.sites)(_ ++ _),
-      preconditions ++ other.preconditions,
-      enumerations ++ other.enumerations,
-      Maps.join(expanded, other.expanded)(_ ++ _)
-    )
+    /** This model and `other`, read apart; where both declare a product of one key with other fields, the constructions
+      * `other` read align with fields of its own, so this declaration stands and those are left out.
+      */
+    def joined(other: Model): Model = {
+      val declared  = products.map(product => product.key -> product.fields).toMap
+      val differing =
+        other.products.filter(product => declared.get(product.key).exists(_ != product.fields)).map(_.key).toSet
+      Model(
+        products ++ other.products.filterNot(product => differing(product.key)),
+        sums ++ other.sums,
+        Maps.join(sites, other.sites -- differing)(_ ++ _),
+        preconditions ++ other.preconditions,
+        enumerations ++ other.enumerations,
+        Maps.join(expanded, other.expanded -- differing)(_ ++ _)
+      )
+    }
   }
 
   /** Frequent itemsets, as shared field groups among sum cases or parameter groups among methods. */

@@ -824,6 +824,24 @@ class AlgebraSuite extends AnalysisSuite {
     analyse(model(products = Vector(load), sites = Map(load.name -> all))).map(_.detail)
   }
 
+  test("the constructions of a product declared otherwise in another read do not join its own") {
+    import Algebra.Argument.*
+    def read(fields: Vector[Algebra.Field], arguments: Vector[Algebra.Argument]*) = {
+      val declared = caseClass("example.Model", fields)
+      model(
+        products = Vector(declared),
+        sites = Map(declared.name -> arguments.toVector.map(Algebra.Site(_, test = false, own = true, "Main.scala:1")))
+      )
+    }
+    val wide   = Vector("a", "b", "c", "d").map(name => field(name, One + a, Algebra.Kind.Optional))
+    val narrow = Vector(field("x"), field("y"))
+    val whole  = read(wide, Vector(Unknown, Unknown, Unknown, True), Vector(Unknown, Unknown, Unknown, True))
+      .joined(read(narrow, Vector(Number(1), Number(2))))
+    assertEquals(whole.products.map(_.fields), Vector(wide))
+    assertEquals(whole.sites.values.flatten.map(_.arguments.size).toSet, Set(4))
+    analyse(whole): Unit
+  }
+
   private val first  = field("first", One + a, Algebra.Kind.Optional)
   private val second = field("second", One + b, Algebra.Kind.Optional)
 
