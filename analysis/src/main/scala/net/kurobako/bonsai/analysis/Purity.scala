@@ -1293,12 +1293,15 @@ object Purity {
     ): Option[Summary] =
       objects(reference.fold(frame.self)(holder(_, frame)).getOrElse(Value.Opaque)).orElse(reference.flatMap(typed(_)))
         .flatMap { candidates =>
-          // A module is always itself, as its methods are summarised without a receiver.
+          // A module is always itself, as its own methods are summarised without a receiver.
           val targets = candidates.map { candidate =>
             val target = matching(method, candidate.cls)
             Key(
               target,
-              Option.unless(candidate.cls.is(Flags.ModuleClass) && candidate.bindings.isEmpty)(candidate),
+              Option.unless(candidate.cls.is(Flags.ModuleClass) && candidate.bindings.isEmpty &&
+                target.maybeOwner == candidate.cls)(
+                candidate
+              ),
               bound(target, method, arguments, frame)
             )
           }
@@ -2184,8 +2187,16 @@ object Purity {
           else Call(name, Resolution.Axiom(axiom(method, None, parameters)), on, passed)
         } else
           implementations(method, qualifier.filterNot(_.isInstanceOf[tpd.This]).map(_.tpe.widen.classSymbol)) match {
-            case Some(targets) if targets.nonEmpty => Call(name, Resolution.Bodies(targets), on, passed)
-            case _                                 =>
+            case Some(targets) if targets.nonEmpty =>
+              val bodies = Resolution.Bodies(targets)
+              Call(
+                name,
+                if (qualifier.exists(Calls.peel(_).isInstanceOf[tpd.Super])) bodies
+                else Resolution.Dispatch(method, function, bodies),
+                on,
+                passed
+              )
+            case _ =>
               val known = axiom(method, qualifier, parameters)
               // What no axiom covers, a library may still describe in its own body.
               if (!method.exists || !known.effects.exists(effectTable(_).kind == Kind.Unknown))

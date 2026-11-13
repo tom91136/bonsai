@@ -1542,6 +1542,57 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(verdicts("Many.loud"), impure("calls scala.Predef.println"))
   }
 
+  test("an object instance resolves the abstract members of the trait methods it inherits") {
+    val inherited = analysed(
+      "Callers",
+      """object Callers {
+        |  def pure(o: Option[Int]): Option[String] = lib.OptionFunctor.as(o, "x")
+        |  def loud(b: Option[Int]): Option[String] = lib.LoudFunctor.as(b, "l")
+        |}""".stripMargin,
+      Seq(
+        "Functor.scala" ->
+          """package lib
+            |trait Functor[F[_]] {
+            |  def map[A, B](fa: F[A])(f: A => B): F[B]
+            |  def as[A, B](fa: F[A], b: B): F[B] = map(fa)(_ => b)
+            |}
+            |object OptionFunctor extends Functor[Option] {
+            |  def map[A, B](fa: Option[A])(f: A => B): Option[B] = fa.map(f)
+            |}
+            |object LoudFunctor extends Functor[Option] {
+            |  def map[A, B](fa: Option[A])(f: A => B): Option[B] = { println(fa); fa.map(f) }
+            |}""".stripMargin
+      )
+    )
+    val verdicts = inherited.purity.verdicts
+    assertEquals(verdicts("Callers.pure"), Purity.Verdict.Pure)
+    assertEquals(verdicts("Callers.loud"), impure("calls Functor.as, which performs output"))
+  }
+
+  test("an object of the same unit resolves the abstract members of the trait methods it inherits") {
+    val inherited = analysed(
+      "Callers",
+      """trait Functor[F[_]] {
+        |  def map[A, B](fa: F[A])(f: A => B): F[B]
+        |  def as[A, B](fa: F[A], b: B): F[B] = map(fa)(_ => b)
+        |}
+        |object OptionFunctor extends Functor[Option] {
+        |  def map[A, B](fa: Option[A])(f: A => B): Option[B] = fa.map(f)
+        |}
+        |object LoudFunctor extends Functor[Option] {
+        |  def map[A, B](fa: Option[A])(f: A => B): Option[B] = { println(fa); fa.map(f) }
+        |}
+        |object Callers {
+        |  def pure(o: Option[Int]): Option[String] = OptionFunctor.as(o, "x")
+        |  def loud(o: Option[Int]): Option[String] = LoudFunctor.as(o, "l")
+        |}""".stripMargin,
+      Seq.empty
+    )
+    val verdicts = inherited.purity.verdicts
+    assertEquals(verdicts("Callers.pure"), Purity.Verdict.Pure)
+    assert(isImpure(verdicts("Callers.loud")), verdicts("Callers.loud"))
+  }
+
   test("a caller using syntax with a pure instance stays pure whatever instances other callers use") {
     val callers = (0 until 40).map(n => s"""  def option$n(o: Option[Int]): Option[String] = o.as("x$n")""")
     val syntax  = analysed(
