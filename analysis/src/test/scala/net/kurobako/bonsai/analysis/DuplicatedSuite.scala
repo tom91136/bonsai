@@ -82,6 +82,7 @@ class DuplicatedSuite extends AnalysisSuite {
           if (output.module == "curried") output.copy(module = "flatJs") else output
         ),
         classpath = whole.classpath - ("curried" -> Output.Scope.Main) + (("flatJs" -> Output.Scope.Main) -> classpath),
+        sources = Vector("flat", "flatJs").map(Output(_, Output.Scope.Main, directory.resolve("shared/Syn.scala"))),
         platforms = Set("flatJs")
       )
       assertEquals(groups(twins).map(_.runs.size), Right(1))

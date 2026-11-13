@@ -95,10 +95,10 @@ private[analysis] object Clashes {
 
   /** The sets of compiles, each a scope of a module, to read in runs of their own, the first being the bulk of the
     * build. Compiles whose classpaths hold different versions of an artifact are read apart, as no read can hold both,
-    * except platform twins and the modules they share classes with, which are read together. Within these, where a
+    * except platform twins and the modules they compile sources with, which are read together. Within these, where a
     * class of one compile or library is a package of another, or a class of one compile is a class of another that is
     * not its platform twin, the smaller of the two sides, the compiles that hold or use it with those that depend on
-    * them and the platform twins that share classes with them, is read apart. `known` names the clashes the compiler
+    * them and the platform twins that compile sources with them, is read apart. `known` names the clashes the compiler
     * has reported. Fails naming the clash where a compile, or a twin and its peers, needs both sides of a class and a
     * package. `because` names each version and clash a run was set apart for, as the failure would.
     */
@@ -172,18 +172,16 @@ private[analysis] object Clashes {
       outputs: Vector[(Output, Vector[Path])],
       known: Set[String]
   ): Either[Vector[String], (Vector[Set[Output.Part]], Vector[String])] = {
-    val readings   = Readings(manifest)
-    val holdings   = outputs.groupMapReduce(_._1.part)((output, _) => held(output.path))(_ ++ _)
-    val fixed      = manifest.unbuilt
-    val everything = holdings.keySet ++ fixed
-    val owners     = outputs.map((output, _) => output.path -> output.module).toMap
-    val jvm        = outputs.view.map(_._1.module).filterNot(manifest.platforms).toSet
-    val libraries  = mutable.Map.empty[Path, Holding]
-    lazy val tasty = outputs.groupMapReduce(_._1.part)((output, files) =>
-      files.map(output.path.relativize(_)).filter(_.getFileName.toString.endsWith(".tasty")).toSet
-    )(_ ++ _)
-    lazy val sharing = tasty.toVector.flatMap((part, paths) => paths.toVector.map(_ -> part)).groupMap(_._1)(_._2)
-      .values.map(_.toSet).filter(_.exists(part => manifest.platforms(part._1))).toVector
+    val readings     = Readings(manifest)
+    val holdings     = outputs.groupMapReduce(_._1.part)((output, _) => held(output.path))(_ ++ _)
+    val fixed        = manifest.unbuilt
+    val everything   = holdings.keySet ++ fixed
+    val owners       = outputs.map((output, _) => output.path -> output.module).toMap
+    val jvm          = outputs.view.map(_._1.module).filterNot(manifest.platforms).toSet
+    val libraries    = mutable.Map.empty[Path, Holding]
+    lazy val sharing = manifest.sources.filter(source => holdings.contains(source.part))
+      .groupMap(_.path.normalize)(_.part).values.map(_.toSet)
+      .filter(group => group.size > 1 && group.exists(part => manifest.platforms(part._1))).toVector
     lazy val mates = sharing.flatMap(group => group.toVector.map(_ -> group)).groupMapReduce(_._1)(_._2)(_ ++ _)
     lazy val peers = mutable.Map.empty[String, Set[String]]
     def seeing(twin: String): Set[String] =

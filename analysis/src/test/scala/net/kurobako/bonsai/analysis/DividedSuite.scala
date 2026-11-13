@@ -39,6 +39,12 @@ class DividedSuite extends AnalysisSuite {
         if (name == "Side.scala") name -> s"package a.b\nobject Side {\n$packaged\n}\n$replacing" else name -> code
       )
     )
+    val replacedNames = replaced.fold(Set.empty[String])(_ => Set("Side.scala"))
+    val sources       = Vector("objects" -> objectSources, "packaged" -> packageSources).flatMap((module, sources) =>
+      listed(directory, module, module, sources) ++ Option.when(twins(module))(
+        listed(directory, module, s"${module}Js", sources :+ ("Js.scala" -> ""), Set("Js.scala") ++ replacedNames)
+      ).toVector.flatten
+    )
     val twinned = Vector("objects" -> objectSources, "packaged" -> replaced.getOrElse(packageSources)).collect {
       case (module, sources) if twins(module) =>
         val classes =
@@ -57,10 +63,22 @@ class DividedSuite extends AnalysisSuite {
       ),
       scoped(Map("base" -> classpath, "objects" -> visible, "packaged" -> visible) ++ twinned.map(_.module -> visible)),
       Set.empty,
+      sources = sources,
       platforms = twinned.map(_.module).toSet,
       jdk = targetJdk
     )
   }
+
+  /** The sources `module` compiles, those not `own` shared with the other compiles of `base`, as a build lists them. */
+  private def listed(
+      directory: Path,
+      base: String,
+      module: String,
+      sources: Seq[(String, String)],
+      own: Set[String] = Set.empty
+  ): Vector[Output] = sources.toVector.map((name, _) =>
+    Output(module, Output.Scope.Main, directory.resolve(if (own(name)) s"$module/$name" else s"$base/shared/$name"))
+  )
 
   private def eachSide(
       shared: Seq[(String, String)],
@@ -587,6 +605,8 @@ class DividedSuite extends AnalysisSuite {
         ),
         scoped(Map("objectsJs" -> classpath, "objects" -> classpath, "packaged" -> classpath)),
         Set.empty,
+        sources = listed(directory, "objects", "objects", Seq(shared)) ++
+          listed(directory, "objects", "objectsJs", Seq(shared, "Other.scala" -> ""), Set("Other.scala")),
         platforms = Set("objectsJs"),
         jdk = targetJdk
       )
@@ -642,6 +662,7 @@ class DividedSuite extends AnalysisSuite {
         )
       }
     }
+    val bases = Map("usersNative" -> ("users" -> userSources), "toolsJs" -> ("tools" -> toolSources))
     Manifest(
       twinned.map(_._1) ++ Vector(
         Output("base", Output.Scope.Main, shared),
@@ -654,6 +675,11 @@ class DividedSuite extends AnalysisSuite {
         "tools" -> (classpath ++ Vector(shared, onPackage))
       ) ++ twinned.map((output, jar) => output.module -> (classpath ++ Vector(shared, jar)))),
       Set.empty,
+      sources = listed(directory, "users", "users", userSources) ++ listed(directory, "tools", "tools", toolSources) ++
+        twinned.flatMap { (output, _) =>
+          val (base, sources) = bases(output.module)
+          listed(directory, base, output.module, sources :+ ("Own.scala" -> ""), Set("Own.scala"))
+        },
       platforms = twinned.map(_._1.module).toSet,
       jdk = targetJdk
     )
@@ -675,6 +701,8 @@ class DividedSuite extends AnalysisSuite {
     whole.copy(
       outputs = whole.outputs ++ outputs,
       classpath = whole.classpath ++ scoped(outputs.map(_.module -> visible).toMap),
+      sources = whole.sources ++
+        modules.flatMap((module, code) => listed(directory, "safe", module, code, Set("Own.scala"))),
       platforms = whole.platforms ++ Option.when(twinned)("safeJs")
     )
   }
@@ -978,10 +1006,45 @@ class DividedSuite extends AnalysisSuite {
         ),
         scoped(Map("core" -> classpath, "coreJs" -> classpath, "coreNative" -> classpath)),
         Set.empty,
+        sources = Vector("core", "coreJs", "coreNative").flatMap(listed(directory, "core", _, shared)),
         platforms = Set("coreJs", "coreNative"),
         jdk = targetJdk
       )
       assertEquals(groups(whole), 1)
+    }
+  }
+
+  test("platform twins of two variants that declare one class from sources of their own are read apart") {
+    Scratch.using("bonsai-") { directory =>
+      val objects  = library(directory, "lib", "3.0", objectLibrary)
+      val packaged = library(directory, "lib", "2.0", packageLibrary)
+      val variants = Vector(
+        ("cats", "package pure\nobject Effects { def go: Int = lib.implicits.one }", objects),
+        ("cats2", "package pure\nobject Effects { def go: Int = new lib.implicits.Tool().two }", packaged)
+      )
+      val compiles = variants.flatMap { (variant, code, jar) =>
+        Vector(variant, s"${variant}Js").map(module =>
+          (
+            Output(
+              module,
+              Output.Scope.Main,
+              compile(directory.resolve(module), Seq("Effects.scala" -> code), Vector(jar))
+            ),
+            Output(module, Output.Scope.Main, directory.resolve(s"$variant/shared/Effects.scala")),
+            jar
+          )
+        )
+      }
+      val whole = Manifest(
+        compiles.map(_._1),
+        scoped(compiles.map((output, _, jar) => output.module -> (classpath :+ jar)).toMap),
+        Set.empty,
+        sources = compiles.map(_._2),
+        platforms = Set("catsJs", "cats2Js"),
+        jdk = targetJdk
+      )
+      assertEquals(groups(whole), 2)
+      assert(reads(whole).graph.nodes.contains("pure.Effects"))
     }
   }
 
@@ -1346,6 +1409,7 @@ class DividedSuite extends AnalysisSuite {
       } ++
       whole.libraries.toVector.sorted.map(module => s"library\t$module") ++
       whole.platforms.toVector.sorted.map(module => s"platform\t$module") ++
+      whole.sources.map(source => s"source\t${source.module}\t${source.scope.id}\t${source.path}") ++
       whole.jdk.map(home => s"jdk\t$home") :+ s"root\t$directory"
     Files.writeString(file, lines.mkString("", "\n", "\n"))
     val (status, out, err) = captured(CLI.run(List("--manifest", file.toString, "--parallelism", "4", "--mode", mode)))
