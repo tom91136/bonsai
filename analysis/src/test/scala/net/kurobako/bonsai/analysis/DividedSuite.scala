@@ -40,7 +40,7 @@ class DividedSuite extends AnalysisSuite {
       )
     )
     val replacedNames = replaced.fold(Set.empty[String])(_ => Set("Side.scala"))
-    val sources       = Vector("objects" -> objectSources, "packaged" -> packageSources).flatMap((module, sources) =>
+    val listing       = Vector("objects" -> objectSources, "packaged" -> packageSources).flatMap((module, sources) =>
       listed(directory, module, module, sources) ++ Option.when(twins(module))(
         listed(directory, module, s"${module}Js", sources :+ ("Js.scala" -> ""), Set("Js.scala") ++ replacedNames)
       ).toVector.flatten
@@ -63,7 +63,7 @@ class DividedSuite extends AnalysisSuite {
       ),
       scoped(Map("base" -> classpath, "objects" -> visible, "packaged" -> visible) ++ twinned.map(_.module -> visible)),
       Set.empty,
-      sources = sources,
+      sources = listing,
       platforms = twinned.map(_.module).toSet,
       jdk = targetJdk
     )
@@ -858,12 +858,26 @@ class DividedSuite extends AnalysisSuite {
         directory,
         "tools",
         library(directory, "lib", "3.0", objectLibrary),
+        library(directory, "lib", "2.0", packageLibrary)
+      )
+      val result = reads(whole)
+      assert(Seq("user.Users", "tool.Tools").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
+      assertEquals(groups(whole, Set("lib.implicits")), 2)
+    }
+  }
+
+  test("a module that uses nothing of its version of an artifact is read with a module on another") {
+    Scratch.using("bonsai-") { directory =>
+      val whole = libraries(
+        directory,
+        "tools",
+        library(directory, "lib", "3.0", objectLibrary),
         library(directory, "lib", "2.0", packageLibrary),
         "package tool\nobject Tools { def two: Int = base.Util.scale(2, 5) }"
       )
       val result = reads(whole)
       assert(Seq("user.Users", "tool.Tools").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
-      assertEquals(groups(whole, Set("lib.implicits")), 2)
+      assertEquals(groups(whole, Set("lib.implicits")), 1)
     }
   }
 
@@ -907,6 +921,26 @@ class DividedSuite extends AnalysisSuite {
         jdk = targetJdk
       )
       assertEquals(groups(whole), 2)
+      val result = reads(whole)
+      assert(Seq("a.First", "b.Other").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
+    }
+  }
+
+  test("modules on two versions of a library whose newer resolves all the older one's uses are read in one run") {
+    Scratch.using("bonsai-") { directory =>
+      val one   = library(directory, "dep", "1.0", "package dep\nobject Dep { def old: Int = 1 }")
+      val two   = library(directory, "dep", "2.0", "package dep\nobject Dep { def old: Int = 1\n  def fresh: Int = 2 }")
+      val first =
+        versioned(directory, "first", Output.Scope.Main, "package a\nobject First { def go: Int = dep.Dep.old }", one)
+      val other =
+        versioned(directory, "other", Output.Scope.Main, "package b\nobject Other { def go: Int = dep.Dep.fresh }", two)
+      val whole = Manifest(
+        Vector(first, other),
+        scoped(Map("first" -> (classpath :+ one), "other" -> (classpath :+ two))),
+        Set.empty,
+        jdk = targetJdk
+      )
+      assertEquals(groups(whole), 1)
       val result = reads(whole)
       assert(Seq("a.First", "b.Other").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
     }

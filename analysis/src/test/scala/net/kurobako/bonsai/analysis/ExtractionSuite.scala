@@ -596,7 +596,7 @@ class ExtractionSuite extends AnalysisSuite {
       Map(
         ("core", main)             -> Vector(older, shaded),
         ("app", main)              -> Vector(newest),
-        ("app", Output.Scope.Test) -> Vector()
+        ("app", Output.Scope.Test) -> Vector.empty
       ),
       Set.empty,
       dependencies = Map("app" -> Set("core"))

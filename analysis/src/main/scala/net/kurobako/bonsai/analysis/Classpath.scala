@@ -9,22 +9,39 @@ import scala.util.Using
 /** The artifacts a classpath names. */
 private[analysis] object Classpath {
 
+  private given Ordering[Vector[BigInt]] = Ordering.Implicits.seqOrdering[Vector, BigInt]
+
   /** Keeps the first version of each artifact, at the positions its copies held. */
-  def shadowed(classpath: Vector[Path]): Vector[Path] = {
+  def shadowed(classpath: Vector[Path]): Vector[Path] = choosing(classpath, Map.empty)
+
+  private def choosing(classpath: Vector[Path], chosen: Map[String, Vector[BigInt]]): Vector[Path] = {
     val versioned = classpath.flatMap(path => artifact(path).map(path -> _)).toMap
-    val first     = classpath.flatMap(versioned.get(_)).foldLeft(Map.empty[String, Vector[BigInt]]) {
-      case (seen, (identity, version)) => seen.updatedWith(identity)(_.orElse(Some(version)))
+    val taking    = classpath.flatMap(versioned.get(_)).foldLeft(chosen) { case (seen, (identity, version)) =>
+      seen.updatedWith(identity)(_.orElse(Some(version)))
     }
-    classpath.filter(path => versioned.get(path).forall((identity, version) => first(identity) == version))
+    classpath.filter(path => versioned.get(path).forall((identity, version) => taking(identity) == version))
   }
 
-  /** The version of each artifact of every classpath in `classpaths`, the standard library aside, which every read
-    * replaces with the one the analysis runs on.
+  /** The version of each artifact that a compile on `classpath` takes, the first, with its jar, the standard library
+    * aside, which every read replaces with the one the analysis runs on.
     */
-  def versions(classpaths: Vector[Vector[Path]]): Vector[Map[String, Vector[BigInt]]] = {
-    val known = classpaths.flatten.distinct.filter(kind(_).isEmpty).flatMap(path => artifact(path).map(path -> _)).toMap
-    classpaths.map(_.flatMap(path => known.get(path)).toMap)
-  }
+  def taken(classpath: Vector[Path]): Map[String, (Vector[BigInt], Path)] =
+    classpath.filter(kind(_).isEmpty).flatMap(path =>
+      artifact(path).map((identity, version) => identity -> (version, path))
+    )
+      .foldLeft(Map.empty[String, (Vector[BigInt], Path)]) { case (seen, (identity, entry)) =>
+        seen.updatedWith(identity)(_.orElse(Some(entry)))
+      }
+
+  /** The newest version of each artifact among those that compiles take. */
+  def newest(takes: Iterable[Map[String, (Vector[BigInt], Path)]]): Map[String, Vector[BigInt]] =
+    takes.flatMap(_.view.mapValues(_._1)).groupMapReduce(_._1)(_._2)(Ordering[Vector[BigInt]].max)
+
+  /** The entries of `classpath` the compiler reads where of each artifact `chosen` names it takes that version, the
+    * first otherwise, against the standard library of the analysis.
+    */
+  def keeping(classpath: Vector[Path], chosen: Map[String, Vector[BigInt]]): Vector[Path] =
+    unified(choosing(classpath, chosen))
 
   /** `classpath` with the JVM standard library jars of the build, whatever their version, replaced by the one the
     * analysis runs on at the position of the first, as the compiler that reads the build's TASTy expects it. The jars

@@ -124,47 +124,76 @@ private[analysis] object Clashes {
 
   private def named(identity: String): String = identity.split("[/:]").last
 
-  private type Versions = Map[String, Set[Vector[BigInt]]]
+  private given Ordering[Vector[BigInt]] = Ordering.Implicits.seqOrdering[Vector, BigInt]
 
-  /** The compiles in groups whose classpaths hold one version of each artifact, the compiles in `tied` kept together
-    * and those without outputs, `fixed`, in the first, which the compiles that agree with the most others join first.
+  private def version(numbers: Vector[BigInt]): String = numbers.mkString(".")
+
+  /** The compiles in groups where the newest version of each artifact any member takes resolves every class and member
+    * the classes of each member on another version reference as that version does, so a read of the group takes the
+    * newest. Compiles on versions that resolve them otherwise are rivals and read apart; as each member agrees with the
+    * holder of the newest version, a group of compiles that agree pairwise agrees as a whole. The compiles in `tied`
+    * are kept together and those without outputs, `fixed`, in the first, which the compiles with the fewest rivals join
+    * first.
     */
   private def apartByVersion(
       readings: Readings,
       everything: Set[Output.Part],
       fixed: Set[Output.Part],
-      tied: Map[Output.Part, Set[Output.Part]]
+      tied: Map[Output.Part, Set[Output.Part]],
+      files: Map[Output.Part, Vector[Path]]
   ): (Vector[Set[Output.Part]], Vector[String]) = {
     val members = everything.toVector.sorted
-    val perPart = members.zip(Classpath.versions(members.map(part => readings.of(Set(part))))).toMap
-    def versionsOf(parts: Set[Output.Part]): Versions =
-      parts.toVector.flatMap(perPart(_).toVector).groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap
-    val nodes = Option.when(fixed.nonEmpty)(fixed).toVector ++
+    val nodes   = Option.when(fixed.nonEmpty)(fixed).toVector ++
       members.filterNot(fixed).map(part => tied.getOrElse(part, Set.empty) + part).distinct
-    val seen    = nodes.map(versionsOf(_))
-    val holders = seen.zipWithIndex.flatMap((versions, node) =>
-      versions.toVector.flatMap((identity, all) => all.toVector.map(version => (identity, version, node)))
+    val taken = nodes.map(_.toVector.sorted.flatMap(part =>
+      readings.taken(part).toVector.map { case (identity, (number, jar)) => (identity, number, jar, part) }
+    ))
+    val jars    = taken.flatten.map(entry => (entry._1, entry._2) -> entry._3).toMap
+    val holding = taken.map(_.groupMap(_._1)(entry => entry._2 -> entry._4).view.mapValues(
+      _.groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap
+    ).toMap)
+    val holders = holding.zipWithIndex.flatMap((held, node) =>
+      held.toVector.flatMap((identity, numbers) => numbers.keys.map(number => (identity, number, node)))
     ).groupMap(_._1)(entry => entry._2 -> entry._3).view.mapValues(_.groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap)
       .toMap
-    val rivals = seen.zipWithIndex.map((versions, node) =>
-      versions.toVector.flatMap((identity, all) =>
-        holders(identity).collect { case (version, others) if all != Set(version) => others }.flatten
-      ).toSet - node
+    val references                          = mutable.Map.empty[Output.Part, Linkage.References]
+    def referenced(parts: Set[Output.Part]) = {
+      parts.foreach(part =>
+        if (!references.contains(part)) references(part) = Linkage.of(files.getOrElse(part, Vector.empty))
+      )
+      parts.toVector.map(references).foldLeft(Linkage.References.empty)(_.merged(_))
+    }
+    val conflicts = holding.zipWithIndex.flatMap((held, node) =>
+      held.toVector.sortBy(_._1).flatMap((identity, numbers) =>
+        numbers.toVector.sortBy(_._1).flatMap { (older, parts) =>
+          lazy val used = referenced(parts)
+          holders(identity).toVector.filter((newer, _) => Ordering[Vector[BigInt]].gt(newer, older)).sortBy(_._1)
+            .flatMap((newer, others) =>
+              Linkage.lost(used, jars(identity -> older), jars(identity -> newer)).map(reference =>
+                (
+                  node,
+                  others - node,
+                  identity,
+                  s"${named(identity)} is on versions ${version(older)} and " +
+                    s"${version(newer)}, and ${version(newer)} resolves $reference otherwise"
+                )
+              )
+            )
+        }
+      )
     )
+    val rivals = conflicts.flatMap((node, others, _, _) =>
+      others.toVector.flatMap(other => Vector(node -> other, other -> node))
+    )
+      .groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap.withDefaultValue(Set.empty[Int])
     val first = if (fixed.nonEmpty) Vector(0) else Vector.empty
     val order = nodes.indices.drop(first.size).sortBy(node => (rivals(node).size, nodes(node).min))
     val runs  = order.foldLeft(first.map(_ -> 0).toMap) { (runs, node) =>
-      val taken = rivals(node).flatMap(runs.get)
-      runs.updated(node, Iterator.from(0).find(!taken(_)).getOrElse(0))
+      val taking = rivals(node).flatMap(runs.get)
+      runs.updated(node, Iterator.from(0).find(!taking(_)).getOrElse(0))
     }
     val groups = runs.toVector.groupMap(_._2)(entry => nodes(entry._1)).toVector.sortBy(_._1).map(_._2.flatten.toSet)
-    val across =
-      groups.flatMap(group => versionsOf(group).toVector).groupMap(_._1)(_._2).view.mapValues(_.flatten.toSet)
-    val because = across.toVector.filter(_._2.size > 1).sortBy(_._1).map { (identity, all) =>
-      val shown = all.toVector.sorted(using Ordering.Implicits.seqOrdering[Vector, BigInt]).map(_.mkString("."))
-      s"${named(identity)} is on versions ${shown.mkString(" and ")}"
-    }
-    (groups, because)
+    (groups, conflicts.filter(_._2.nonEmpty).groupBy(_._3).toVector.sortBy(_._1).map(_._2.head._4))
   }
 
   private def parts(
@@ -277,7 +306,8 @@ private[analysis] object Clashes {
                 } yield rest ++ extra
             }
       }
-    val (versioned, differing) = apartByVersion(readings, everything, fixed, mates)
+    val (versioned, differing) =
+      apartByVersion(readings, everything, fixed, mates, outputs.groupMapReduce(_._1.part)(_._2)(_ ++ _))
     versioned.foldLeft[Either[Vector[String], Vector[Set[Output.Part]]]](Right(Vector.empty))((all, group) =>
       for {
         done <- all
