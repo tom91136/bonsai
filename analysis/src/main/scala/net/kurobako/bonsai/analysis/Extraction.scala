@@ -261,16 +261,13 @@ object Extraction {
       ).allErrors.map(_.message).distinct
       // The compiler resolves a class once per run, so the run reads the classpaths of the modules in turn, the JVM
       // modules' first, and a class several platforms' copies of a library hold resolves to the first copy.
-      val requires                                             = manifest.requires
-      val readings                                             = Readings(manifest)
-      @tailrec def required(modules: Set[String]): Set[String] = {
-        val next = modules ++ modules.flatMap(requires.getOrElse(_, Set.empty))
-        if (next == modules) modules else required(next)
-      }
+      val readings                                              = Readings(manifest)
+      val byPart                                                = manifest.outputs.groupBy(_.part)
+      def outputsOf(parts: Vector[Output.Part])                 = parts.flatMap(byPart.getOrElse(_, Vector.empty))
       def behindOf(run: Set[Output], unbuilt: Set[Output.Part]) = {
-        val needed = required(run.map(_.module))
-        val beside = primary.filter(output => needed(output.module) && !run(output)).map(_.path)
-        (primary.filter(run).map(_.path) ++ beside).distinct ++ readings.of(run.map(_.part) ++ unbuilt)
+        val beside =
+          outputsOf(readings.required(run.map(_.part))).filterNot(output => manifest.platforms(output.module))
+        (primary.filter(run) ++ beside).map(_.path).distinct ++ readings.of(run.map(_.part) ++ unbuilt)
       }
       val linking    = Some((graph: Graph) => Reach.link(manifest, JavaConversion.merge(graph, java), world))
       val everything = manifest.outputs.toSet
@@ -281,15 +278,18 @@ object Extraction {
       // modules' are.
       def twinning(run: Set[Output], target: Collector, behind: Vector[Path]): Vector[Twinned] = {
         val outputs = manifest.outputs.filter(run).groupMap(_.module)(_.path)
+        val parts   = run.map(_.part).groupBy(_._1)
         Twins.reading(
           classes.filter((output, _) => !manifest.platforms(output.module) && run(output)),
           (copies ++ own.filter((_, file) => readable(file))).filter((output, _) => run(output)),
           shared
         ).map { twin =>
-          val ahead = (twin.module +: Twins.peers(manifest, jvmModules, twin.module)).flatMap(outputs.getOrElse(
+          val inRun = (twin.module +: Twins.peers(manifest, jvmModules, twin.module)).flatMap(outputs.getOrElse(
             _,
             Vector.empty
           ))
+          val ahead = (inRun ++ outputsOf(readings.required(parts.getOrElse(twin.module, Set.empty))).map(_.path))
+            .distinct
           val classpath = readings.twin(twin.module, ahead, behind)
           val copies    = collector(Vector.empty, Set.empty, None)
           val own       = collector(Vector.empty, Set.empty, linking)

@@ -904,6 +904,41 @@ class DividedSuite extends AnalysisSuite {
     }
   }
 
+  test("a platform module read apart from the platform module it extends reads that module's classes") {
+    Scratch.using("bonsai-") { directory =>
+      val one  = library(directory, "dep", "1.0", "package dep\nobject Dep { def old: Int = 1 }")
+      val two  = library(directory, "dep", "2.0", "package dep\nobject Dep { def fresh: Int = 2 }")
+      val core = versioned(
+        directory,
+        "coreJs",
+        Output.Scope.Main,
+        "package core\nclass Base { def go: Int = dep.Dep.old }",
+        one
+      )
+      val app = Output(
+        "appJs",
+        Output.Scope.Main,
+        compile(
+          directory.resolve("appJs"),
+          Seq("App.scala" -> "package app\nobject App extends core.Base { def two: Int = dep.Dep.fresh + go }"),
+          Vector(core.path, two)
+        )
+      )
+      val jvm   = versioned(directory, "jvm", Output.Scope.Main, "package jvm\nobject Jvm { def go: Int = 1 }", one)
+      val whole = Manifest(
+        Vector(jvm, core, app),
+        scoped(Map("jvm" -> (classpath :+ one), "coreJs" -> (classpath :+ one), "appJs" -> (classpath :+ two))),
+        Set.empty,
+        platforms = Set("coreJs", "appJs"),
+        jdk = targetJdk,
+        dependencies = Map("appJs" -> Set("coreJs"))
+      )
+      assertEquals(groups(whole), 2)
+      val result = reads(whole)
+      assert(Seq("app.App", "core.Base").forall(result.graph.nodes.contains), result.graph.nodes.keySet.toString)
+    }
+  }
+
   test("modules on one version of a library are read in one run") {
     Scratch.using("bonsai-") { directory =>
       val one   = library(directory, "dep", "1.0", "package dep\nobject Dep { def old: Int = 1 }")

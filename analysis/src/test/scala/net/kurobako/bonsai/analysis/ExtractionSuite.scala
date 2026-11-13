@@ -584,6 +584,26 @@ class ExtractionSuite extends AnalysisSuite {
     assertEquals(Classpath.shadowed(Vector(older, other, newest, output)), Vector(older, other, output))
   }
 
+  test("the read of a compile holds behind its classpath the libraries of the compiles it requires") {
+    val older  = Path.of("/cache/org/example/tool/1.9.0/tool-1.9.0.jar")
+    val newest = Path.of("/cache/org/example/tool/1.10.0/tool-1.10.0.jar")
+    val shaded = Path.of("/cache/org/example/queues/3.3.0/queues-3.3.0.jar")
+    val main   = Output.Scope.Main
+    val core   = Output("core", main, Path.of("/work/core"))
+    val app    = Output("app", Output.Scope.Test, Path.of("/work/app-test"))
+    val whole  = Manifest(
+      Vector(core, Output("app", main, Path.of("/work/app")), app),
+      Map(
+        ("core", main)             -> Vector(older, shaded),
+        ("app", main)              -> Vector(newest),
+        ("app", Output.Scope.Test) -> Vector()
+      ),
+      Set.empty,
+      dependencies = Map("app" -> Set("core"))
+    )
+    assertEquals(Readings(whole).of(Set(app.part)), Vector(newest, shaded))
+  }
+
   test("shadowing identifies a jar outside a repository layout by its manifest and unversioned name") {
     Scratch.using("bonsai-") { directory =>
       def jar(path: String, version: String) = {

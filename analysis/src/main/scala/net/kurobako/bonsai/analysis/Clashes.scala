@@ -248,7 +248,7 @@ private[analysis] object Clashes {
     def holding(holder: Holder, members: Set[Output.Part]): Set[Output.Part] = holder match {
       case Owned(part)   => following(Set(part)) & members
       case Library(path) =>
-        following(members.filter(part => manifest.classpath.getOrElse(part, Vector.empty).contains(path))) & members
+        following(members.filter(part => readings.entries(Set(part)).contains(path))) & members
     }
     def movable(side: Set[Output.Part], members: Set[Output.Part]): Boolean =
       !side.exists(fixed) && (members -- side).exists(holdings.contains)
