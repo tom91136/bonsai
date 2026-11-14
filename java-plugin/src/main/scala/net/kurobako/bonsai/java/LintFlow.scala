@@ -245,27 +245,76 @@ object LintFlow {
     }
   }
 
-  /** A null that reaches a parameter or an array of non-null elements. */
+  /** A null that reaches a parameter or an array of non-null elements, or that a reference holder starts with where its
+    * value type is not nullable.
+    */
   private object DataFlowNull extends Lint {
     val id               = LintId.DataFlowNull.id
-    val kinds: Set[Kind] = Set(Tree.Kind.METHOD)
+    val kinds: Set[Kind] = Set(Tree.Kind.METHOD, Tree.Kind.NEW_CLASS)
 
-    def check(context: Context, tree: Tree): Vector[Found] =
-      facts(context, tree).toVector.flatMap { (_, flow) =>
-        val passed = flow.passes.flatMap { pass =>
-          if (flow.value(pass.argument).definitelyNull && Nullness.nonNullParameter(pass.parameter))
-            Some(context.found("null is passed where the parameter is not nullable", pass.argument))
-          else None
+    /** The holders that start as null, by the types of the constructors that give them no value. */
+    private val EmptyHolders = Map(
+      "java.util.concurrent.atomic.AtomicReference"      -> Set(Vector.empty[String]),
+      "java.util.concurrent.atomic.AtomicReferenceArray" -> Set(Vector("int")),
+      "java.lang.ThreadLocal"                            -> Set(Vector.empty[String]),
+      "javafx.beans.property.SimpleObjectProperty"       ->
+        Set(Vector.empty[String], Vector("java.lang.Object", "java.lang.String")),
+      "javafx.beans.property.ReadOnlyObjectWrapper" ->
+        Set(Vector.empty[String], Vector("java.lang.Object", "java.lang.String"))
+    )
+
+    def check(context: Context, tree: Tree): Vector[Found] = tree match {
+      case creation: NewClassTree => emptyHolder(context, creation)
+      case _                      =>
+        facts(context, tree).toVector.flatMap { (_, flow) =>
+          val passed = flow.passes.flatMap { pass =>
+            if (flow.value(pass.argument).definitelyNull && Nullness.nonNullParameter(pass.parameter))
+              Some(context.found("null is passed where the parameter is not nullable", pass.argument))
+            else None
+          }
+          val stored = flow.stores.flatMap { store =>
+            if (
+              flow.value(store.expression).definitelyNull && !Nullness.nullableType(store.component) &&
+              context.namedElement.exists(Nullness.marked)
+            ) Some(context.found("null is stored in an array of elements that are not nullable", store.expression))
+            else None
+          }
+          passed ++ stored
         }
-        val stored = flow.stores.flatMap { store =>
-          if (
-            flow.value(store.expression).definitelyNull && !Nullness.nullableType(store.component) &&
-            context.namedElement.exists(Nullness.marked)
-          ) Some(context.found("null is stored in an array of elements that are not nullable", store.expression))
-          else None
+    }
+
+    private def emptyHolder(context: Context, creation: NewClassTree): Vector[Found] =
+      if (creation.classBody.isDefined) Vector.empty
+      else
+        context.namedElement(creation).toVector.collect { case constructor: ExecutableElement => constructor }.flatMap {
+          constructor =>
+            val parameters =
+              constructor.getParameters.asScala.map(p => context.types.erasure(p.asType).toString).toVector
+            val owner = constructor.getEnclosingElement.toString
+            val scope = context.ancestors.view.flatMap(context.namedElement(_)).headOption
+            if (!EmptyHolders.get(owner).exists(_.contains(parameters)) || !scope.exists(Nullness.marked)) Vector.empty
+            else
+              holderValue(context, creation).filterNot(Nullness.nullableType(_)).toVector.map(value =>
+                context.found(s"the holder starts as null but its value type $value is not nullable", creation)
+              )
         }
-        passed ++ stored
+
+    /** The type of the value the holder keeps, read from the declaration the holder is given to, as the type of a
+      * diamond keeps no annotation.
+      */
+    private def holderValue(context: Context, creation: NewClassTree): Option[TypeMirror] = {
+      val diamond = creation.getIdentifier match {
+        case parameterized: ParameterizedTypeTree => parameterized.getTypeArguments.isEmpty
+        case _                                    => false
       }
+      val holder = context.ancestors.headOption match {
+        case Some(variable: VariableTree)     => context.namedElement(variable).map(_.asType)
+        case Some(assignment: AssignmentTree) => context.namedElement(assignment.getVariable).map(_.asType)
+        case _ if !diamond                    => context.attributedType(creation)
+        case _                                => None
+      }
+      holder.collect { case declared: DeclaredType => declared }.flatMap(_.getTypeArguments.asScala.headOption)
+    }
   }
 
   /** A null returned from a method that is not nullable, a nullable method that never returns null, and an override
