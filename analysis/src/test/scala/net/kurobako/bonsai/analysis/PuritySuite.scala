@@ -1640,7 +1640,39 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(verdicts("Callers.loud"), impure("calls Ops.as, which performs output"))
   }
 
-  test("a library body compiled against another version of a dependency is left unread, not retyped") {
+  test("a library body that retypes with the wrong number of arguments stays read") {
+    val stale = extract(
+      program(
+        "Use",
+        """object Use {
+          |  def run: Int = lib.Reader.run
+          |  def loud: Int = lib.Reader.loud
+          |  def mapped: Int = lib.Reader.mapped
+          |  def chained: String = lib.Reader.chained
+          |}""".stripMargin
+      ),
+      dependencies = Seq(
+        "Reader.scala" ->
+          """package lib
+            |object Reader {
+            |  def run: Int = Old.plus(1)(2)
+            |  def loud: Int = { println("x"); Old.plus(1)(2) }
+            |  def mapped: Int = Seq(1, 2).map(x => Old.plus(x)(2)).sum
+            |  def chained: String = Old.plus(1)(2).toString
+            |}""".stripMargin
+      ),
+      absent = Seq("Old.scala" -> "package lib\nobject Old { def plus(x: Int)(y: Int): Int = x + y }"),
+      outdated = Seq("Old.scala" -> "package lib\nobject Old { def plus(x: Int, y: Int): Int = x + y }")
+    )
+    val verdicts = stale.purity.verdicts
+    assertEquals(stale.notes, Vector.empty[String])
+    assertEquals(verdicts("Use.run"), Purity.Verdict.Pure)
+    assertEquals(verdicts("Use.loud"), impure("calls Reader.loud, which performs output"))
+    assertEquals(verdicts("Use.mapped"), Purity.Verdict.Pure)
+    assertEquals(verdicts("Use.chained"), Purity.Verdict.Pure)
+  }
+
+  test("a library body naming a member the classpath lacks is left unread") {
     val stale = extract(
       program("Use", "object Use { def run: Int = lib.Reader.run }"),
       dependencies = Seq(
@@ -1649,7 +1681,7 @@ class PuritySuite extends AnalysisSuite {
             |object Reader { def run: Int = Old.plus(1)(2) }""".stripMargin
       ),
       absent = Seq("Old.scala" -> "package lib\nobject Old { def plus(x: Int)(y: Int): Int = x + y }"),
-      outdated = Seq("Old.scala" -> "package lib\nobject Old { def plus(x: Int, y: Int): Int = x + y }")
+      outdated = Seq("Old.scala" -> "package lib\nobject Old { def minus(x: Int, y: Int): Int = x - y }")
     )
     assertEquals(stale.notes.filter(_.contains("wrong number")), Vector.empty[String])
     assert(stale.notes.exists(_.startsWith("could not read library bodies of lib.Reader")), stale.notes)
