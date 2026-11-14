@@ -315,6 +315,9 @@ enum LintId(val id: String) {
   /** A `Thread.sleep` in a loop, which waits by polling rather than on the condition. */
   case BusyWait extends LintId("busy-wait")
 
+  /** A volatile field read again after its null check, which can see a different value from the check. */
+  case VolatileReread extends LintId("volatile-reread")
+
   /** A field or local variable that is never assigned again, so it can be final. */
   case CanBeFinal extends LintId("can-be-final")
 

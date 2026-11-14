@@ -2,6 +2,7 @@ package net.kurobako.bonsai.java
 
 import com.sun.source.tree.*
 import com.sun.source.tree.Tree.Kind
+import javax.lang.model.element.Element
 import javax.lang.model.element.ElementKind
 import javax.lang.model.element.ExecutableElement
 import javax.lang.model.element.Modifier
@@ -16,7 +17,7 @@ import net.kurobako.bonsai.java.Javac.*
 object LintThreading {
 
   /** The lints of the threading. */
-  val lints: Vector[Lint] = Vector(SynchronizedOnNonFinal, WaitNotInLoop, BusyWait)
+  val lints: Vector[Lint] = Vector(SynchronizedOnNonFinal, WaitNotInLoop, BusyWait, VolatileReread)
 
   /** A lock of a field that may be replaced while the code waits for it. */
   private object SynchronizedOnNonFinal extends Lint {
@@ -80,5 +81,48 @@ object LintThreading {
           ))
         case _ => Vector.empty
       }
+  }
+
+  /** A volatile field read again after its null check, which can see a different value from the check. */
+  private object VolatileReread extends Lint {
+    val id               = LintId.VolatileReread.id
+    val kinds: Set[Kind] = Set(Tree.Kind.EQUAL_TO, Tree.Kind.NOT_EQUAL_TO)
+
+    def check(context: Context, tree: Tree): Vector[Found] = {
+      val comparison = tree.asInstanceOf[BinaryTree]
+      val field      =
+        if (isNull(comparison.getRightOperand)) volatileField(context, comparison.getLeftOperand)
+        else if (isNull(comparison.getLeftOperand)) volatileField(context, comparison.getRightOperand)
+        else None
+      val scope = context.enclosing(Set(Tree.Kind.LAMBDA_EXPRESSION, Tree.Kind.METHOD)).flatMap {
+        case lambda: LambdaExpressionTree => Some(lambda.getBody)
+        case method: MethodTree           => Option(method.getBody)
+        case _                            => None
+      }
+      val checkEnd = context.trees.getSourcePositions.getEndPosition(context.unit, tree)
+      (field, scope) match {
+        case (Some(variable), Some(body)) if rereads(context, body, variable, checkEnd) =>
+          Vector(context.found(
+            s"volatile field '${variable.getSimpleName}' is read again after this null check; copy it to a local first"
+          ))
+        case _ => Vector.empty
+      }
+    }
+
+    private def isNull(tree: ExpressionTree): Boolean = Lint.unwrapped(tree).getKind == Tree.Kind.NULL_LITERAL
+
+    private def volatileField(context: Context, candidate: ExpressionTree): Option[Element] =
+      Option(context.elementOf(Lint.unwrapped(candidate)))
+        .filter(element => element.getKind == ElementKind.FIELD && element.getModifiers.contains(Modifier.VOLATILE))
+
+    private def rereads(context: Context, scope: Tree, field: Element, checkEnd: Long): Boolean = {
+      val assigned  = Scan.collect(scope, _ => true) { case assignment: AssignmentTree => assignment.getVariable }
+      val positions = context.trees.getSourcePositions
+      Scan.exists(scope) {
+        case node @ (_: IdentifierTree | _: MemberSelectTree) =>
+          !assigned.exists(_ eq node) && context.elementOf(node) == field &&
+          positions.getStartPosition(context.unit, node) > checkEnd
+      }
+    }
   }
 }

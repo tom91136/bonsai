@@ -2589,6 +2589,60 @@ class LintSuite extends munit.FunSuite {
     assertEquals(found.head.method, "demo.Spinning.spin")
   }
 
+  test("a volatile field read again after its null check is flagged") {
+    val model = compile("Settings" -> """
+      |package demo;
+      |
+      |public class Settings {
+      |  private volatile String path;
+      |
+      |  public int length() {
+      |    if (path != null) return path.length();
+      |    return 0;
+      |  }
+      |
+      |  public boolean empty() {
+      |    return this.path == null || this.path.isEmpty();
+      |  }
+      |
+      |  public Runnable later() {
+      |    return () -> { if (path != null) System.out.println(path); };
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "volatile-reread")
+    assertEquals(found.size, 3, model.lints.mkString("\n"))
+    assertEquals(
+      found.map(_.method).sorted,
+      Vector("demo.Settings.empty", "demo.Settings.later", "demo.Settings.length")
+    )
+  }
+
+  test("a volatile field copied to a local, or not read again, is not flagged") {
+    val model = compile("Settings" -> """
+      |package demo;
+      |
+      |public class Settings {
+      |  private volatile String path;
+      |  private String plain;
+      |
+      |  public int length() {
+      |    String current = path;
+      |    return current != null ? current.length() : 0;
+      |  }
+      |
+      |  public boolean present() { return path != null; }
+      |
+      |  public void reset() { if (path != null) path = null; }
+      |
+      |  public int plainLength() { return plain != null ? plain.length() : 0; }
+      |}
+      |""".stripMargin)
+
+    assertEquals(model.lints.filter(_.id == "volatile-reread").size, 0, model.lints.mkString("\n"))
+  }
+
   test("a field or local that is never assigned again can be final") {
     val model = compile("Fields" -> """
       |package demo;
