@@ -4434,6 +4434,173 @@ class LintSuite extends munit.FunSuite {
     assertEquals(found.map(_.line).sorted, Vector(21, 25), found.mkString("\n"))
   }
 
+  test("the retrieval methods of queues and deques may return null") {
+    val found = flow(
+      "nullable-use",
+      "Queues" ->
+        """package demo;
+          |
+          |import java.util.ArrayDeque;
+          |import java.util.Deque;
+          |import java.util.LinkedList;
+          |import java.util.PriorityQueue;
+          |import java.util.Queue;
+          |import java.util.concurrent.BlockingQueue;
+          |import java.util.concurrent.ConcurrentLinkedDeque;
+          |import java.util.concurrent.TimeUnit;
+          |
+          |public class Queues {
+          |  static int poll(Queue<String> queue) {
+          |    return queue.poll().length();
+          |  }
+          |
+          |  static int peek(PriorityQueue<String> queue) {
+          |    return queue.peek().length();
+          |  }
+          |
+          |  static int pollFirst(Deque<String> deque) {
+          |    return deque.pollFirst().length();
+          |  }
+          |
+          |  static int peekFirst(ConcurrentLinkedDeque<String> deque) {
+          |    return deque.peekFirst().length();
+          |  }
+          |
+          |  static int timed(BlockingQueue<String> queue) throws InterruptedException {
+          |    return queue.poll(1, TimeUnit.SECONDS).length();
+          |  }
+          |
+          |  static int pollLast(LinkedList<String> list, ArrayDeque<String> array) {
+          |    return list.pollLast().length() + array.peekLast().length();
+          |  }
+          |
+          |  static int take(BlockingQueue<String> queue) throws InterruptedException {
+          |    return queue.take().length();
+          |  }
+          |
+          |  static int checked(Queue<String> queue) {
+          |    String head = queue.poll();
+          |    if (head == null) return 0;
+          |    return head.length();
+          |  }
+          |}
+          |""".stripMargin
+    )
+    assertEquals(found.map(_.line).sorted, Vector(14, 18, 22, 26, 30, 34, 34), found.mkString("\n"))
+  }
+
+  private val javafx = Seq(
+    "ObservableValue" ->
+      """package javafx.beans.value;
+        |
+        |public interface ObservableValue<T> {
+        |  T getValue();
+        |}
+        |""".stripMargin,
+    "ObservableObjectValue" ->
+      """package javafx.beans.value;
+        |
+        |public interface ObservableObjectValue<T> extends ObservableValue<T> {
+        |  T get();
+        |}
+        |""".stripMargin,
+    "ObjectProperty" ->
+      """package javafx.beans.property;
+        |
+        |import javafx.beans.value.ObservableObjectValue;
+        |
+        |public abstract class ObjectProperty<T> implements ObservableObjectValue<T> {
+        |  public abstract void set(T value);
+        |
+        |  public T getValue() {
+        |    return get();
+        |  }
+        |}
+        |""".stripMargin,
+    "SimpleObjectProperty" ->
+      """package javafx.beans.property;
+        |
+        |public class SimpleObjectProperty<T> extends ObjectProperty<T> {
+        |  private T value;
+        |
+        |  public SimpleObjectProperty() {}
+        |
+        |  public SimpleObjectProperty(T initialValue) {
+        |    value = initialValue;
+        |  }
+        |
+        |  public SimpleObjectProperty(Object bean, String name) {}
+        |
+        |  public SimpleObjectProperty(Object bean, String name, T initialValue) {
+        |    value = initialValue;
+        |  }
+        |
+        |  public T get() {
+        |    return value;
+        |  }
+        |
+        |  public void set(T value) {
+        |    this.value = value;
+        |  }
+        |}
+        |""".stripMargin,
+    "ReadOnlyObjectWrapper" ->
+      """package javafx.beans.property;
+        |
+        |public class ReadOnlyObjectWrapper<T> extends SimpleObjectProperty<T> {
+        |  public ReadOnlyObjectWrapper() {}
+        |
+        |  public ReadOnlyObjectWrapper(T initialValue) {
+        |    super(initialValue);
+        |  }
+        |}
+        |""".stripMargin
+  )
+
+  test("the value of a JavaFX object property is nullable until it is set") {
+    val found = flow(
+      "nullable-use",
+      (javafx :+ "Properties" ->
+        """package demo;
+          |
+          |import javafx.beans.property.ObjectProperty;
+          |import javafx.beans.property.ReadOnlyObjectWrapper;
+          |import javafx.beans.property.SimpleObjectProperty;
+          |import javafx.beans.value.ObservableObjectValue;
+          |import javafx.beans.value.ObservableValue;
+          |
+          |public class Properties {
+          |  static int observed(ObservableObjectValue<String> value) {
+          |    return value.get().length();
+          |  }
+          |
+          |  static int viewed(ObservableValue<String> value) {
+          |    return value.getValue().length();
+          |  }
+          |
+          |  static int property(ObjectProperty<String> property) {
+          |    return property.getValue().length();
+          |  }
+          |
+          |  static int simple(SimpleObjectProperty<String> property) {
+          |    return property.get().length();
+          |  }
+          |
+          |  static int wrapped(ReadOnlyObjectWrapper<String> wrapper) {
+          |    return wrapper.get().length();
+          |  }
+          |
+          |  static int checked(ObjectProperty<String> property) {
+          |    String value = property.get();
+          |    if (value == null) return 0;
+          |    return value.length();
+          |  }
+          |}
+          |""".stripMargin)*
+    )
+    assertEquals(found.map(_.line), Vector(11, 19, 23, 27), found.mkString("\n"))
+  }
+
   test("unboxing a nullable value is reported unless a check proves it") {
     val found = flow(
       "nullable-use",
