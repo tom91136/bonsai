@@ -2567,6 +2567,28 @@ class LintSuite extends munit.FunSuite {
     assertEquals(found.head.method, "demo.Waiting.poll")
   }
 
+  test("a Thread.onSpinWait in a loop is a busy wait") {
+    val model = compile("Spinning" -> """
+      |package demo;
+      |
+      |public class Spinning {
+      |  public void spin(boolean[] ready) {
+      |    while (!ready[0]) {
+      |      Thread.onSpinWait();
+      |    }
+      |  }
+      |
+      |  public void once() {
+      |    Thread.onSpinWait();
+      |  }
+      |}
+      |""".stripMargin)
+
+    val found = model.lints.filter(_.id == "busy-wait")
+    assertEquals(found.size, 1, model.lints.mkString("\n"))
+    assertEquals(found.head.method, "demo.Spinning.spin")
+  }
+
   test("a field or local that is never assigned again can be final") {
     val model = compile("Fields" -> """
       |package demo;

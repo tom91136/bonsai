@@ -66,19 +66,19 @@ object LintThreading {
     val id               = LintId.BusyWait.id
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
-    def check(context: Context, tree: Tree): Vector[Found] = {
-      val sleeping = context.element match {
-        case method: ExecutableElement =>
-          method.getSimpleName.contentEquals("sleep") &&
-          method.enclosing.exists {
-            case owner: TypeElement => owner.getQualifiedName.contentEquals("java.lang.Thread")
-            case _                  => false
-          }
-        case _ => false
+    private val Polling = Set("sleep", "onSpinWait")
+
+    def check(context: Context, tree: Tree): Vector[Found] =
+      context.element match {
+        case method: ExecutableElement
+            if Polling(method.getSimpleName.toString) && context.inLoop && method.enclosing.exists {
+              case owner: TypeElement => owner.getQualifiedName.contentEquals("java.lang.Thread")
+              case _                  => false
+            } =>
+          Vector(context.found(
+            s"Thread.${method.getSimpleName} in a loop waits by polling; use a condition, latch or blocking queue"
+          ))
+        case _ => Vector.empty
       }
-      if (sleeping && context.inLoop)
-        Vector(context.found("Thread.sleep in a loop waits by polling; use a condition, latch or blocking queue"))
-      else Vector.empty
-    }
   }
 }
