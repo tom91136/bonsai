@@ -4603,6 +4603,46 @@ class LintSuite extends munit.FunSuite {
     assertEquals(found.map(_.line), Vector(11, 19, 23, 27), found.mkString("\n"))
   }
 
+  test("a reference holder created without a value needs a nullable value type") {
+    val holders =
+      """package demo;
+        |
+        |import java.util.concurrent.atomic.AtomicReference;
+        |import java.util.concurrent.atomic.AtomicReferenceArray;
+        |import javafx.beans.property.ObjectProperty;
+        |import javafx.beans.property.ReadOnlyObjectWrapper;
+        |import javafx.beans.property.SimpleObjectProperty;
+        |import org.jspecify.annotations.Nullable;
+        |
+        |public class Holders {
+        |  private final AtomicReference<String> empty = new AtomicReference<>();
+        |  private final AtomicReference<@Nullable String> declared = new AtomicReference<>();
+        |  private final AtomicReference<String> initial = new AtomicReference<>("start");
+        |  private final AtomicReference<String> explicit = new AtomicReference<String>();
+        |  private final AtomicReference<@Nullable String> typed = new AtomicReference<@Nullable String>();
+        |  private final AtomicReferenceArray<String> slots = new AtomicReferenceArray<>(4);
+        |  private final AtomicReferenceArray<String> copied = new AtomicReferenceArray<>(new String[] {"a"});
+        |  private final ObjectProperty<String> property = new SimpleObjectProperty<>();
+        |  private final ObjectProperty<@Nullable String> maybe = new SimpleObjectProperty<>();
+        |  private final ObjectProperty<String> set = new SimpleObjectProperty<>("a");
+        |  private final ObjectProperty<String> named = new SimpleObjectProperty<>(this, "named");
+        |  private final ReadOnlyObjectWrapper<String> wrapper = new ReadOnlyObjectWrapper<>();
+        |  private final ThreadLocal<String> local = new ThreadLocal<>();
+        |  private final ThreadLocal<String> supplied = ThreadLocal.withInitial(() -> "a");
+        |  private final AtomicReference<String> subclassed = new AtomicReference<>() {};
+        |
+        |  void assigned() {
+        |    AtomicReference<String> held;
+        |    held = new AtomicReference<>();
+        |    var inferred = new AtomicReference<String>();
+        |  }
+        |}
+        |""".stripMargin
+    val found = flow("data-flow-null", (javafx :+ "Holders" -> holders)*)
+    assertEquals(found.map(_.line), Vector(11, 14, 16, 18, 21, 22, 23, 29, 30), found.mkString("\n"))
+    assertEquals(compile((javafx :+ "Holders" -> holders)*).lints.filter(_.id == "data-flow-null"), Vector.empty)
+  }
+
   test("unboxing a nullable value is reported unless a check proves it") {
     val found = flow(
       "nullable-use",
