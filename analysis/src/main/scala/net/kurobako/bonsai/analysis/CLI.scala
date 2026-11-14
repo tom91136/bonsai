@@ -150,7 +150,7 @@ object CLI {
       options.hot,
       options.bounded,
       parallel
-    ).left.map(_.mkString("\n")).flatMap(result => recorded(manifest, options).map(result -> _)).map {
+    ).left.map(_.mkString("\n")).flatMap(result => recorded(manifest, options).map(result -> _)).flatMap {
       (result, compiled) =>
         val locked = options.lock.filter(Files.exists(_)).fold(Set.empty[String])(file =>
           Report.keys(Files.readString(file))
@@ -167,23 +167,24 @@ object CLI {
             Purity.regressions(result.purity, result.graph.nodes, locked) ++
             Purity.violations(result.purity, result.graph.nodes, options.policies)).map(relocated(manifest, _))
         options.relock.foreach(file => Files.writeString(file, Purity.lock(result.purity, result.graph.nodes)): Unit)
-        val baseline = options.baseline.filter(Files.exists(_)).fold(Set.empty[String])(file =>
-          Report.keys(Files.readString(file))
-        )
-        val report = Report.Options(options.disabled, options.failing, baseline, options.info, options.nonfatal)
-        options.record.foreach { file =>
-          val previous = if (Files.exists(file)) Files.readString(file) else ""
-          val nodes    = findings.map(finding => finding.node.name -> finding.node).toMap ++ result.graph.nodes
-          val lines    = Report(findings, result.graph.nodes, report.copy(info = false))
-          Files.writeString(file, Report.merge(previous, lines, nodes, manifest.outputs.map(_.module).toSet)): Unit
+        for {
+          baselineRows <- rowsOf(options.baseline)
+          previousRows <- rowsOf(options.record)
+        } yield {
+          val baseline = baselineRows.map(_.key).toSet
+          val report   = Report.Options(options.disabled, options.failing, baseline, options.info, options.nonfatal)
+          options.record.foreach { file =>
+            val lines = Report(findings, result.graph.nodes, report.copy(info = false))
+            Files.writeString(file, Report.merge(previousRows, lines, manifest.outputs.map(_.module).toSet)): Unit
+          }
+          Reuse.Record(
+            result.status ++
+              result.problems.map(problem => s"${Reuse.Problem}$problem") ++
+              result.notes.map(note => s"${Reuse.Note}$note") ++
+              (if (options.purity) Purity.summary(result.purity) else Vector.empty),
+            Report(findings, result.graph.nodes, report).map(line => Reuse.Shown(line.failing, line.show))
+          )
         }
-        Reuse.Record(
-          result.status ++
-            result.problems.map(problem => s"${Reuse.Problem}$problem") ++
-            result.notes.map(note => s"${Reuse.Note}$note") ++
-            (if (options.purity) Purity.summary(result.purity) else Vector.empty),
-          Report(findings, result.graph.nodes, report).map(line => Reuse.Shown(line.failing, line.show))
-        )
     }
 
   private def relocated(manifest: Manifest, finding: Finding): Finding =
@@ -191,6 +192,11 @@ object CLI {
 
   private def recorded(manifest: Manifest, options: Options): Either[String, Vector[Finding]] =
     if (options.mode == Mode.Audit) Compiled.findings(manifest).left.map(_.mkString("\n")) else Right(Vector.empty)
+
+  private def rowsOf(file: Option[Path]): Either[String, Vector[Report.Row]] = file match {
+    case Some(path) if Files.exists(path) => Report.rows(path.toString, Files.readString(path))
+    case _                                => Right(Vector.empty)
+  }
 
   // The sources are read apart from the build's classes, so the scan runs while those are hashed or extracted.
   private def scanning(manifest: Manifest): Scan =

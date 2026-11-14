@@ -113,20 +113,27 @@ object Report {
     }.toVector
   }
 
-  /** The baseline text after a run over `modules` writes `lines`, one finding key per line. Entries of a node in a
-    * covered module are replaced, and the rest are kept. A node the run does not reach has no module here, so its
-    * entries are kept.
-    */
-  def merge(previous: String, lines: Vector[Line], nodes: Map[String, Node], modules: Set[String]): String = {
-    def owned(key: String): Boolean =
-      key.split("\t", 3).lift(1).flatMap(nodes.get).exists(node => modules(node.module))
-    val kept = previous.linesIterator.filter(key => key.nonEmpty && !owned(key)).toVector
-    (kept ++ records(lines)).distinct.mkString("", "\n", "\n")
+  case class Row(key: String, module: String)
+
+  def rows(name: String, text: String): Either[String, Vector[Row]] = {
+    val split = text.linesIterator.filter(_.nonEmpty).toVector.map(_.split("\t", -1).toVector)
+    if (split.forall(_.size == 4)) Right(split.map(row => Row(row.take(3).mkString("\t"), row(3))))
+    else Left(s"$name has a row without a module: delete it and record the baseline again with `bonsaiBaselineWrite`")
+  }
+
+  def merge(previous: Vector[Row], lines: Vector[Line], modules: Set[String]): String = {
+    val tag     = modules.minOption.getOrElse("")
+    val covered = modules + tag
+    val kept    = previous.filterNot(row => covered(row.module))
+    (kept ++ records(lines, tag)).distinct.map(row => s"${row.key}\t${row.module}").mkString("", "\n", "\n")
   }
 
   /** The findings of the compiler plugin are left out, as no baseline holds them back. */
-  private def records(lines: Vector[Line]): Vector[String] =
-    lines.filterNot(_.finding.rule.recorded).map(_.finding.key)
+  private def records(lines: Vector[Line], tag: String): Vector[Row] =
+    lines.filterNot(_.finding.rule.recorded).map { line =>
+      val node = line.finding.node
+      Row(line.finding.key, if (node.module.isEmpty) tag else node.module)
+    }
 
   /** The keys a file of one key per line records, such as a baseline or a purity lock. */
   def keys(text: String): Set[String] = text.linesIterator.filter(_.nonEmpty).toSet

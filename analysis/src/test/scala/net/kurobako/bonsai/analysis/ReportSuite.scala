@@ -238,7 +238,37 @@ class ReportSuite extends AnalysisSuite {
 
   test("baselines round trip through their text form") {
     val found = lines(defaults)
-    assertEquals(Report.keys(Report.merge("", found, Map.empty, Set.empty)), found.map(_.finding.key).toSet)
+    val rows  = found.map(line => Report.Row(line.finding.key, line.finding.node.module)).distinct
+    assertEquals(Report.rows("baseline", Report.merge(Vector.empty, found, Set.empty)), Right(rows))
+  }
+
+  test("a row without a module is rejected with the file and the command to record again") {
+    val rows = Report.rows("baseline.tsv", "unused\tlib.Gone\tgone\n")
+    assert(rows.left.exists(message => message.contains("baseline.tsv") && message.contains("bonsaiBaselineWrite")))
+  }
+
+  test("a write over a module drops its rows of deleted definitions and keeps the rows of other modules") {
+    val previous = Vector(Report.Row("unused\tlib.Gone\tgone", "a"), Report.Row("unused\tlib.Other\tgone", "b"))
+    assertEquals(Report.merge(previous, Vector.empty, Set("a")), "unused\tlib.Other\tgone\tb\n")
+  }
+
+  test("a finding of no module is recorded under the first module of the run") {
+    val finding = Finding(Finding.Rule.UnusedBound, toolsNode.copy(module = ""), "bounded lib.Tools (x) is stale")
+    val text    = Report.merge(Vector.empty, Report(Vector(finding), Map.empty, defaults), Set("a", "b"))
+    assertEquals(text, s"${finding.key}\ta\n")
+    val recorded = Report.rows("baseline", text).toOption.get
+    assertEquals(Report.merge(recorded, Vector.empty, Set("b")), s"${finding.key}\ta\n")
+    assertEquals(Report.merge(recorded, Vector.empty, Set("a")), "\n")
+  }
+
+  test("a moved finding replaces its row under the same module") {
+    val before   = Finding(Finding.Rule.DuplicateCode, toolsNode, "2 copies of 5 lines (84 nodes): A.scala:10-14")
+    val after    = before.copy(detail = "2 copies of 5 lines (84 nodes): A.scala:20-24")
+    val reported = Report(Vector(after), Map.empty, defaults)
+    assertEquals(
+      Report.merge(Vector(Report.Row(before.key, toolsNode.module)), reported, Set(toolsNode.module)),
+      s"${after.key}\t${toolsNode.module}\n"
+    )
   }
 
   test("escalating every rule fails on any warning, while information stays information") {
