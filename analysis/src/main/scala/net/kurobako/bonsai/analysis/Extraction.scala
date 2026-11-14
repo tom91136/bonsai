@@ -289,13 +289,21 @@ object Extraction {
           ))
           val ahead = (inRun ++ outputsOf(readings.required(parts.getOrElse(twin.module, Set.empty))).map(_.path))
             .distinct
-          val classpath = readings.twin(twin.module, ahead, behind)
-          val copies    = collector(Vector.empty, Set.empty, None)
-          val own       = collector(Vector.empty, Set.empty, linking)
-          val found     = reading(copies, twin.replaced, classpath) ++ reading(own, twin.own, classpath)
-          target.absorb(copies)
-          target.absorb(own)
-          Twinned(twin, own, copies, copies.problems ++ own.problems, found.toVector ++ copies.notes ++ own.notes)
+          val classpath    = readings.twin(twin.module, ahead, behind)
+          val copies       = collector(Vector.empty, Set.empty, None)
+          val own          = collector(Vector.empty, Set.empty, linking)
+          val found        = reading(copies, twin.replaced, classpath) ++ reading(own, twin.own, classpath)
+          val closedCopies = copies.outcome
+          val closedOwn    = own.outcome
+          target.absorb(closedCopies)
+          target.absorb(closedOwn)
+          Twinned(
+            twin,
+            closedOwn,
+            closedCopies,
+            closedCopies.problems ++ closedOwn.problems,
+            found.toVector ++ closedCopies.notes ++ closedOwn.notes
+          )
         }
       }
       val leading    = manifest.outputs.filterNot(separate).toSet
@@ -320,27 +328,29 @@ object Extraction {
       }
       // A group reads a class again that an earlier run read from the same position, and what it records of that
       // class is the earlier run's.
-      def copying(run: Collector, before: Vector[Collector]): String => Boolean =
+      def copying(run: Collector.Outcome, before: Vector[Collector.Outcome]): String => Boolean =
         name => run.positionOf(name).exists(position => before.exists(_.positionOf(name).contains(position)))
-      val owned = phaseTwins.map(twin => Owned.Twin(twin.own, standing(phaseTwins))) ++
-        groups.zipWithIndex.map((group, index) =>
-          Owned.Copy(group, copying(group, phase +: groups.take(index)))
-        ) ++
-        groupRuns.flatMap((_, twins, _) =>
-          twins.map(twin => Owned.Twin(twin.own, standing(twins)))
-        )
-      val readers                = phase +: (twinRuns.flatMap(twin => Vector(twin.own, twin.copies)) ++ groups)
       val errors                 = reading(phase, together, behind)
       def beside(run: Collector) = (phase +: groups).filterNot(_ eq run).foldLeft(Collector.Evidence.empty)(_ ++
         _.evidence)
       groups.foreach(run => run.conclude(beside(run)))
-      groups.foreach(phase.absorb(_))
+      val concluded = groups.map(_.outcome)
+      concluded.foreach(phase.absorb(_))
       phase.conclude(beside(phase))
-      val problems = skipped ++ java.problems ++ phase.problems ++ twinRuns.flatMap(_.problems) ++
-        groups.flatMap(_.problems)
-      val notes = phase.notes ++ errors ++ twinRuns.flatMap(_.notes) ++
-        groupRuns.flatMap((own, _, found) => found ++ own.notes)
-      val graph = JavaConversion.merge(phase.graph, java)
+      val head  = phase.outcome
+      val owned = phaseTwins.map(twin => Owned.Twin(twin.own, standing(phaseTwins))) ++
+        concluded.zipWithIndex.map((group, index) =>
+          Owned.Copy(group, copying(group, head +: concluded.take(index)))
+        ) ++
+        groupRuns.flatMap((_, twins, _) =>
+          twins.map(twin => Owned.Twin(twin.own, standing(twins)))
+        )
+      val readers  = head +: (twinRuns.flatMap(twin => Vector(twin.own, twin.copies)) ++ concluded)
+      val problems = skipped ++ java.problems ++ head.problems ++ twinRuns.flatMap(_.problems) ++
+        concluded.flatMap(_.problems)
+      val notes = head.notes ++ errors ++ twinRuns.flatMap(_.notes) ++
+        groupRuns.zip(concluded).flatMap { case ((_, _, found), closed) => found ++ closed.notes }
+      val graph = JavaConversion.merge(head.graph, java)
       // A platform twin replaces some sources with its own of the same name, so the types in them cannot move.
       val twinned = manifest.sources.filter(source => manifest.platforms(source.module)).groupMap(_.module)(_.path)
         .values.map(paths => (paths.toSet, paths.map(_.getFileName).toSet)).toVector
@@ -353,7 +363,7 @@ object Extraction {
       // The classes of each twin's own sources are analysed apart from the JVM modules', and their models join.
       def joined[A](
           base: A,
-          part: Collector => A,
+          part: Collector.Outcome => A,
           join: (A, A) => A,
           excluding: (A, String => Boolean) => A = (model: A, _: String => Boolean) => model,
           excluded: Owned => Option[String => Boolean] = _.uses
@@ -364,12 +374,12 @@ object Extraction {
             excluded(run).fold(part(run.collector))(excluded => excluding(part(run.collector), excluded))
           )
         }
-      val whole      = joined(phase.structures, _.structures, _.joined(_), _.excluding(_), excluded = _.definitions)
+      val whole      = joined(head.structures, _.structures, _.joined(_), _.excluding(_), excluded = _.definitions)
       val structures = whole.copy(extents =
         whole.extents.filter((key, _) => graph.nodes.get(key).forall(node => !replaced.exists(_.endsWith(node.source))))
       )
       // The model of the Java code joins the model of the Scala code, so that the rules read both alike.
-      val scala   = joined(phase.algebra, _.algebra, _.joined(_), _.excluding(_), excluded = _.definitions)
+      val scala   = joined(head.algebra, _.algebra, _.joined(_), _.excluding(_), excluded = _.definitions)
       val algebra = scala.copy(
         products = scala.products ++ java.products,
         sums = scala.sums ++ java.sums,
@@ -382,7 +392,7 @@ object Extraction {
         case source if manifest.platforms(source.module) && !jvmPaths(source.path) => sourceSet(source.path.toString)
       }.toSet & jvmPaths.map(path => sourceSet(path.toString))
       def replacedAt(node: Node): Boolean = node.source.nonEmpty && seams(sourceSet(node.source))
-      val analysed                        = joined(phase.smells, _.smells, _.joined(_), _.excluding(_))
+      val analysed                        = joined(head.smells, _.smells, _.joined(_), _.excluding(_))
       val smells                          = analysed.copy(
         methods = analysed.methods ++ java.methods,
         instantiations = if (groups.isEmpty) analysed.instantiations else Smells.merged(analysed.instantiations),
@@ -393,15 +403,15 @@ object Extraction {
         moduleUses = moduleUses
       )
       // A run of part of the build misses the uses and assignments in the rest of it, which the others record by name.
-      def observed(part: Collector) = {
+      def observed(part: Collector.Outcome) = {
         val others = readers.filterNot(_ eq part)
         part.memberships.observed(
           others.foldLeft(Map.empty[String, Set[Use]])((all, other) => Maps.join(all, other.usages)(_ ++ _)),
           others.flatMap(_.assignments).toSet,
-          phase.referrers
+          head.referrers
         )
       }
-      val members = owned.foldLeft(observed(phase))((all, run) =>
+      val members = owned.foldLeft(observed(head))((all, run) =>
         all.joined(run.uses.fold(observed(run.collector))(excluded =>
           observed(run.collector).excluding(excluded)
         ))
@@ -409,17 +419,17 @@ object Extraction {
         .pinned(name => graph.nodes.get(name).exists(replacedAt(_)))
       val isHot     = Globs.heat(hot)
       val unmatched = {
-        val beside = (groups ++ twinRuns.map(_.own)).map(_.unusedBounds.toSet)
-        phase.unusedBounds.filter(bound => beside.forall(_(bound)))
+        val beside = (concluded ++ twinRuns.map(_.own)).map(_.unusedBounds.toSet)
+        head.unusedBounds.filter(bound => beside.forall(_(bound)))
       }
       if (graph.nodes.isEmpty && problems.nonEmpty) Left(problems ++ notes)
       else {
-        val linked                       = phase.calls.getOrElse(Reach.link(manifest, graph, world))
+        val linked                       = head.calls.getOrElse(Reach.link(manifest, graph, world))
         val Reach.Reached(reach, unread) = Reach.of(linked, graph)
         val hotNames                     = graph.nodes.values.view.map(_.name).filter(isHot).toSet
         // Megamorphic calls cost only where the JVM compiles hot code, which a platform twin never runs on.
         val resolved = Megamorphic.resolve(
-          (phase +: groups).flatMap(_.megamorphic).filter(site =>
+          (head +: concluded).flatMap(_.megamorphic).filter(site =>
             !(apart.nonEmpty && site.generic) &&
               graph.nodes.get(site.node).exists(node => !manifest.platforms(node.module) && hotNames(node.name))
           ),
@@ -431,33 +441,33 @@ object Extraction {
           graph,
           algebra,
           smells,
-          joined(phase.designs, _.designs, _.joined(_), _.excluding(_), excluded = _.definitions),
+          joined(head.designs, _.designs, _.joined(_), _.excluding(_), excluded = _.definitions),
           structures,
-          joined(phase.equality, _.equality, _.joined(_), _.excluding(_), excluded = _.definitions),
+          joined(head.equality, _.equality, _.joined(_), _.excluding(_), excluded = _.definitions),
           members.copy(calls = java.callers),
-          owned.foldLeft(phase.duplicates)(_ ++ _.collector.duplicates) ++
-            Clones.groups((phase +: groups).flatMap(_.candidates)) ++
+          owned.foldLeft(head.duplicates)(_ ++ _.collector.duplicates) ++
+            Clones.groups((head +: concluded).flatMap(_.candidates)) ++
             java.clones,
           bytecode(),
           joined[Vector[Complexity.Summary]](
-            phase.complexities,
+            head.complexities,
             _.complexities,
             _ ++ _,
             (summaries, named) => summaries.filterNot(summary => named(summary.node)),
             excluded = _.definitions
           ),
           unmatched,
-          owned.foldLeft(phase.pipelines)(_ ++ _.collector.pipelines),
+          owned.foldLeft(head.pipelines)(_ ++ _.collector.pipelines),
           resolved.filterNot(_.site.settled),
           Megamorphic.shared(resolved, graph.nodes, linked.graph, world),
           Option.when(hot.nonEmpty)(graph.nodes.keySet.filter(isHot)),
-          joined(phase.purity, _.purity, _.joined(_)),
+          joined(head.purity, _.purity, _.joined(_)),
           java.lints,
           problems ++ unread,
-          joined(phase.nesting(graph.rooted), _.nesting(graph.rooted), _.joined(_)).pinned(replacedAt(_)),
+          joined(head.nesting(graph.rooted), _.nesting(graph.rooted), _.joined(_)).pinned(replacedAt(_)),
           reach,
           notes,
-          owned.foldLeft(phase.dictionaries)(_ ++ _.collector.dictionaries),
+          owned.foldLeft(head.dictionaries)(_ ++ _.collector.dictionaries),
           status
         ))
       }
@@ -512,9 +522,9 @@ object Extraction {
     )
   }
 
-  private enum Owned(val collector: Collector) {
-    case Twin(own: Collector, stands: String => Boolean)    extends Owned(own)
-    case Copy(group: Collector, repeats: String => Boolean) extends Owned(group)
+  private enum Owned(val collector: Collector.Outcome) {
+    case Twin(own: Collector.Outcome, stands: String => Boolean)    extends Owned(own)
+    case Copy(group: Collector.Outcome, repeats: String => Boolean) extends Owned(group)
 
     def uses: Option[String => Boolean] = this match {
       case Twin(_, stands) => Some(stands)
@@ -529,8 +539,8 @@ object Extraction {
 
   private case class Twinned(
       reading: Twins.Reading,
-      own: Collector,
-      copies: Collector,
+      own: Collector.Outcome,
+      copies: Collector.Outcome,
       problems: Vector[String],
       notes: Vector[String]
   )

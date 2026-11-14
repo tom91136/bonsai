@@ -78,6 +78,38 @@ private[analysis] object Collector {
     def ++(other: Absorbed): Absorbed = Absorbed(other.nodes ++ nodes, roots ++ other.roots)
   }
 
+  /** What a collector leaves once it has read and concluded, apart from the compiler state it read. */
+  case class Outcome(
+      referrers: Map[String, Vector[String]],
+      usages: Map[String, Set[Use]],
+      assignments: Set[String],
+      candidates: Vector[Clones.Candidate],
+      problems: Vector[String],
+      notes: Vector[String],
+      described: collection.Map[String, Node],
+      recorded: Symbols.Recorded,
+      graph: Graph,
+      calls: Option[Reach.Calls],
+      algebra: Algebra.Model,
+      smells: Smells.Model,
+      designs: Designs.Model,
+      structures: Structures.Model,
+      equality: Equality.Model,
+      memberships: Members.Model,
+      duplicates: Vector[Clones.Group],
+      complexities: Vector[Complexity.Summary],
+      unusedBounds: Vector[Complexity.Bounded],
+      pipelines: Vector[Pipelines.Lifted],
+      megamorphic: Vector[Megamorphic.Site],
+      dictionaries: Vector[Dictionaries.Parameter],
+      purity: Purity.Model,
+      nesting: Set[String] => Nesting.Model
+  ) {
+
+    /** The file and line the node of the given name is declared at. */
+    def positionOf(name: String): Option[(String, Int)] = described.get(name).map(node => (node.source, node.line))
+  }
+
   // A hierarchy of one case is a single implementation, which another rule reports.
   private val MinimumCases = 2
 
@@ -328,10 +360,38 @@ private[analysis] class Collector(
   /** Adds what a twin's classes reference, which the copies of the JVM modules the node records stand in for: the edges
     * and the nodes. The edges join at once, so that a run that reads no file still holds them.
     */
-  def absorb(other: Collector): Unit = {
-    symbols.absorb(other.symbols.recorded)
+  def absorb(other: Collector.Outcome): Unit = {
+    symbols.absorb(other.recorded)
     twinned = twinned ++ Collector.Absorbed(other.graph.nodes, other.graph.roots)
   }
+
+  /** The results of this collector, which stand without the compiler state the collector holds. */
+  def outcome: Collector.Outcome = Collector.Outcome(
+    referrers,
+    usages,
+    assignments,
+    candidates,
+    problems,
+    notes,
+    symbols.nodes,
+    symbols.recorded,
+    graph,
+    calls,
+    algebra,
+    smells,
+    designs,
+    structures,
+    equality,
+    memberships,
+    duplicates,
+    complexities,
+    unusedBounds,
+    pipelines,
+    megamorphic,
+    dictionaries,
+    purity,
+    placements.fold((_: Set[String]) => Nesting.Model.empty)(_.found.model)
+  )
 
   /** The nodes with an edge to each node, with those of the runs this collector absorbed. */
   def referrers: Map[String, Vector[String]] = symbols.incoming
@@ -367,9 +427,6 @@ private[analysis] class Collector(
   def note(message: String): Unit = remarks += message
 
   def notes: Vector[String] = remarks.toVector
-
-  /** The file and line the node of the given name is declared at. */
-  def positionOf(name: String): Option[(String, Int)] = symbols.described(name).map(node => (node.source, node.line))
 
   def graph: Graph = {
     val own = symbols.graph(entryPoints)
@@ -520,9 +577,6 @@ private[analysis] class Collector(
   }
 
   def memberships: Members.Model = Members.Model(memberList.toVector, givenList.toVector, nestedList.toVector)
-
-  /** The declarations the nesting rule places, with `entries` the nodes code outside the build enters at. */
-  def nesting(entries: Set[String]): Nesting.Model = placements.fold(Nesting.Model.empty)(_.model(entries))
 
   def duplicates: Vector[Clones.Group] = clones.toVector
 

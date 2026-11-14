@@ -22,7 +22,52 @@ object Placements {
     finally stack.pop(): Unit
   }
 
-  private case class Held(node: Node, lines: Int, inside: Boolean, movable: Boolean, owner: Boolean, bare: Boolean)
+  private[analysis] case class Held(
+      node: Node,
+      lines: Int,
+      inside: Boolean,
+      movable: Boolean,
+      owner: Boolean,
+      bare: Boolean
+  )
+
+  /** The declarations found and the references between them, apart from the compiler state they were read from. */
+  private[analysis] case class Found(
+      units: Vector[Held],
+      members: Vector[Held],
+      edges: Map[String, Set[String]],
+      pinned: Set[String]
+  ) {
+
+    /** The declarations and the references between them; `entries` names the units code outside the build enters at.
+      */
+    def model(entries: Set[String]): Nesting.Model = {
+      val declarations = units.map(found =>
+        Nesting.Declaration(
+          found.node,
+          unit = true,
+          found.inside,
+          found.lines.max(0),
+          found.movable && !pinned(found.node.name),
+          found.owner,
+          found.bare,
+          entries(found.node.name)
+        )
+      ) ++ members.map(found =>
+        Nesting.Declaration(
+          found.node,
+          unit = false,
+          inside = false,
+          found.lines.max(0),
+          found.movable,
+          owner = false,
+          bare = false,
+          found.node.exported
+        )
+      )
+      Nesting.Model(declarations, edges)
+    }
+  }
 }
 
 /** The declarations of a build and the references between them, for the nesting rule. A reference counts for the
@@ -242,35 +287,8 @@ private class Placements(resolver: Symbols, lines: Lines)(using Context) extends
     case _ => false
   }
 
-  /** The declarations found and the references between them; `entries` names the units code outside the build enters
-    * at.
-    */
-  def model(entries: Set[String]): Nesting.Model = {
-    val declarations = units.values.toVector.map(found =>
-      Nesting.Declaration(
-        found.node,
-        unit = true,
-        found.inside,
-        found.lines.max(0),
-        found.movable && !pinned(found.node.name),
-        found.owner,
-        found.bare,
-        entries(found.node.name)
-      )
-    ) ++ members.values.toVector.map(found =>
-      Nesting.Declaration(
-        found.node,
-        unit = false,
-        inside = false,
-        found.lines.max(0),
-        found.movable,
-        owner = false,
-        bare = false,
-        found.node.exported
-      )
-    )
-    Nesting.Model(declarations, edges.view.mapValues(_.toSet).toMap)
-  }
+  def found: Found =
+    Found(units.values.toVector, members.values.toVector, edges.view.mapValues(_.toSet).toMap, pinned.toSet)
 
   private class Referencing(using Context) extends TypeTraverser {
     def traverse(tpe: Type): Unit = tpe match {
