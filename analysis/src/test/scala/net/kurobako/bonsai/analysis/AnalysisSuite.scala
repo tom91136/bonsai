@@ -42,15 +42,15 @@ trait AnalysisSuite extends FunSuite {
 
   /** Sources and resources are named by relative path; test sources see the main output. A module of `libraries`
     * publishes its main output for other builds to use, `dependencies` are compiled onto the classpath outside the
-    * build, `absent` are compiled against but left off the analysed classpath, as a dependency a manifest misses is,
-    * `concurrent` names methods that run the functions passed to them on other threads, and `twins` holds the sources
-    * each platform twin, module `t0` and on, compiles beside the main ones, in place of those it names alike. `rooted`
-    * compiles the build's sources under the build directory as their source root, and names it the root of the
-    * manifest, as a build does. `resourced` are resources the build packages from a resource directory, and `unlisted`
-    * the files of that directory it does not, such as hidden and excluded ones, written in Latin-1. `marked` has the
-    * manifest name the module as one whose resources are listed, as `resourced` does. `outdated` are classes the
-    * analysed classpath holds in place of the `absent` ones the build compiled against, as another version of a
-    * dependency would be.
+    * build, `absent` are compiled against, by `dependencies` too, but left off the analysed classpath, as a dependency
+    * a manifest misses is, `concurrent` names methods that run the functions passed to them on other threads, and
+    * `twins` holds the sources each platform twin, module `t0` and on, compiles beside the main ones, in place of those
+    * it names alike. `rooted` compiles the build's sources under the build directory as their source root, and names it
+    * the root of the manifest, as a build does. `resourced` are resources the build packages from a resource directory,
+    * and `unlisted` the files of that directory it does not, such as hidden and excluded ones, written in Latin-1.
+    * `marked` has the manifest name the module as one whose resources are listed, as `resourced` does. `outdated` are
+    * classes the analysed classpath holds in place of the `absent` ones the build compiled against, as another version
+    * of a dependency would be.
     */
   protected def extract(
       main: Seq[(String, String)],
@@ -118,9 +118,9 @@ trait AnalysisSuite extends FunSuite {
   )(use: (Extraction.Result, Vector[Path]) => A): A =
     Scratch.using("bonsai-") { directory =>
       val sourceRoot = Option.when(rooted)(directory)
+      val missing    = Option.when(absent.nonEmpty)(compile(directory.resolve("absent"), absent, Vector.empty))
       val external   =
-        Option.when(dependencies.nonEmpty)(compile(directory.resolve("dependencies"), dependencies, Vector.empty))
-      val missing     = Option.when(absent.nonEmpty)(compile(directory.resolve("absent"), absent, Vector.empty))
+        Option.when(dependencies.nonEmpty)(compile(directory.resolve("dependencies"), dependencies, missing.toVector))
       val mainClasses = compile(directory.resolve("main"), main, external.toVector ++ missing, sourceRoot)
       write(mainClasses, resources)
       write(directory.resolve("resources"), resourced)

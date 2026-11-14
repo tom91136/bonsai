@@ -1639,4 +1639,20 @@ class PuritySuite extends AnalysisSuite {
     assert(isUnknown(verdicts("Callers.unknown")), verdicts("Callers.unknown"))
     assertEquals(verdicts("Callers.loud"), impure("calls Ops.as, which performs output"))
   }
+
+  test("a library body compiled against another version of a dependency is left unread, not retyped") {
+    val stale = extract(
+      program("Use", "object Use { def run: Int = lib.Reader.run }"),
+      dependencies = Seq(
+        "Reader.scala" ->
+          """package lib
+            |object Reader { def run: Int = Old.plus(1)(2) }""".stripMargin
+      ),
+      absent = Seq("Old.scala" -> "package lib\nobject Old { def plus(x: Int)(y: Int): Int = x + y }"),
+      outdated = Seq("Old.scala" -> "package lib\nobject Old { def plus(x: Int, y: Int): Int = x + y }")
+    )
+    assertEquals(stale.notes.filter(_.contains("wrong number")), Vector.empty[String])
+    assert(stale.notes.exists(_.startsWith("could not read library bodies of lib.Reader")), stale.notes)
+    assert(isUnknown(stale.purity.verdicts("Use.run")), stale.purity.verdicts("Use.run"))
+  }
 }

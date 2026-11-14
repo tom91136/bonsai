@@ -4,6 +4,7 @@ import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.ast.tpd.TreeOps
 import dotty.tools.dotc.core.Constants.Constant
 import dotty.tools.dotc.core.Contexts.Context
+import dotty.tools.dotc.core.Contexts.ctx
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Symbols.Symbol
 import dotty.tools.dotc.core.Symbols.defn
@@ -13,6 +14,7 @@ import dotty.tools.dotc.core.Types.ExprType
 import dotty.tools.dotc.core.Types.TermRef
 import dotty.tools.dotc.core.Types.ThisType
 import dotty.tools.dotc.core.Types.Type
+import dotty.tools.dotc.reporting.StoreReporter
 import dotty.tools.dotc.util.Spans.Span
 import net.kurobako.bonsai.effects.{Effect as Generic, *}
 import net.kurobako.bonsai.lifting.*
@@ -714,6 +716,8 @@ object Purity {
     private val pending    = mutable.Queue.empty[(Symbol, Int)]
     private val explored   = mutable.Set.empty[Symbol]
     private val unread     = mutable.LinkedHashSet.empty[Symbol]
+    private val reader     = StoreReporter()
+    private val reading    = ctx.fresh.setReporter(reader)
     private val lost       = mutable.LinkedHashMap.empty[String, Throwable]
     private val facts      = mutable.Map.empty[Symbol, Facts]
     private val fresh      = mutable.Set.empty[Symbol]
@@ -942,7 +946,7 @@ object Purity {
 
     /** The facts of a method of the build or a library, reading a library body on first need within the limits. */
     private def factsOf(method: Symbol): Option[Facts] = facts.get(method).orElse(
-      Option.when(explored.size < MaximumLibrary)(method.defTree).collect {
+      Option.when(explored.size < MaximumLibrary)(unpickled(method)).collect {
         case definition: tpd.DefDef if !definition.rhs.isEmpty =>
           explored += method
           val read =
@@ -1548,7 +1552,7 @@ object Purity {
       Calls.lambda(tree) match {
         case Some(lambda) =>
           Value.Function(
-            lambdas.getOrElseUpdate(lambda.symbol, Walker(frame.root, lambda.symbol, 1).facts(lambda.rhs)),
+            lambdas.getOrElseUpdate(lambda.symbol, Walker(frame.root, lambda.symbol, 1).facts(forced(lambda))),
             frame
           )
         case None =>
@@ -1921,11 +1925,24 @@ object Purity {
       Classpath.holder(roots, file).orElse(Option.when(file.nonEmpty)(file)).fold("an unknown classpath entry")(path)
     }
 
+    // A body compiled against another version of a dependency than the classpath holds reads with errors, which are
+    // kept apart from the run's and leave the body unread.
+    private def forced(definition: tpd.ValOrDefDef): tpd.Tree = {
+      val symbol = definition.symbol
+      if (!unread(symbol)) {
+        val before = reader.errorCount
+        definition.rhs(using reading): Unit
+        if (reader.errorCount > before) unread += symbol
+      }
+      if (unread(symbol)) throw IllegalStateException("its body does not read against the classpath")
+      definition.rhs
+    }
+
     // A library body is unpickled on first read, and a reference in it to a class the classpath lacks can fail that.
     private def unpickled(symbol: Symbol): tpd.Tree =
       try
         symbol.defTree match {
-          case tree: tpd.ValOrDefDef => tree.rhs: Unit; tree
+          case tree: tpd.ValOrDefDef => forced(tree): Unit; tree
           case tree                  => tree
         }
       catch {
@@ -2137,7 +2154,7 @@ object Purity {
           case Some(lambda) =>
             Argument.Function(lambdas.getOrElseUpdate(
               lambda.symbol,
-              Walker(root, lambda.symbol, depth).facts(lambda.rhs)
+              Walker(root, lambda.symbol, depth).facts(forced(lambda))
             ))
           case None if parameter.exists && parameter.isTerm && parameter.info.isInstanceOf[ExprType] =>
             Argument.Function(Walker(root, scope, depth).facts(argument))
