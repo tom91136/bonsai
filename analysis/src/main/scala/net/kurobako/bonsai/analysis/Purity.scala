@@ -777,6 +777,7 @@ object Purity {
     )
     private val Connectives   = Set("&&", "||")
     private val View          = requiredClass("scala.collection.View")
+    private val Iterable      = requiredClass("scala.collection.Iterable")
     private val IteratorClass = requiredClass("scala.collection.Iterator")
     private val LockClass     = requiredClass("java.util.concurrent.locks.Lock")
 
@@ -2283,8 +2284,11 @@ object Purity {
         Summary(modelled.effects.toSet, modelled.invokes)
       }
 
-      private def callable(tpe: Type): Boolean =
-        tpe.isInstanceOf[ExprType] || defn.isFunctionType(tpe.widen) || tpe.widen.derivesFrom(defn.PartialFunctionClass)
+      private def callable(tpe: Type): Boolean = {
+        val widened = tpe.widen
+        tpe.isInstanceOf[ExprType] || defn.isFunctionType(widened) ||
+        widened.derivesFrom(defn.PartialFunctionClass) && !widened.derivesFrom(Iterable)
+      }
 
       // Collections and iterators; for comprehensions over options and results sequence effects by design.
       private def viewed(qualifier: Option[tpd.Tree]): Boolean =

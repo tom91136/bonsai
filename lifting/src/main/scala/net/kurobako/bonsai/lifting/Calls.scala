@@ -95,11 +95,16 @@ object Calls {
         module.is(Flags.Module) &&
           (module == defn.ArrayModule || MutablePackages.exists(qualified(module).startsWith(_)))
       )
-      method.isConstructor || Set("iterator", "toArray", "toBuffer", "clone")(name) ||
+      method.isConstructor || Set("iterator", "toArray", "toBuffer", "clone")(name) || splits(method) ||
       factory &&
       Set("apply", "empty", "from", "ofDim", "fill", "tabulate", "newBuilder", "allocate", "allocateDirect")(name) ||
       configures(function)
   }
+
+  private val Texts = Set("java.lang.String", "scala.collection.StringOps")
+
+  private def splits(method: Symbol)(using Context): Boolean =
+    method.exists && Texts(qualified(method.owner)) && method.info.finalResultType.widen.classSymbol == defn.ArrayClass
 
   // A buffer is configured and filled by chained calls on itself.
   private def configures(function: tpd.Tree)(using Context): Boolean =

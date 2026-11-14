@@ -1687,4 +1687,48 @@ class PuritySuite extends AnalysisSuite {
     assert(stale.notes.exists(_.startsWith("could not read library bodies of lib.Reader")), stale.notes)
     assert(isUnknown(stale.purity.verdicts("Use.run")), stale.purity.verdicts("Use.run"))
   }
+
+  private def probed(source: String, name: String): Purity.Verdict =
+    extract(Seq(
+      "Main.scala"  -> "object Main { def main(args: Array[String]): Unit = println(Probe) }",
+      "Probe.scala" -> source
+    )).purity.verdicts.getOrElse(name, fail(s"no verdict for $name"))
+
+  test("an interpolated string is pure for pure arguments, selected, lambda-bound, or parameters") {
+    val shapes = Vector(
+      "case class P(y: String)\nobject Probe { def f(p: P): String = s\"x-${p.y}\" }"                    -> "Probe.f",
+      "object Probe { def h(a: String): String = s\"x-$a\" }"                                            -> "Probe.h",
+      "object Probe { def k(a: String): Option[String] = Option(a).map(family => s\"$family-latest\") }" -> "Probe.k",
+      "case class P(y: String)\nobject Probe {\n  def tagged(p: P, arch: String): String = arch match {\n" +
+        "    case \"arm64\" => s\"x-${p.y}\"\n    case _       => \"x\"\n  }\n}" -> "Probe.tagged",
+      "object Probe {\n  case class Identity(family: String, release: String, declaredLatest: Boolean)\n" +
+        "  private val families = Map(\"linux\" -> \"ubuntu\", \"windows\" -> \"windows\")\n" +
+        "  def identity(os: String, release: String, labels: List[String]): Option[Identity] =\n" +
+        "    families.get(os).map(family =>\n" +
+        "      Identity(family, release, labels.exists(_.equalsIgnoreCase(s\"$family-latest\"))))\n}" ->
+        "Probe.identity"
+    )
+    shapes.foreach((source, name) => assertEquals(probed(source, name), Purity.Verdict.Pure, name))
+  }
+
+  test("reading an array the method created is not reading mutable state, but one it was given is") {
+    val loop = (receiver: String, parameter: String) =>
+      s"""import scala.annotation.tailrec
+         |object Probe {
+         |  def summed($parameter): Int = {
+         |    @tailrec def loop(rest: List[String], acc: Int): Int = rest match {
+         |      case head :: tail => loop(tail, acc + head.toIntOption.getOrElse(0))
+         |      case Nil          => acc
+         |    }
+         |    loop($receiver, 0)
+         |  }
+         |}""".stripMargin
+    assertEquals(probed(loop("text.split(\",\").toList", "text: String"), "Probe.summed"), Purity.Verdict.Pure)
+    assertEquals(probed(loop("Array(text).toList", "text: String"), "Probe.summed"), Purity.Verdict.Pure)
+    assert(isImpure(probed(loop("parts.toList", "parts: Array[String]"), "Probe.summed")))
+    assert(isImpure(probed(
+      "object Probe {\n  private val parts = Array(\"1\")\n  def summed: Int = parts.toList.size\n}",
+      "Probe.summed"
+    )))
+  }
 }
