@@ -334,6 +334,16 @@ object LintBugs {
     val kinds: Set[Kind] = Set(Tree.Kind.METHOD_INVOCATION)
 
     private val Checked = Set(
+      "java.io.File#createNewFile",
+      "java.io.File#delete",
+      "java.io.File#mkdir",
+      "java.io.File#mkdirs",
+      "java.io.File#renameTo",
+      "java.io.File#setExecutable",
+      "java.io.File#setLastModified",
+      "java.io.File#setReadOnly",
+      "java.io.File#setReadable",
+      "java.io.File#setWritable",
       "java.io.InputStream#read",
       "java.io.Reader#read",
       "java.util.concurrent.BlockingQueue#offer",

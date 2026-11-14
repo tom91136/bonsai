@@ -2982,6 +2982,38 @@ class LintSuite extends munit.FunSuite {
     assertEquals(found.size, 2, model.lints.mkString("\n"))
   }
 
+  test("a java.io.File operation whose result is ignored") {
+    val model = compile("Installer" -> """
+      |package demo;
+      |
+      |import java.io.File;
+      |
+      |public class Installer {
+      |  public void install(File launcher) throws Exception {
+      |    launcher.createNewFile();
+      |    launcher.delete();
+      |    launcher.mkdir();
+      |    launcher.getParentFile().mkdirs();
+      |    launcher.renameTo(new File("other"));
+      |    launcher.setExecutable(true);
+      |    launcher.setLastModified(0L);
+      |    launcher.setReadOnly();
+      |    launcher.setReadable(true);
+      |    launcher.setWritable(true);
+      |  }
+      |
+      |  public void checked(File launcher) throws Exception {
+      |    if (!launcher.setExecutable(true)) throw new Exception("not executable");
+      |    boolean created = launcher.exists() || launcher.createNewFile();
+      |  }
+      |}
+      |""".stripMargin)
+
+    val ignored = model.lints.filter(_.id == "ignored-call-result")
+    assertEquals(ignored.size, 10, model.lints.mkString("\n"))
+    assert(ignored.forall(_.method.endsWith("install")), ignored.map(_.method).mkString("\n"))
+  }
+
   test("a serialVersionUID field can be annotated with @Serial") {
     val model = compile("Serialized" -> """
       |package demo;
