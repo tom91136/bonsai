@@ -62,14 +62,12 @@ private object DataFlow {
     "java.lang.String"   -> Set("valueOf")
   )
 
-  /** The methods of the JDK and JavaFX whose result is null when a queue is empty or a property is not set, by the type
-    * whose subtypes have them; the declarations carry no annotation for it.
+  /** The methods of the JDK whose result is null when a queue is empty, by the type whose subtypes have them; the
+    * declarations carry no annotation for it.
     */
   private val NullableResults = Map(
-    "java.util.Queue"                          -> Set("poll", "peek"),
-    "java.util.Deque"                          -> Set("pollFirst", "pollLast", "peekFirst", "peekLast"),
-    "javafx.beans.value.ObservableObjectValue" -> Set("get", "getValue"),
-    "javafx.beans.value.WritableObjectValue"   -> Set("get", "getValue")
+    "java.util.Queue" -> Set("poll", "peek"),
+    "java.util.Deque" -> Set("pollFirst", "pollLast", "peekFirst", "peekLast")
   )
 
   private type Env = Map[Ref, Value]

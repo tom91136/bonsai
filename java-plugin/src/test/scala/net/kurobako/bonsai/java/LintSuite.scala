@@ -4559,7 +4559,7 @@ class LintSuite extends munit.FunSuite {
         |""".stripMargin
   )
 
-  test("the value of a JavaFX object property is nullable until it is set") {
+  test("the value of a JavaFX object property follows its type argument") {
     val found = flow(
       "nullable-use",
       (javafx :+ "Properties" ->
@@ -4570,37 +4570,58 @@ class LintSuite extends munit.FunSuite {
           |import javafx.beans.property.SimpleObjectProperty;
           |import javafx.beans.value.ObservableObjectValue;
           |import javafx.beans.value.ObservableValue;
+          |import org.jspecify.annotations.Nullable;
           |
           |public class Properties {
-          |  static int observed(ObservableObjectValue<String> value) {
+          |  static int observed(ObservableObjectValue<@Nullable String> value) {
           |    return value.get().length();
           |  }
           |
-          |  static int viewed(ObservableValue<String> value) {
+          |  static int viewed(ObservableValue<@Nullable String> value) {
           |    return value.getValue().length();
           |  }
           |
-          |  static int property(ObjectProperty<String> property) {
+          |  static int property(ObjectProperty<@Nullable String> property) {
           |    return property.getValue().length();
           |  }
           |
-          |  static int simple(SimpleObjectProperty<String> property) {
+          |  static int simple(SimpleObjectProperty<@Nullable String> property) {
           |    return property.get().length();
           |  }
           |
-          |  static int wrapped(ReadOnlyObjectWrapper<String> wrapper) {
+          |  static int wrapped(ReadOnlyObjectWrapper<@Nullable String> wrapper) {
           |    return wrapper.get().length();
           |  }
           |
-          |  static int checked(ObjectProperty<String> property) {
+          |  static int checked(ObjectProperty<@Nullable String> property) {
           |    String value = property.get();
           |    if (value == null) return 0;
           |    return value.length();
           |  }
+          |
+          |  static int observedPlain(ObservableObjectValue<String> value) {
+          |    return value.get().length();
+          |  }
+          |
+          |  static int viewedPlain(ObservableValue<String> value) {
+          |    return value.getValue().length();
+          |  }
+          |
+          |  static int propertyPlain(ObjectProperty<String> property) {
+          |    return property.getValue().length();
+          |  }
+          |
+          |  static int simplePlain(SimpleObjectProperty<String> property) {
+          |    return property.get().length();
+          |  }
+          |
+          |  static int wrappedPlain(ReadOnlyObjectWrapper<String> wrapper) {
+          |    return wrapper.get().length();
+          |  }
           |}
           |""".stripMargin)*
     )
-    assertEquals(found.map(_.line), Vector(11, 19, 23, 27), found.mkString("\n"))
+    assertEquals(found.map(_.line), Vector(12, 16, 20, 24, 28), found.mkString("\n"))
   }
 
   test("a reference holder created without a value needs a nullable value type") {
