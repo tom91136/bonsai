@@ -62,6 +62,16 @@ private object DataFlow {
     "java.lang.String"   -> Set("valueOf")
   )
 
+  /** The methods of the JDK and JavaFX whose result is null when a queue is empty or a property is not set, by the type
+    * whose subtypes have them; the declarations carry no annotation for it.
+    */
+  private val NullableResults = Map(
+    "java.util.Queue"                          -> Set("poll", "peek"),
+    "java.util.Deque"                          -> Set("pollFirst", "pollLast", "peekFirst", "peekLast"),
+    "javafx.beans.value.ObservableObjectValue" -> Set("get", "getValue"),
+    "javafx.beans.value.WritableObjectValue"   -> Set("get", "getValue")
+  )
+
   private type Env = Map[Ref, Value]
 
   private enum LoopTest {
@@ -880,11 +890,27 @@ private class DataFlow(context: Context) {
     DataFlow.NonNullResults.get(owner).exists(_.contains(method.getSimpleName.toString))
   }
 
+  /** Whether the call is of a method that the library says returns null, on a type that has it. */
+  private def libraryNullable(invocation: MethodInvocationTree, method: ExecutableElement): Boolean = {
+    val named          = method.getSimpleName.toString
+    lazy val receivers = method.getEnclosingElement.asType +:
+      (invocation.getMethodSelect match {
+        case select: MemberSelectTree => context.attributedType(select.getExpression).toVector
+        case _                        => Vector.empty
+      })
+    !marked(method) && NullableResults.exists { (owner, names) =>
+      names.contains(named) && context.elements.typeNamed(owner).exists { declared =>
+        val bound = context.types.erasure(declared.asType)
+        receivers.exists(receiver => context.types.isSubtype(context.types.erasure(receiver), bound))
+      }
+    }
+  }
+
   /** The value a call returns, by what its declaration and the type arguments of the call say. */
   private def result(invocation: MethodInvocationTree, method: ExecutableElement): Value =
     if (knownNonNull(method)) Value.NonNull
     else if (method.getModifiers.contains(Modifier.NATIVE)) Value.Unknown
-    else if (Nullness.hasAnnotation(method, Nullness.Nullable)) Value(Null.Maybe)
+    else if (Nullness.hasAnnotation(method, Nullness.Nullable) || libraryNullable(invocation, method)) Value(Null.Maybe)
     else if (Nullness.hasBoundary(method))
       if (method.getReturnType.getKind == TypeKind.TYPEVAR) Value(Null.Maybe) else Value.Unknown
     else if (method.getReturnType.getKind == TypeKind.TYPEVAR) {

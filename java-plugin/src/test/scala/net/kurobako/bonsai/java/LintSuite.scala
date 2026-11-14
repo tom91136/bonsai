@@ -4435,58 +4435,60 @@ class LintSuite extends munit.FunSuite {
   }
 
   test("the retrieval methods of queues and deques may return null") {
-    val found = flow(
-      "nullable-use",
-      "Queues" ->
-        """package demo;
-          |
-          |import java.util.ArrayDeque;
-          |import java.util.Deque;
-          |import java.util.LinkedList;
-          |import java.util.PriorityQueue;
-          |import java.util.Queue;
-          |import java.util.concurrent.BlockingQueue;
-          |import java.util.concurrent.ConcurrentLinkedDeque;
-          |import java.util.concurrent.TimeUnit;
-          |
-          |public class Queues {
-          |  static int poll(Queue<String> queue) {
-          |    return queue.poll().length();
-          |  }
-          |
-          |  static int peek(PriorityQueue<String> queue) {
-          |    return queue.peek().length();
-          |  }
-          |
-          |  static int pollFirst(Deque<String> deque) {
-          |    return deque.pollFirst().length();
-          |  }
-          |
-          |  static int peekFirst(ConcurrentLinkedDeque<String> deque) {
-          |    return deque.peekFirst().length();
-          |  }
-          |
-          |  static int timed(BlockingQueue<String> queue) throws InterruptedException {
-          |    return queue.poll(1, TimeUnit.SECONDS).length();
-          |  }
-          |
-          |  static int pollLast(LinkedList<String> list, ArrayDeque<String> array) {
-          |    return list.pollLast().length() + array.peekLast().length();
-          |  }
-          |
-          |  static int take(BlockingQueue<String> queue) throws InterruptedException {
-          |    return queue.take().length();
-          |  }
-          |
-          |  static int checked(Queue<String> queue) {
-          |    String head = queue.poll();
-          |    if (head == null) return 0;
-          |    return head.length();
-          |  }
-          |}
-          |""".stripMargin
-    )
+    val queues =
+      """package demo;
+        |
+        |import java.util.ArrayDeque;
+        |import java.util.Deque;
+        |import java.util.LinkedList;
+        |import java.util.PriorityQueue;
+        |import java.util.Queue;
+        |import java.util.concurrent.BlockingQueue;
+        |import java.util.concurrent.ConcurrentLinkedDeque;
+        |import java.util.concurrent.TimeUnit;
+        |
+        |public class Queues {
+        |  static int poll(Queue<String> queue) {
+        |    return queue.poll().length();
+        |  }
+        |
+        |  static int peek(PriorityQueue<String> queue) {
+        |    return queue.peek().length();
+        |  }
+        |
+        |  static int pollFirst(Deque<String> deque) {
+        |    return deque.pollFirst().length();
+        |  }
+        |
+        |  static int peekFirst(ConcurrentLinkedDeque<String> deque) {
+        |    return deque.peekFirst().length();
+        |  }
+        |
+        |  static int timed(BlockingQueue<String> queue) throws InterruptedException {
+        |    return queue.poll(1, TimeUnit.SECONDS).length();
+        |  }
+        |
+        |  static int pollLast(LinkedList<String> list, ArrayDeque<String> array) {
+        |    return list.pollLast().length() + array.peekLast().length();
+        |  }
+        |
+        |  static int take(BlockingQueue<String> queue) throws InterruptedException {
+        |    return queue.take().length();
+        |  }
+        |
+        |  static int checked(Queue<String> queue) {
+        |    String head = queue.poll();
+        |    if (head == null) return 0;
+        |    return head.length();
+        |  }
+        |}
+        |""".stripMargin
+    val found = flow("nullable-use", "Queues" -> queues)
     assertEquals(found.map(_.line).sorted, Vector(14, 18, 22, 26, 30, 34, 34), found.mkString("\n"))
+    assertEquals(
+      compile("Queues" -> queues).lints.filter(_.id == "nullable-use").map(_.line).sorted,
+      found.map(_.line).sorted
+    )
   }
 
   private val javafx = Seq(
