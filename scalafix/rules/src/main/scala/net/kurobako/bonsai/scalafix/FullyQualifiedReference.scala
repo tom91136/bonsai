@@ -7,7 +7,8 @@ import scalafix.v1.*
 /** Writes a declaration reached through its full package path by its simple name, and imports it.
   *
   * Packages of `QualifiedCollectionNamespaces` and `NamespaceImports` keep the forms those rules require. A name that
-  * another declaration in the file also uses keeps its full path and is not reported.
+  * another declaration in the file also uses, or that a parent of an enclosing template may inherit, keeps its full
+  * path and is not reported.
   */
 class FullyQualifiedReference(namespaces: List[QualifiedCollectionNamespaces.Namespace])
     extends SemanticRule("FullyQualifiedReference") {
@@ -28,8 +29,14 @@ class FullyQualifiedReference(namespaces: List[QualifiedCollectionNamespaces.Nam
         case name: Name if references.notSelectionName(name) && !name.symbol.isNone =>
           name.value -> entity(name.symbol.value)
       } ++ written.map(c => c.name -> c.entity)).groupMap(_._1)(_._2)
-    val rewritable = written.filterNot(c => entities(c.name).exists(_ != c.entity))
-    val needed     = rewritable.map(c => (c.pkg, c.name)).distinct.filterNot {
+    val rewritable = written.filterNot(c =>
+      entities(c.name).exists(_ != c.entity) ||
+        ancestry.ancestors(c.tree).exists {
+          case template: Template => definitions.mayInherit(template, c.name)
+          case _                  => false
+        }
+    )
+    val needed = rewritable.map(c => (c.pkg, c.name)).distinct.filterNot {
       case (pkg, name) => references.imported(pkg, name)
     }
     (rewritable.map(c =>

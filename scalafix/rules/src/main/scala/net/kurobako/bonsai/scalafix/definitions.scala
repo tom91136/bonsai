@@ -77,6 +77,17 @@ private object definitions {
       }
     )
 
+  /** Whether a parent of `template`, or any supertype of it, declares a member called `name`, or has members that
+    * cannot be read, as for classes compiled by Scala 3, which the symbol table does not read.
+    */
+  def mayInherit(template: Template, name: String)(using SemanticDocument): Boolean =
+    lineage(template.inits.map(init => symbol(init.tpe))).exists(parent =>
+      info(parent).map(_.signature) match {
+        case Some(ClassSignature(_, _, _, declarations)) => declarations.exists(_.displayName == name)
+        case _                                           => true
+      }
+    )
+
   /** Whether the term names a method that takes arguments, which the compiler eta expands where a function is wanted.
     */
   def methodReference(term: Term)(using SemanticDocument): Boolean = term match {
