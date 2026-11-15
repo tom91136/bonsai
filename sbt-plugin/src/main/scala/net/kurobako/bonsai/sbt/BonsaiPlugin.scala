@@ -362,6 +362,7 @@ object BonsaiPlugin extends AutoPlugin {
       }
     },
     semanticdbEnabled := !isMetaBuild.value,
+    scalafixCaching   := isMetaBuild.value,
     // The rules are a Scala 3 artifact, while sbt-scalafix resolves %% rules against Scala 2.13.
     scalafixDependencies ++= (if (isMetaBuild.value) Nil else Seq(Organization % "bonsai-scalafix_3" % Version)),
     // scalafixConfig is a setting, so the file it names is written by a task each scalafix run depends on.

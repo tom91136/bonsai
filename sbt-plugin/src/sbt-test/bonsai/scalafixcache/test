@@ -1,0 +1,6 @@
+# a lint warning reaches the callback on every check, not only the first
+> scalafixAll --check
+$ exists diagnostics.txt
+$ delete diagnostics.txt
+> scalafixAll --check
+$ exists diagnostics.txt
