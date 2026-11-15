@@ -17,6 +17,8 @@ object QualifiedCollectionNamespaces {
     // Members of the types in a package are owned by those types, whose symbols do not end in a slash.
     def owns(owner: String): Boolean =
       if (subpackages) owner.endsWith("/") && owner.startsWith(symbol) else owner == symbol
+
+    def isPackage(candidate: String): Boolean = candidate == symbol
   }
 
   val Defaults: List[Namespace] = List(
@@ -70,11 +72,15 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
         Option.when(!symbol.isNone)(symbol.owner.value).flatMap(namespace(_)).filterNot(written(name, _)).map {
           space =>
             val replaced = qualified(name)
-            space -> lint.replace(
+            (
+              space,
               replaced,
-              s"${space.prefix}.${symbol.displayName}",
-              "unqualified",
-              s"write ${space.prefix}.${symbol.displayName}, so the name reads as what it is"
+              lint.replace(
+                replaced,
+                s"${space.prefix}.${symbol.displayName}",
+                "unqualified",
+                s"write ${space.prefix}.${symbol.displayName}, so the name reads as what it is"
+              )
             )
         }
     }.flatten
@@ -101,8 +107,20 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
       }
     }
     val rewritten = replacing.map((importer, space) => Patch.replaceTree(importer, space.pkg))
-    (imported ++ prefixed.map(_._2) ++ rewritten ++ references.placements(added.map(importing(_)))).asPatch
+    val redundant = document.tree.collect {
+      case importee @ Importee.Name(name) if redundantImport(name.symbol.value, prefixed.map(_._2)) =>
+        Patch.removeImportee(importee)
+    }
+    (imported ++ prefixed.map(_._3) ++ rewritten ++ redundant ++ references.placements(added.map(importing(_)))).asPatch
   }
+
+  private def redundantImport(symbol: String, replaced: List[Tree])(using document: SemanticDocument): Boolean =
+    namespaces.exists(space => space.prefix == space.pkg && space.isPackage(symbol)) &&
+      document.tree.collect {
+        case name: Term.Name
+            if references.notSelectionName(name) && name.symbol.value == symbol &&
+              ancestry.outsideImports(name) => name
+      }.forall(name => name.parent.exists(parent => replaced.exists(_ eq parent)))
 
   // The package and name an import of the namespace is split into.
   private def importing(space: QualifiedCollectionNamespaces.Namespace): (String, String) = {

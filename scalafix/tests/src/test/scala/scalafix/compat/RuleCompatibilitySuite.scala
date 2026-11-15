@@ -196,6 +196,16 @@ object RuleCompatibilitySuite {
       "qualified-collection-namespaces",
       "QualifiedCollectionNamespacesJavaOnly",
       "FullyQualifiedReference.fully-qualified-reference"
+    ) -> followsConfig,
+    configured(
+      "qualified-collection-namespaces",
+      "QualifiedCollectionNamespacesPackageImport",
+      "FullyQualifiedReference.fully-qualified-reference"
+    ) -> followsConfig,
+    configured(
+      "qualified-collection-namespaces",
+      "QualifiedCollectionNamespacesPackageImportGrouped",
+      "FullyQualifiedReference.fully-qualified-reference"
     )                                                                                               -> followsConfig,
     configured("namespace-imports", "FullyQualifiedReference", "NamespaceImports.namespace-import") -> reconfigured,
     configured("namespace-imports", "QualifiedCollectionNamespacesJavaOnly", "NamespaceImports.qualified-reference") ->
@@ -207,7 +217,18 @@ object RuleCompatibilitySuite {
     configured("namespace-imports", "FullyQualifiedReferenceNoImport", "NamespaceImports.namespace-import") ->
       reconfigured,
     configured("namespace-imports", "FullyQualifiedReferenceSubpackages", "NamespaceImports.namespace-import") ->
-      reconfigured
+      reconfigured,
+    configured(
+      "namespace-imports",
+      "QualifiedCollectionNamespacesPackageImport",
+      "NamespaceImports.qualified-reference"
+    ) ->
+      reconfigured,
+    configured(
+      "namespace-imports",
+      "QualifiedCollectionNamespacesPackageImportGrouped",
+      "NamespaceImports.qualified-reference"
+    ) -> reconfigured
   )
 
   val configuredPending: Map[Key, String] = Map.empty
