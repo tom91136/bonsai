@@ -1673,10 +1673,11 @@ object Purity {
         .toVector ++ arguments.zip(passed).collect { case (argument, value) if carries(argument.tpe.widen) => value }
       if (method.isConstructor) {
         val cls = method.owner
-        // A class declared in a method captures its values; any class captures its constructor's arguments.
+        // A class captures the values its declaration sees, and its constructor's arguments.
         Value.Object(
           cls,
-          frame.bindings ++ cls.info.decls.toList.filter(_.is(Flags.ParamAccessor)).zip(passed) ++
+          frame.bindings.filter((symbol, _) => ownedBy(cls, symbol.owner)) ++
+            cls.info.decls.toList.filter(_.is(Flags.ParamAccessor)).zip(passed) ++
             terms(method).zip(passed)
         )
       } else if (holder(function, frame).exists(symbolic(_))) Value.Deferred(application, frame)

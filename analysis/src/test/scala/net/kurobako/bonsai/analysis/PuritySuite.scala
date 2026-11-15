@@ -1349,6 +1349,72 @@ class PuritySuite extends AnalysisSuite {
     assert(mutual.purity.resolved <= size * size * 10, mutual.purity.resolved)
   }
 
+  test("steps that each construct the next with what they hold are evaluated a bounded number of times") {
+    val steps = extract(
+      Seq(
+        "Main.scala"    -> "object Main { def main(args: Array[String]): Unit = println(new Machine(16)) }",
+        "Machine.scala" ->
+          """import java.util.zip.CRC32
+            |trait State {
+            |  def feed(chunk: Array[Byte]): (State, Array[Byte])
+            |}
+            |class Machine(size: Int) {
+            |  private var state: State = new Header(Array.emptyByteArray, new CRC32)
+            |  def onChunk(c: Array[Byte]): Array[Byte] = {
+            |    val (next, output) = state.feed(c)
+            |    state = next
+            |    output
+            |  }
+            |  private def step(crc: CRC32, skip: Int, check: Boolean): State =
+            |    if (skip > 0) new Skip(check, crc, skip)
+            |    else if (check) new Check(Array.emptyByteArray, crc.getValue())
+            |    else new Body()
+            |  private class Header(acc: Array[Byte], crc: CRC32) extends State {
+            |    def feed(chunk: Array[Byte]): (State, Array[Byte]) = {
+            |      val bytes = acc ++ chunk
+            |      if (bytes.length < 10) (new Header(bytes, crc), Array.emptyByteArray)
+            |      else {
+            |        val (header, rest) = bytes.splitAt(10)
+            |        crc.update(header)
+            |        step(crc, header(4), header(3) == 1).feed(rest)
+            |      }
+            |    }
+            |  }
+            |  private class Skip(check: Boolean, crc: CRC32, skip: Int) extends State {
+            |    def feed(chunk: Array[Byte]): (State, Array[Byte]) = {
+            |      val (upTo, rest) = chunk.splitAt(chunk.indexOf(0) + 1)
+            |      crc.update(upTo)
+            |      step(crc, skip - 1, check).feed(rest)
+            |    }
+            |  }
+            |  private class Check(past: Array[Byte], value: Long) extends State {
+            |    def feed(chunk: Array[Byte]): (State, Array[Byte]) = {
+            |      val (two, rest) = (past ++ chunk).splitAt(2)
+            |      if (two.length < 2) (new Check(two, value), Array.emptyByteArray)
+            |      else new Body().feed(rest)
+            |    }
+            |  }
+            |  private class Body extends State {
+            |    private val crc: CRC32 = new CRC32
+            |    def feed(chunk: Array[Byte]): (State, Array[Byte]) = {
+            |      crc.update(chunk)
+            |      if (chunk.isEmpty) new Trailer(Array.emptyByteArray, crc.getValue(), 0L).feed(chunk) else (this, chunk)
+            |    }
+            |  }
+            |  private class Trailer(acc: Array[Byte], expected: Long, size: Long) extends State {
+            |    def feed(chunk: Array[Byte]): (State, Array[Byte]) = {
+            |      val bytes = acc ++ chunk
+            |      if (bytes.length < 8) (new Trailer(bytes, expected, size), Array.emptyByteArray)
+            |      else new Header(Array.emptyByteArray, new CRC32).feed(bytes.drop(8))
+            |    }
+            |  }
+            |}""".stripMargin
+      )
+    )
+    assert(steps.purity.verdicts.nonEmpty)
+    assert(steps.purity.resolved <= 100, steps.purity.resolved)
+  }
+
   private def claimed(sources: Seq[(String, String)], name: String): String =
     extract(Seq("Main.scala" -> "object Main { def main(args: Array[String]): Unit = println(Callers) }") ++ sources)
       .purity.verdicts.getOrElse(name, fail(s"no verdict for $name")) match {
