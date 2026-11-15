@@ -1672,20 +1672,73 @@ class PuritySuite extends AnalysisSuite {
     assertEquals(verdicts("Use.chained"), Purity.Verdict.Pure)
   }
 
-  test("a library body naming a member the classpath lacks is left unread") {
+  test("a library body annotated with a class the classpath lacks stays read") {
     val stale = extract(
-      program("Use", "object Use { def run: Int = lib.Reader.run }"),
+      program(
+        "Use",
+        """object Use {
+          |  def run: Int = lib.Reader.run
+          |  def loud: Int = lib.Reader.loud
+          |  def typed: Int = lib.Reader.typed
+          |}""".stripMargin
+      ),
       dependencies = Seq(
         "Reader.scala" ->
           """package lib
-            |object Reader { def run: Int = Old.plus(1)(2) }""".stripMargin
+            |object Reader {
+            |  def run: Int = { @Marker("a") val x = 1; x + 1 }
+            |  def loud: Int = { @Marker("b") val x = 1; println(x); x }
+            |  def typed: Int = { val x: Int @Marker("c") = 1; x + 1 }
+            |}""".stripMargin
+      ),
+      absent = Seq(
+        "Marker.scala" -> "package lib\nclass Marker(why: String) extends scala.annotation.StaticAnnotation"
+      )
+    )
+    val verdicts = stale.purity.verdicts
+    assertEquals(stale.notes, Vector.empty[String])
+    assertEquals(verdicts("Use.run"), Purity.Verdict.Pure)
+    assertEquals(verdicts("Use.loud"), impure("calls Reader.loud, which performs output"))
+    assertEquals(verdicts("Use.typed"), Purity.Verdict.Pure)
+  }
+
+  test("a library body that retypes with the wrong type arguments stays read") {
+    val stale = extract(
+      program("Use", "object Use {\n  def run: Int = lib.Reader.run\n  def loud: Int = lib.Reader.loud\n}"),
+      dependencies = Seq(
+        "Reader.scala" ->
+          """package lib
+            |object Reader {
+            |  def run: Int = Old.pick[Int, String](1)
+            |  def loud: Int = { println("x"); Old.pick[Int, String](1) }
+            |}""".stripMargin
+      ),
+      absent = Seq("Old.scala" -> "package lib\nobject Old { def pick[A, B](x: A): A = x }"),
+      outdated = Seq("Old.scala" -> "package lib\nobject Old { def pick[A](x: A): A = x }")
+    )
+    val verdicts = stale.purity.verdicts
+    assertEquals(stale.notes, Vector.empty[String])
+    assertEquals(verdicts("Use.run"), Purity.Verdict.Pure)
+    assertEquals(verdicts("Use.loud"), impure("calls Reader.loud, which performs output"))
+  }
+
+  test("a call to a member the classpath lacks is unknown in a library body that stays read") {
+    val stale = extract(
+      program("Use", "object Use {\n  def run: Int = lib.Reader.run\n  def loud: Int = lib.Reader.loud\n}"),
+      dependencies = Seq(
+        "Reader.scala" ->
+          """package lib
+            |object Reader {
+            |  def run: Int = Old.plus(1)(2)
+            |  def loud: Int = { println("x"); Old.plus(1)(2) }
+            |}""".stripMargin
       ),
       absent = Seq("Old.scala" -> "package lib\nobject Old { def plus(x: Int)(y: Int): Int = x + y }"),
       outdated = Seq("Old.scala" -> "package lib\nobject Old { def minus(x: Int, y: Int): Int = x - y }")
     )
-    assertEquals(stale.notes.filter(_.contains("wrong number")), Vector.empty[String])
-    assert(stale.notes.exists(_.startsWith("could not read library bodies of lib.Reader")), stale.notes)
+    assertEquals(stale.notes, Vector.empty[String])
     assert(isUnknown(stale.purity.verdicts("Use.run")), stale.purity.verdicts("Use.run"))
+    assertEquals(stale.purity.verdicts("Use.loud"), impure("calls Reader.loud, which performs output"))
   }
 
   private def probed(source: String, name: String): Purity.Verdict =

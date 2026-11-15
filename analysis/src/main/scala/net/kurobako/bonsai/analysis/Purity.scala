@@ -1927,21 +1927,10 @@ object Purity {
     }
 
     // A body compiled against another version of a dependency than the classpath holds reads with errors, which are
-    // kept apart from the run's. A call whose argument lists no longer match its method still names that method, so
-    // the body stays read; any other error leaves it unread.
+    // kept apart from the run's; a call they leave without a symbol is unknown, as any call to an unknown method is.
     private def forced(definition: tpd.ValOrDefDef): tpd.Tree = {
-      val symbol = definition.symbol
-      if (!unread(symbol)) {
-        val before = reader.errorCount
-        val misfit = definition.rhs(using reading).filterSubTrees {
-          case application: tpd.Apply =>
-            application.tpe.isError && application.fun.symbol.exists && !application.fun.tpe.widen.isError
-          case _ => false
-        }(using reading)
-        if (reader.errorCount - before > misfit.size) unread += symbol
-      }
-      if (unread(symbol)) throw IllegalStateException("its body does not read against the classpath")
-      definition.rhs
+      if (unread(definition.symbol)) throw IllegalStateException("its body does not read against the classpath")
+      definition.rhs(using reading)
     }
 
     // A library body is unpickled on first read, and a reference in it to a class the classpath lacks can fail that.
