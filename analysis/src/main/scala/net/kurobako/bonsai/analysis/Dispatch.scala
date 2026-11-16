@@ -102,6 +102,7 @@ private[analysis] class Dispatch(symbols: Symbols, bodied: Symbol => Boolean, fo
     )(node => apart.getOrElseUpdate(node, mutable.ArrayBuffer.empty) += (name -> module)): Unit
 
   /** Records the abstraction a trait or abstract class `cls` is, or the abstractions a concrete class implements. */
+  @SuppressWarnings(Array("stryker4s.mutation.MethodExpression"))
   def classify(cls: Symbol, name: String, key: String, info: Node)(using Context): Unit =
     if (cls.is(Flags.Trait) || cls.is(Flags.Abstract)) {
       // Other builds can implement what a library exports, unless it is sealed.
