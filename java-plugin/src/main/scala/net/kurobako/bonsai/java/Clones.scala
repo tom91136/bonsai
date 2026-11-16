@@ -422,14 +422,14 @@ object Clones {
   def nameHash(name: String): Long = (MurmurHash3.stringHash(name).toLong << 32) | (name.hashCode & 0xffffffffL)
 
   // a loop, as boxing every hash and allocating a closure for each call costs more than the whole hashing does
-  // scalafix:off DisableSyntax.var, BannedSyntax.no-iterator
+  // scalafix:off DisableSyntax.var
   inline def combine[A](seed: Long, items: Iterable[A])(inline hash: A => Long): Long = {
     var chained = seed
     val it      = items.iterator
     while (it.hasNext) chained = mix(chained * 31 + hash(it.next()))
     chained
   }
-  // scalafix:on DisableSyntax.var, BannedSyntax.no-iterator
+  // scalafix:on DisableSyntax.var
 
   /** A node of the code, which the hashes take. */
   private class Node(val trees: Trees, val tree: Tree, val path: TreePath) {
