@@ -378,6 +378,13 @@ lazy val analysis = analysed(project.in(file("analysis")))
     run / fork := true,
     run / javaOptions += "-Xmx8g",
     Test / fork := true,
+    // A suite named Isolated... counts what the whole JVM holds, so it gets a JVM of its own.
+    Test / testGrouping := Def.uncached {
+      val (isolated, shared) = (Test / definedTests).value.partition(_.name.split('.').last.startsWith("Isolated"))
+      val options            = (Test / forkOptions).value
+      (Tests.Group("shared", shared, Tests.SubProcess(options)) +:
+        isolated.map(test => Tests.Group(test.name, Seq(test), Tests.SubProcess(options)))).filter(_.tests.nonEmpty)
+    },
     // Each test runner compiles the suites' fixtures before it is warm, so past half the cores more runners only
     // repeat that work.
     strykerConcurrency := (sys.runtime.availableProcessors / 2).max(1),
