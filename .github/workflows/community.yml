@@ -16,7 +16,7 @@ on:
         default: ''
         type: string
       project-timeout-minutes:
-        description: Wall-clock limit of one project's sbt run
+        description: Wall-clock limit of one project (sbt and the analysis)
         required: false
         default: '60'
         type: string

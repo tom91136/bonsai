@@ -3,7 +3,7 @@
 //> using dep com.lihaoyi::ujson:4.4.3
 // Runs the projects of one shard one after another within a time budget, through run.scala.
 // usage: shard.scala <projects.jsonl> <shard> <of> <budget seconds> <per-project timeout seconds> [run.scala options]
-// A project is a JSON object per line: {"url": ..., "ref": ..., "java": 17, "sbt": ["bonsaiAnalyse"], "name": ...};
+// A project is a JSON object per line: {"url": ..., "ref": ..., "java": 17, "sbt": ["++3.3.8"], "name": ...};
 // "sbt", "name" and "fetch_tag" (a tag, or ALL, to fetch) are optional. A project with a "shard" runs in that shard,
 // and one without belongs to shard i mod <of>, i being its index in the list.
 // A project whose status is clone-failed or runner-error runs once more if the budget allows.

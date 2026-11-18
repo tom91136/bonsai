@@ -78,11 +78,10 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
       output(
         status = "failed",
         log = Vector(
-          "Foo is a class in a.jar and a package in b.jar, which the compiler cannot read together, and m, n need both",
-          "[error] bonsai analysis failed"
+          "Foo is a class in a.jar and a package in b.jar, which the compiler cannot read together, and m, n need both"
         )
       )
-    ) == Vector("analysis-failed", "clash")
+    ) == Vector("clash")
   )
   check("an unresolved clash is red")(
     kinds(output(log =
@@ -96,10 +95,6 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
     Vector("x could not be analysed", "y cannot be unpickled", "z could not be read").forall(l =>
       kinds(output(log = Vector(l))) == Vector("problem")
     )
-  )
-  check("a failed analysis is reported")(
-    kinds(output(status = "failed", log = Vector(banner, "[error] bonsai analysis failed"))) ==
-      Vector("analysis-failed")
   )
   check("a build that fails on its own is not bonsai's")(
     kinds(output(
@@ -136,7 +131,7 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   check("an analysis that fails on its findings is healthy")(
     kinds(output(
       status = "failed",
-      log = Vector(banner, "error\tcomplexity\thandwritten\tm\tA\tA.scala:1\tcubic\tk", "[error] bonsai analysis failed"),
+      err = Vector(banner),
       runs = Vector("m.tsv" -> 1),
       failing = Set("m.tsv")
     )).isEmpty
@@ -144,10 +139,27 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   check("a failing finding of another run explains no exit")(
     kinds(output(
       status = "failed",
-      log = Vector(banner, "[error] bonsai analysis failed"),
+      err = Vector(banner),
       runs = Vector("m.tsv" -> 1, "n.tsv" -> 1),
       failing = Set("m.tsv")
-    )) == Vector("analysis-failed", "crash")
+    )) == Vector("crash")
+  )
+  check("a bonsai frame in the analysis' own output is a crash")(
+    kinds(output(err =
+      Vector(
+        banner,
+        "java.lang.AssertionError: boom",
+        "\tat net.kurobako.bonsai.analysis.Extraction$.read(Extraction.scala:1)"
+      )
+    )) == Vector("crash")
+  )
+  check("an uncaught exception in the analysis' own output is a crash")(
+    kinds(output(err = Vector(banner, "Exception in thread \"main\" java.lang.OutOfMemoryError: Java heap space"))) ==
+      Vector("crash")
+  )
+  check("the analysis' own output is the evidence of a stop")(
+    Health.assess(output(status = "oom", log = Vector("compiling"), err = Vector(banner, "reading"))).head.evidence ==
+      Vector("status oom while the analysis was running", banner, "reading")
   )
   check("an uncaught exception after the banner is a crash")(
     kinds(output(log = Vector(banner, "Exception in thread \"main\" java.lang.OutOfMemoryError: Java heap space"))) ==
@@ -189,6 +201,19 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
     rows(Iterator(output(status = "failed", log = Vector("problem: x") ++ Vector.fill(50)("tail"))), Map.empty).head
   check("rows judge the whole log and keep its tail")(long.failures.map(_.kind) == Vector("problem") &&
     long.output.log.size == 20)
+
+  check("a regression in the analysis shows the analysis' output")(
+    regressionExcerpt(
+      rows(
+        Iterator(output(status = "failed", log = Vector("compiling"), err = Vector(banner, "java.lang.Error: boom"))),
+        Map.empty
+      ).head.output
+    ) == Vector("status failed", banner, "java.lang.Error: boom")
+  )
+  check("a regression in the build shows the build's errors")(
+    regressionExcerpt(output(status = "failed", log = Vector("compiling", "[error] boom"), err = Vector(banner))) ==
+      Vector("status failed", "[error] boom")
+  )
 
   check("the summary lists missing classes by project")(
     render(Vector(Row(output(name = "m"), Vector.empty, None, Vector(undefined))), Vector.empty, None, Int.MaxValue)

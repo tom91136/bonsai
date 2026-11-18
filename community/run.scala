@@ -2,14 +2,17 @@
 //> using scala 3.8
 // Builds one project with bonsai in a fresh container and writes its outputs to <out>/<name>.
 // usage: run.scala --url <git url or local repository> --ref <ref> --java <major> --ivy <ivy home> [options] [--sbt <command>]...
+// The --sbt commands run before bonsaiManifest, which the container adds itself, and the analysis then runs once on each
+// manifest after sbt has exited.
 //   --out DIR        output root (default community-out)
 //   --name NAME      output directory name (default derived from the url)
 //   --image IMAGE    image to run (default localhost/bonsai-community:latest)
 //   --memory SIZE    container memory cap (default 12g)
 //   --memory-swap SIZE  cap on memory plus swap (default: --memory, so no swap)
 //   --heap SIZE      sbt heap (default 6g)
+//   --analysis-heap SIZE  heap of the analysis (default: bonsaiAnalysisHeap of the build)
 //   --cpus N         cpu cap
-//   --timeout SEC    wall-clock limit for the sbt run (default 3600)
+//   --timeout SEC    wall-clock limit for sbt and the analysis (default 3600)
 //   --cache VOLUME   named volume holding the dependency caches, kept afterwards (default: a fresh volume, removed after)
 //   --version V      bonsai version in the ivy repository (default 0.1.0-SNAPSHOT)
 //   --bonsai no      build the project without bonsai, as the control of a run
@@ -82,6 +85,7 @@ def quietly(args: String*): Unit =
   var memory         = "12g"
   var memorySwap     = ""
   var heap           = "6g"
+  var analysisHeap   = ""
   var timeoutSeconds = "3600"
   var version        = "0.1.0-SNAPSHOT"
   var url            = ""
@@ -101,24 +105,25 @@ def quietly(args: String*): Unit =
     val value                             = rest.tail.headOption
     def set(assign: String => Unit): Unit = assign(value.getOrElse(fail(1, s"$option: missing value")))
     option match {
-      case "--url"         => set(url = _)
-      case "--ref"         => set(ref = _)
-      case "--java"        => set(java = _)
-      case "--ivy"         => set(ivy = _)
-      case "--out"         => set(out = _)
-      case "--name"        => set(name = _)
-      case "--image"       => set(image = _)
-      case "--memory"      => set(memory = _)
-      case "--memory-swap" => set(memorySwap = _)
-      case "--heap"        => set(heap = _)
-      case "--cpus"        => set(cpus = _)
-      case "--timeout"     => set(timeoutSeconds = _)
-      case "--cache"       => set(cache = _)
-      case "--version"     => set(version = _)
-      case "--tag"         => set(tag = _)
-      case "--bonsai"      => set(inject = _)
-      case "--sbt"         => set(sbt += _)
-      case _               => fail(2, s"unknown option: $option")
+      case "--url"           => set(url = _)
+      case "--ref"           => set(ref = _)
+      case "--java"          => set(java = _)
+      case "--ivy"           => set(ivy = _)
+      case "--out"           => set(out = _)
+      case "--name"          => set(name = _)
+      case "--image"         => set(image = _)
+      case "--memory"        => set(memory = _)
+      case "--memory-swap"   => set(memorySwap = _)
+      case "--heap"          => set(heap = _)
+      case "--analysis-heap" => set(analysisHeap = _)
+      case "--cpus"          => set(cpus = _)
+      case "--timeout"       => set(timeoutSeconds = _)
+      case "--cache"         => set(cache = _)
+      case "--version"       => set(version = _)
+      case "--tag"           => set(tag = _)
+      case "--bonsai"        => set(inject = _)
+      case "--sbt"           => set(sbt += _)
+      case _                 => fail(2, s"unknown option: $option")
     }
     rest = rest.drop(2)
   }
@@ -128,7 +133,7 @@ def quietly(args: String*): Unit =
   if (ivy.isEmpty) fail(1, "--ivy is required")
   if (!Files.isDirectory(Path.of(ivy, "local"))) fail(2, s"no $ivy/local")
   val limit    = timeoutSeconds.toLongOption.getOrElse(fail(1, s"--timeout: not a number: $timeoutSeconds"))
-  val commands = sbt.result().headOption.fold(Vector("bonsaiAnalyse"))(_ => sbt.result())
+  val commands = sbt.result()
   if (name.isEmpty) name = derivedName(url)
 
   val dir = realpath(out).resolve(name)
@@ -185,6 +190,8 @@ def quietly(args: String*): Unit =
       s"TIMEOUT_SECONDS=$timeoutSeconds",
       "-e",
       s"BONSAI_VERSION=$version",
+      "-e",
+      s"ANALYSIS_HEAP=$analysisHeap",
       "-e",
       s"SBT_OPTS=-Dsbt.color=false -Dsbt.supershell=false -Xmx$heap",
       image,

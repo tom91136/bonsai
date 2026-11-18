@@ -2,10 +2,13 @@
 //> using scala 3.8
 // Runs inside the community image: clones one project, injects bonsai, runs sbt and writes the outputs to /out.
 // usage: build.scala <sbt command>...
-// environment: PROJECT_URL PROJECT_REF JAVA_MAJOR TIMEOUT_SECONDS BONSAI_VERSION, and optionally PROJECT_TAG and BONSAI_INJECT
+// environment: PROJECT_URL PROJECT_REF JAVA_MAJOR TIMEOUT_SECONDS BONSAI_VERSION, and optionally PROJECT_TAG, BONSAI_INJECT
+// and ANALYSIS_HEAP
 // BONSAI_INJECT=no builds the project untouched, as the control of a run.
 // PROJECT_TAG is a tag to fetch beside the ref, or ALL to unshallow the clone with every tag, for builds that read git tags.
-// sbt runs on JAVA_MAJOR, which the build targets; the analysis runs on JDK 25.
+// sbt runs the commands given, then bonsaiManifest, on JAVA_MAJOR, which the build targets, and exits. The analysis then
+// runs once on each manifest, on JDK 25, with the heap the plugin sets unless ANALYSIS_HEAP names another.
+// TIMEOUT_SECONDS bounds sbt and the analyses together.
 
 import java.nio.charset.StandardCharsets.ISO_8859_1
 import java.nio.file.Files
@@ -33,6 +36,9 @@ val version     = required("BONSAI_VERSION")
 val tag         = sys.env.getOrElse("PROJECT_TAG", "")
 val javaHome    = s"/opt/jdk/$major"
 val analysisJdk = "/opt/jdk/25"
+val task        = "bonsaiManifest"
+val heapKey     = "bonsaiAnalysisHeap"
+val heapLine    = "\\[info\\]\\s+(\\d+[kKmMgG])".r
 val env         = Seq("JAVA_HOME" -> javaHome, "PATH" -> s"$javaHome/bin:${sys.env.getOrElse("PATH", "")}")
 
 def now(): Double = System.nanoTime() / 1e9
@@ -115,13 +121,30 @@ def peakKb(pid: Long): Long =
       .getOrElse(0L)
   }.getOrElse(0L)
 
-def samplePeak(process: Process): Long = {
+def samplePeak(process: Process, deadline: Double): (Long, Boolean) = {
   var peak = 0L
-  while (process.isAlive) {
+  while (process.isAlive && now() < deadline) {
     peak = peak.max(peakKb(process.pid))
     process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)
   }
-  peak
+  val late = process.isAlive
+  if (late) {
+    process.destroy()
+    if (!process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) process.destroyForcibly()
+  }
+  (peak, late)
+}
+
+def analysisHeap(log: Path): String = sys.env.get("ANALYSIS_HEAP").filter(_.nonEmpty).orElse {
+  Files.readAllLines(log, ISO_8859_1).asScala.reverseIterator.collectFirst { case heapLine(heap) => heap }
+}.getOrElse("6g")
+
+def statusOf(code: Int, oom: Long): String = code match {
+  case _ if code != 124 && oom > 0 => "oom"
+  case 0                           => "ok"
+  case 124                         => "timeout"
+  case 137                         => "killed"
+  case _                           => "failed"
 }
 
 def readOr(file: String, default: String): String = Try(Files.readString(Path.of(file), ISO_8859_1)).getOrElse(default)
@@ -163,38 +186,16 @@ def readOr(file: String, default: String): String = Try(Files.readString(Path.of
   write(log, "")
   val stamper = new Thread(() => stamp(log, out.resolve("build.ts.log"), stop))
   stamper.start()
-  val code = exec(Seq("timeout", "-k", "30", limit, "sbt", "--server", "--batch") ++ sbt, appendTo(log), appendTo(log))
-  val t2   = now()
+  val deadline = t1 + limit.toDouble
+  val code     = exec(
+    Seq("timeout", "-k", "30", limit, "sbt", "--server", "--batch") ++ sbt ++ Seq(task, s"show $heapKey"),
+    appendTo(log),
+    appendTo(log)
+  )
+  val t2 = now()
   stop.set(true)
   stamper.join()
   append(timings, s"build\t${elapsed(t1, t2)}\n")
-
-  val oom = readOr("/sys/fs/cgroup/memory.events", "0").linesIterator
-    .collectFirst { case l if l.startsWith("oom_kill ") => l.stripPrefix("oom_kill ") }
-    .flatMap(_.toLongOption)
-    .getOrElse(0L)
-  val status = code match {
-    case _ if code != 124 && oom > 0 => "oom"
-    case 0                           => "ok"
-    case 124                         => "timeout"
-    case 137                         => "killed"
-    case _                           => "failed"
-  }
-  write(out.resolve("status"), s"$status\n")
-
-  write(
-    out.resolve("meta.tsv"),
-    s"""url\t$url
-       |ref\t$ref
-       |commit\t$commit
-       |java\t$major
-       |bonsai\t$version
-       |sbt\t${sbt.mkString(" ")}
-       |exit\t$code
-       |oom_kill\t$oom
-       |""".stripMargin
-  )
-  write(out.resolve("peak-memory-bytes"), readOr("/sys/fs/cgroup/memory.peak", ""))
 
   Files.createDirectories(out.resolve("manifests"))
   Files.createDirectories(out.resolve("info"))
@@ -202,7 +203,9 @@ def readOr(file: String, default: String): String = Try(Files.readString(Path.of
     Seq("find", src.toString, "-path", "*/target/*", "-path", "*/bonsai/manifest.tsv", "-print0"),
     ProcessBuilder.Redirect.INHERIT
   )
-  var toolCp = ""
+  val heap     = analysisHeap(log)
+  var toolCp   = ""
+  var analysed = Vector.empty[(String, Int)]
   new String(found, ISO_8859_1).split('\u0000').filter(_.nonEmpty).foreach { name =>
     val file = Path.of(name)
     val id   = manifestName(file)
@@ -214,13 +217,13 @@ def readOr(file: String, default: String): String = Try(Files.readString(Path.of
         ISO_8859_1
       ).replaceAll("\n+$", "")
     }
-    if (toolCp.nonEmpty) {
+    if (toolCp.nonEmpty && now() < deadline) {
       val started = now()
       val process = command(
         Seq(
           s"$analysisJdk/bin/java",
           "-Xss1g",
-          "-Xmx6g",
+          s"-Xmx$heap",
           "-cp",
           toolCp,
           "net.kurobako.bonsai.analysis.CLI",
@@ -233,18 +236,45 @@ def readOr(file: String, default: String): String = Try(Files.readString(Path.of
         to(out.resolve(s"info/$id.out")),
         to(out.resolve(s"info/$id.err"))
       )
-      val peak = samplePeak(process)
-      val exit = process.waitFor()
+      val (peak, late) = samplePeak(process, deadline)
+      val exit         = if (late) 124 else process.waitFor()
+      analysed :+= id -> exit
       append(out.resolve("info/runs.tsv"), s"$id\t$exit\t${elapsed(started, now())}\tpeak_kb=$peak\n")
     }
   }
+  append(timings, s"analysis\t${elapsed(t2, now())}\n")
+
+  val oom = readOr("/sys/fs/cgroup/memory.events", "0").linesIterator
+    .collectFirst { case l if l.startsWith("oom_kill ") => l.stripPrefix("oom_kill ") }
+    .flatMap(_.toLongOption)
+    .getOrElse(0L)
+  val failed = if (code != 0) code else analysed.collectFirst { case (_, exit) if exit != 0 => exit }.getOrElse(0)
+  val status = statusOf(failed, oom)
+  write(out.resolve("status"), s"$status\n")
+
+  write(
+    out.resolve("meta.tsv"),
+    s"""url\t$url
+       |ref\t$ref
+       |commit\t$commit
+       |java\t$major
+       |bonsai\t$version
+       |sbt\t${sbt.mkString(" ")}
+       |analysis_heap\t$heap
+       |exit\t$failed
+       |oom_kill\t$oom
+       |""".stripMargin
+  )
+  write(out.resolve("peak-memory-bytes"), readOr("/sys/fs/cgroup/memory.peak", ""))
 
   val reportable = "^(error|warning|info)\t".r
-  val lines      = Files.lines(log, ISO_8859_1)
-  try {
-    val report = lines.iterator.asScala.filter(l => reportable.findFirstIn(l).isDefined || l.contains("[bonsai:"))
-    write(out.resolve("report.txt"), report.map(_ + "\n").mkString)
-  } finally lines.close()
+  val sources    = log +: analysed.map((id, _) => out.resolve(s"info/$id.out"))
+  val report     = sources.flatMap { file =>
+    val lines = Files.lines(file, ISO_8859_1)
+    try lines.iterator.asScala.filter(l => reportable.findFirstIn(l).isDefined || l.contains("[bonsai:")).toVector
+    finally lines.close()
+  }
+  write(out.resolve("report.txt"), report.map(_ + "\n").mkString)
 
   if (status != "ok") {
     val crash = out.resolve("crash.txt")
@@ -259,5 +289,9 @@ def readOr(file: String, default: String): String = Try(Files.readString(Path.of
     }
     append(crash, "== tail of build.log\n")
     exec(Seq("tail", "-n", "200", log.toString), appendTo(crash), inherit)
+    analysed.foreach { (id, _) =>
+      append(crash, s"== tail of $id.err\n")
+      exec(Seq("tail", "-n", "200", out.resolve(s"info/$id.err").toString), appendTo(crash), inherit)
+    }
   }
 }

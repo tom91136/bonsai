@@ -103,16 +103,17 @@ object Health {
     def hit(kind: String, matching: String => Boolean): Option[Failure] =
       Option(all.filter(matching)).filter(_.nonEmpty).map(hits => Failure(kind, limited(hits)))
 
-    val uncaught = output.log.dropWhile(banner.findFirstIn(_).isEmpty).filter(_.startsWith("Exception in thread"))
-    val exits    = output.runs.collect {
+    val uncaught = (output.log ++ output.err).dropWhile(
+      banner.findFirstIn(_).isEmpty
+    ).filter(_.startsWith("Exception in thread"))
+    val exits = output.runs.collect {
       case (id, code) if code != 0 && !output.failing(id) => s"the analysis of $id exited with $code"
     }
-    val judged   = output.runs.exists(_._2 != 0) && exits.isEmpty
-    val jvm      = if (ran) output.crash.filter(l => l.startsWith("== ") && l.contains("hs_err_pid")) else Vector.empty
-    val crash    = thrown(output.log) ++ (if (uncaught.isEmpty) Vector.empty else limited(uncaught)) ++ exits ++ jvm
+    val jvm   = if (ran) output.crash.filter(l => l.startsWith("== ") && l.contains("hs_err_pid")) else Vector.empty
+    val crash = thrown(output.log ++ output.err) ++ (if (uncaught.isEmpty) Vector.empty else limited(uncaught)) ++
+      exits ++ jvm
 
     Vector(
-      hit("analysis-failed", _.contains("bonsai analysis failed")).filterNot(_ => judged),
       hit(
         "problem",
         l =>
@@ -121,7 +122,7 @@ object Health {
       hit("clash", clash),
       Option.when(crash.nonEmpty)(Failure("crash", crash)),
       Option.when(ran && stops.contains(output.status))(
-        Failure("stopped", s"status ${output.status} while the analysis was running" +: output.log.takeRight(3))
+        Failure("stopped", s"status ${output.status} while the analysis was running" +: output.err.takeRight(3))
       )
     ).flatten
   }

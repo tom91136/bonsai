@@ -32,6 +32,9 @@ One `Containerfile` serves the workstation and CI, so a run reproduces in either
   toolchain. Nothing reads or writes the host home directory, `~/.ivy2`, or `~/.m2`.
 - A project builds on `/opt/jdk/<major>`, which the manifest names as its target, while the analysis runs on JDK 25
   through `bonsaiAnalysisJavaHome`, so Java 8 and 11 projects can be analysed.
+- sbt runs the project's own commands, then `bonsaiManifest`, which compiles and writes the manifest, and exits. The
+  analysis then runs once per manifest in its own JVM, with the heap of `bonsaiAnalysisHeap` unless `--analysis-heap`
+  says otherwise, so the container's peak memory is the larger of the two JVMs, not their sum.
 - CI keeps the image in the GitHub Actions cache as a compressed archive keyed by the `Containerfile` digest. The
   archive stays well under the cache's 10 GB limit, since an entry past it is not saved at all.
 - Dependency caches live in a named volume per run.
@@ -42,7 +45,7 @@ One `Containerfile` serves the workstation and CI, so a run reproduces in either
 - The shards balance on the per-project timings of the previous run, falling back to list order. A project may set its own
   `memory`, `memory_swap` and `heap`, and runs in shards of the projects that set the same. `scala/scala3` needs more than
   a hosted runner's 16 GB, so its shard enables zram swap and the container may use it.
-- Each project gets a wall-clock limit; a timeout is a finding about bonsai, not a skip.
+- Each project gets a wall-clock limit for sbt and the analysis together; a timeout is a finding about bonsai, not a skip.
 
 ## Outputs
 
@@ -56,10 +59,11 @@ Per project: build log, manifest, report, timings, peak heap, and any crash trac
 CI turns the outputs into a verdict. The run is red when any project shows a bonsai health failure, or when a project that
 was ok in the previous run on `main` is not ok now. Findings never fail it.
 
-- A health failure is a crash, a `bonsai analysis failed` line, a `problem:` line or a `note:` line from the analysis, an
-  unreadable, unanalysable or unpicklable class, a clash between a class and a package that fails the analysis, or a
-  timeout, out-of-memory kill or kill while the analysis was running. A note that a class is missing from the
-  project's own classpath is not one; the summary lists those per project. A project whose own build fails before the analysis runs is not one.
+- A health failure is a crash, a non-zero exit of the analysis that its findings do not explain, a `problem:` line or
+  a `note:` line from the analysis, an unreadable, unanalysable or unpicklable class, a clash between a class and a
+  package that fails the analysis, or a timeout, out-of-memory kill or kill while the analysis was running. A note that
+  a class is missing from the project's own classpath is not one; the summary lists those per project. A project whose
+  own build fails before the analysis runs is not one.
 - The previous run is the newest unexpired `community-baseline` artifact of a run on `main`, which holds each project's
   status, timings and sorted findings. The first run has none, so only health failures apply.
 - The job summary lists the counts per status, each failure and regression with a log excerpt, and the findings added and
