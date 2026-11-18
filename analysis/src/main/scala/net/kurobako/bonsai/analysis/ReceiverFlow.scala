@@ -22,19 +22,23 @@ import scala.jdk.CollectionConverters.*
 
 private[analysis] object ReceiverFlow {
 
-  /** The methods that call each target, one entry per distinct pair. Each caller is added once, with all its targets.
-    */
+  /** What a call reaches: every dispatch target of a callee, or the one method it resolves to. */
+  enum Reach {
+    case Dispatch(callee: Reference)
+    case Direct(target: Reference)
+  }
+
+  /** The methods that reach each key, one entry per distinct pair. Each caller is added once, with all its keys. */
   class CallerIndex {
-    private val found = mutable.Map.empty[Reference, mutable.ArrayBuffer[Reference]]
+    private val found = mutable.Map.empty[Reach, mutable.ArrayBuffer[Reference]]
 
-    def add(caller: Reference, targets: Iterator[Reference]): Unit =
-      mutable.HashSet.from(targets).foreach(target =>
-        found.getOrElseUpdate(target, mutable.ArrayBuffer.empty) += caller: Unit
-      )
+    def add(caller: Reference, keys: IterableOnce[Reach]): Unit =
+      mutable.HashSet.from(keys).foreach(key => found.getOrElseUpdate(key, mutable.ArrayBuffer.empty) += caller: Unit)
 
-    def of(target: Reference): Vector[Reference] = found.get(target).fold(Vector.empty)(_.toVector)
+    def of(key: Reach): collection.Seq[Reference] = found.getOrElse(key, Nil)
 
-    def held: Int = found.valuesIterator.map(_.size).sum
+    @SuppressWarnings(Array("bonsai:test-only-member"))
+    def held: Int = found.values.view.map(_.size).sum
   }
 
   /** The classes and lambdas a value can be, and whether it can also be something not named: a field, a call result, or
@@ -174,12 +178,27 @@ private[analysis] class ReceiverFlow(world: ClassWorld, graph: CallGraph) {
   private lazy val callingMethods: CallerIndex = {
     val index = CallerIndex()
     graph.reachable.foreach { caller =>
-      index.add(caller, world.method(caller).iterator.flatMap(_.invocations.iterator.flatMap(targets)))
+      index.add(caller, world.method(caller).toVector.view.flatMap(_.invocations.view.flatMap(reach(_))))
     }
     index
   }
 
-  private[analysis] def indexed: Int = callingMethods.held
+  private lazy val dispatching: mutable.Map[Reference, mutable.ArrayBuffer[Reference]] = {
+    val found = mutable.Map.empty[Reference, mutable.ArrayBuffer[Reference]]
+    graph.dispatch.foreach((callee, implementations) =>
+      implementations.foreach(target => found.getOrElseUpdate(target, mutable.ArrayBuffer.empty) += callee: Unit)
+    )
+    found
+  }
+
+  @SuppressWarnings(Array("bonsai:test-only-member"))
+  private[analysis] def indexed: Int = callingMethods.held + dispatching.values.view.map(_.size).sum
+
+  private def callingMethodsOf(target: Reference): Vector[Reference] =
+    mutable.LinkedHashSet.from(
+      callingMethods.of(Reach.Direct(target)).view ++
+        dispatching.getOrElse(target, Nil).view.flatMap(callee => callingMethods.of(Reach.Dispatch(callee)))
+    ).toVector
 
   private lazy val implementations: Map[Reference, Vector[Lambda]] =
     graph.lambdas.values.toVector.groupBy(lambda => Reference(lambda.owner, lambda.name, lambda.descriptor))
@@ -187,16 +206,21 @@ private[analysis] class ReceiverFlow(world: ClassWorld, graph: CallGraph) {
   private def called(invocation: Invocation): Reference =
     Reference(invocation.owner, invocation.name, invocation.descriptor)
 
-  private def targets(invocation: Invocation): Vector[Reference] = {
+  private def reach(invocation: Invocation): Option[Reach] = {
     val callee = called(invocation)
     invocation.kind match {
-      case Kind.Virtual | Kind.Interface if !invocation.owner.startsWith("[") =>
-        graph.dispatch.getOrElse(callee, Set.empty).toVector
-      case _ =>
+      case Kind.Virtual | Kind.Interface if !invocation.owner.startsWith("[") => Some(Reach.Dispatch(callee))
+      case _                                                                  =>
         world.resolve(callee).map(target =>
-          Reference(target.owner, target.method.name, target.method.descriptor)
-        ).toVector
+          Reach.Direct(Reference(target.owner, target.method.name, target.method.descriptor))
+        )
     }
+  }
+
+  private def targets(invocation: Invocation): Vector[Reference] = reach(invocation) match {
+    case Some(Reach.Dispatch(callee)) => graph.dispatch.getOrElse(callee, Set.empty).toVector
+    case Some(Reach.Direct(target))   => Vector(target)
+    case None                         => Vector.empty
   }
 
   private def callsOf(method: Reference): Vector[Call] = analysed.getOrElseUpdate(
@@ -232,7 +256,7 @@ private[analysis] class ReceiverFlow(world: ClassWorld, graph: CallGraph) {
 
   private def edges(target: Reference): Vector[Edge] = into.getOrElseUpdate(
     target,
-    callingMethods.of(target).flatMap(caller =>
+    callingMethodsOf(target).flatMap(caller =>
       callsOf(caller).filter(call => targets(call.invocation).contains(target)).map(Edge(caller, _, target))
     )
   )

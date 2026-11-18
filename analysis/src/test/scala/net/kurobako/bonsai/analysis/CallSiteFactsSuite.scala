@@ -50,17 +50,23 @@ class CallSiteFactsSuite extends AnalysisSuite {
         |  def mapped(f: Step => Int, step: Step): Int = f(step)
         |  def captured(step: Step): Int = mapped(_ => step.run(), Second())
         |  def mixed(flag: Boolean, step: Step): Int = (if (flag) step else Second()).run()
-        |}
-        |
-        |object Many {
-        |  def go(step: Step): Int = step.run() + step.run() + step.run() + step.run()
         |}""".stripMargin
   )
+
+  private val fanned =
+    "Fan.scala" ->
+      (0 until 6).map(n => s"class Impl$n extends fixture.Step { def run(): Int = $n }").mkString(
+        "package fixture\n\n",
+        "\n",
+        "\n\nobject Fan {\n" +
+          (0 until 6).map(n => s"  def call$n(step: Step): Int = step.run()").mkString("\n") +
+          "\n  def all(): Int = " + (0 until 6).map(n => s"call$n(Impl$n())").mkString(" + ") + "\n}"
+      )
 
   private def compiled[A](roots: Vector[Reference])(use: (CallGraph, ClassWorld) => A): A =
     Scratch.using("bonsai-graph-") { directory =>
       ClassSource.of(
-        Vector(compile(directory, sources, Vector.empty)),
+        Vector(compile(directory, sources :+ fanned, Vector.empty)),
         classpath,
         Some(Path.of(sys.props("java.home")))
       ) match {
@@ -106,24 +112,25 @@ class CallSiteFactsSuite extends AnalysisSuite {
     }
   }
 
-  test("the index of calling methods holds one entry per distinct target and caller") {
+  test("the index of calling methods holds one entry per distinct key and caller") {
     val index  = ReceiverFlow.CallerIndex()
     val (a, b) = (ref("A", "a"), ref("B", "b"))
-    val (t, u) = (ref("T", "t"), ref("U", "u"))
-    index.add(a, Iterator(t, t, u, t))
-    index.add(b, Iterator(t, t))
+    val (t, u) = (ReceiverFlow.Reach.Direct(ref("T", "t")), ReceiverFlow.Reach.Dispatch(ref("U", "u")))
+    index.add(a, Vector(t, t, u, t))
+    index.add(b, Vector(t, t))
     assertEquals(index.held, 3)
     assertEquals(index.of(t), Vector(a, b))
     assertEquals(index.of(u), Vector(a))
   }
 
-  test("a method reaching one target through many invocations and dispatch targets is held once for each") {
-    val many = ref("Many$", "go", stepped)
-    compiled(Vector(entry, many)) { (graph, world) =>
+  test("the callers of the implementations of a callee are held once per callee, not once per implementation") {
+    val fan = (0 until 6).map(n => ref("Fan$", s"call$n", stepped))
+    compiled(Vector(entry, ref("Fan$", "all"))) { (graph, world) =>
       val flow = ReceiverFlow(world, graph)
-      assert(flow.callers(ref("First", "run")).contains(many))
-      assert(flow.callers(ref("Second", "run")).contains(many))
-      assertEquals(flow.indexed, graph.reachable.toVector.map(flow.callers(_).size).sum)
+      assert(fan.forall(method => (0 until 6).forall(n => flow.callers(ref(s"Impl$n", "run")).contains(method))))
+      val sites      = graph.reachable.view.flatMap(world.method(_)).map(_.invocations.size).sum
+      val dispatched = graph.dispatch.values.view.map(_.size).sum
+      assert(flow.indexed <= sites + dispatched, s"${flow.indexed} > $sites + $dispatched")
     }
   }
 
