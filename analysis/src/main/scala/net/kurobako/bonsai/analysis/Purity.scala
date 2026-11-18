@@ -640,6 +640,12 @@ object Purity {
     private case class Frame(root: Symbol, self: Option[Value], bindings: Map[Symbol, Value]) {
       private var hash = 0 // scalafix:ok DisableSyntax.var
 
+      private lazy val declared: Map[Symbol, Map[Symbol, Value]] =
+        bindings.groupBy((symbol, _) => symbol.owner)
+
+      def visibleFrom(cls: Symbol): Map[Symbol, Value] =
+        cls.ownersIterator.flatMap(owner => declared.get(owner)).foldLeft(Map.empty[Symbol, Value])(_ ++ _)
+
       override def hashCode: Int = {
         if (hash == 0) {
           val found = ScalaRunTime._hashCode(this)
@@ -1676,7 +1682,7 @@ object Purity {
         // A class captures the values its declaration sees, and its constructor's arguments.
         Value.Object(
           cls,
-          frame.bindings.filter((symbol, _) => ownedBy(cls, symbol.owner)) ++
+          frame.visibleFrom(cls) ++
             cls.info.decls.toList.filter(_.is(Flags.ParamAccessor)).zip(passed) ++
             terms(method).zip(passed)
         )
