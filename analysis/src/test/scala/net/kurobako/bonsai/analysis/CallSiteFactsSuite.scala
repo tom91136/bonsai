@@ -50,6 +50,10 @@ class CallSiteFactsSuite extends AnalysisSuite {
         |  def mapped(f: Step => Int, step: Step): Int = f(step)
         |  def captured(step: Step): Int = mapped(_ => step.run(), Second())
         |  def mixed(flag: Boolean, step: Step): Int = (if (flag) step else Second()).run()
+        |}
+        |
+        |object Many {
+        |  def go(step: Step): Int = step.run() + step.run() + step.run() + step.run()
         |}""".stripMargin
   )
 
@@ -99,6 +103,27 @@ class CallSiteFactsSuite extends AnalysisSuite {
         case Receiver.Instance(name) => name
       }
       assert(names.contains("java/util/ArrayList") && names.contains("java/util/LinkedList"), names.toString)
+    }
+  }
+
+  test("the index of calling methods holds one entry per distinct target and caller") {
+    val index  = ReceiverFlow.CallerIndex()
+    val (a, b) = (ref("A", "a"), ref("B", "b"))
+    val (t, u) = (ref("T", "t"), ref("U", "u"))
+    index.add(a, Iterator(t, t, u, t))
+    index.add(b, Iterator(t, t))
+    assertEquals(index.held, 3)
+    assertEquals(index.of(t), Vector(a, b))
+    assertEquals(index.of(u), Vector(a))
+  }
+
+  test("a method reaching one target through many invocations and dispatch targets is held once for each") {
+    val many = ref("Many$", "go", stepped)
+    compiled(Vector(entry, many)) { (graph, world) =>
+      val flow = ReceiverFlow(world, graph)
+      assert(flow.callers(ref("First", "run")).contains(many))
+      assert(flow.callers(ref("Second", "run")).contains(many))
+      assertEquals(flow.indexed, graph.reachable.toVector.map(flow.callers(_).size).sum)
     }
   }
 

@@ -22,6 +22,21 @@ import scala.jdk.CollectionConverters.*
 
 private[analysis] object ReceiverFlow {
 
+  /** The methods that call each target, one entry per distinct pair. Each caller is added once, with all its targets.
+    */
+  class CallerIndex {
+    private val found = mutable.Map.empty[Reference, mutable.ArrayBuffer[Reference]]
+
+    def add(caller: Reference, targets: Iterator[Reference]): Unit =
+      mutable.HashSet.from(targets).foreach(target =>
+        found.getOrElseUpdate(target, mutable.ArrayBuffer.empty) += caller: Unit
+      )
+
+    def of(target: Reference): Vector[Reference] = found.get(target).fold(Vector.empty)(_.toVector)
+
+    def held: Int = found.valuesIterator.map(_.size).sum
+  }
+
   /** The classes and lambdas a value can be, and whether it can also be something not named: a field, a call result, or
     * an argument no caller in the program passes.
     */
@@ -156,15 +171,15 @@ private[analysis] class ReceiverFlow(world: ClassWorld, graph: CallGraph) {
   private val analysed = mutable.Map.empty[Reference, Vector[Call]]
   private val into     = mutable.Map.empty[Reference, Vector[Edge]]
 
-  private lazy val callingMethods: Map[Reference, Vector[Reference]] = {
-    val found = mutable.Map.empty[Reference, mutable.ArrayBuffer[Reference]]
+  private lazy val callingMethods: CallerIndex = {
+    val index = CallerIndex()
     graph.reachable.foreach { caller =>
-      world.method(caller).foreach(_.invocations.foreach { invocation =>
-        targets(invocation).foreach(target => found.getOrElseUpdate(target, mutable.ArrayBuffer.empty) += caller: Unit)
-      })
+      index.add(caller, world.method(caller).iterator.flatMap(_.invocations.iterator.flatMap(targets)))
     }
-    found.view.mapValues(_.distinct.toVector).toMap
+    index
   }
+
+  private[analysis] def indexed: Int = callingMethods.held
 
   private lazy val implementations: Map[Reference, Vector[Lambda]] =
     graph.lambdas.values.toVector.groupBy(lambda => Reference(lambda.owner, lambda.name, lambda.descriptor))
@@ -217,7 +232,7 @@ private[analysis] class ReceiverFlow(world: ClassWorld, graph: CallGraph) {
 
   private def edges(target: Reference): Vector[Edge] = into.getOrElseUpdate(
     target,
-    callingMethods.getOrElse(target, Vector.empty).flatMap(caller =>
+    callingMethods.of(target).flatMap(caller =>
       callsOf(caller).filter(call => targets(call.invocation).contains(target)).map(Edge(caller, _, target))
     )
   )
