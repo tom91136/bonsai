@@ -1,0 +1,7 @@
+# the manifest task compiles and writes the manifest the analysis reads, and does not run the analysis
+> bonsaiManifest
+> checkManifest
+> checkNotAnalysed
+# the analysis task then runs on the manifest, as it was
+> bonsaiAnalyse
+> checkAnalysed

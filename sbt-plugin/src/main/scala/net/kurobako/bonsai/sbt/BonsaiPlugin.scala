@@ -166,6 +166,8 @@ object BonsaiPlugin extends AutoPlugin {
     )
     val bonsaiAnalysisHeap: SettingKey[String] =
       settingKey[String]("The largest heap the forked analysis may take, as -Xmx takes it, such as 4g")
+    val bonsaiManifest: TaskKey[File] =
+      taskKey[File]("Compile this project and the projects it aggregates and write the manifest the analysis reads")
     val bonsaiAnalyse: TaskKey[Unit] = taskKey[Unit]("Analyse this project and the projects it aggregates as one build")
     val bonsaiBaselineWrite: TaskKey[File] = taskKey[File]("Record the current analysis warnings in bonsaiBaseline")
     val bonsaiPurityWrite: TaskKey[File]   =
@@ -173,6 +175,8 @@ object BonsaiPlugin extends AutoPlugin {
   }
 
   import autoImport.*
+
+  private val bonsaiPrepared = taskKey[Option[Prepared]]("The manifest of the build and what the analysis needs to run")
 
   private val Organization = BonsaiArtifacts.organization
   private val Version      = BonsaiArtifacts.version
@@ -385,7 +389,12 @@ object BonsaiPlugin extends AutoPlugin {
     Compile / scalafix := (Compile / scalafix).dependsOn(bonsaiScalafixConfig).evaluated,
     Test / scalafix    := (Test / scalafix).dependsOn(bonsaiScalafixConfig).evaluated,
     scalafixAll        := scalafixAll.dependsOn(bonsaiScalafixConfig).evaluated,
-    bonsaiAnalyse      := Compat.uncached {
+    bonsaiPrepared     := Compat.uncached(prepare.value),
+    bonsaiManifest     := Compat.uncached {
+      bonsaiPrepared.value.fold(target.value / "bonsai" / "manifest.tsv")(_.manifest)
+    },
+    bonsaiManifest / aggregate := false,
+    bonsaiAnalyse              := Compat.uncached {
       val code = analyse((_, _) => Nil).value
       if (code != 0) Compat.fail("bonsai analysis failed")
     },
@@ -461,6 +470,14 @@ object BonsaiPlugin extends AutoPlugin {
       resources: Seq[String]
   )
 
+  private case class Prepared(
+      manifest: File,
+      versions: Seq[String],
+      resolution: DependencyResolution,
+      directory: File,
+      log: Logger
+  )
+
   // A configuration with nothing to compile, or whose classes or sources another one of its project already holds,
   // as one that shares its parent's settings does, adds nothing to analyse.
   private def redundant(entries: Seq[Analysed]): Seq[Analysed] =
@@ -505,9 +522,8 @@ object BonsaiPlugin extends AutoPlugin {
     file
   }
 
-  /** Runs the analysis with `extra` arguments derived from the baseline and purity files, returning its exit code. */
-  private def analyse(extra: (File, File) => Seq[String]): Def.Initialize[Task[Int]] = Def.taskDyn {
-    val analysisJdk = AnalysisJdk.select(bonsaiAnalysisJavaHome.value, AnalysisJdk.probe).fold(Compat.fail, identity)
+  /** Compiles what the analysis reads and writes its manifest, or prepares nothing when no project is analysed. */
+  private def prepare: Def.Initialize[Task[Option[Prepared]]] = Def.taskDyn {
     // Aggregated projects bonsai does not run on, such as native toolchain builds, lack the JVM settings it reads.
     val data       = buildStructure.value.data
     val candidates = thisProjectRef.all(ScopeFilter(inAggregates(ThisProject))).value
@@ -534,7 +550,8 @@ object BonsaiPlugin extends AutoPlugin {
     if (enabled.isEmpty)
       Def.task {
         skipped.foreach(streams.value.log.info(_))
-        0
+        IO.delete(target.value / "bonsai" / "manifest.tsv")
+        None
       }
     else Def.task {
       skipped.foreach(streams.value.log.info(_))
@@ -607,8 +624,6 @@ object BonsaiPlugin extends AutoPlugin {
       val resourced = entries.flatMap(_.resources).distinct ++ ManifestLines.resourced(entries.map(_.project))
       val generated =
         ManifestLines.generated(kept.flatMap(_.managedDirectories).distinct, kept.flatMap(_.managed).distinct)
-      val baseline = bonsaiBaseline.value
-      val purity   = bonsaiPurity.value
       val jdk      = ManifestLines.jdk(bonsaiJdk.value)
       val manifest = directory / "bonsai" / "manifest.tsv"
       val text     = bonsaiConfiguration.value.text
@@ -622,7 +637,16 @@ object BonsaiPlugin extends AutoPlugin {
         )
       )
       val versions = Def.task(scalaVersion.value).all(analysed).value.distinct
-      val tool     = analysisClasspath(resolution, versions, directory, log)
+      Some(Prepared(manifest, versions, resolution, directory, log))
+    }
+  }
+
+  /** Runs the analysis with `extra` arguments derived from the baseline and purity files, returning its exit code. */
+  private def analyse(extra: (File, File) => Seq[String]): Def.Initialize[Task[Int]] = Def.taskDyn {
+    val analysisJdk = AnalysisJdk.select(bonsaiAnalysisJavaHome.value, AnalysisJdk.probe).fold(Compat.fail, identity)
+    Def.task {
+      val baseline = bonsaiBaseline.value
+      val purity   = bonsaiPurity.value
       val threads  = Parallelism.of(concurrentRestrictions.value)
       val options  = Seq("--mode", bonsaiModeId.value, "--parallelism", threads.toString) ++
         BonsaiConfiguration.Analysis(
@@ -640,16 +664,22 @@ object BonsaiPlugin extends AutoPlugin {
           bonsaiNesting.value
         ).options(Findings, baseline, purity) ++
         extra(baseline, purity)
-      Fork.java(
-        ForkOptions().withJavaHome(analysisJdk).withRunJVMOptions(Vector(s"-Xmx${bonsaiAnalysisHeap.value}")),
-        Seq(
-          "-cp",
-          tool.mkString(java.io.File.pathSeparator),
-          "net.kurobako.bonsai.analysis.CLI",
-          "--manifest",
-          manifest.getAbsolutePath
-        ) ++ options
-      )
+      val heap = bonsaiAnalysisHeap.value
+      bonsaiPrepared.value match {
+        case None           => 0
+        case Some(prepared) =>
+          val tool = analysisClasspath(prepared.resolution, prepared.versions, prepared.directory, prepared.log)
+          Fork.java(
+            ForkOptions().withJavaHome(analysisJdk).withRunJVMOptions(Vector(s"-Xmx$heap")),
+            Seq(
+              "-cp",
+              tool.mkString(java.io.File.pathSeparator),
+              "net.kurobako.bonsai.analysis.CLI",
+              "--manifest",
+              prepared.manifest.getAbsolutePath
+            ) ++ options
+          )
+      }
     }
   }
 
