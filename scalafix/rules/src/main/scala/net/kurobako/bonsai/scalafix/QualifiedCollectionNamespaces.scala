@@ -3,6 +3,7 @@ package net.kurobako.bonsai.scalafix
 import metaconfig.Conf
 import metaconfig.Configured
 import scala.meta.*
+import scala.meta.tokens.Token
 import scalafix.v1.*
 
 object QualifiedCollectionNamespaces {
@@ -103,16 +104,34 @@ class QualifiedCollectionNamespaces(namespaces: List[QualifiedCollectionNamespac
               } " +
               s"${space.pkg}; write its members as ${space.prefix}.${member(importee)}",
             importee.pos
-          ) + (if (replacing.exists(_._1 eq importer)) Patch.empty else Patch.removeImportee(importee))
+          )
       }
     }
     val rewritten = replacing.map((importer, space) => Patch.replaceTree(importer, space.pkg))
-    val redundant = document.tree.collect {
-      case importee @ Importee.Name(name) if redundantImport(name.symbol.value, prefixed.map(_._2)) =>
-        Patch.removeImportee(importee)
+    val removed = members.filterNot((importer, _) => replacing.exists(_._1 eq importer)).flatMap { case (importer, _) =>
+      importer.importees.filter(memberImportee(_))
+    } ++ document.tree.collect {
+      case importee @ Importee.Name(name) if redundantImport(name.symbol.value, prefixed.map(_._2)) => importee
     }
-    (imported ++ prefixed.map(_._3) ++ rewritten ++ redundant ++ references.placements(added.map(importing(_)))).asPatch
+    (imported ++ prefixed.map(_._3) ++ rewritten ++ removals(removed) ++
+      references.placements(added.map(importing(_)))).asPatch
   }
+
+  private def removals(importees: List[Importee])(using SemanticDocument): List[Patch] =
+    importees.distinct.groupBy(_.parent.flatMap(_.parent)).toList.flatMap {
+      case (Some(statement: Import), group)
+          if statement.importers.forall(_.importees.forall(importee => group.exists(_ eq importee))) =>
+        List(Patch.removeTokens(precedingLine(statement) ++ statement.tokens.toList))
+      case (_, group) => group.map(Patch.removeImportee(_))
+    }
+
+  private def precedingLine(statement: Import)(using document: SemanticDocument): List[Token] =
+    if (!statement.parent.toList.flatMap(_.children).takeWhile(_ ne statement).lastOption.exists(_.is[Import])) Nil
+    else {
+      val leading = document.tokenList.leading(statement.tokens.head).toList
+      val indent  = leading.takeWhile(_.is[Token.HSpace])
+      leading.drop(indent.size).headOption.collect { case eol: Token.AtEOL => eol :: indent }.getOrElse(Nil)
+    }
 
   private def redundantImport(symbol: String, replaced: List[Tree])(using document: SemanticDocument): Boolean =
     namespaces.exists(space => space.prefix == space.pkg && space.isPackage(symbol)) &&

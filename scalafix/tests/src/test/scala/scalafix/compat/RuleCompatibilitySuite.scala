@@ -29,6 +29,18 @@ import scalafix.v1.Configuration
 import scalafix.v1.RuleDecoder
 
 object RuleCompatibilitySuite {
+
+  class ImportBlockRewrite extends v1.SyntacticRule("ImportBlockRewrite") {
+    override def fix(using document: v1.SyntacticDocument): v1.Patch = {
+      val imports = document.tree.collect { case statement: Import => statement }
+      if (imports.isEmpty) v1.Patch.empty
+      else {
+        val block = document.tokens.slice(imports.head.tokens.start, imports.last.tokens.end)
+        (v1.Patch.addLeft(imports.head.tokens.head, block.map(_.syntax).mkString) + v1.Patch.removeTokens(block)).atomic
+      }
+    }
+  }
+
   enum Stage {
     case Output
     case Input
@@ -206,8 +218,38 @@ object RuleCompatibilitySuite {
       "qualified-collection-namespaces",
       "QualifiedCollectionNamespacesPackageImportGrouped",
       "FullyQualifiedReference.fully-qualified-reference"
+    ) -> followsConfig,
+    configured(
+      "qualified-collection-namespaces",
+      "QualifiedCollectionNamespacesGroupedMemberImport",
+      "FullyQualifiedReference.fully-qualified-reference"
+    ) -> followsConfig,
+    configured(
+      "qualified-collection-namespaces",
+      "QualifiedCollectionNamespacesImportBlock",
+      "FullyQualifiedReference.fully-qualified-reference"
+    ) -> followsConfig,
+    configured(
+      "qualified-collection-namespaces",
+      "QualifiedCollectionNamespacesLoneImport",
+      "FullyQualifiedReference.fully-qualified-reference"
     )                                                                                               -> followsConfig,
     configured("namespace-imports", "FullyQualifiedReference", "NamespaceImports.namespace-import") -> reconfigured,
+    configured(
+      "namespace-imports",
+      "QualifiedCollectionNamespacesGroupedMemberImport",
+      "NamespaceImports.qualified-reference"
+    ) -> reconfigured,
+    configured(
+      "namespace-imports",
+      "QualifiedCollectionNamespacesImportBlock",
+      "NamespaceImports.qualified-reference"
+    ) -> reconfigured,
+    configured(
+      "namespace-imports",
+      "QualifiedCollectionNamespacesLoneImport",
+      "NamespaceImports.qualified-reference"
+    ) -> reconfigured,
     configured("namespace-imports", "QualifiedCollectionNamespacesJavaOnly", "NamespaceImports.qualified-reference") ->
       reconfigured,
     configured("namespace-imports", "FullyQualifiedReferenceClash", "NamespaceImports.namespace-import") ->
@@ -325,6 +367,16 @@ class RuleCompatibilitySuite extends AnyFunSuite {
     }
   }
 
+  private def fixed(rule: String, f: Fixture, sdoc: v1.SemanticDocument): String = {
+    val decoder = RuleDecoder.decoder(RuleDecoder.Settings().withConfig(f.scalafixConfig))
+    val config  = Configuration().withConf(f.conf).withScalaVersion(args.scalaVersion.value)
+      .withScalacOptions(args.scalacOptions).withScalacClasspath(args.classpath.entries)
+    val rules = decoder.read(Conf.Lst(Conf.Str(rule))).get.withConfiguration(config).get
+    rules.beforeStart()
+    try rules.semanticPatch(sdoc, suppress = false).fixed
+    finally rules.afterComplete()
+  }
+
   private def allFindings(conf: Conf, f: Fixture, sdoc: v1.SemanticDocument): List[Finding] =
     ruleNames.flatMap(findings(_, conf, f, sdoc))
 
@@ -440,6 +492,38 @@ class RuleCompatibilitySuite extends AnyFunSuite {
     stats.clear()
     val found = outputCandidates()
     check(found, outputArtefacts, outputPending)
+  }
+
+  test("a removed import keeps the line structure beside a rule that rewrites the import block") {
+    val fixtureNames = List("LoneImport", "UnusedImport", "ImportBlock", "GroupedMemberImport")
+    fixtureNames.foreach { name =>
+      val f      = fixtures.find(_.path.testName == s"scala/fix/QualifiedCollectionNamespaces$name.scala").get
+      val sdoc   = inputDocument(f)
+      val config = Configuration().withConf(f.conf).withScalaVersion(args.scalaVersion.value)
+        .withScalacOptions(args.scalacOptions).withScalacClasspath(args.classpath.entries)
+      val decoder = RuleDecoder.decoder(RuleDecoder.Settings().withConfig(f.scalafixConfig))
+      val rule    = decoder.read(Conf.Lst(Conf.Str("QualifiedCollectionNamespaces"))).get.withConfiguration(config).get
+      val rules   = scalafix.internal.v1.Rules(rule.rules :+ ImportBlockRewrite())
+      rules.beforeStart()
+      val result =
+        try rules.semanticPatch(sdoc, suppress = false)
+        finally rules.afterComplete()
+      assert(result.fixed.linesIterator.size == sdoc.input.text.linesIterator.size, name)
+      val layout = (text: String) => text.linesIterator.slice(f.headerEnd + 1, f.headerEnd + 4).toList
+      assert(layout(result.fixed) == layout(sdoc.input.text), name)
+    }
+  }
+
+  test("every rule leaves its own expected output unchanged") {
+    val changed = fixtures.flatMap { f =>
+      f.output.toList.flatMap { file =>
+        val text = Files.readString(file)
+        f.headerRules.toList.sorted.filter(rule => fixed(rule, f, outputDocument(f, file)) != text).map(rule =>
+          s"  ${f.path.testName} with $rule"
+        )
+      }
+    }
+    assert(changed.isEmpty, changed.mkString("rewritten expected outputs:\n", "\n", ""))
   }
 
   test("findings on input lines rewritten by another rule are accounted for") {
