@@ -46,6 +46,9 @@ object ToolingComments {
   // scalafmt: { align.preset = none }
   def formatted: Int = 10
 
+  //> using plugin net.kurobako:bonsai-plugin_3.8:0.1.0-SNAPSHOT
+  def directive: Int = 18
+
   // the unused parameter would otherwise be flagged
   @SuppressWarnings(Array("scalafix:ToolingComments"))
   def kept(unused: Int): Int = {

@@ -8,9 +8,9 @@ import scalafix.v1.*
 /** Comments worded for the moment they were written, such as `not ... yet`, `for now`, `at the moment`, `currently`,
   * and `these days`. They go stale without a change to the code beside them; a comment says what the code does and why.
   * Comments with a `TODO`, `FIXME`, or `XXX` marker are left alone, since a marker is where a time-bound note belongs,
-  * as are scalafix directives and wordings that mean something else, such as `at the moment the lock is released` and
-  * `the currently selected item`. `No longer` and `anymore` are left out, since they describe a change of state at run
-  * time as often as a change of the code. Reports at warning severity.
+  * as are scalafix and scala-cli `using` directives and wordings that mean something else, such as
+  * `at the moment the lock is released` and `the currently selected item`. `No longer` and `anymore` are left out,
+  * since they describe a change of state at run time as often as a change of the code. Reports at warning severity.
   */
 class TimeRelativeComments extends SyntacticRule("TimeRelativeComments") {
   private val Patterns = List(

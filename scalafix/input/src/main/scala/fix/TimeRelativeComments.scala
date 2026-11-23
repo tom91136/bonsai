@@ -48,6 +48,9 @@ the comment states a point in time that the code outlives; say what the code doe
   // yet another loop over the same table
   val Conjunction = 16
 
+  //> using option "-Wconf:msg=not yet:s"
+  val Directive = 18
+
   // scalafix:off TimeRelativeComments
   // not wired up yet
   val Disabled = 17

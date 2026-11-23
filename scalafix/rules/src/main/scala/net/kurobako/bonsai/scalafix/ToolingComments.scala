@@ -10,7 +10,7 @@ import scalafix.v1.*
 object ToolingComments {
   def compile(pattern: String): Pattern = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE)
 
-  val Directive: Regex = "(?:scalafix|scalafmt|bonsai):\\s*[a-z{]".r
+  val Directive: Regex = "(?:(?:scalafix|scalafmt|bonsai):\\s*[a-z{]|^//>\\s*using\\b)".r
 }
 
 /** Comments that justify code by the tools that check it, naming a linter, a warning, or a dependency cycle. A comment
@@ -18,7 +18,7 @@ object ToolingComments {
   * wordings count only beside a word of tooling in the same comment, since loops and assemblers have cycles too. A
   * comment on a definition that suppresses a rule is where the reason belongs, and is left alone unless it only repeats
   * what the rule checks, naming a word of the rule and a repeated, restated or duplicated thing. Scalafix directives
-  * are left alone.
+  * and scala-cli `using` directives are left alone.
   *
   * `ToolingComments.phrases` lists further case-insensitive regular expressions that mark such a comment, for the
   * wording a codebase falls into.
