@@ -223,7 +223,8 @@ object Extraction {
           entry: Set[Root],
           link: Option[Graph => Reach.Calls],
           foreign: Set[Output] = Set.empty,
-          deferred: Boolean = false
+          deferred: Boolean = false,
+          keepCalls: Boolean = false
       ) =
         Collector(
           manifest.outputs,
@@ -240,7 +241,8 @@ object Extraction {
           entry,
           link,
           foreign,
-          deferred
+          deferred,
+          keepCalls
         )
       val tastyPaths                                                              = relativePaths(manifest)
       def reading(phase: Collector, files: Vector[Path], classpath: Vector[Path]) = Reader(phase, tastyPaths).process(
@@ -270,7 +272,7 @@ object Extraction {
       }
       val linking    = Some((graph: Graph) => Reach.link(manifest, JavaConversion.merge(graph, java), world))
       val everything = manifest.outputs.toSet
-      val phase      = collector(java.costs, roots, linking, separate, apart.nonEmpty)
+      val phase      = collector(java.costs, roots, linking, separate, apart.nonEmpty, keepCalls = true)
       val jvmModules = primary.map(_.module).toSet
       // A twin's classes resolve against its own and its peers' first, and the rest of its run behind them. The
       // copies are read for what they reference only, and the classes of its own sources are analysed as the JVM
