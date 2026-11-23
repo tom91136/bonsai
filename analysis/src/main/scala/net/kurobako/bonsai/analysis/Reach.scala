@@ -65,9 +65,11 @@ object Reach {
     )
     val testRoots = tests.toSet ++
       CallGraph.roots(graph.copy(roots = twinned(graph, manifest.platforms, Output.Scope.Test)), world)
+    val walk = new CallGraph.Walk(world, classes.contains)
     @annotation.tailrec
     def settle(mains: Set[Reference], testing: Set[Reference]): CallGraph = {
-      val calls = CallGraph.build(world, mains, build = classes.contains, tests = testing)
+      walk.extend(mains, testing)
+      val calls = walk.result()
       val state = survey(world, calls, classes, bodied, entered, graph)
       val more  = reading(graph, Expansion(graph, state.main, state.dead ++ state.tested), world)
       val extra = reading(graph, Expansion(graph, state.every, state.dead), world)

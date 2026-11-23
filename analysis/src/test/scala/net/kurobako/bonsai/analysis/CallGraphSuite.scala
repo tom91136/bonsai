@@ -989,4 +989,25 @@ public class $bslash$amp$div {
       assertEquals(tagged.collect { case CallGraph.Receiver.Closure(site) => site }.toSet, marked)
     }
   }
+
+  test("a walk extended with more roots is the graph a single walk from all those roots builds") {
+    withWorld() { world =>
+      val main  = ref("Orders", "siteThenNew", "(Lfixture/Shape;)I")
+      val first = ref("Hosting", "fromTest")
+      val later = ref("Hosting", "testing", "()Ljava/lang/Object;")
+      val whole = CallGraph.build(world, Set(main), tests = Set(first, later))
+      val walk  = new CallGraph.Walk(world, _ => false)
+      walk.extend(Set(main), Set(first))
+      walk.extend(Set.empty[Reference], Set(later))
+      val grown = walk.result()
+      assertEquals(grown.reachable, whole.reachable)
+      assertEquals(grown.dispatch, whole.dispatch)
+      assertEquals(grown.instantiated, whole.instantiated)
+      assertEquals(grown.lambdas, whole.lambdas)
+      assertEquals(grown.testOnly, whole.testOnly)
+      assertEquals(grown.testInstantiated, whole.testInstantiated)
+      walk.extend(Set(main), Set(first, later))
+      assertEquals(walk.result().reachable.size, whole.reachable.size)
+    }
+  }
 }

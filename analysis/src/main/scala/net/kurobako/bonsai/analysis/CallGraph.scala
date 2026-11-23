@@ -35,7 +35,11 @@ private[analysis] object CallGraph {
       roots: Set[Reference],
       build: String => Boolean = _ => false,
       tests: Set[Reference] = Set.empty
-  ): CallGraph = Walk(world, build).run(roots, tests)
+  ): CallGraph = {
+    val walk = Walk(world, build)
+    walk.extend(roots, tests)
+    walk.result()
+  }
 
   /** The methods the roots of `graph` enter the program at, by the kind of each root. */
   def roots(graph: Graph, world: ClassWorld): Set[Reference] =
@@ -101,7 +105,7 @@ private[analysis] object CallGraph {
   private def conforms(name: String, owner: String, world: ClassWorld): Boolean =
     name == owner || world.ancestors(name).contains(owner)
 
-  private class Walk(world: ClassWorld, build: String => Boolean) {
+  class Walk(world: ClassWorld, build: String => Boolean) {
     private val reachable    = mutable.Set.empty[Reference]
     private val targets      = mutable.Map.empty[Reference, mutable.Set[Reference]]
     private val pending      = mutable.Queue.empty[Reference]
@@ -113,24 +117,33 @@ private[analysis] object CallGraph {
     private val testMethods  = mutable.Set.empty[Reference]
     private val testClasses  = mutable.Set.empty[String]
     private var testing      = false // scalafix:ok DisableSyntax.var
+    private var started      = false // scalafix:ok DisableSyntax.var
 
-    def run(roots: Set[Reference], tests: Set[Reference]): CallGraph = {
-      created.foreach(instantiate(_))
-      upcalls.foreach(site(_))
-      roots.foreach(root => enter(root))
+    /** Enters the roots found since the last call. Walking again from more roots only grows what is reachable, so a
+      * caller that settles roots can extend one walk instead of rebuilding the graph from scratch each round.
+      */
+    def extend(roots: Set[Reference], tests: Set[Reference]): Unit = {
+      if (!started) {
+        started = true
+        created.foreach(instantiate(_))
+        upcalls.foreach(site(_))
+      }
+      testing = false
+      roots.foreach(enter(_))
       drain()
       testing = true
-      tests.foreach(root => enter(root))
+      tests.foreach(enter(_))
       drain()
-      CallGraph(
-        reachable.toSet,
-        targets.view.mapValues(_.toSet).toMap,
-        instances.toSet,
-        closures.toMap,
-        testMethods.toSet,
-        testClasses.toSet
-      )
     }
+
+    def result(): CallGraph = CallGraph(
+      reachable.toSet,
+      targets.view.mapValues(_.toSet).toMap,
+      instances.toSet,
+      closures.toMap,
+      testMethods.toSet,
+      testClasses.toSet
+    )
 
     private def drain(): Unit = while (pending.nonEmpty) visit(pending.dequeue())
 
