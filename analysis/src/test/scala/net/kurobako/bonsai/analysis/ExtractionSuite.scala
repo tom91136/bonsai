@@ -467,6 +467,59 @@ class ExtractionSuite extends AnalysisSuite {
     }
   }
 
+  test(
+    "a library's Scala 2.13 and Scala 3 artifacts are one artifact, so modules that hold different versions read apart"
+  ) {
+    Scratch.using("bonsai-") { directory =>
+      def api(name: String, version: String, artifact: String, member: String): Path = {
+        val classes = compile(
+          directory.resolve(s"$name-$version"),
+          Seq("Api.scala" -> s"package lib\nobject Api { $member }"),
+          Vector.empty
+        )
+        archive(classes, directory.resolve(s"$artifact-$version.jar"), artifact, version)
+      }
+      val older = api("api-old", "1.0.0", "api_2.13", "def apply()(implicit value: String): Int = value.length")
+      val newer = api("api-new", "2.0.0", "api_3", "def apply(value: String): String = value")
+      val old   = compile(
+        directory.resolve("old"),
+        Seq(
+          "Old.scala" ->
+            """object Old {
+              |  def run(implicit value: String): Int = lib.Api()
+              |  def entry(): Int = run("abc")
+              |}""".stripMargin
+        ),
+        Vector(older)
+      )
+      val fresh = compile(
+        directory.resolve("new"),
+        Seq(
+          "New.scala" ->
+            """object New {
+              |  def run(value: String): String = lib.Api(value)
+              |  def entry(): String = run("abc")
+              |}""".stripMargin
+        ),
+        Vector(newer)
+      )
+      val outputs  = Vector(Output("new", Output.Scope.Main, fresh), Output("old", Output.Scope.Main, old))
+      val manifest =
+        Manifest(
+          outputs,
+          scoped(Map("new" -> (newer +: classpath), "old" -> (older +: classpath))),
+          Set.empty,
+          jdk = targetJdk
+        )
+      val result = Extraction.read(manifest).fold(errors => fail(errors.mkString("\n")), identity)
+      assertEquals(result.notes, Vector.empty)
+      assertEquals(
+        result.graph.nodes.keySet.filter(node => node.startsWith("Old") || node.startsWith("New")),
+        Set("Old", "New")
+      )
+    }
+  }
+
   test("artifacts whose manifests share a vendor and title stay apart on the merged classpath") {
     Scratch.using("bonsai-") { directory =>
       def core(name: String, version: String, member: String): Path = {
@@ -623,6 +676,13 @@ class ExtractionSuite extends AnalysisSuite {
       dependencies = Map("app" -> Set("core"))
     )
     assertEquals(Readings(whole).of(Set(app.part)), Vector(newest, shaded))
+  }
+
+  test("shadowing keeps the first version of a library across its Scala 2.13 and Scala 3 artifacts") {
+    val older = Path.of("/cache/org/example/tool_2.13/1.9.0/tool_2.13-1.9.0.jar")
+    val newer = Path.of("/cache/org/example/tool_3/1.10.0/tool_3-1.10.0.jar")
+    assertEquals(Classpath.shadowed(Vector(older, newer)), Vector(older))
+    assertEquals(Classpath.shadowed(Vector(newer, older)), Vector(newer))
   }
 
   test("shadowing identifies a jar outside a repository layout by its manifest and unversioned name") {

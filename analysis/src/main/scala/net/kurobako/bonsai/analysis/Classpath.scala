@@ -100,11 +100,23 @@ private[analysis] object Classpath {
       Try(Using.resource(JarFile(directory.toFile))(jar => Option(jar.getEntry(file)).nonEmpty)).getOrElse(false)
   }
 
-  /** The identity and numeric version of a jar, from its manifest or else its Maven-style repository layout. */
+  /** The identity and numeric version of a jar, from its manifest or else its Maven-style repository layout, with the
+    * Scala binary version left out of the artifact's name, as a library's Scala 2.13 and Scala 3 copies are the same
+    * artifact to the compiler that reads them.
+    */
   private def artifact(path: Path): Option[(String, Vector[BigInt])] =
     manifested(path).orElse(laidOut(path)).map((identity, version) =>
-      identity -> version.split("[.-]").view.map(_.takeWhile(_.isDigit)).takeWhile(_.nonEmpty).map(BigInt(_)).toVector
+      ScalaBinary.replaceAllIn(identity, "") ->
+        version
+          .split("[.-]")
+          .view
+          .map(_.takeWhile(_.isDigit))
+          .takeWhile(_.nonEmpty)
+          .map(BigInt(_))
+          .toVector
     )
+
+  private val ScalaBinary = """_(?:2\.\d+|3(?:\.\d+)?)(?=:|$)""".r
 
   private def manifested(path: Path): Option[(String, String)] =
     if (!path.getFileName.toString.endsWith(".jar") || !Files.isRegularFile(path)) None
