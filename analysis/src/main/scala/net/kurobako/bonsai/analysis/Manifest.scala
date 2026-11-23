@@ -9,8 +9,94 @@ import scala.jdk.CollectionConverters.*
 
 object Manifest {
 
+  private type Update = Manifest => Either[String, Manifest]
+
   private def scopeOf(path: Path, index: Int, scope: String): Either[String, Output.Scope] =
     Output.Scope.values.find(_.id == scope).toRight(s"$path:${index + 1}: unknown scope: $scope")
+
+  private def parseOutput(path: Path, index: Int, module: String, scope: String, location: String): Update =
+    current =>
+      scopeOf(path, index, scope).map { parsed =>
+        current.copy(outputs = current.outputs :+ Output(module, parsed, Path.of(location)))
+      }
+
+  private def parseClasspath(path: Path, index: Int, module: String, scope: String, location: String): Update =
+    current =>
+      scopeOf(path, index, scope).map { parsed =>
+        val key = module -> parsed
+        current.copy(classpath =
+          current.classpath.updated(key, current.classpath.getOrElse(key, Vector.empty) :+ Path.of(location))
+        )
+      }
+
+  private def parseDepends(module: String, other: String): Update =
+    current =>
+      Right(current.copy(dependencies =
+        current.dependencies.updated(module, current.dependencies.getOrElse(module, Set.empty) + other)
+      ))
+
+  private def parseLibrary(module: String): Update =
+    current => Right(current.copy(libraries = current.libraries + module))
+
+  private def parsePlatform(module: String): Update =
+    current => Right(current.copy(platforms = current.platforms + module))
+
+  private def parseRecorded(module: String): Update =
+    current => Right(current.copy(recorded = current.recorded + module))
+
+  private def parseResourced(module: String): Update =
+    current => Right(current.copy(resourced = current.resourced + module))
+
+  private def parseOption(module: String, option: String): Update =
+    current =>
+      Right(current.copy(options =
+        current.options.updated(module, current.options.getOrElse(module, Vector.empty) :+ option)
+      ))
+
+  private def parseSource(path: Path, index: Int, module: String, scope: String, location: String): Update =
+    current =>
+      scopeOf(path, index, scope).map { parsed =>
+        current.copy(sources = current.sources :+ Output(module, parsed, Path.of(location)))
+      }
+
+  private def parseProduct(path: Path, index: Int, module: String, scope: String, location: String): Update =
+    current =>
+      scopeOf(path, index, scope).map { parsed =>
+        current.copy(products = current.products :+ Output(module, parsed, Path.of(location)))
+      }
+
+  private def parseResource(name: String, location: String): Update =
+    current => Right(current.copy(resources = current.resources :+ Resource(name, Path.of(location))))
+
+  private def parseModel(path: Path, index: Int, module: String, scope: String, location: String): Update =
+    current =>
+      scopeOf(path, index, scope).map { parsed =>
+        current.copy(models = current.models :+ Output(module, parsed, Path.of(location)))
+      }
+
+  private def parseGenerated(location: String): Update =
+    current => Right(current.copy(generated = current.generated :+ Path.of(location)))
+
+  private def parseJdk(path: Path, index: Int, location: String): Update =
+    current => {
+      val home = Path.of(location)
+      if (current.jdk.exists(_ != home)) Left(s"$path:${index + 1}: conflicting jdk: $location")
+      else Right(current.copy(jdk = Some(home)))
+    }
+
+  private def parseRoot(location: String): Update =
+    current => Right(current.copy(root = Some(Path.of(location))))
+
+  private def parseTextExclude(glob: String): Update =
+    current => Right(current.copy(textExclusions = current.textExclusions :+ glob))
+
+  private def parseText(rule: String, field: String, value: String): Update =
+    current => {
+      val fields = current.texts.getOrElse(rule.toInt, Map.empty)
+      Right(current.copy(texts =
+        current.texts.updated(rule.toInt, fields.updated(field, fields.getOrElse(field, Vector.empty) :+ value))
+      ))
+    }
 
   /** Reads tab-separated `output <module> <scope> <directory>`, `classpath <module> <scope> <entry>`,
     * `library <module>`, `depends <module> <module>`, `platform <module>`, `recorded <module>`,
@@ -24,59 +110,26 @@ object Manifest {
         case (manifest, (line, index)) =>
           manifest.flatMap { current =>
             line.split("\t", -1).toList match {
-              case List("output", module, scope, location) =>
-                scopeOf(path, index, scope).map {
-                  parsed => current.copy(outputs = current.outputs :+ Output(module, parsed, Path.of(location)))
-                }
+              case List("output", module, scope, location) => parseOutput(path, index, module, scope, location)(current)
               case List("classpath", module, scope, location) =>
-                scopeOf(path, index, scope).map { parsed =>
-                  val key = module -> parsed
-                  current.copy(classpath =
-                    current.classpath.updated(key, current.classpath.getOrElse(key, Vector.empty) :+ Path.of(location))
-                  )
-                }
-              case List("depends", module, other) =>
-                Right(current.copy(dependencies =
-                  current.dependencies.updated(module, current.dependencies.getOrElse(module, Set.empty) + other)
-                ))
-              case List("library", module)        => Right(current.copy(libraries = current.libraries + module))
-              case List("platform", module)       => Right(current.copy(platforms = current.platforms + module))
-              case List("recorded", module)       => Right(current.copy(recorded = current.recorded + module))
-              case List("resourced", module)      => Right(current.copy(resourced = current.resourced + module))
-              case List("option", module, option) =>
-                Right(current.copy(options =
-                  current.options.updated(module, current.options.getOrElse(module, Vector.empty) :+ option)
-                ))
-              case List("source", module, scope, location) =>
-                scopeOf(path, index, scope).map {
-                  parsed => current.copy(sources = current.sources :+ Output(module, parsed, Path.of(location)))
-                }
+                parseClasspath(path, index, module, scope, location)(current)
+              case List("depends", module, other)          => parseDepends(module, other)(current)
+              case List("library", module)                 => parseLibrary(module)(current)
+              case List("platform", module)                => parsePlatform(module)(current)
+              case List("recorded", module)                => parseRecorded(module)(current)
+              case List("resourced", module)               => parseResourced(module)(current)
+              case List("option", module, option)          => parseOption(module, option)(current)
+              case List("source", module, scope, location) => parseSource(path, index, module, scope, location)(current)
               case List("product", module, scope, location) =>
-                scopeOf(path, index, scope).map {
-                  parsed => current.copy(products = current.products :+ Output(module, parsed, Path.of(location)))
-                }
-              case List("resource", name, location) =>
-                Right(current.copy(resources = current.resources :+ Resource(name, Path.of(location))))
-              case List("model", module, scope, location) =>
-                scopeOf(path, index, scope).map {
-                  parsed => current.copy(models = current.models :+ Output(module, parsed, Path.of(location)))
-                }
-              case List("generated", location) =>
-                Right(current.copy(generated = current.generated :+ Path.of(location)))
-              case List("jdk", location) =>
-                val home = Path.of(location)
-                if (current.jdk.exists(_ != home)) Left(s"$path:${index + 1}: conflicting jdk: $location")
-                else Right(current.copy(jdk = Some(home)))
-              case List("root", location)     => Right(current.copy(root = Some(Path.of(location))))
-              case List("text-exclude", glob) => Right(current.copy(textExclusions = current.textExclusions :+ glob))
+                parseProduct(path, index, module, scope, location)(current)
+              case List("resource", name, location)       => parseResource(name, location)(current)
+              case List("model", module, scope, location) => parseModel(path, index, module, scope, location)(current)
+              case List("generated", location)            => parseGenerated(location)(current)
+              case List("jdk", location)                  => parseJdk(path, index, location)(current)
+              case List("root", location)                 => parseRoot(location)(current)
+              case List("text-exclude", glob)             => parseTextExclude(glob)(current)
               case List("text", rule, field, value) if rule.toIntOption.isDefined =>
-                val fields = current.texts.getOrElse(rule.toInt, Map.empty)
-                Right(current.copy(texts =
-                  current.texts.updated(
-                    rule.toInt,
-                    fields.updated(field, fields.getOrElse(field, Vector.empty) :+ value)
-                  )
-                ))
+                parseText(rule, field, value)(current)
               case _ => Left(s"$path:${index + 1}: unrecognised manifest line: $line")
             }
           }
