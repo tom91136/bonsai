@@ -65,6 +65,9 @@ was ok in the previous run on `main` is not ok now. Findings never fail it.
   a class is missing from the project's own classpath, or that library bodies could not be read for want of such a
   class, is not one; the summary lists those per project. A project whose own build fails before the analysis runs is
   not one.
+- A project whose manifest holds a pre-release `scala3-library_3`, or one on a minor line older than the oldest in
+  `scala3Versions` in `build.sbt`, is unsupported input: the summary lists it with that version in its own section, and
+  its results count as neither a health failure nor a regression.
 - The previous run is the newest unexpired `community-baseline` artifact of a run on `main`, which holds each project's
   status, timings and sorted findings. The first run has none, so only health failures apply.
 - The job summary lists the counts per status, each failure and regression with a log excerpt, and the findings added and

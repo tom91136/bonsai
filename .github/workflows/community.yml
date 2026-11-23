@@ -224,13 +224,14 @@ jobs:
           PREVIOUS: ${{ needs.plan.outputs.previous }}
         run: |
           set -euo pipefail
+          scala3=$(sed -nE 's/^lazy val scala3Versions *= *Seq\((.*)\)$/\1/p' build.sbt | tr -d ' "')
           options=()
           if [[ -n $PREVIOUS ]]; then
             gh run download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --name community-baseline --dir "$RUNNER_TEMP/previous"
             options+=(--previous "$RUNNER_TEMP/previous" --previous-run "$PREVIOUS")
           fi
           community/report.scala --out out --projects "$RUNNER_TEMP/planned.jsonl" --summary "$GITHUB_STEP_SUMMARY" \
-            --report report --baseline baseline "${options[@]}"
+            --report report --scala3-versions "$scala3" --baseline baseline "${options[@]}"
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:

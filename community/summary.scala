@@ -12,11 +12,12 @@ case class Row(
     output: Output,
     failures: Vector[Failure],
     before: Option[Before],
-    missing: Vector[String] = Vector.empty
+    missing: Vector[String] = Vector.empty,
+    unsupported: Vector[String] = Vector.empty
 ) {
   def name: String       = output.name
-  def regressed: Boolean = before.exists(_.status == "ok") && output.status != "ok"
-  def red: Boolean       = failures.nonEmpty || regressed
+  def regressed: Boolean = unsupported.isEmpty && before.exists(_.status == "ok") && output.status != "ok"
+  def red: Boolean       = unsupported.isEmpty && (failures.nonEmpty || regressed)
 }
 
 case class Changes(name: String, added: Vector[String], removed: Vector[String]) {
@@ -34,11 +35,21 @@ def changes(current: Vector[String], previous: Vector[String]): (Vector[String],
   (surplus(after, before), surplus(before, after))
 }
 
-def rows(outputs: Iterator[Output], previous: Map[String, Before]): Vector[Row] =
+def rows(
+    outputs: Iterator[Output],
+    previous: Map[String, Before],
+    supported: Vector[String] = Vector.empty
+): Vector[Row] =
   outputs.map { output =>
     val kept =
       output.copy(log = output.log.takeRight(20), err = output.err.takeRight(20), crash = output.crash.takeRight(20))
-    Row(kept, Health.assess(output), previous.get(output.name), Health.missing(output))
+    Row(
+      kept,
+      Health.assess(output),
+      previous.get(output.name),
+      Health.missing(output),
+      Scala3.unsupported(output.scala3, supported)
+    )
   }.toVector
 
 def findingChanges(all: Vector[Row]): Vector[Changes] =
@@ -98,13 +109,20 @@ def regressionExcerpt(output: Output): Vector[String] = {
   s"status ${output.status}" +: shown.takeRight(15)
 }
 
-def render(all: Vector[Row], diffs: Vector[Changes], previousRun: Option[String], budget: Int): String = {
+def render(
+    all: Vector[Row],
+    diffs: Vector[Changes],
+    previousRun: Option[String],
+    budget: Int,
+    supported: Vector[String] = Vector.empty
+): String = {
   val out                      = new StringBuilder
   var full                     = false
   def add(block: String): Unit =
     if (!full && out.length + block.length <= budget) out ++= block else full = true
 
-  val failing     = all.filter(_.failures.nonEmpty).sortBy(_.name)
+  val unsupported = all.filter(_.unsupported.nonEmpty).sortBy(_.name)
+  val failing     = all.filter(row => row.failures.nonEmpty && row.unsupported.isEmpty).sortBy(_.name)
   val regressions = all.filter(_.regressed).sortBy(_.name)
   val red         = all.count(_.red)
 
@@ -117,6 +135,10 @@ def render(all: Vector[Row], diffs: Vector[Changes], previousRun: Option[String]
   add(previousRun.fold("No previous run to compare with, so regressions were not checked.\n\n")(run =>
     s"Compared with the baseline of run $run.\n\n"
   ))
+  if (unsupported.nonEmpty)
+    add(
+      s"${unsupported.size} projects build on a Scala 3 version outside what bonsai supports; they are not judged.\n\n"
+    )
 
   val now    = all.groupMapReduce(_.output.status)(_ => 1)(_ + _)
   val before = all.flatMap(_.before).groupMapReduce(_.status)(_ => 1)(_ + _)
@@ -137,6 +159,13 @@ def render(all: Vector[Row], diffs: Vector[Changes], previousRun: Option[String]
   add(s"## Bonsai health failures (${failing.size})\n\n")
   failing.foreach { row =>
     add(s"### ${row.name}\n\nStatus ${row.output.status}; ${row.failures.map(_.kind).mkString(", ")}.\n\n")
+    row.failures.foreach(failure => add(s"${failure.kind}\n\n${fenced(failure.evidence)}\n"))
+  }
+
+  val range = Scala3.range(supported).fold("")(range => s" ($range)")
+  add(s"## Unsupported Scala 3 versions (${unsupported.size})\n\n")
+  unsupported.foreach { row =>
+    add(s"### ${row.name}\n\nScala 3 ${row.unsupported.mkString(", ")} is outside what bonsai supports$range.\n\n")
     row.failures.foreach(failure => add(s"${failure.kind}\n\n${fenced(failure.evidence)}\n"))
   }
 

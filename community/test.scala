@@ -22,8 +22,9 @@ def output(
     runs: Vector[(String, Int)] = Vector.empty,
     findings: Vector[String] = Vector.empty,
     name: String = "p",
-    failing: Set[String] = Set.empty
-): Output = Output(name, status, log, err, crash, runs, failing, findings)
+    failing: Set[String] = Set.empty,
+    scala3: Vector[String] = Vector.empty
+): Output = Output(name, status, log, err, crash, runs, failing, findings, scala3)
 
 def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
 
@@ -202,6 +203,17 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
     kinds(output(status = "timeout", err = Vector(banner))) == Vector("stopped")
   )
 
+  val supported = Vector("3.3.9", "3.4.3", "3.10.0")
+  check("a pre-release Scala 3 is unsupported")(Scala3.unsupported(Vector("3.3.0-RC2"), supported) ==
+    Vector("3.3.0-RC2"))
+  check("a Scala 3 line older than the oldest supported is unsupported")(
+    Scala3.unsupported(Vector("3.0.2", "3.2.2"), supported) == Vector("3.0.2", "3.2.2")
+  )
+  check("the oldest supported line is supported")(Scala3.unsupported(Vector("3.3.5"), supported).isEmpty)
+  check("a newer Scala 3 line is supported")(Scala3.unsupported(Vector("3.10.0"), supported).isEmpty)
+  check("a project without a Scala 3 version is not unsupported")(Scala3.unsupported(Vector.empty, supported).isEmpty)
+  check("the supported range comes from the versions")(Scala3.range(supported) == Some("3.3 and newer"))
+
   def row(now: String, before: Option[String]) =
     Row(output(status = now), Vector.empty, before.map(Before(_, Vector.empty)))
   check("ok to failed regresses")(row("failed", Some("ok")).regressed)
@@ -213,10 +225,23 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   check("ok to ok is not red")(!row("ok", Some("ok")).red)
   check("a failure makes a row red")(Row(output(), Vector(Failure("problem", Vector("x"))), None).red)
 
+  val unsupported = Row(
+    output(name = "u", status = "failed"),
+    Vector(Failure("problem", Vector("problem: x"))),
+    Some(Before("ok", Vector.empty)),
+    unsupported = Vector("3.0.2")
+  )
+  check("an unsupported project is not red")(!unsupported.red)
+  check("an unsupported project does not regress")(!unsupported.regressed)
+
   val long =
     rows(Iterator(output(status = "failed", log = Vector("problem: x") ++ Vector.fill(50)("tail"))), Map.empty).head
   check("rows judge the whole log and keep its tail")(long.failures.map(_.kind) == Vector("problem") &&
     long.output.log.size == 20)
+  check("rows mark a project unsupported by its manifest version")(
+    rows(Iterator(output(name = "u", scala3 = Vector("3.0.2"))), Map.empty, supported).head.unsupported ==
+      Vector("3.0.2")
+  )
 
   check("a regression in the analysis shows the analysis' output")(
     regressionExcerpt(
@@ -269,6 +294,12 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   put("out/a/info/m.manifest.tsv.out", "warning\tb\nwarning\ta\n")
   put("out/a/info/runs.tsv", "m.tsv\t0\t3.2\tpeak_kb=1\nn.manifest.tsv\t1\t1.0\tpeak_kb=1\n")
   put("out/a/info/n.manifest.tsv.out", "warning\tc\nerror\td\n")
+  put(
+    "out/a/manifests/m.tsv",
+    "classpath\tm\tmain\t/cache/scala3-library_3-3.3.9.jar\n" +
+      "classpath\tm\ttest\t/cache/scala3-library_3-3.10.0.jar\n" +
+      "classpath\tm\tmain\t/cache/other.jar\n"
+  )
   put("out/b/status", "runner-error:125\n")
   val a = Output.read(root.resolve("out/a"))
   check("a status is read")(a.status == "ok" && Output.read(root.resolve("out/b")).status == "runner-error")
@@ -277,6 +308,7 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   check("the analysis exit is read")(a.runs == Vector("m.tsv" -> 0, "n.manifest.tsv" -> 1))
   check("a run that printed a failing finding is read")(a.failing == Set("n.manifest.tsv"))
   check("findings are read sorted")(a.findings == Vector("error\td", "warning\ta", "warning\tb", "warning\tc"))
+  check("the Scala 3 versions are read from the manifests")(a.scala3 == Vector("3.10.0", "3.3.9"))
   check("both logs are searched")(Health.assess(a).head.evidence.size == 2)
 
   writeBaseline(Vector(a), root.resolve("out"), root.resolve("base"))
@@ -300,6 +332,19 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   check("a regression is listed with its log")(text.contains("### b") && text.contains("compile error"))
   check("a failure is listed with its evidence")(text.contains("problem: z"))
   check("the summary is ASCII")(text.forall(_ < 128))
+  val mixed = render(Vector(good, bad, sick, unsupported), diffs, Some("7"), Int.MaxValue, supported)
+  check("unsupported projects do not change the red counts")(
+    mixed.contains("Red: 1 projects with a bonsai health failure and 1 regressions")
+  )
+  check("an unsupported project has its own section")(
+    mixed.contains("## Unsupported Scala 3 versions (1)") && mixed.contains("### u") &&
+      mixed.contains("Scala 3 3.0.2 is outside what bonsai supports (3.3 and newer)")
+  )
+  check("an unsupported project's findings are listed informationally")(mixed.contains("problem: x"))
+  check("an unsupported project alone is green")(
+    render(Vector(unsupported), Vector.empty, Some("7"), Int.MaxValue, supported)
+      .startsWith("# Community build\n\nGreen")
+  )
   check("a green run says so")(render(
     Vector(good),
     Vector.empty,

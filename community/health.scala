@@ -15,11 +15,13 @@ case class Output(
     crash: Vector[String],
     runs: Vector[(String, Int)],
     failing: Set[String],
-    findings: Vector[String]
+    findings: Vector[String],
+    scala3: Vector[String] = Vector.empty
 )
 
 object Output {
-  private val ansi = "\u001B\\[[0-9;]*[A-Za-z]".r
+  private val ansi          = "\u001B\\[[0-9;]*[A-Za-z]".r
+  private val scala3Library = ".*scala3-library_3-([^/]+)\\.jar$".r
 
   private def lines(file: Path): Vector[String] =
     if (Files.isRegularFile(file)) Files.readAllLines(file, ISO_8859_1).asScala.toVector.map(ansi.replaceAllIn(_, ""))
@@ -31,6 +33,17 @@ object Output {
       try stream.iterator.asScala.filter(_.getFileName.toString.endsWith(suffix)).toVector.sortBy(_.toString)
       finally stream.close()
     } else Vector.empty
+
+  private def scala3(dir: Path): Vector[String] =
+    listed(dir.resolve("manifests"), ".tsv").flatMap { file =>
+      lines(file).collect {
+        case line if line.startsWith("classpath\t") =>
+          line.split('\t').lastOption.flatMap {
+            case scala3Library(version) => Some(version)
+            case _                      => None
+          }
+      }.flatten
+    }.distinct.sorted
 
   def read(dir: Path): Output = {
     val info = dir.resolve("info")
@@ -50,8 +63,35 @@ object Output {
       failing = outputs.collect {
         case (file, out) if out.exists(_.startsWith("error\t")) => file.getFileName.toString.stripSuffix(".out")
       }.toSet,
-      findings = outputs.flatMap(_._2).sorted
+      findings = outputs.flatMap(_._2).sorted,
+      scala3 = scala3(dir)
     )
+  }
+}
+
+object Scala3 {
+  private val version = "^(\\d+)\\.(\\d+)\\..*$".r
+
+  private def line(text: String): Option[(Int, Int)] = text match {
+    case version(major, minor) if !text.contains("-") => Some(major.toInt -> minor.toInt)
+    case _                                            => None
+  }
+
+  def oldest(supported: Vector[String]): Option[(Int, Int)] = supported.flatMap(line).minOption
+
+  def range(supported: Vector[String]): Option[String] =
+    oldest(supported).map((major, minor) => s"$major.$minor and newer")
+
+  def unsupported(scala3: Vector[String], supported: Vector[String]): Vector[String] = {
+    val floor = oldest(supported)
+    scala3.filter { text =>
+      (line(text), floor) match {
+        case (None, _)                                                => true
+        case (Some(_), None)                                          => false
+        case (Some((major, minor)), Some((oldestMajor, oldestMinor))) =>
+          major < oldestMajor || major == oldestMajor && minor < oldestMinor
+      }
+    }.distinct.sorted
   }
 }
 
