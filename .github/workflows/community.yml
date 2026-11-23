@@ -92,11 +92,23 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       count: ${{ steps.plan.outputs.count }}
       previous: ${{ steps.previous.outputs.run }}
+      coursier: ${{ steps.coursier.outputs.key }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-scala-cli
+        id: setup
+      - id: coursier
+        run: |
+          set -euo pipefail
+          key=$(grep -h '^//> using' community/*.scala | sort | sha256sum | cut -d' ' -f1)
+          echo "key=community-coursier-$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        id: coursier-restore
+        with:
+          path: ~/.cache/coursier/v1
+          key: ${{ steps.coursier.outputs.key }}
       - run: community/test.scala
       - id: previous
         env:
@@ -125,6 +137,16 @@ jobs:
           options=(--projects "$list" --planned planned.jsonl --shards "$SHARDS" --memory "$MEMORY")
           if [[ -n $PREVIOUS ]]; then options+=(--previous "$RUNNER_TEMP/previous"); fi
           community/plan.scala "${options[@]}" >> "$GITHUB_OUTPUT"
+      - if: steps.coursier-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/coursier/v1
+          key: ${{ steps.coursier.outputs.key }}
+      - if: steps.setup.outputs.binary-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/bin/scala-cli
+          key: ${{ steps.setup.outputs.binary-key }}
       - uses: actions/upload-artifact@v7
         with:
           name: community-plan
@@ -160,6 +182,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-scala-cli
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/coursier/v1
+          key: ${{ needs.plan.outputs.coursier }}
       - uses: actions/cache/restore@v6
         with:
           path: image.tar.zst
@@ -210,6 +236,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-scala-cli
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/coursier/v1
+          key: ${{ needs.plan.outputs.coursier }}
       - uses: actions/download-artifact@v8
         with:
           pattern: outputs-*

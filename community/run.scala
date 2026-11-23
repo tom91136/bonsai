@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala-cli shebang --server=false
-//> using scala 3.8
+//> using scala 3.8.4
 // Builds one project with bonsai in a fresh container and writes its outputs to <out>/<name>.
 // usage: run.scala --url <git url or local repository> --ref <ref> --java <major> --ivy <ivy home> [options] [--sbt <command>]...
 // The --sbt commands run before bonsaiManifest, which the container adds itself, and the analysis then runs once on each

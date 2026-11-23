@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala-cli shebang --server=false
-//> using scala 3.8
+//> using scala 3.8.4
 // Runs inside the community image: clones one project, injects bonsai, runs sbt and writes the outputs to /out.
 // usage: build.scala <sbt command>...
 // environment: PROJECT_URL PROJECT_REF JAVA_MAJOR TIMEOUT_SECONDS BONSAI_VERSION, and optionally PROJECT_TAG, BONSAI_INJECT

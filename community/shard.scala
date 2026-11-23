@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala-cli shebang --server=false
-//> using scala 3.8
+//> using scala 3.8.4
 //> using dep com.lihaoyi::ujson:4.4.3
 // Runs the projects of one shard one after another within a time budget, through run.scala.
 // usage: shard.scala <projects.jsonl> <shard> <of> <budget seconds> <per-project timeout seconds> [run.scala options]

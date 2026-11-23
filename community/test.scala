@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala-cli shebang --server=false
-//> using scala 3.8
+//> using scala 3.8.4
 //> using dep com.lihaoyi::ujson:4.4.3
 //> using file projects.scala
 //> using file packing.scala
