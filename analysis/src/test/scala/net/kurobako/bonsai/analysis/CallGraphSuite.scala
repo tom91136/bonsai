@@ -1010,4 +1010,46 @@ public class $bslash$amp$div {
       assertEquals(walk.result().reachable.size, whole.reachable.size)
     }
   }
+
+  test("settling roots walks the program once") {
+    inspect(
+      Seq(
+        "Main.scala" -> "object Main { def main(args: Array[String]): Unit = println(Used.text) }",
+        "Used.scala" ->
+          "object Used { inline def text: String = ${ Expansion.text }; def go(): Unit = () }",
+        "Expansion.scala" ->
+          "import scala.quoted.*\nobject Expansion { def text(using Quotes): Expr[String] = Expr(Layers.describe) }",
+        "Layers.scala" -> "object Layers { def describe: String = \"layers\" }"
+      )
+    ) { (result, outputs) =>
+      val manifest = Manifest(
+        outputs = outputs.map(Output("m", Output.Scope.Main, _)),
+        classpath = Map("m" -> Output.Scope.Main -> classpath),
+        libraries = Set("m"),
+        jdk = targetJdk
+      )
+      val source = Reach.source(manifest).fold(error => fail(error), identity)
+      val calls  = Using.resource(source) { source =>
+        Reach.link(manifest, result.graph, ClassWorld(source.bytes(_)))
+      }
+      assertEquals(calls.walks, 1)
+    }
+  }
+
+  test("what a test reaches first and a main root reaches later is no longer test-only") {
+    withWorld() { world =>
+      val mainMethod = ref("Mark", "hello")
+      val testMethod = ref("Hosting", "fromTest")
+      val mainClass  = ref("Hosting", "hosted", "()Ljava/lang/Object;")
+      val testClass  = ref("Hosting", "testing", "()Ljava/lang/Object;")
+      val whole      = CallGraph.build(world, Set(mainMethod, mainClass), tests = Set(testMethod, testClass))
+      val walk       = new CallGraph.Walk(world, _ => false)
+      walk.extend(Set.empty[Reference], Set(testMethod, testClass))
+      walk.extend(Set(mainMethod, mainClass), Set.empty[Reference])
+      val grown = walk.result()
+      assertEquals(grown, whole)
+      assert(!grown.testOnly(mainMethod))
+      assert(!grown.testInstantiated("fixture/Hosted"))
+    }
+  }
 }

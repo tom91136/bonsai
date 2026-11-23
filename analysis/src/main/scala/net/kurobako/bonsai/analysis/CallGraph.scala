@@ -36,9 +36,9 @@ private[analysis] object CallGraph {
       build: String => Boolean = _ => false,
       tests: Set[Reference] = Set.empty
   ): CallGraph = {
-    val walk = Walk(world, build)
-    walk.extend(roots, tests)
-    walk.result()
+    val started = new Walk(world, build)
+    started.extend(roots, tests)
+    started.result()
   }
 
   /** The methods the roots of `graph` enter the program at, by the kind of each root. */
@@ -114,7 +114,9 @@ private[analysis] object CallGraph {
     private val initialised  = mutable.Set.empty[String]
     private val sitesByOwner = mutable.Map.empty[String, mutable.Set[Reference]]
     private val receivers    = mutable.Map.empty[String, mutable.Set[Receiver]]
+    private val mainMethods  = mutable.Set.empty[Reference]
     private val testMethods  = mutable.Set.empty[Reference]
+    private val mainClasses  = mutable.Set.empty[String]
     private val testClasses  = mutable.Set.empty[String]
     private var testing      = false // scalafix:ok DisableSyntax.var
     private var started      = false // scalafix:ok DisableSyntax.var
@@ -141,8 +143,8 @@ private[analysis] object CallGraph {
       targets.view.mapValues(_.toSet).toMap,
       instances.toSet,
       closures.toMap,
-      testMethods.toSet,
-      testClasses.toSet
+      (testMethods -- mainMethods).toSet,
+      (testClasses -- mainClasses).toSet
     )
 
     private def drain(): Unit = while (pending.nonEmpty) visit(pending.dequeue())
@@ -160,11 +162,10 @@ private[analysis] object CallGraph {
     private def reference(target: ClassWorld.Target): Reference =
       Reference(target.owner, target.method.name, target.method.descriptor)
 
-    private def reach(method: Reference): Unit =
-      if (reachable.add(method)) {
-        if (testing) testMethods += method
-        pending.enqueue(method)
-      }
+    private def reach(method: Reference): Unit = {
+      if (testing) testMethods += method else mainMethods += method
+      if (reachable.add(method)) pending.enqueue(method)
+    }
 
     private def reached(callee: Reference, target: Reference): Unit =
       if (targets.getOrElseUpdate(callee, mutable.Set.empty).add(target)) reach(target)
@@ -233,13 +234,14 @@ private[analysis] object CallGraph {
       receive(Receiver.Closure(at), (types :+ objectClass).distinct)
     }
 
-    private def instantiate(name: String): Unit =
+    private def instantiate(name: String): Unit = {
+      if (testing) testClasses += name else mainClasses += name
       if (instances.add(name)) {
-        if (testing) testClasses += name
         initialise(name)
         receive(Receiver.Instance(name), name +: world.ancestors(name))
         if (build(name)) callbacks(name)
       }
+    }
 
     private def callbacks(name: String): Unit =
       world.get(name).foreach { file =>
