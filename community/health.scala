@@ -64,7 +64,8 @@ object Health {
   private val frame   = "^\\s+at net\\.kurobako\\.bonsai\\.".r
   private val absent  = Vector(
     "^note: undefined: .+ # -?\\d+: .+ at readTasty$".r,
-    "^note: .+ could not be \\w+: dotty\\.tools\\.dotc\\.core\\.MissingType: .*$".r
+    "^note: .+ could not be \\w+: dotty\\.tools\\.dotc\\.core\\.MissingType: .*$".r,
+    "^note: could not read library bodies of \\S+(?:, \\S+)* in .+$".r
   )
   private val rerun = "^(\\[\\w+\\]\\s+)?read in \\d+ groups: ".r
 

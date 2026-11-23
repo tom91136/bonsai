@@ -62,8 +62,9 @@ was ok in the previous run on `main` is not ok now. Findings never fail it.
 - A health failure is a crash, a non-zero exit of the analysis that its findings do not explain, a `problem:` line or
   a `note:` line from the analysis, an unreadable, unanalysable or unpicklable class, a clash between a class and a
   package that fails the analysis, or a timeout, out-of-memory kill or kill while the analysis was running. A note that
-  a class is missing from the project's own classpath is not one; the summary lists those per project. A project whose
-  own build fails before the analysis runs is not one.
+  a class is missing from the project's own classpath, or that library bodies could not be read for want of such a
+  class, is not one; the summary lists those per project. A project whose own build fails before the analysis runs is
+  not one.
 - The previous run is the newest unexpired `community-baseline` artifact of a run on `main`, which holds each project's
   status, timings and sorted findings. The first run has none, so only health failures apply.
 - The job summary lists the counts per status, each failure and regression with a log excerpt, and the findings added and

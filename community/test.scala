@@ -50,6 +50,22 @@ def kinds(o: Output): Vector[String] = Health.assess(o).map(_.kind)
   check("a note on a missing type is not a failure")(kinds(output(err = Vector(unanalysed))).isEmpty)
   check("such notes are listed")(Health.missing(output(log = Vector(banner, undefined, unanalysed, undefined))) ==
     Vector(undefined, unanalysed))
+  val library =
+    "note: could not read library bodies of fm.common.InputStreamResource in /cache/fm-common_3-1.0.0.jar"
+  check("a note on unread library bodies is not a failure")(
+    kinds(output(log = Vector(banner, library))).isEmpty
+  )
+  check("a note on several unread library bodies is not a failure")(
+    kinds(output(log = Vector(banner, "note: could not read library bodies of a.B, c.D in /cache/x.jar"))).isEmpty
+  )
+  check("such notes are listed")(Health.missing(output(log = Vector(banner, library, undefined))) ==
+    Vector(library, undefined))
+  check("a truncated unread-library note is a problem")(
+    kinds(output(log = Vector(banner, "note: could not read library bodies of a.B"))).nonEmpty
+  )
+  check("a wrong-arity note is still a problem")(kinds(output(log =
+    Vector(banner, "note: wrong number of arguments at <no phase> for (x: A): B: C, expected: 1, found: 0")
+  )) == Vector("problem"))
   check("an undefined note from another phase is a problem")(
     kinds(output(log = Vector("note: undefined: x # 3: T at typer"))) == Vector("problem")
   )
