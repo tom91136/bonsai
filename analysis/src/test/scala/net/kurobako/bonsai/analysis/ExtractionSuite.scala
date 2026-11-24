@@ -678,6 +678,20 @@ class ExtractionSuite extends AnalysisSuite {
     assertEquals(Readings(whole).of(Set(app.part)), Vector(newest, shaded))
   }
 
+  test("a read keeps the classpath order of each compile, so a shadowed class resolves where it names it") {
+    val main    = Output.Scope.Main
+    val shadow  = Path.of("/work/shadow-classes")
+    val library = Path.of("/cache/org/example/lib/1.0/lib-1.0.jar")
+    val other   = Output("other", main, Path.of("/work/other"))
+    val uses    = Output("uses", main, Path.of("/work/uses"))
+    val whole   = Manifest(
+      Vector(other, uses),
+      Map((other.module, main) -> Vector(library), (uses.module, main) -> Vector(shadow, library)),
+      Set.empty
+    )
+    assertEquals(Readings(whole).of(Set(other.part, uses.part)).take(2), Vector(shadow, library))
+  }
+
   test("shadowing keeps the first version of a library across its Scala 2.13 and Scala 3 artifacts") {
     val older = Path.of("/cache/org/example/tool_2.13/1.9.0/tool_2.13-1.9.0.jar")
     val newer = Path.of("/cache/org/example/tool_3/1.10.0/tool_3-1.10.0.jar")

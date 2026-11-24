@@ -3,6 +3,7 @@ package net.kurobako.bonsai.analysis
 import java.nio.file.Path
 import scala.annotation.tailrec
 import scala.collection.concurrent.TrieMap
+import scala.collection.mutable
 
 /** The classpaths the reads of a manifest's compiles resolve against. */
 private[analysis] class Readings(manifest: Manifest) {
@@ -47,10 +48,42 @@ private[analysis] class Readings(manifest: Manifest) {
     */
   def of(members: Set[Output.Part]): Vector[Path] = Classpath.keeping(entries(members), chosen(members, Vector.empty))
 
-  /** The entries of the classpaths a read of `members` takes, before versions are chosen. */
+  /** The entries of the classpaths a read of `members` takes, before versions are chosen: those of the compiles, merged
+    * so that each keeps the order of its own classpath, then those of the compiles they require, likewise. A class a
+    * build shadows thus resolves to the copy the compile that names it read, whichever compile came first.
+    */
   def entries(members: Set[Output.Part]): Vector[Path] =
-    (members.toVector.sortBy(rank(_)) ++ required(members)).flatMap(manifest.classpath.getOrElse(_, Vector.empty))
-      .distinct
+    merged(members.toVector.sortBy(rank(_)).map(part => manifest.classpath.getOrElse(part, Vector.empty))) ++
+      merged(required(members).map(part => manifest.classpath.getOrElse(part, Vector.empty)))
+
+  /** The entries of `classpaths` in an order that keeps each classpath's own. Entries no classpath orders between come
+    * in the order they first appear; where classpaths disagree, their first appearance decides.
+    */
+  private def merged(classpaths: Vector[Vector[Path]]): Vector[Path] = {
+    val listed = classpaths.flatten.distinct
+    if (classpaths.lengthCompare(1) <= 0) listed
+    else {
+      val position = listed.zipWithIndex.toMap
+      val ordering = Ordering.by(position)
+      val edges    = classpaths.flatMap { entries =>
+        val kept = entries.distinct
+        kept.zip(kept.drop(1))
+      }.distinct
+      val following = edges.groupMap(_._1)(_._2)
+      val waiting   = mutable.Map.from(edges.groupMapReduce(_._2)(_ => 1)(_ + _))
+      val pending   = mutable.TreeSet.from(listed)(using ordering)
+      val order     = Vector.newBuilder[Path]
+      while (pending.nonEmpty) {
+        val next = pending.find(path => waiting.getOrElse(path, 0) == 0).getOrElse(pending.head)
+        pending -= next
+        order += next
+        following.getOrElse(next, Vector.empty).foreach(after =>
+          waiting.update(after, waiting.getOrElse(after, 0) - 1)
+        )
+      }
+      order.result()
+    }
+  }
 
   /** The entries the read of the classes of the platform twin `twin` resolves against: its outputs and those of its
     * peers `ahead`, its own classpaths, and those of its run, `behind`, the versions of its own first.
