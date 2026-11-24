@@ -608,7 +608,7 @@ class MegamorphicSuite extends AnalysisSuite {
             val world = ClassWorld(source.bytes(_))
             val roots =
               Set(Reference("fixture/Wire", root, "()V"), Reference("fixture/Wire", "run", "(Lfixture/Handler;)I"))
-            Megamorphic.resolve(Vector(at), nodes, CallGraph.build(world, roots), world)
+            Megamorphic.resolve(Vector(at), nodes, CallGraphs.build(world, roots), world)
           }
       )
     }

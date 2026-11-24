@@ -319,8 +319,8 @@ private[analysis] class Collector(
     if (deferred) pooled = duplicates else clones ++= Clones.groups(duplicates)
     dispatching.resolve()
     dictionaryList ++= dictionary.parameters(others.dictionaries)
-    val calls    = link.map(_(graph))
-    val bytecode = calls.fold(BytecodeEffects.none)(_.summaries)
+    val reached  = link.map(_(graph))
+    val bytecode = reached.fold(BytecodeEffects.none)(_.summaries)
     val declared = Complexity.Declared(bounded)
     val costs    = Costs(
       bodies ++ constructors,
@@ -356,7 +356,7 @@ private[analysis] class Collector(
     effects.unanalysed.foreach(failed(_, _))
     structure.finish(others.structure)
     comparing.finish()
-    if (keepCalls) linked = calls
+    if (keepCalls) linked = reached
   }
 
   /** Adds what a twin's classes reference, which the copies of the JVM modules the node records stand in for: the edges

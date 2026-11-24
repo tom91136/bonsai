@@ -22,7 +22,7 @@ trait Graphed extends AnalysisSuite {
   )(use: (Extraction.Result, CallGraph, ClassWorld) => A): A =
     inspect(main, test, hot = hot)((result, directories) =>
       withWorld(directories) { world =>
-        use(result, CallGraph.build(world, CallGraph.roots(result.graph, world) ++ rooted), world)
+        use(result, CallGraphs.build(world, CallGraph.roots(result.graph, world) ++ rooted), world)
       }
     )
 

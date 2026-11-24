@@ -48,8 +48,7 @@ object Reach {
       summaries: BytecodeEffects.Summaries,
       classes: Map[String, Output.Scope],
       bodied: Map[String, Vector[Method]],
-      entered: Set[Root],
-      walks: Int
+      entered: Set[Root]
   )
 
   def link(manifest: Manifest, graph: Graph, world: ClassWorld): Calls = {
@@ -66,9 +65,7 @@ object Reach {
     )
     val testRoots = tests.toSet ++
       CallGraph.roots(graph.copy(roots = twinned(graph, manifest.platforms, Output.Scope.Test)), world)
-    var walks = 0 // scalafix:ok DisableSyntax.var
-    val walk  = new CallGraph.Walk(world, classes.contains)
-    walks += 1
+    val walk = CallGraph.Walk(world, classes.contains)
     @annotation.tailrec
     def settle(mains: Set[Reference], testing: Set[Reference]): CallGraph = {
       walk.extend(mains, testing)
@@ -80,7 +77,7 @@ object Reach {
       else settle(mains ++ more, testing ++ extra)
     }
     val callGraph = settle(roots, testRoots)
-    Calls(world, callGraph, BytecodeEffects.summarise(world, callGraph), classes, bodied, entered, walks)
+    Calls(world, callGraph, BytecodeEffects.summarise(world, callGraph), classes, bodied, entered)
   }
 
   private def classesOf(outputs: Vector[Output]): Map[String, Output.Scope] =
@@ -94,9 +91,9 @@ object Reach {
 
   /** The reach of the build `graph` describes, from the calls its classes make. */
   def of(linked: Calls, graph: Graph): Reached = {
-    val Calls(world, calls, _, classes, bodied, entered, _) = linked
-    val state                                               = survey(world, calls, classes, bodied, entered, graph)
-    val unread                                              = world.unreadable.collect {
+    val Calls(world, calls, _, classes, bodied, entered) = linked
+    val state                                            = survey(world, calls, classes, bodied, entered, graph)
+    val unread                                           = world.unreadable.collect {
       case (name, error) if classes.contains(name) =>
         s"class file ${name.replace('/', '.')} could not be read: $error"
     }

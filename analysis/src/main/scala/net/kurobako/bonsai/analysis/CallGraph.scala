@@ -25,22 +25,6 @@ private[analysis] object CallGraph {
 
   private val mainDescriptor = "([Ljava/lang/String;)V"
 
-  /** The methods reachable from `roots`, and then from `tests` as well; a method reached only after `tests` enter is
-    * `testOnly`. Native methods and missing classes are leaves. A class `build` accepts that the program instantiates
-    * has its overrides of methods declared outside the build reached, since code outside the build may dispatch to
-    * them.
-    */
-  def build(
-      world: ClassWorld,
-      roots: Set[Reference],
-      build: String => Boolean = _ => false,
-      tests: Set[Reference] = Set.empty
-  ): CallGraph = {
-    val started = new Walk(world, build)
-    started.extend(roots, tests)
-    started.result()
-  }
-
   /** The methods the roots of `graph` enter the program at, by the kind of each root. */
   def roots(graph: Graph, world: ClassWorld): Set[Reference] =
     graph.roots.flatMap(root => classes(root.name, world).flatMap(entered(_, root.kind, world)))
@@ -105,6 +89,11 @@ private[analysis] object CallGraph {
   private def conforms(name: String, owner: String, world: ClassWorld): Boolean =
     name == owner || world.ancestors(name).contains(owner)
 
+  /** The methods reachable from the roots entered so far, and then from the tests as well; a method reached only after
+    * tests enter is `testOnly`. Native methods and missing classes are leaves. A class `build` accepts that the program
+    * instantiates has its overrides of methods declared outside the build reached, since code outside the build may
+    * dispatch to them.
+    */
   class Walk(world: ClassWorld, build: String => Boolean) {
     private val reachable    = mutable.Set.empty[Reference]
     private val targets      = mutable.Map.empty[Reference, mutable.Set[Reference]]
@@ -143,8 +132,8 @@ private[analysis] object CallGraph {
       targets.view.mapValues(_.toSet).toMap,
       instances.toSet,
       closures.toMap,
-      (testMethods -- mainMethods).toSet,
-      (testClasses -- mainClasses).toSet
+      testMethods.diff(mainMethods).toSet,
+      testClasses.diff(mainClasses).toSet
     )
 
     private def drain(): Unit = while (pending.nonEmpty) visit(pending.dequeue())

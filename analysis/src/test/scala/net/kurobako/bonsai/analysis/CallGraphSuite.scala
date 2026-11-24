@@ -559,7 +559,7 @@ public class $bslash$amp$div {
     Reference(s"fixture/$owner", name, descriptor)
 
   private def graphOf[A](roots: Reference*)(check: CallGraph => A): A =
-    withWorld()(world => check(CallGraph.build(world, roots.toSet)))
+    withWorld()(world => check(CallGraphs.build(world, roots.toSet)))
 
   private def lambdasIn(owner: String, method: String): Vector[Lambda] =
     withWorld()(_.get(owner).get.methods.view.filter(_.name == method).flatMap(_.lambdas).toVector)
@@ -782,14 +782,14 @@ public class $bslash$amp$div {
 
   test("string concatenation reaches toString even when no walked code of the JDK calls it") {
     withWorld(Set("java/lang/String", "java/lang/Class")) { world =>
-      val found = CallGraph.build(world, Set(ref("Concat", "join", "()Ljava/lang/String;")))
+      val found = CallGraphs.build(world, Set(ref("Concat", "join", "()Ljava/lang/String;")))
       assertReaches(found, ref("Named", "toString", "()Ljava/lang/String;"), ref("Mark", "named"))
     }
   }
 
   test("native methods and missing classes are leaves, and an unresolved reference does not stop the walk") {
     withWorld(Set("fixture/Gone")) { world =>
-      val found = CallGraph.build(world, Set(ref("Edge", "entry")))
+      val found = CallGraphs.build(world, Set(ref("Edge", "entry")))
       assertReaches(found, ref("Edge", "nat"), ref("Mark", "circle"))
     }
   }
@@ -883,19 +883,19 @@ public class $bslash$amp$div {
   test("an instantiated build class has its overrides of methods declared outside the build reached") {
     withWorld() { world =>
       val inBuild = (name: String) => name.startsWith("fixture/")
-      val found   = CallGraph.build(world, Set(ref("Hosting", "hosted", "()Ljava/lang/Object;")), build = inBuild)
+      val found   = CallGraphs.build(world, Set(ref("Hosting", "hosted", "()Ljava/lang/Object;")), build = inBuild)
       assertReaches(found, ref("Hosted", "compareTo", "(Lfixture/Hosted;)I"), ref("Mark", "hook"))
       assertMisses(found, ref("Hosted", "mine"), ref("Mark", "dead"))
-      val bare = CallGraph.build(world, Set(ref("Hosting", "hosted", "()Ljava/lang/Object;")))
+      val bare = CallGraphs.build(world, Set(ref("Hosting", "hosted", "()Ljava/lang/Object;")))
       assertMisses(bare, ref("Hosted", "compareTo", "(Lfixture/Hosted;)I"), ref("Mark", "hook"))
-      val unbuilt = CallGraph.build(world, Set(ref("Hosting", "fromMain")), build = inBuild)
+      val unbuilt = CallGraphs.build(world, Set(ref("Hosting", "fromMain")), build = inBuild)
       assertMisses(unbuilt, ref("Hosted", "compareTo", "(Lfixture/Hosted;)I"))
     }
   }
 
   test("an interface method that a root enters dispatches to the overrides of the classes the program instantiates") {
     withWorld() { world =>
-      val found = CallGraph.build(world, Set(ref("Hosting", "latch", "()Lfixture/Lock;"), ref("Lock", "open")))
+      val found = CallGraphs.build(world, Set(ref("Hosting", "latch", "()Lfixture/Lock;"), ref("Lock", "open")))
       assertReaches(found, ref("Latch", "open"), ref("Mark", "work"))
       assertMisses(found, ref("Unlatched", "open"), ref("Mark", "ranDead"))
     }
@@ -903,7 +903,7 @@ public class $bslash$amp$div {
 
   test("what only the tests reach or instantiate is test-only, and what the roots reach first is not") {
     withWorld() { world =>
-      val found = CallGraph.build(
+      val found = CallGraphs.build(
         world,
         Set(ref("Hosting", "fromMain")),
         tests = Set(ref("Hosting", "fromTest"), ref("Hosting", "testing", "()Ljava/lang/Object;"))
@@ -964,14 +964,14 @@ public class $bslash$amp$div {
 
   test("a build class instantiated by a root has no constructor invented for it") {
     withWorld() { world =>
-      val found = CallGraph.build(world, Set(ref("Provider", "run", "()V")), build = _.startsWith("fixture/"))
+      val found = CallGraphs.build(world, Set(ref("Provider", "run", "()V")), build = _.startsWith("fixture/"))
       assertMisses(found, ref("Provider", "<init>", "()V"), ref("Mark", "dead"))
     }
   }
 
   test("a lambda is a receiver of a call to a method one of its interfaces implements and another leaves abstract") {
     withWorld() { world =>
-      val found = CallGraph.build(world, Set(ref("Doors", "run", "()V")))
+      val found = CallGraphs.build(world, Set(ref("Doors", "run", "()V")))
       val sites = found.lambdas.keySet.filter(_.holder == ref("Doors", "run", "()V"))
       assertEquals(sites.size, 1)
       val passing = found.receivers(ref("Gateway", "pass", "()V"), world)
@@ -981,7 +981,7 @@ public class $bslash$amp$div {
 
   test("a lambda with marker interfaces is a receiver of calls on its functional interface and on its markers") {
     withWorld() { world =>
-      val found   = CallGraph.build(world, Set(ref("Alternate", "markers")))
+      val found   = CallGraphs.build(world, Set(ref("Alternate", "markers")))
       val marked  = found.lambdas.keySet.filter(_.holder == ref("Alternate", "markers"))
       val running = found.receivers(Reference("java/lang/Runnable", "run", "()V"), world)
       assertEquals(running.collect { case CallGraph.Receiver.Closure(site) => site }.toSet, marked)
@@ -995,8 +995,8 @@ public class $bslash$amp$div {
       val main  = ref("Orders", "siteThenNew", "(Lfixture/Shape;)I")
       val first = ref("Hosting", "fromTest")
       val later = ref("Hosting", "testing", "()Ljava/lang/Object;")
-      val whole = CallGraph.build(world, Set(main), tests = Set(first, later))
-      val walk  = new CallGraph.Walk(world, _ => false)
+      val whole = CallGraphs.build(world, Set(main), tests = Set(first, later))
+      val walk  = CallGraph.Walk(world, _ => false)
       walk.extend(Set(main), Set(first))
       walk.extend(Set.empty[Reference], Set(later))
       val grown = walk.result()
@@ -1011,39 +1011,14 @@ public class $bslash$amp$div {
     }
   }
 
-  test("settling roots walks the program once") {
-    inspect(
-      Seq(
-        "Main.scala" -> "object Main { def main(args: Array[String]): Unit = println(Used.text) }",
-        "Used.scala" ->
-          "object Used { inline def text: String = ${ Expansion.text }; def go(): Unit = () }",
-        "Expansion.scala" ->
-          "import scala.quoted.*\nobject Expansion { def text(using Quotes): Expr[String] = Expr(Layers.describe) }",
-        "Layers.scala" -> "object Layers { def describe: String = \"layers\" }"
-      )
-    ) { (result, outputs) =>
-      val manifest = Manifest(
-        outputs = outputs.map(Output("m", Output.Scope.Main, _)),
-        classpath = Map("m" -> Output.Scope.Main -> classpath),
-        libraries = Set("m"),
-        jdk = targetJdk
-      )
-      val source = Reach.source(manifest).fold(error => fail(error), identity)
-      val calls  = Using.resource(source) { source =>
-        Reach.link(manifest, result.graph, ClassWorld(source.bytes(_)))
-      }
-      assertEquals(calls.walks, 1)
-    }
-  }
-
   test("what a test reaches first and a main root reaches later is no longer test-only") {
     withWorld() { world =>
       val mainMethod = ref("Mark", "hello")
       val testMethod = ref("Hosting", "fromTest")
       val mainClass  = ref("Hosting", "hosted", "()Ljava/lang/Object;")
       val testClass  = ref("Hosting", "testing", "()Ljava/lang/Object;")
-      val whole      = CallGraph.build(world, Set(mainMethod, mainClass), tests = Set(testMethod, testClass))
-      val walk       = new CallGraph.Walk(world, _ => false)
+      val whole      = CallGraphs.build(world, Set(mainMethod, mainClass), tests = Set(testMethod, testClass))
+      val walk       = CallGraph.Walk(world, _ => false)
       walk.extend(Set.empty[Reference], Set(testMethod, testClass))
       walk.extend(Set(mainMethod, mainClass), Set.empty[Reference])
       val grown = walk.result()

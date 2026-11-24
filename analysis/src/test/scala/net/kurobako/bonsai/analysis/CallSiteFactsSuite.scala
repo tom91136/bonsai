@@ -74,7 +74,7 @@ class CallSiteFactsSuite extends AnalysisSuite {
         case Right(source) =>
           Using.resource(source) { source =>
             val world = ClassWorld(source.bytes(_))
-            use(CallGraph.build(world, roots.toSet), world)
+            use(CallGraphs.build(world, roots.toSet), world)
           }
       }
     }

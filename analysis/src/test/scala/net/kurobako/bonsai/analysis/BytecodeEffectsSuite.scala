@@ -543,7 +543,7 @@ public class Pulls {
         Using.resource(source) { source =>
           val world = ClassWorld(name => if (absent(name)) None else source.bytes(name).orElse(jdk(name)))
           val names = outputs.flatMap(classesOf(_)).filter(rooted)
-          val graph = CallGraph.build(world, (methodsOf(world, names) ++ extra).toSet)
+          val graph = CallGraphs.build(world, (methodsOf(world, names) ++ extra).toSet)
           val found = BytecodeEffects.summarise(world, graph)
           check(world, found)
         }
