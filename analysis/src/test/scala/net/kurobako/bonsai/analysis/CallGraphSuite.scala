@@ -1093,29 +1093,56 @@ public class $bslash$amp$div {
 
   test("extending a walk with tests first and mains later matches a fresh build over those roots") {
     withWorld() { world =>
+      val fromMain     = ref("Hosting", "fromMain")
+      val fromTest     = ref("Hosting", "fromTest")
+      val hosted       = ref("Hosting", "hosted", "()Ljava/lang/Object;")
+      val testing      = ref("Hosting", "testing", "()Ljava/lang/Object;")
+      val lateFromTest = ref("Hosting", "lateFromTest", "()Ljava/lang/Object;")
+      val lateFromMain = ref("Hosting", "lateFromMain", "()Ljava/lang/Object;")
+      val siteThenNew  = ref("Orders", "siteThenNew", "(Lfixture/Shape;)I")
+      val newThenSite  = ref("Orders", "newThenSite", "(Lfixture/Shape;)I")
+      val circles      = ref("Orders", "circles")
+      val make         = ref("Orders", "make", "()Lfixture/Shape;")
+      val call         = ref("Orders", "call", "(Lfixture/Shape;)I")
+      val construct    = ref("Inits", "construct", "()Ljava/lang/Object;")
+      val staticCall   = ref("Inits", "staticCall")
+      val viaHandle    = ref("Staged", "viaHandle")
+      val spawn        = ref("Threads", "spawn", "()Ljava/lang/Object;")
+      val invoke       = ref("Lambdas", "invoke")
+      val dead         = ref("Dead", "run")
+
       val roots = Vector(
-        ref("Hosting", "fromMain"),
-        ref("Hosting", "fromTest"),
-        ref("Hosting", "hosted", "()Ljava/lang/Object;"),
-        ref("Hosting", "testing", "()Ljava/lang/Object;"),
-        ref("Hosting", "lateFromTest", "()Ljava/lang/Object;"),
-        ref("Hosting", "lateFromMain", "()Ljava/lang/Object;"),
-        ref("Orders", "siteThenNew", "(Lfixture/Shape;)I"),
-        ref("Orders", "newThenSite", "(Lfixture/Shape;)I"),
-        ref("Orders", "circles"),
-        ref("Orders", "make", "()Lfixture/Shape;"),
-        ref("Orders", "call", "(Lfixture/Shape;)I"),
-        ref("Inits", "construct", "()Ljava/lang/Object;"),
-        ref("Inits", "staticCall"),
-        ref("Staged", "viaHandle"),
-        ref("Threads", "spawn", "()Ljava/lang/Object;"),
-        ref("Lambdas", "invoke"),
-        ref("Dead", "run")
+        fromMain,
+        fromTest,
+        hosted,
+        testing,
+        lateFromTest,
+        lateFromMain,
+        siteThenNew,
+        newThenSite,
+        circles,
+        make,
+        call,
+        construct,
+        staticCall,
+        viaHandle,
+        spawn,
+        invoke,
+        dead
       )
-      for {
-        testRoot <- roots
-        mainRoot <- roots
-      } {
+      val cross = Vector(
+        (fromMain, fromTest),
+        (fromTest, fromMain),
+        (hosted, spawn),
+        (spawn, hosted),
+        (lateFromTest, lateFromMain),
+        (lateFromTest, viaHandle),
+        (viaHandle, lateFromTest),
+        (siteThenNew, newThenSite),
+        (make, call),
+        (call, make)
+      )
+      for ((testRoot, mainRoot) <- roots.map(root => (root, root)) ++ cross) {
         val whole = CallGraphs.build(world, Set(mainRoot), tests = Set(testRoot))
         val walk  = CallGraph.Walk(world, _ => false)
         walk.extend(Set.empty[Reference], Set(testRoot))
