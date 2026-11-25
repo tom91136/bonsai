@@ -692,6 +692,38 @@ class ExtractionSuite extends AnalysisSuite {
     assertEquals(Readings(whole).of(Set(other.part, uses.part)).take(2), Vector(shadow, library))
   }
 
+  test("a read holds a jar shared with a required compile once, at its first appearance") {
+    val main   = Output.Scope.Main
+    val libA   = Path.of("/cache/org/example/lib/1.0/lib-1.0.jar")
+    val libB   = Path.of("/cache/org/example/extra/1.0/extra-1.0.jar")
+    val appJar = Path.of("/cache/org/example/app/1.0/app-1.0.jar")
+    val lib    = Output("lib", main, Path.of("/work/lib"))
+    val app    = Output("app", main, Path.of("/work/app"))
+    val whole  = Manifest(
+      Vector(lib, app),
+      Map((app.module, main) -> Vector(appJar, libA), (lib.module, main) -> Vector(libA, libB)),
+      Set.empty,
+      dependencies = Map("app" -> Set("lib"))
+    )
+    val readings = Readings(whole)
+    assertEquals(readings.entries(Set(app.part)), Vector(appJar, libA, libB))
+    assertEquals(readings.of(Set(app.part)), Vector(appJar, libA, libB))
+    val shared = whole.copy(classpath = Map((app.module, main) -> Vector(libA), (lib.module, main) -> Vector(libA)))
+    assertEquals(Readings(shared).entries(Set(app.part)), Vector(libA))
+    assertEquals(Readings(shared).of(Set(app.part)), Vector(libA))
+  }
+
+  test("a twin read holds a jar shared with the run behind it once") {
+    val main     = Output.Scope.Main
+    val libA     = Path.of("/cache/org/example/lib/1.0/lib-1.0.jar")
+    val js       = Output("js", main, Path.of("/work/js"))
+    val whole    = Manifest(Vector(js), Map((js.module, main) -> Vector(libA)), Set.empty, platforms = Set("js"))
+    val readings = Readings(whole)
+    val behind   = readings.of(Set(js.part))
+    assertEquals(behind, Vector(libA))
+    assertEquals(readings.twin("js", Vector.empty, behind), Vector(libA))
+  }
+
   test("shadowing keeps the first version of a library across its Scala 2.13 and Scala 3 artifacts") {
     val older = Path.of("/cache/org/example/tool_2.13/1.9.0/tool_2.13-1.9.0.jar")
     val newer = Path.of("/cache/org/example/tool_3/1.10.0/tool_3-1.10.0.jar")

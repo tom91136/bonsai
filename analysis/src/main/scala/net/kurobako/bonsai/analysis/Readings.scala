@@ -53,8 +53,8 @@ private[analysis] class Readings(manifest: Manifest) {
     * build shadows thus resolves to the copy the compile that names it read, whichever compile came first.
     */
   def entries(members: Set[Output.Part]): Vector[Path] =
-    merged(members.toVector.sortBy(rank(_)).map(part => manifest.classpath.getOrElse(part, Vector.empty))) ++
-      merged(required(members).map(part => manifest.classpath.getOrElse(part, Vector.empty)))
+    (merged(members.toVector.sortBy(rank(_)).map(part => manifest.classpath.getOrElse(part, Vector.empty))) ++
+      merged(required(members).map(part => manifest.classpath.getOrElse(part, Vector.empty)))).distinct
 
   /** The entries of `classpaths` in an order that keeps each classpath's own. Entries no classpath orders between come
     * in the order they first appear; where classpaths disagree, their first appearance decides.
@@ -90,6 +90,6 @@ private[analysis] class Readings(manifest: Manifest) {
     */
   def twin(twin: String, ahead: Vector[Path], behind: Vector[Path]): Vector[Path] = {
     val members = inside.getOrElse(twin, Vector.empty).toSet
-    Classpath.keeping(ahead ++ entries(members) ++ behind, chosen(members, Vector(Classpath.taken(behind))))
+    Classpath.keeping((ahead ++ entries(members) ++ behind).distinct, chosen(members, Vector(Classpath.taken(behind))))
   }
 }
