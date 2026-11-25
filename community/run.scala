@@ -151,6 +151,7 @@ def quietly(args: String*): Unit =
     url = "file:///src"
   }
   if (coursier.nonEmpty) {
+    Files.createDirectories(Path.of(coursier))
     mounts ++= Vector("-v", s"${Path.of(coursier).toRealPath()}:/opt/coursier", "-e", "COURSIER_CACHE=/opt/coursier")
   }
 
