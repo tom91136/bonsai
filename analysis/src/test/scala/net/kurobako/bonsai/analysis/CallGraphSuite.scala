@@ -1140,7 +1140,12 @@ public class $bslash$amp$div {
         (viaHandle, lateFromTest),
         (siteThenNew, newThenSite),
         (make, call),
-        (call, make)
+        (call, make),
+        (newThenSite, siteThenNew),
+        (fromMain, siteThenNew),
+        (fromMain, newThenSite),
+        (fromMain, circles),
+        (fromMain, call)
       )
       for ((testRoot, mainRoot) <- roots.map(root => (root, root)) ++ cross) {
         val whole = CallGraphs.build(world, Set(mainRoot), tests = Set(testRoot))
