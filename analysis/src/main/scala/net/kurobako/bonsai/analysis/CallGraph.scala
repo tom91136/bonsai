@@ -96,13 +96,14 @@ private[analysis] object CallGraph {
     */
   class Walk(world: ClassWorld, build: String => Boolean) {
     private val reachable    = mutable.Set.empty[Reference]
-    private val targets      = mutable.Map.empty[Reference, mutable.Set[Reference]]
-    private val pending      = mutable.Queue.empty[Reference]
+    private val targets      = mutable.Map.empty[Reference, mutable.Set[(Reference, Boolean)]]
+    private val pending      = mutable.Queue.empty[(Reference, Boolean)]
     private val instances    = mutable.Set.empty[String]
     private val closures     = mutable.Map.empty[LambdaSite, Lambda]
-    private val initialised  = mutable.Set.empty[String]
-    private val sitesByOwner = mutable.Map.empty[String, mutable.Set[Reference]]
-    private val receivers    = mutable.Map.empty[String, mutable.Set[Receiver]]
+    private val visited      = mutable.Set.empty[(Reference, Boolean)]
+    private val initialised  = mutable.Set.empty[(String, Boolean)]
+    private val sitesByOwner = mutable.Map.empty[String, mutable.Set[(Reference, Boolean)]]
+    private val receivers    = mutable.Map.empty[String, mutable.Set[(Receiver, Boolean)]]
     private val mainMethods  = mutable.Set.empty[Reference]
     private val testMethods  = mutable.Set.empty[Reference]
     private val mainClasses  = mutable.Set.empty[String]
@@ -129,14 +130,18 @@ private[analysis] object CallGraph {
 
     def result(): CallGraph = CallGraph(
       reachable.toSet,
-      targets.view.mapValues(_.toSet).toMap,
+      targets.view.mapValues(_.map(_._1).toSet).toMap,
       instances.toSet,
       closures.toMap,
       testMethods.diff(mainMethods).toSet,
       testClasses.diff(mainClasses).toSet
     )
 
-    private def drain(): Unit = while (pending.nonEmpty) visit(pending.dequeue())
+    private def drain(): Unit = while (pending.nonEmpty) {
+      val (method, phase) = pending.dequeue()
+      testing = phase
+      visit(method)
+    }
 
     private def enter(root: Reference): Unit =
       world.resolve(root).foreach { target =>
@@ -152,12 +157,14 @@ private[analysis] object CallGraph {
       Reference(target.owner, target.method.name, target.method.descriptor)
 
     private def reach(method: Reference): Unit = {
-      if (testing) testMethods += method else mainMethods += method
-      if (reachable.add(method)) pending.enqueue(method)
+      val phase = testing
+      if (phase) testMethods += method else mainMethods += method
+      reachable += method
+      if (visited.add((method, phase))) pending.enqueue((method, phase))
     }
 
     private def reached(callee: Reference, target: Reference): Unit =
-      if (targets.getOrElseUpdate(callee, mutable.Set.empty).add(target)) reach(target)
+      if (targets.getOrElseUpdate(callee, mutable.Set.empty).add((target, testing))) reach(target)
 
     private def visit(method: Reference): Unit =
       world.method(method).foreach(body(method, _))
@@ -187,16 +194,24 @@ private[analysis] object CallGraph {
         if (initialising) initialise(target.owner)
       }
 
-    private def site(callee: Reference): Unit =
-      if (sitesByOwner.getOrElseUpdate(callee.owner, mutable.Set.empty).add(callee))
-        receivers.getOrElse(callee.owner, mutable.Set.empty).toVector.foreach(link(callee, _))
+    private def site(callee: Reference): Unit = {
+      val phase = testing
+      if (sitesByOwner.getOrElseUpdate(callee.owner, mutable.Set.empty).add((callee, phase)))
+        receivers.getOrElse(callee.owner, mutable.Set.empty).toVector.foreach { (receiver, receiverPhase) =>
+          link(callee, receiver, phase || receiverPhase)
+        }
+    }
 
-    private def link(callee: Reference, receiver: Receiver): Unit =
-      receiver match {
-        case Receiver.Instance(name) =>
-          world.select(name, callee).foreach(target => reached(callee, reference(target)))
-        case Receiver.Closure(at) => invoke(callee, closures(at))
-      }
+    private def link(callee: Reference, receiver: Receiver, phase: Boolean): Unit = {
+      val saved = testing
+      testing = phase
+      try receiver match {
+          case Receiver.Instance(name) =>
+            world.select(name, callee).foreach(target => reached(callee, reference(target)))
+          case Receiver.Closure(at) => invoke(callee, closures(at))
+        }
+      finally testing = saved
+    }
 
     private def invoke(callee: Reference, lambda: Lambda): Unit =
       if (runs(callee, lambda)) implementation(callee, lambda)
@@ -224,8 +239,10 @@ private[analysis] object CallGraph {
     }
 
     private def instantiate(name: String): Unit = {
+      val wasMain = mainClasses.contains(name)
       if (testing) testClasses += name else mainClasses += name
-      if (instances.add(name)) {
+      val promoted = !testing && !wasMain
+      if (instances.add(name) || promoted) {
         initialise(name)
         receive(Receiver.Instance(name), name +: world.ancestors(name))
         if (build(name)) callbacks(name)
@@ -243,14 +260,18 @@ private[analysis] object CallGraph {
       }
 
     private def receive(receiver: Receiver, types: Vector[String]): Unit = {
-      types.foreach(receivers.getOrElseUpdate(_, mutable.Set.empty) += receiver)
+      val phase = testing
+      val entry = (receiver, phase)
+      types.foreach(receivers.getOrElseUpdate(_, mutable.Set.empty) += entry)
       types.foreach(tpe =>
-        sitesByOwner.getOrElse(tpe, mutable.Set.empty).toVector.foreach(link(_, receiver))
+        sitesByOwner.getOrElse(tpe, mutable.Set.empty).toVector.foreach { (callee, sitePhase) =>
+          link(callee, receiver, sitePhase || phase)
+        }
       )
     }
 
     private def initialise(name: String): Unit =
-      if (initialised.add(name))
+      if (initialised.add((name, testing)))
         world.get(name).foreach { file =>
           if (!file.isInterface) {
             file.superName.foreach(initialise(_))

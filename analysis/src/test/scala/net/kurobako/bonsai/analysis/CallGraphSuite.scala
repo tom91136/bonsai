@@ -106,6 +106,8 @@ public class Hosting {
   public static int fromMain() { return Mark.circle() + Mark.square() + new Circle().area(); }
   public static int fromTest() { return Mark.square() + Mark.hello(); }
   public static Object testing() { return new Hosted(); }
+  public static Object lateFromTest() { return new Late(); }
+  public static Object lateFromMain() { return new Late(); }
   public static Lock latch() { return new Latch(); }
 }
 
@@ -1025,6 +1027,101 @@ public class $bslash$amp$div {
       assertEquals(grown, whole)
       assert(!grown.testOnly(mainMethod))
       assert(!grown.testInstantiated("fixture/Hosted"))
+    }
+  }
+
+  test("a test-reached method promoted to a main root promotes its callees too") {
+    withWorld() { world =>
+      val root  = ref("Hosting", "fromTest")
+      val whole = CallGraphs.build(world, Set(root), tests = Set(root))
+      val walk  = CallGraph.Walk(world, _ => false)
+      walk.extend(Set.empty[Reference], Set(root))
+      val first = walk.result()
+      assert(first.testOnly(root))
+      assert(first.testOnly(ref("Mark", "square")))
+      assert(first.testOnly(ref("Mark", "hello")))
+      walk.extend(Set(root), Set(root))
+      assertEquals(walk.result(), whole)
+    }
+  }
+
+  test("a test-instantiated class promoted to a main root promotes its class initialiser") {
+    withWorld() { world =>
+      val fromTest = ref("Hosting", "lateFromTest", "()Ljava/lang/Object;")
+      val fromMain = ref("Hosting", "lateFromMain", "()Ljava/lang/Object;")
+      val whole    = CallGraphs.build(world, Set(fromMain), tests = Set(fromTest))
+      val walk     = CallGraph.Walk(world, _ => false)
+      walk.extend(Set.empty[Reference], Set(fromTest))
+      val first = walk.result()
+      assert(first.testOnly(ref("Late", "<clinit>", "()V")))
+      assert(first.testOnly(ref("Mark", "late")))
+      walk.extend(Set(fromMain), Set.empty[Reference])
+      assertEquals(walk.result(), whole)
+    }
+  }
+
+  test("a test-reached dispatch site promoted to a main root promotes the override") {
+    withWorld() { world =>
+      val root  = ref("Orders", "circles")
+      val whole = CallGraphs.build(world, Set(root), tests = Set(root))
+      val walk  = CallGraph.Walk(world, _ => false)
+      walk.extend(Set.empty[Reference], Set(root))
+      val first = walk.result()
+      assert(first.testOnly(ref("Circle", "area")))
+      assert(first.testOnly(ref("Mark", "circle")))
+      walk.extend(Set(root), Set(root))
+      assertEquals(walk.result(), whole)
+    }
+  }
+
+  test("a main site linking to a test-instantiated class leaves the override test-only") {
+    withWorld() { world =>
+      val fromTest = ref("Orders", "make", "()Lfixture/Shape;")
+      val fromMain = ref("Orders", "call", "(Lfixture/Shape;)I")
+      val whole    = CallGraphs.build(world, Set(fromMain), tests = Set(fromTest))
+      val walk     = CallGraph.Walk(world, _ => false)
+      walk.extend(Set.empty[Reference], Set(fromTest))
+      val first = walk.result()
+      assert(first.testInstantiated("fixture/Square"))
+      assert(!first.reachable(ref("Square", "area")))
+      walk.extend(Set(fromMain), Set.empty[Reference])
+      val grown = walk.result()
+      assert(grown.testOnly(ref("Square", "area")), "a main site must not promote a test-instantiated override")
+      assertEquals(grown, whole)
+    }
+  }
+
+  test("extending a walk with tests first and mains later matches a fresh build over those roots") {
+    withWorld() { world =>
+      val roots = Vector(
+        ref("Hosting", "fromMain"),
+        ref("Hosting", "fromTest"),
+        ref("Hosting", "hosted", "()Ljava/lang/Object;"),
+        ref("Hosting", "testing", "()Ljava/lang/Object;"),
+        ref("Hosting", "lateFromTest", "()Ljava/lang/Object;"),
+        ref("Hosting", "lateFromMain", "()Ljava/lang/Object;"),
+        ref("Orders", "siteThenNew", "(Lfixture/Shape;)I"),
+        ref("Orders", "newThenSite", "(Lfixture/Shape;)I"),
+        ref("Orders", "circles"),
+        ref("Orders", "make", "()Lfixture/Shape;"),
+        ref("Orders", "call", "(Lfixture/Shape;)I"),
+        ref("Inits", "construct", "()Ljava/lang/Object;"),
+        ref("Inits", "staticCall"),
+        ref("Staged", "viaHandle"),
+        ref("Threads", "spawn", "()Ljava/lang/Object;"),
+        ref("Lambdas", "invoke"),
+        ref("Dead", "run")
+      )
+      for {
+        testRoot <- roots
+        mainRoot <- roots
+      } {
+        val whole = CallGraphs.build(world, Set(mainRoot), tests = Set(testRoot))
+        val walk  = CallGraph.Walk(world, _ => false)
+        walk.extend(Set.empty[Reference], Set(testRoot))
+        walk.extend(Set(mainRoot), Set.empty[Reference])
+        assertEquals(walk.result(), whole, s"main=$mainRoot test=$testRoot")
+      }
     }
   }
 }
