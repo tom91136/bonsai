@@ -201,7 +201,7 @@ def quietly(args: String*): Unit =
       "-e",
       s"ANALYSIS_HEAP=$analysisHeap",
       "-e",
-      s"SBT_OPTS=-Dsbt.color=false -Dsbt.supershell=false -Xmx$heap",
+      s"SBT_OPTS=-Dsbt.color=false -Dsbt.supershell=false -Xmx$heap -Xss4M",
       image,
       "scala-cli",
       "run",
