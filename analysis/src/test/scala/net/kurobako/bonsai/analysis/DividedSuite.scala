@@ -569,6 +569,19 @@ class DividedSuite extends AnalysisSuite {
     }
   }
 
+  test("a divided read reaches the same classes as the same classes read undivided") {
+    apart(
+      Seq("Util.scala" -> "package core\nobject Util { def used: Int = 1\n  def spare: Int = 2 }"),
+      Seq("Main.scala" ->
+        "package lib\nobject Main { def main(args: Array[String]): Unit = { println(core.Util.used); () } }"),
+      Set.empty
+    ) { (together, divided) =>
+      assertEquals(divided.reach, together.reach)
+      assert(!together.reach.deadMethods("core.Util.used()I"), together.reach.toString)
+      assert(together.reach.deadMethods("core.Util.spare()I"), together.reach.toString)
+    }
+  }
+
   test("a base class of an exported class in another run keeps its members exempt") {
     apart(
       Seq("Base.scala" -> "package core\nclass Base { def hook: Int = 1 }"),
