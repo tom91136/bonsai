@@ -14,6 +14,8 @@
 //   --cpus N         cpu cap
 //   --timeout SEC    wall-clock limit for sbt and the analysis (default 3600)
 //   --cache VOLUME   named volume holding the dependency caches, kept afterwards (default: a fresh volume, removed after)
+//   --coursier DIR   a coursier cache to mount at /opt/coursier and use in the container, so that the toolchain resolves
+//                    from it rather than from Maven Central
 //   --version V      bonsai version in the ivy repository (default 0.1.0-SNAPSHOT)
 //   --bonsai no      build the project without bonsai, as the control of a run
 //   --tag TAG        a git tag to fetch beside the ref, or ALL to unshallow with every tag, for builds that read tags
@@ -95,6 +97,7 @@ def quietly(args: String*): Unit =
   var name           = ""
   var cpus           = ""
   var cache          = ""
+  var coursier       = ""
   var tag            = ""
   var inject         = "yes"
   val sbt            = Vector.newBuilder[String]
@@ -119,6 +122,7 @@ def quietly(args: String*): Unit =
       case "--cpus"          => set(cpus = _)
       case "--timeout"       => set(timeoutSeconds = _)
       case "--cache"         => set(cache = _)
+      case "--coursier"      => set(coursier = _)
       case "--version"       => set(version = _)
       case "--tag"           => set(tag = _)
       case "--bonsai"        => set(inject = _)
@@ -145,6 +149,9 @@ def quietly(args: String*): Unit =
   if (Files.isDirectory(Path.of(url))) {
     mounts ++= Vector("-v", s"${Path.of(url).toRealPath()}:/src:ro")
     url = "file:///src"
+  }
+  if (coursier.nonEmpty) {
+    mounts ++= Vector("-v", s"${Path.of(coursier).toRealPath()}:/opt/coursier", "-e", "COURSIER_CACHE=/opt/coursier")
   }
 
   val container = s"bonsai-community-${ProcessHandle.current().pid()}-${Random.nextInt(32768)}"
